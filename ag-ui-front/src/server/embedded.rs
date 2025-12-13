@@ -86,7 +86,8 @@ pub async fn boot_embedded_server(
         .unwrap_or_else(|_| "Standalone".to_string())
         .to_lowercase();
 
-    let result = match storage_type.as_str() {
+    // boot_ag_ui_server handles lock.unlock() internally, so we don't unlock here
+    match storage_type.as_str() {
         "scalable" => {
             tracing::info!("AG-UI: Using Scalable mode with Redis session/event storage");
             let redis_pool = app_module
@@ -114,7 +115,7 @@ pub async fn boot_embedded_server(
                 ag_ui_config,
             );
 
-            boot_ag_ui_server(handler, server_config, lock.clone(), Some(shutdown_signal)).await
+            boot_ag_ui_server(handler, server_config, lock, Some(shutdown_signal)).await
         }
         _ => {
             tracing::info!("AG-UI: Using Standalone mode with in-memory session/event storage");
@@ -133,10 +134,7 @@ pub async fn boot_embedded_server(
                 ag_ui_config,
             );
 
-            boot_ag_ui_server(handler, server_config, lock.clone(), Some(shutdown_signal)).await
+            boot_ag_ui_server(handler, server_config, lock, Some(shutdown_signal)).await
         }
-    };
-
-    lock.unlock();
-    result
+    }
 }

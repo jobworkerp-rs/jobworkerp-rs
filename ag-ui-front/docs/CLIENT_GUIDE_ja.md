@@ -20,7 +20,7 @@ AG-UI Front は [AG-UI プロトコル](https://docs.ag-ui.com/) に準拠した
 
 ### 基本フロー
 
-```
+```text
 クライアント                    AG-UI Server
     |                              |
     |-- POST /ag-ui/run ---------->|  ワークフロー実行開始
@@ -246,7 +246,7 @@ Authorization: Bearer <token>
 
 ### イベント形式
 
-```
+```text
 event: EVENT_TYPE
 data: {"field": "value", ...}
 id: 1
@@ -302,7 +302,7 @@ id: 1
 | `TEXT_MESSAGE_END` | メッセージ終了 |
 
 **シーケンス例:**
-```
+```text
 event: TEXT_MESSAGE_START
 data: {"type":"TEXT_MESSAGE_START","messageId":"msg-1","role":"assistant","timestamp":1702345678000}
 id: 5
@@ -344,7 +344,7 @@ HITL は、ワークフロー実行中にユーザー入力を待機する機能
 
 ### HITL フロー
 
-```
+```text
 クライアント                    AG-UI Server
     |                              |
     |-- POST /ag-ui/run ---------->|
@@ -399,7 +399,7 @@ Content-Type: application/json
 
 ### HITL 再開後のイベント
 
-```
+```text
 event: TOOL_CALL_RESULT
 data: {"type":"TOOL_CALL_RESULT","toolCallId":"wait_run-456","result":{"approved":true},"timestamp":...}
 
@@ -447,7 +447,7 @@ data: {"type":"STEP_STARTED","stepId":"task2","stepName":"next_task","timestamp"
 
 `RUN_ERROR` イベントとして配信されます：
 
-```
+```text
 event: RUN_ERROR
 data: {"type":"RUN_ERROR","runId":"run-456","message":"Task failed","code":"TASK_FAILED","timestamp":...}
 ```

@@ -1,5 +1,5 @@
 use super::{
-    context::{TaskContext, WorkflowContext},
+    context::{TaskContext, WorkflowContext, WorkflowStreamEvent},
     expression::UseExpression,
 };
 use crate::workflow::{
@@ -197,7 +197,8 @@ impl TaskExecutor {
         cx: Arc<opentelemetry::Context>,
         parent_task: Arc<TaskContext>,
         execution_id: Option<Arc<ExecutionId>>,
-    ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
+    ) -> futures::stream::BoxStream<'static, Result<WorkflowStreamEvent, Box<workflow::Error>>>
+    {
         let position = parent_task.position.clone();
         // enter task (add task name to position stack)
         // XXX Do not forget to remove the position after task execution (difficult to debug)
@@ -274,7 +275,14 @@ impl TaskExecutor {
                         .map_or("None".to_string(), |p| p.as_json_pointer().to_string())
                 );
                 task_context.set_completed_at();
-                return futures::stream::once(futures::future::ready(Ok(task_context))).boxed();
+                let pos_str = task_context.position.read().await.as_json_pointer();
+                let event = WorkflowStreamEvent::task_completed_with_position(
+                    "skip",
+                    &self.task_name,
+                    &pos_str,
+                    task_context,
+                );
+                return futures::stream::once(futures::future::ready(Ok(event))).boxed();
             }
             task_context
         } else {
@@ -322,10 +330,16 @@ impl TaskExecutor {
                             "`If' condition is false, skip: {:#?}",
                             &task_context.raw_input
                         );
+                        let pos_str = task_context.position.read().await.as_json_pointer();
                         task_context.remove_position().await; // remove task_name
                         task_context.set_completed_at();
-                        return futures::stream::once(futures::future::ready(Ok(task_context)))
-                            .boxed();
+                        let event = WorkflowStreamEvent::task_completed_with_position(
+                            "skip_if",
+                            &self.task_name,
+                            &pos_str,
+                            task_context,
+                        );
+                        return futures::stream::once(futures::future::ready(Ok(event))).boxed();
                     }
                 }
                 Err(mut e) => {
@@ -359,7 +373,7 @@ impl TaskExecutor {
         // remove task position after execution (last task context)
         Box::pin(stream! {
             pin_mut!(res);
-            let mut previous_item: Option<Result<TaskContext, Box<workflow::Error>>> = res.next().await;
+            let mut previous_item: Option<Result<WorkflowStreamEvent, Box<workflow::Error>>> = res.next().await;
             if previous_item.is_none() {
                 // If no item is returned, we yield an empty result
                 yield Err(workflow::errors::ErrorFactory::create(
@@ -380,13 +394,19 @@ impl TaskExecutor {
 
                 // Handle the final item - call remove_position() only if it's Ok
                 if let Some(final_item) = previous_item {
-                    if let Ok(tc) = final_item {
-                        tc.remove_position().await; // remove task name from position stack
-                        yield Ok(tc);
-                    } else {
-                        tracing::info!("Final item is an error: {:#?}", final_item);
-                        // If the final item is an error, yield it as is
-                        yield final_item;
+                    match final_item {
+                        Ok(event) => {
+                            // Remove position from context if this is a completed event
+                            if let Some(tc) = event.context() {
+                                tc.remove_position().await; // remove task name from position stack
+                            }
+                            yield Ok(event);
+                        }
+                        Err(e) => {
+                            tracing::info!("Final item is an error: {:#?}", e);
+                            // If the final item is an error, yield it as is
+                            yield Err(e);
+                        }
                     }
                 }
              }
@@ -576,7 +596,8 @@ impl TaskExecutor {
         cx: Arc<opentelemetry::Context>,
         task_context: TaskContext,
         execution_id: Option<Arc<ExecutionId>>,
-    ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
+    ) -> futures::stream::BoxStream<'static, Result<WorkflowStreamEvent, Box<workflow::Error>>>
+    {
         // Prepare owned data for 'static futures
         let job_executor_wrapper = self.job_executor_wrapper.clone();
         let task_name = Arc::new(self.task_name.clone());
@@ -648,6 +669,7 @@ impl TaskExecutor {
                     execution_id.clone(),
                     self.metadata.clone(),
                 );
+                let task_name_str = task_name.to_string();
                 futures::stream::once(async move {
                     match fork_executor
                         .execute(cx, task_name.as_str(), task_context.clone())
@@ -661,7 +683,7 @@ impl TaskExecutor {
                             .await;
                             match expr {
                                 Ok(mut expr) => {
-                                    Self::update_context_by_output(
+                                    let result = Self::update_context_by_output(
                                         checkpoint_repository.clone(),
                                         execution_id.clone(),
                                         original_task.clone(),
@@ -669,7 +691,12 @@ impl TaskExecutor {
                                         &mut expr,
                                         ctx,
                                     )
-                                    .await
+                                    .await?;
+                                    Ok(WorkflowStreamEvent::task_completed(
+                                        "forkTask",
+                                        &task_name_str,
+                                        result,
+                                    ))
                                 }
                                 Err(mut e) => {
                                     let pos = task_context.position.read().await;
@@ -685,6 +712,7 @@ impl TaskExecutor {
             }
             Task::RaiseTask(task) => {
                 let task_executor = RaiseTaskExecutor::new(workflow_context.clone(), task);
+                let task_name_str = task_name.to_string();
                 futures::stream::once(async move {
                     match task_executor
                         .execute(cx, task_name.as_str(), task_context.clone())
@@ -696,7 +724,7 @@ impl TaskExecutor {
                                 Arc::new(ctx.clone()),
                             )
                             .await?;
-                            Self::update_context_by_output(
+                            let result = Self::update_context_by_output(
                                 checkpoint_repository.clone(),
                                 execution_id.clone(),
                                 original_task.clone(),
@@ -704,7 +732,12 @@ impl TaskExecutor {
                                 &mut expr,
                                 ctx,
                             )
-                            .await
+                            .await?;
+                            Ok(WorkflowStreamEvent::task_completed(
+                                "raiseTask",
+                                &task_name_str,
+                                result,
+                            ))
                         }
                         Err(e) => Err(e),
                     }
@@ -713,6 +746,7 @@ impl TaskExecutor {
             }
             Task::RunTask(task) => {
                 let use_streaming = task.use_streaming;
+                let task_name_str = task_name.to_string();
 
                 // Check if streaming execution should be used for the given RunTask
                 //
@@ -740,7 +774,7 @@ impl TaskExecutor {
                                     Arc::new(ctx.clone()),
                                 )
                                 .await?;
-                                Self::update_context_by_output(
+                                let result = Self::update_context_by_output(
                                     checkpoint_repository.clone(),
                                     execution_id.clone(),
                                     original_task.clone(),
@@ -748,7 +782,13 @@ impl TaskExecutor {
                                     &mut expr,
                                     ctx,
                                 )
-                                .await
+                                .await?;
+                                // TODO: Return StreamingJobCompleted with job_id when available
+                                Ok(WorkflowStreamEvent::task_completed(
+                                    "runTask",
+                                    &task_name_str,
+                                    result,
+                                ))
                             }
                             Err(e) => Err(e),
                         }
@@ -773,7 +813,7 @@ impl TaskExecutor {
                                     Arc::new(ctx.clone()),
                                 )
                                 .await?;
-                                Self::update_context_by_output(
+                                let result = Self::update_context_by_output(
                                     checkpoint_repository.clone(),
                                     execution_id.clone(),
                                     original_task.clone(),
@@ -781,7 +821,13 @@ impl TaskExecutor {
                                     &mut expr,
                                     ctx,
                                 )
-                                .await
+                                .await?;
+                                // TODO: Return JobCompleted with job_id when available
+                                Ok(WorkflowStreamEvent::task_completed(
+                                    "runTask",
+                                    &task_name_str,
+                                    result,
+                                ))
                             }
                             Err(e) => Err(e),
                         }
@@ -791,6 +837,7 @@ impl TaskExecutor {
             }
             Task::SetTask(task) => {
                 let task_executor = SetTaskExecutor::new(workflow_context.clone(), task);
+                let task_name_str = task_name.to_string();
                 futures::stream::once(async move {
                     match task_executor
                         .execute(cx, task_name.as_str(), task_context.clone())
@@ -802,7 +849,7 @@ impl TaskExecutor {
                                 Arc::new(ctx.clone()),
                             )
                             .await?;
-                            Self::update_context_by_output(
+                            let result = Self::update_context_by_output(
                                 checkpoint_repository.clone(),
                                 execution_id.clone(),
                                 original_task.clone(),
@@ -810,7 +857,12 @@ impl TaskExecutor {
                                 &mut expr,
                                 ctx,
                             )
-                            .await
+                            .await?;
+                            Ok(WorkflowStreamEvent::task_completed(
+                                "setTask",
+                                &task_name_str,
+                                result,
+                            ))
                         }
                         Err(e) => Err(e),
                     }
@@ -819,6 +871,7 @@ impl TaskExecutor {
             }
             Task::SwitchTask(task) => {
                 let task_executor = SwitchTaskExecutor::new(workflow_context.clone(), &task);
+                let task_name_str = task_name.to_string();
                 futures::stream::once(async move {
                     match task_executor
                         .execute(cx, task_name.as_str(), task_context.clone())
@@ -830,7 +883,7 @@ impl TaskExecutor {
                                 Arc::new(ctx.clone()),
                             )
                             .await?;
-                            Self::update_context_by_output(
+                            let result = Self::update_context_by_output(
                                 checkpoint_repository.clone(),
                                 execution_id.clone(),
                                 original_task.clone(),
@@ -838,7 +891,12 @@ impl TaskExecutor {
                                 &mut expr,
                                 ctx,
                             )
-                            .await
+                            .await?;
+                            Ok(WorkflowStreamEvent::task_completed(
+                                "switchTask",
+                                &task_name_str,
+                                result,
+                            ))
                         }
                         Err(e) => Err(e),
                     }
@@ -855,6 +913,7 @@ impl TaskExecutor {
                     execution_id.clone(),
                     self.metadata.clone(),
                 );
+                let task_name_str = task_name.to_string();
                 futures::stream::once(async move {
                     match task_executor
                         .execute(cx, task_name.as_str(), task_context.clone())
@@ -866,7 +925,7 @@ impl TaskExecutor {
                                 Arc::new(ctx.clone()),
                             )
                             .await?;
-                            Self::update_context_by_output(
+                            let result = Self::update_context_by_output(
                                 checkpoint_repository.clone(),
                                 execution_id.clone(),
                                 original_task.clone(),
@@ -874,7 +933,12 @@ impl TaskExecutor {
                                 &mut expr,
                                 ctx,
                             )
-                            .await
+                            .await?;
+                            Ok(WorkflowStreamEvent::task_completed(
+                                "tryTask",
+                                &task_name_str,
+                                result,
+                            ))
                         }
                         Err(e) => Err(e),
                     }
@@ -883,6 +947,7 @@ impl TaskExecutor {
             }
             Task::WaitTask(task) => {
                 let task_executor = WaitTaskExecutor::new(task);
+                let task_name_str = task_name.to_string();
                 futures::stream::once(async move {
                     match task_executor
                         .execute(cx, task_name.as_str(), task_context.clone())
@@ -894,7 +959,7 @@ impl TaskExecutor {
                                 Arc::new(ctx.clone()),
                             )
                             .await?;
-                            Self::update_context_by_output(
+                            let result = Self::update_context_by_output(
                                 checkpoint_repository.clone(),
                                 execution_id.clone(),
                                 original_task.clone(),
@@ -902,7 +967,12 @@ impl TaskExecutor {
                                 &mut expr,
                                 ctx,
                             )
-                            .await
+                            .await?;
+                            Ok(WorkflowStreamEvent::task_completed(
+                                "waitTask",
+                                &task_name_str,
+                                result,
+                            ))
                         }
                         Err(e) => Err(e),
                     }
@@ -928,7 +998,7 @@ pub trait StreamTaskExecutorTrait<'a>: Send + Sync {
         cx: Arc<opentelemetry::Context>,
         task_name: Arc<String>,
         task_context: TaskContext,
-    ) -> impl futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send;
+    ) -> impl futures::Stream<Item = Result<WorkflowStreamEvent, Box<workflow::Error>>> + Send;
 }
 
 pub struct RaiseTaskExecutor {
@@ -1014,5 +1084,427 @@ impl ExecutionId {
         } else {
             value.map(|v| Self { value: v })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workflow::definition::workflow::{
+        Document, FlowDirective, FlowDirectiveEnum, Input, Output, RunJobRunner, RunRunner,
+        RunTask, RunTaskConfiguration, SetTask, Task, TaskList, WorkflowName, WorkflowSchema,
+        WorkflowVersion,
+    };
+    use app::module::test::create_hybrid_test_app;
+    use futures::StreamExt;
+    use std::str::FromStr;
+
+    fn create_workflow_with_run_task() -> WorkflowSchema {
+        let task_map_list = {
+            let mut map1 = HashMap::new();
+            // Run task that executes a simple command using RunRunner variant
+            let mut args = serde_json::Map::new();
+            args.insert("command".to_string(), serde_json::json!("echo"));
+            args.insert("args".to_string(), serde_json::json!(["hello", "world"]));
+
+            map1.insert(
+                "run_command".to_string(),
+                Task::RunTask(RunTask {
+                    run: RunTaskConfiguration::Runner(RunRunner {
+                        runner: RunJobRunner {
+                            name: "COMMAND".to_string(),
+                            arguments: args,
+                            options: None,
+                            settings: serde_json::Map::new(),
+                            using: None,
+                        },
+                    }),
+                    export: None,
+                    if_: None,
+                    input: None,
+                    metadata: serde_json::Map::new(),
+                    output: None,
+                    then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
+                    timeout: None,
+                    checkpoint: false,
+                    use_streaming: false,
+                }),
+            );
+            vec![map1]
+        };
+        let task_list = TaskList(task_map_list);
+
+        WorkflowSchema {
+            checkpointing: None,
+            document: Document {
+                name: WorkflowName::from_str("test-run-task-workflow").unwrap(),
+                version: WorkflowVersion::from_str("1.0.0").unwrap(),
+                metadata: serde_json::Map::new(),
+                ..Default::default()
+            },
+            input: Input {
+                schema: None,
+                from: None,
+            },
+            output: Some(Output {
+                as_: None,
+                schema: None,
+            }),
+            do_: task_list,
+        }
+    }
+
+    fn create_workflow_with_set_task() -> WorkflowSchema {
+        let task_map_list = {
+            let mut map1 = HashMap::new();
+            map1.insert(
+                "set_value".to_string(),
+                Task::SetTask(SetTask {
+                    set: {
+                        let mut m = serde_json::Map::new();
+                        m.insert("key".to_string(), serde_json::json!("value"));
+                        m
+                    },
+                    export: None,
+                    if_: None,
+                    input: None,
+                    metadata: serde_json::Map::new(),
+                    output: None,
+                    then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
+                    timeout: None,
+                    checkpoint: false,
+                }),
+            );
+            vec![map1]
+        };
+        let task_list = TaskList(task_map_list);
+
+        WorkflowSchema {
+            checkpointing: None,
+            document: Document {
+                name: WorkflowName::from_str("test-set-task-workflow").unwrap(),
+                version: WorkflowVersion::from_str("1.0.0").unwrap(),
+                metadata: serde_json::Map::new(),
+                ..Default::default()
+            },
+            input: Input {
+                schema: None,
+                from: None,
+            },
+            output: Some(Output {
+                as_: None,
+                schema: None,
+            }),
+            do_: task_list,
+        }
+    }
+
+    /// Helper function to check if event is TaskCompleted with matching task_type and task_name
+    fn is_task_completed_event(
+        event: &Result<WorkflowStreamEvent, Box<workflow::Error>>,
+        expected_task_type: &str,
+        expected_task_name: &str,
+    ) -> bool {
+        if let Ok(WorkflowStreamEvent::TaskCompleted { event, .. }) = event {
+            event.task_type == expected_task_type && event.task_name == expected_task_name
+        } else {
+            false
+        }
+    }
+
+    /// Helper function to get event description for debugging
+    fn event_description(event: &Result<WorkflowStreamEvent, Box<workflow::Error>>) -> String {
+        match event {
+            Ok(evt) => {
+                let variant = match evt {
+                    WorkflowStreamEvent::TaskCompleted { event, .. } => {
+                        format!(
+                            "TaskCompleted(type={}, name={})",
+                            event.task_type, event.task_name
+                        )
+                    }
+                    WorkflowStreamEvent::TaskStarted { event } => {
+                        format!(
+                            "TaskStarted(type={}, name={})",
+                            event.task_type, event.task_name
+                        )
+                    }
+                    WorkflowStreamEvent::JobStarted { event } => {
+                        format!("JobStarted(job_id={})", event.job_id)
+                    }
+                    WorkflowStreamEvent::JobCompleted { event, .. } => {
+                        format!("JobCompleted(job_id={})", event.job_id)
+                    }
+                    WorkflowStreamEvent::StreamingJobStarted { event } => {
+                        format!("StreamingJobStarted(job_id={})", event.job_id)
+                    }
+                    WorkflowStreamEvent::StreamingJobCompleted { event, .. } => {
+                        format!("StreamingJobCompleted(job_id={})", event.job_id)
+                    }
+                };
+                format!("Ok({})", variant)
+            }
+            Err(e) => format!("Err({})", e),
+        }
+    }
+
+    /// Test that RunTask emits WorkflowStreamEvent::TaskCompleted with correct task type
+    /// Note: This test requires Redis/worker infrastructure and is ignored by default.
+    /// Run with `--ignored` flag to execute.
+    #[test]
+    #[ignore = "Requires Redis/worker infrastructure"]
+    fn test_run_task_emits_task_completed_event() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module.clone()));
+
+            let workflow = create_workflow_with_run_task();
+            let input = Arc::new(serde_json::json!({}));
+            let context = Arc::new(serde_json::json!({}));
+
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context.clone(),
+                None,
+            )));
+
+            // Create TaskExecutor
+            let task_executor = TaskExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(60),
+                job_executor_wrapper,
+                None, // checkpoint_repository
+                "run_command",
+                Arc::new(workflow.do_.0[0].get("run_command").unwrap().clone()),
+                Arc::new(HashMap::new()),
+            );
+
+            // Execute and collect events
+            let task_context = TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            );
+
+            let stream = task_executor
+                .execute(
+                    Arc::new(opentelemetry::Context::current()),
+                    Arc::new(task_context),
+                    None,
+                )
+                .await;
+
+            futures::pin_mut!(stream);
+
+            let mut events: Vec<Result<WorkflowStreamEvent, Box<workflow::Error>>> = Vec::new();
+            while let Some(event) = stream.next().await {
+                events.push(event);
+            }
+
+            // Verify at least one event was emitted
+            assert!(
+                !events.is_empty(),
+                "Expected at least one event from RunTask"
+            );
+
+            // Check if the event is TaskCompleted with task_type "runTask"
+            let has_run_task_event = events
+                .iter()
+                .any(|e| is_task_completed_event(e, "runTask", "run_command"));
+
+            assert!(
+                has_run_task_event,
+                "Expected TaskCompleted event with task_type='runTask' and task_name='run_command'. Got events: {:?}",
+                events.iter().map(event_description).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    /// Test that SetTask emits WorkflowStreamEvent::TaskCompleted with correct task type
+    #[test]
+    fn test_set_task_emits_task_completed_event() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module.clone()));
+
+            let workflow = create_workflow_with_set_task();
+            let input = Arc::new(serde_json::json!({}));
+            let context = Arc::new(serde_json::json!({}));
+
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context.clone(),
+                None,
+            )));
+
+            // Create TaskExecutor
+            let task_executor = TaskExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(60),
+                job_executor_wrapper,
+                None,
+                "set_value",
+                Arc::new(workflow.do_.0[0].get("set_value").unwrap().clone()),
+                Arc::new(HashMap::new()),
+            );
+
+            let task_context = TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            );
+
+            let stream = task_executor
+                .execute(
+                    Arc::new(opentelemetry::Context::current()),
+                    Arc::new(task_context),
+                    None,
+                )
+                .await;
+
+            futures::pin_mut!(stream);
+
+            let mut events: Vec<Result<WorkflowStreamEvent, Box<workflow::Error>>> = Vec::new();
+            while let Some(event) = stream.next().await {
+                events.push(event);
+            }
+
+            assert!(
+                !events.is_empty(),
+                "Expected at least one event from SetTask"
+            );
+
+            // Check for TaskCompleted with task_type "setTask"
+            let has_set_task_event = events
+                .iter()
+                .any(|e| is_task_completed_event(e, "setTask", "set_value"));
+
+            assert!(
+                has_set_task_event,
+                "Expected TaskCompleted event with task_type='setTask' and task_name='set_value'. Got events: {:?}",
+                events.iter().map(event_description).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    /// Test that WorkflowStreamEvent.into_context() extracts TaskContext correctly
+    #[test]
+    fn test_workflow_stream_event_into_context() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let input = Arc::new(serde_json::json!({"test": "value"}));
+            let context_vars = Arc::new(Mutex::new(serde_json::Map::new()));
+            let task_context = TaskContext::new(None, input, context_vars);
+
+            // Create a TaskCompleted event
+            let event =
+                WorkflowStreamEvent::task_completed("testTask", "my_task", task_context.clone());
+
+            // Extract context using into_context()
+            let extracted = event.into_context();
+            assert!(extracted.is_some(), "into_context should return Some");
+
+            let extracted_context = extracted.unwrap();
+            assert_eq!(
+                *extracted_context.input,
+                serde_json::json!({"test": "value"})
+            );
+        });
+    }
+
+    /// Test that WorkflowStreamEvent.context() returns reference to TaskContext
+    #[test]
+    fn test_workflow_stream_event_context_ref() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let input = Arc::new(serde_json::json!({"key": "data"}));
+            let context_vars = Arc::new(Mutex::new(serde_json::Map::new()));
+            let task_context = TaskContext::new(None, input, context_vars);
+
+            let event =
+                WorkflowStreamEvent::task_completed("runTask", "cmd_task", task_context.clone());
+
+            // Get reference using context()
+            let ctx_ref = event.context();
+            assert!(ctx_ref.is_some(), "context() should return Some");
+            assert_eq!(*ctx_ref.unwrap().input, serde_json::json!({"key": "data"}));
+        });
+    }
+
+    /// Test event variants and their properties
+    #[test]
+    fn test_workflow_stream_event_variants() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let input = Arc::new(serde_json::json!({}));
+            let context_vars = Arc::new(Mutex::new(serde_json::Map::new()));
+            let task_context = TaskContext::new(None, input, context_vars);
+
+            // TaskCompleted - has context
+            let task_completed =
+                WorkflowStreamEvent::task_completed("runTask", "task1", task_context.clone());
+            assert!(task_completed.is_completed_event());
+            assert!(!task_completed.is_start_event());
+            assert!(task_completed.context().is_some());
+
+            // TaskStarted - no context
+            let task_started = WorkflowStreamEvent::task_started("runTask", "task1", "/do/task1");
+            assert!(task_started.is_start_event());
+            assert!(!task_started.is_completed_event());
+            assert!(task_started.context().is_none());
+
+            // StreamingJobStarted - no context
+            let streaming_started =
+                WorkflowStreamEvent::streaming_job_started(123, "COMMAND", "worker1", "/do/task1");
+            assert!(streaming_started.is_start_event());
+            assert!(streaming_started.context().is_none());
+
+            // StreamingJobCompleted - has context
+            let streaming_completed = WorkflowStreamEvent::streaming_job_completed(
+                123,
+                Some(456),
+                "/do/task1",
+                task_context.clone(),
+            );
+            assert!(streaming_completed.is_completed_event());
+            assert!(streaming_completed.context().is_some());
+
+            // JobStarted - no context
+            let job_started =
+                WorkflowStreamEvent::job_started(789, "HTTP_REQUEST", "worker2", "/do/task2");
+            assert!(job_started.is_start_event());
+            assert!(job_started.context().is_none());
+
+            // JobCompleted - has context
+            let job_completed =
+                WorkflowStreamEvent::job_completed(789, Some(1000), "/do/task2", task_context);
+            assert!(job_completed.is_completed_event());
+            assert!(job_completed.context().is_some());
+        });
+    }
+
+    /// Test position() method returns correct position for all event types
+    #[test]
+    fn test_workflow_stream_event_position() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let input = Arc::new(serde_json::json!({}));
+            let context_vars = Arc::new(Mutex::new(serde_json::Map::new()));
+            let task_context = TaskContext::new(None, input, context_vars);
+
+            let task_started = WorkflowStreamEvent::task_started("runTask", "t1", "/do/task1");
+            assert_eq!(task_started.position(), "/do/task1");
+
+            let job_started = WorkflowStreamEvent::job_started(1, "CMD", "w1", "/do/job1");
+            assert_eq!(job_started.position(), "/do/job1");
+
+            let streaming_started =
+                WorkflowStreamEvent::streaming_job_started(2, "LLM", "w2", "/do/stream1");
+            assert_eq!(streaming_started.position(), "/do/stream1");
+
+            // Completed events get position from TaskContext
+            let task_completed =
+                WorkflowStreamEvent::task_completed("setTask", "t2", task_context.clone());
+            // Position from newly created TaskContext is empty by default
+            assert!(task_completed.position().is_empty() || task_completed.position() == "/");
+        });
     }
 }
