@@ -242,6 +242,41 @@ impl JobResultApp for HybridJobResultAppImpl {
         }
     }
 
+    async fn listen_result_by_job_id(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        request_streaming: bool,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
+    where
+        Self: Send + 'static,
+    {
+        // Check if result already exists
+        let res = self.find_job_result_by_job_id(job_id).await?;
+        match res {
+            // already finished: return resolved result
+            Some(v) if self.is_finished(&v) => Ok((v, None)),
+            // result in rdb (not finished by store_failure option)
+            Some(v) => {
+                // found not finished result: wait for result data
+                self.subscribe_result_with_check(
+                    job_id,
+                    timeout.as_ref(),
+                    v.data
+                        .map(|r| r.streaming_type != 0)
+                        .unwrap_or(request_streaming),
+                )
+                .await
+            }
+            None => {
+                // not found result: wait for job
+                tracing::debug!("job result not found: find job: {:?}", job_id);
+                self.subscribe_result_with_check(job_id, timeout.as_ref(), request_streaming)
+                    .await
+            }
+        }
+    }
+
     async fn listen_result_stream_by_worker(
         &self,
         worker_id: Option<&WorkerId>,
