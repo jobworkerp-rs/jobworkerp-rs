@@ -799,4 +799,3 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         })
     }
 }
-
