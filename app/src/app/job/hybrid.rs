@@ -878,7 +878,7 @@ impl JobApp for HybridJobAppImpl {
                     }
                     res
                 }
-                Ok(_rtype) => {
+                Ok(ResponseType::NoResult) => {
                     // publish for listening result client
                     let r = self
                         .job_result_pubsub_repository()
