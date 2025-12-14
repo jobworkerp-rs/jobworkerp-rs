@@ -145,8 +145,9 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
             } = &task;
 
             // === 1. Timeout setting ===
+            // Round up to at least 1 second to avoid immediate timeouts for sub-second durations
             let timeout_sec = if let Some(workflow::TaskTimeout::Timeout(duration)) = timeout {
-                (duration.after.to_millis() / 1000) as u32
+                std::cmp::max(1, ((duration.after.to_millis() + 999) / 1000) as u32)
             } else {
                 default_timeout.as_secs() as u32
             };

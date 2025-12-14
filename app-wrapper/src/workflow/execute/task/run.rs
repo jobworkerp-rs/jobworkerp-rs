@@ -1,7 +1,4 @@
 pub mod python;
-pub mod stream;
-
-pub use stream::RunStreamTaskExecutor;
 
 use super::TaskExecutorTrait;
 use crate::workflow::{
@@ -176,8 +173,9 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             run,
             ..
         } = &self.task;
+        // Round up to at least 1 second to avoid immediate timeouts for sub-second durations
         let timeout_sec = if let Some(workflow::TaskTimeout::Timeout(duration)) = timeout {
-            (duration.after.to_millis() / 1000) as u32
+            std::cmp::max(1, ((duration.after.to_millis() + 999) / 1000) as u32)
         } else {
             self.default_task_timeout.as_secs() as u32
         };
