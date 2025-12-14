@@ -684,4 +684,119 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             Ok(None)
         }
     }
+
+    /// Listen to job result by job_id and return a stream of JSON values.
+    ///
+    /// This function:
+    /// 1. Calls `listen_result_by_job_id` to get job result and optional stream
+    /// 2. If stream is available, converts each chunk to JSON and yields
+    /// 3. If stream is unavailable (job completed), converts final result to JSON
+    ///
+    /// # Arguments
+    /// * `job_id` - The job ID to listen for
+    /// * `runner_name` - Runner name for decoding output
+    /// * `using` - Optional method name for multi-method runners (MCP/Plugin)
+    /// * `timeout` - Optional timeout in milliseconds
+    ///
+    /// # Returns
+    /// Stream of JSON values representing the job result chunks
+    fn listen_job_result_as_json_stream<'a>(
+        &'a self,
+        job_id: &'a proto::jobworkerp::data::JobId,
+        runner_name: &'a str,
+        using: Option<&'a str>,
+        timeout: Option<u64>,
+    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<serde_json::Value>> + Send + 'a>> {
+        use futures::StreamExt;
+        use proto::jobworkerp::data::result_output_item;
+
+        // UseJobResultApp is inherited from FunctionCallHelper -> UseJobExecutor -> UseJobResultApp
+        Box::pin(async_stream::stream! {
+            let result = self
+                .job_result_app()
+                .listen_result_by_job_id(job_id, timeout, true)
+                .await;
+
+            match result {
+                Ok((_job_result, Some(mut stream))) => {
+                    // Stream available - yield decoded chunks
+                    while let Some(item) = stream.next().await {
+                        match item.item {
+                            Some(result_output_item::Item::Data(data)) => {
+                                match self
+                                    .decode_job_result_output(None, Some(runner_name), &data, using)
+                                    .await
+                                {
+                                    Ok(json) => yield Ok(json),
+                                    Err(e) => {
+                                        tracing::warn!("Failed to decode stream chunk: {:?}", e);
+                                        // Fallback to raw string
+                                        yield Ok(serde_json::Value::String(
+                                            String::from_utf8_lossy(&data).to_string(),
+                                        ));
+                                    }
+                                }
+                            }
+                            Some(result_output_item::Item::End(_)) |
+                            Some(result_output_item::Item::FinalCollected(_)) => {
+                                // End of stream
+                                break;
+                            }
+                            None => {
+                                // Skip empty items
+                            }
+                        }
+                    }
+                }
+                Ok((job_result, None)) => {
+                    // No stream - job already completed, use final result
+                    tracing::debug!(
+                        "No stream available for job {} (already completed), using final result",
+                        job_id.value
+                    );
+
+                    if let Some(data) = &job_result.data {
+                        if let Some(output) = &data.output {
+                            if !output.items.is_empty() {
+                                match self
+                                    .decode_job_result_output(
+                                        None,
+                                        Some(runner_name),
+                                        &output.items,
+                                        using,
+                                    )
+                                    .await
+                                {
+                                    Ok(json) => yield Ok(json),
+                                    Err(e) => {
+                                        tracing::warn!("Failed to decode final result: {:?}", e);
+                                        // Fallback to raw string
+                                        yield Ok(serde_json::Value::String(
+                                            String::from_utf8_lossy(&output.items).to_string(),
+                                        ));
+                                    }
+                                }
+                            } else {
+                                yield Err(JobWorkerError::RuntimeError(
+                                    "Job completed but output is empty".to_string(),
+                                ).into());
+                            }
+                        } else {
+                            yield Err(JobWorkerError::RuntimeError(
+                                "Job completed but output is None".to_string(),
+                            ).into());
+                        }
+                    } else {
+                        yield Err(JobWorkerError::RuntimeError(
+                            "Job completed but has no result data".to_string(),
+                        ).into());
+                    }
+                }
+                Err(e) => {
+                    yield Err(e);
+                }
+            }
+        })
+    }
 }
+
