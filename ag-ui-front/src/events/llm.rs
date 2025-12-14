@@ -26,7 +26,10 @@ use std::sync::Arc;
 ///
 /// LLM_CHAT runner streams serialized LlmChatResult protobuf messages.
 /// This function decodes the bytes and extracts the text content.
-fn extract_text_from_llm_chat_result(bytes: &[u8]) -> Option<String> {
+///
+/// Returns `Some(text)` if the protobuf decodes successfully and contains text.
+/// Falls back to UTF-8 string interpretation if protobuf decoding fails.
+pub fn extract_text_from_llm_chat_result(bytes: &[u8]) -> Option<String> {
     match LlmChatResult::decode(bytes) {
         Ok(result) => {
             if let Some(content) = result.content {

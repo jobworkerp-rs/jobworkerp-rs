@@ -500,6 +500,12 @@ pub enum WorkflowStreamEvent {
     StreamingJobStarted {
         event: JobStartedEvent,
     },
+    /// Streaming data chunk for real-time LLM output
+    /// Each chunk is yielded as it arrives from Redis Pub/Sub
+    StreamingData {
+        job_id: i64,
+        data: Vec<u8>,
+    },
     StreamingJobCompleted {
         event: JobCompletedEvent,
         context: TaskContext,
@@ -526,9 +532,16 @@ pub enum WorkflowStreamEvent {
 impl WorkflowStreamEvent {
     /// Convert to protobuf WorkflowEvent (for gRPC/serialization)
     pub fn to_proto(&self) -> WorkflowEvent {
+        use proto::jobworkerp::data::StreamingDataEvent;
         match self {
             Self::StreamingJobStarted { event } => WorkflowEvent {
                 event: Some(workflow_event::Event::StreamingJobStarted(event.clone())),
+            },
+            Self::StreamingData { job_id, data } => WorkflowEvent {
+                event: Some(workflow_event::Event::StreamingData(StreamingDataEvent {
+                    job_id: *job_id,
+                    data: data.clone(),
+                })),
             },
             Self::StreamingJobCompleted { event, .. } => WorkflowEvent {
                 event: Some(workflow_event::Event::StreamingJobCompleted(event.clone())),
@@ -611,9 +624,11 @@ impl WorkflowStreamEvent {
     }
 
     /// Get position from the event
+    /// Returns empty string for StreamingData which has no position
     pub fn position(&self) -> &str {
         match self {
             Self::StreamingJobStarted { event } => &event.position,
+            Self::StreamingData { .. } => "",
             Self::StreamingJobCompleted { event, .. } => &event.position,
             Self::JobStarted { event } => &event.position,
             Self::JobCompleted { event, .. } => &event.position,
@@ -695,6 +710,11 @@ impl WorkflowStreamEvent {
                 position: position.to_string(),
             },
         }
+    }
+
+    /// Create StreamingData event for real-time LLM output chunks
+    pub fn streaming_data(job_id: i64, data: Vec<u8>) -> Self {
+        Self::StreamingData { job_id, data }
     }
 
     /// Create StreamingJobCompleted event

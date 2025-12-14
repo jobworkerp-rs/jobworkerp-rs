@@ -371,45 +371,74 @@ impl TaskExecutor {
             .execute_task(cx, task_context, execution_id.clone())
             .await;
         // remove task position after execution (last task context)
+        // NOTE: For streaming events (StreamingJobStarted, StreamingData), we yield immediately
+        // to ensure real-time delivery. Only the final completed event needs position cleanup.
         Box::pin(stream! {
             pin_mut!(res);
-            let mut previous_item: Option<Result<WorkflowStreamEvent, Box<workflow::Error>>> = res.next().await;
-            if previous_item.is_none() {
-                // If no item is returned, we yield an empty result
+            // Track non-streaming events to find the final one for position cleanup
+            let mut previous_item: Option<Result<WorkflowStreamEvent, Box<workflow::Error>>> = None;
+
+            while let Some(item) = res.next().await {
+                match &item {
+                    Ok(event) => {
+                        // Check if this is a streaming event that should be yielded immediately
+                        let is_streaming_event = matches!(
+                            event,
+                            WorkflowStreamEvent::StreamingJobStarted { .. } |
+                            WorkflowStreamEvent::StreamingData { .. }
+                        );
+
+                        if is_streaming_event {
+                            // Flush previous_item before yielding streaming event to preserve order
+                            if let Some(prev) = previous_item.take() {
+                                yield prev;
+                            }
+                            // Yield streaming events immediately for real-time delivery
+                            yield item;
+                        } else {
+                            // For non-streaming events, use previous_item pattern
+                            // to identify the final event for position cleanup
+                            if let Some(prev) = previous_item.take() {
+                                yield prev;
+                            }
+                            previous_item = Some(item);
+                        }
+                    }
+                    Err(_) => {
+                        // For errors, use previous_item pattern as well
+                        if let Some(prev) = previous_item.take() {
+                            yield prev;
+                        }
+                        previous_item = Some(item);
+                    }
+                }
+            }
+
+            // Handle the final non-streaming item - call remove_position() only if it's Ok
+            if let Some(final_item) = previous_item {
+                match final_item {
+                    Ok(event) => {
+                        // Remove position from context if this is a completed event
+                        if let Some(tc) = event.context() {
+                            tc.remove_position().await; // remove task name from position stack
+                        }
+                        yield Ok(event);
+                    }
+                    Err(e) => {
+                        // If the final item is an error, yield it as is
+                        yield Err(e);
+                    }
+                }
+            } else {
+                // If no non-streaming item was returned, yield an error
+                // (This shouldn't happen normally as workflows should always have a completion event)
                 yield Err(workflow::errors::ErrorFactory::create(
                     workflow::errors::ErrorCode::NotFound,
                     Some("No task context returned".to_string()),
                     Some(err_pos),
                     None,
                 ));
-            } else {
-                while let Some(current_item) = res.next().await {
-                    // If we have a previous item, yield it
-                    if let Some(prev) = previous_item.take() {
-                        yield prev;
-                    }
-                    // Store current item as previous for next iteration
-                    previous_item = Some(current_item);
-                }
-
-                // Handle the final item - call remove_position() only if it's Ok
-                if let Some(final_item) = previous_item {
-                    match final_item {
-                        Ok(event) => {
-                            // Remove position from context if this is a completed event
-                            if let Some(tc) = event.context() {
-                                tc.remove_position().await; // remove task name from position stack
-                            }
-                            yield Ok(event);
-                        }
-                        Err(e) => {
-                            tracing::info!("Final item is an error: {:#?}", e);
-                            // If the final item is an error, yield it as is
-                            yield Err(e);
-                        }
-                    }
-                }
-             }
+            }
         })
     }
 
@@ -776,7 +805,7 @@ impl TaskExecutor {
                         futures::pin_mut!(stream);
                         while let Some(event_result) = stream.next().await {
                             match event_result {
-                                Ok(WorkflowStreamEvent::StreamingJobCompleted { event, context }) => {
+                                Ok(WorkflowStreamEvent::StreamingJobCompleted { mut event, context }) => {
                                     // Apply output transformation
                                     let mut expr = match TaskExecutor::expression(
                                         &*workflow_context.read().await,
@@ -797,11 +826,26 @@ impl TaskExecutor {
                                         context,
                                     ).await {
                                         Ok(result) => {
-                                            // Re-emit StreamingJobCompleted with updated context
-                                            yield Ok(WorkflowStreamEvent::StreamingJobCompleted {
-                                                event,
-                                                context: result,
-                                            });
+                                            // Update event.output with transformed output
+                                            match serde_json::to_vec(&result.output) {
+                                                Ok(output_bytes) => {
+                                                    event.output = output_bytes;
+                                                    // Re-emit StreamingJobCompleted with updated event and context
+                                                    yield Ok(WorkflowStreamEvent::StreamingJobCompleted {
+                                                        event,
+                                                        context: result,
+                                                    });
+                                                }
+                                                Err(e) => {
+                                                    let pos = result.position.read().await.as_json_pointer();
+                                                    yield Err(workflow::errors::ErrorFactory::new().internal_error(
+                                                        format!("Failed to serialize output: {}", e),
+                                                        Some(pos),
+                                                        None,
+                                                    ));
+                                                    return;
+                                                }
+                                            }
                                         }
                                         Err(e) => {
                                             yield Err(e);
@@ -810,7 +854,7 @@ impl TaskExecutor {
                                     }
                                 }
                                 other => {
-                                    // Pass through other events (StreamingJobStarted, errors)
+                                    // Pass through other events (StreamingJobStarted, StreamingData, errors)
                                     yield other;
                                 }
                             }
@@ -1259,6 +1303,9 @@ mod tests {
                     }
                     WorkflowStreamEvent::StreamingJobStarted { event } => {
                         format!("StreamingJobStarted(job_id={})", event.job_id)
+                    }
+                    WorkflowStreamEvent::StreamingData { job_id, .. } => {
+                        format!("StreamingData(job_id={})", job_id)
                     }
                     WorkflowStreamEvent::StreamingJobCompleted { event, .. } => {
                         format!("StreamingJobCompleted(job_id={})", event.job_id)

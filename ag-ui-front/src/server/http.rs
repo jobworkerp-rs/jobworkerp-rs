@@ -172,6 +172,18 @@ where
 
     // Add custom headers
     let mut response = response;
+
+    // Disable buffering for real-time streaming
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    // Disable nginx buffering
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-accel-buffering"),
+        header::HeaderValue::from_static("no"),
+    );
+
     if let Ok(run_id_value) = header::HeaderValue::from_str(&session.run_id.to_string()) {
         response.headers_mut().insert(
             header::HeaderName::from_static("x-ag-ui-run-id"),
@@ -222,7 +234,21 @@ where
         )
     });
 
-    Ok(Sse::new(sse_stream).keep_alive(KeepAlive::default()))
+    let mut response = Sse::new(sse_stream)
+        .keep_alive(KeepAlive::default())
+        .into_response();
+
+    // Disable buffering for real-time streaming
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-accel-buffering"),
+        header::HeaderValue::from_static("no"),
+    );
+
+    Ok(response)
 }
 
 /// HITL message request body
@@ -301,9 +327,19 @@ where
         )
     });
 
-    let response = Sse::new(sse_stream)
+    let mut response = Sse::new(sse_stream)
         .keep_alive(KeepAlive::default())
         .into_response();
+
+    // Disable buffering for real-time streaming
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-accel-buffering"),
+        header::HeaderValue::from_static("no"),
+    );
 
     Ok(response)
 }

@@ -4,8 +4,10 @@
 
 use crate::config::AgUiServerConfig;
 use crate::error::{AgUiError, Result};
-use crate::events::{shared_adapter, AgUiEvent, EventEncoder, SharedWorkflowEventAdapter};
-use crate::pubsub::convert_result_stream_to_events;
+use crate::events::{
+    extract_text_from_llm_chat_result, shared_adapter, AgUiEvent, EventEncoder,
+    SharedWorkflowEventAdapter,
+};
 use crate::session::{EventStore, HitlWaitingInfo, Session, SessionManager, SessionState};
 use crate::types::ids::MessageId;
 use crate::types::{RunAgentInput, RunId, ThreadId, WorkflowState, WorkflowStatus};
@@ -17,7 +19,6 @@ use app_wrapper::workflow::execute::context::WorkflowStreamEvent;
 use app_wrapper::workflow::execute::workflow::WorkflowExecutor;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
-use proto::jobworkerp::data::JobId;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -740,7 +741,6 @@ where
         let event_store = self.event_store.clone();
         let encoder = self.encoder.clone();
         let session_manager = self.session_manager.clone();
-        let app_module = self.app_module.clone();
 
         stream! {
             // Emit RUN_STARTED (skip for HITL resume to avoid duplicate)
@@ -758,81 +758,97 @@ where
             // Track previous position for STEP_STARTED/STEP_FINISHED detection
             let mut prev_position: Option<String> = None;
 
-            // Execute workflow with events (includes StreamingJobStarted for LLM streaming)
+            // Execute workflow with events (includes StreamingJobStarted/StreamingData for LLM streaming)
             let cx = Arc::new(opentelemetry::Context::current());
             let workflow_stream = executor.execute_workflow_with_events(cx);
 
             // Pin the stream for iteration
             tokio::pin!(workflow_stream);
 
-            // Track active LLM stream subscriptions (job_id -> stream)
-            // We use a channel to receive LLM events from spawned subscription tasks
-            let (llm_event_tx, mut llm_event_rx) = tokio::sync::mpsc::unbounded_channel::<AgUiEvent>();
+            // Track active message IDs for streaming jobs (job_id -> MessageId)
+            // Used to correlate StreamingData events with TEXT_MESSAGE_CONTENT
+            let mut active_message_ids: HashMap<i64, MessageId> = HashMap::new();
 
-            // Track JoinHandles for LLM stream subscription tasks to await completion before draining
-            let mut llm_stream_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-
+            // Main event loop - process workflow events sequentially
+            // StreamingData events are now yielded directly from workflow_stream
             while let Some(result) = workflow_stream.next().await {
-                // Check for any pending LLM stream events
-                while let Ok(llm_event) = llm_event_rx.try_recv() {
-                    let event_id = Self::encode_event_with_logging(&encoder, &llm_event);
-                    event_store.store_event(&run_id, event_id, llm_event.clone()).await;
-                    yield (event_id, llm_event);
-                }
-
                 match result {
                     Ok(event) => {
-                        // Handle StreamingJobStarted: subscribe to LLM stream
+                        // Handle StreamingJobStarted: emit TEXT_MESSAGE_START
                         if let WorkflowStreamEvent::StreamingJobStarted { event: job_started } = &event {
-                            let job_id = JobId { value: job_started.job_id };
-                            let worker_name = job_started.worker_name.clone();
-                            let llm_event_tx = llm_event_tx.clone();
-                            let job_result_app = app_module.job_result_app.clone();
+                            let job_id = job_started.job_id;
+                            let message_id = MessageId::random();
 
                             tracing::info!(
-                                job_id = job_started.job_id,
-                                worker_name = %worker_name,
+                                job_id = job_id,
+                                worker_name = %job_started.worker_name,
                                 position = %job_started.position,
-                                "StreamingJobStarted: subscribing to LLM stream"
+                                "StreamingJobStarted: emitting TEXT_MESSAGE_START"
                             );
 
-                            // Spawn a task to subscribe to LLM stream and forward events
-                            let handle = tokio::spawn(async move {
-                                let message_id = MessageId::random();
-                                match job_result_app
-                                    .listen_result(&job_id, None, Some(&worker_name), None, true)
-                                    .await
-                                {
-                                    Ok((_job_result, Some(stream))) => {
-                                        let event_stream = convert_result_stream_to_events(stream, message_id);
-                                        tokio::pin!(event_stream);
+                            // Close previous message if exists for this job_id (prevents dangling UI messages)
+                            if let Some(old_message_id) = active_message_ids.remove(&job_id) {
+                                tracing::warn!(
+                                    job_id = job_id,
+                                    "Received duplicate StreamingJobStarted, closing previous message"
+                                );
+                                let end_event = AgUiEvent::text_message_end(old_message_id);
+                                let end_event_id = Self::encode_event_with_logging(&encoder, &end_event);
+                                event_store.store_event(&run_id, end_event_id, end_event.clone()).await;
+                                yield (end_event_id, end_event);
+                            }
 
-                                        while let Some(event) = event_stream.next().await {
-                                            if llm_event_tx.send(event).is_err() {
-                                                tracing::warn!(
-                                                    job_id = job_id.value,
-                                                    "LLM event receiver dropped, stopping stream"
-                                                );
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    Ok((_job_result, None)) => {
-                                        tracing::warn!(
-                                            job_id = job_id.value,
-                                            "No stream returned from listen_result for streaming job"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(
-                                            job_id = job_id.value,
-                                            error = %e,
-                                            "Failed to subscribe to LLM stream"
-                                        );
-                                    }
+                            // Store message_id for correlation with StreamingData
+                            active_message_ids.insert(job_id, message_id.clone());
+
+                            // Emit TEXT_MESSAGE_START
+                            let ag_event = AgUiEvent::text_message_start(
+                                message_id,
+                                crate::types::Role::Assistant,
+                            );
+                            let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
+                            event_store.store_event(&run_id, event_id, ag_event.clone()).await;
+                            yield (event_id, ag_event);
+                        }
+
+                        // Handle StreamingData: emit TEXT_MESSAGE_CONTENT
+                        if let WorkflowStreamEvent::StreamingData { job_id, data } = &event {
+                            if let Some(message_id) = active_message_ids.get(job_id) {
+                                // Decode LlmChatResult protobuf and extract text content
+                                if let Some(text) = extract_text_from_llm_chat_result(data) {
+                                    let ag_event = AgUiEvent::text_message_content(
+                                        message_id.clone(),
+                                        text,
+                                    );
+                                    let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
+                                    event_store.store_event(&run_id, event_id, ag_event.clone()).await;
+                                    yield (event_id, ag_event);
                                 }
-                            });
-                            llm_stream_handles.push(handle);
+                            } else {
+                                tracing::warn!(
+                                    job_id = job_id,
+                                    "Received StreamingData for unknown job_id"
+                                );
+                            }
+                            // StreamingData doesn't need further processing
+                            continue;
+                        }
+
+                        // Handle StreamingJobCompleted: emit TEXT_MESSAGE_END
+                        if let WorkflowStreamEvent::StreamingJobCompleted { event: job_completed, .. } = &event {
+                            let job_id = job_completed.job_id;
+                            if let Some(message_id) = active_message_ids.remove(&job_id) {
+                                tracing::info!(
+                                    job_id = job_id,
+                                    "StreamingJobCompleted: emitting TEXT_MESSAGE_END"
+                                );
+
+                                let ag_event = AgUiEvent::text_message_end(message_id);
+                                let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
+                                event_store.store_event(&run_id, event_id, ag_event.clone()).await;
+                                yield (event_id, ag_event);
+                            }
+                            // Continue to process context for state snapshot
                         }
 
                         // Extract context from completed events for workflow state updates
@@ -971,29 +987,17 @@ where
                                     );
                                 }
 
-                                // Spawn background task to drain and persist remaining LLM events
-                                // This ensures events are not lost when HITL pauses the workflow
-                                let drain_encoder = encoder.clone();
-                                let drain_event_store = event_store.clone();
-                                let drain_run_id = run_id.clone();
-                                tokio::spawn(async move {
-                                    // Wait for all LLM stream subscription tasks to complete
-                                    for handle in llm_stream_handles {
-                                        if let Err(e) = handle.await {
-                                            tracing::warn!(error = ?e, "LLM stream subscription task failed during HITL pause");
-                                        }
-                                    }
-
-                                    // Drain and persist any remaining LLM events
-                                    while let Ok(llm_event) = llm_event_rx.try_recv() {
-                                        let event_id = Self::encode_event_with_logging(&drain_encoder, &llm_event);
-                                        drain_event_store.store_event(&drain_run_id, event_id, llm_event).await;
-                                    }
+                                // Flush TEXT_MESSAGE_END for any active streaming messages before pausing
+                                for (job_id, message_id) in active_message_ids.drain() {
                                     tracing::debug!(
-                                        run_id = %drain_run_id,
-                                        "Completed draining LLM events during HITL pause"
+                                        job_id = job_id,
+                                        "HITL pause: flushing TEXT_MESSAGE_END for interrupted stream"
                                     );
-                                });
+                                    let ag_event = AgUiEvent::text_message_end(message_id);
+                                    let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
+                                    event_store.store_event(&run_id, event_id, ag_event.clone()).await;
+                                    yield (event_id, ag_event);
+                                }
 
                                 // Exit stream without emitting RUN_FINISHED
                                 tracing::info!("Workflow paused for HITL, session {} is now Paused", session_id);
@@ -1003,6 +1007,18 @@ where
                         // Start events (StreamingJobStarted, JobStarted, TaskStarted) are handled above
                     }
                     Err(e) => {
+                        // Flush any remaining TEXT_MESSAGE_END for interrupted streams
+                        for (job_id, message_id) in active_message_ids.drain() {
+                            tracing::debug!(
+                                job_id = job_id,
+                                "Error path: flushing TEXT_MESSAGE_END for interrupted stream"
+                            );
+                            let ag_event = AgUiEvent::text_message_end(message_id);
+                            let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
+                            event_store.store_event(&run_id, event_id, ag_event.clone()).await;
+                            yield (event_id, ag_event);
+                        }
+
                         // Emit STEP_FINISHED for current step before error
                         if prev_position.is_some() {
                             let mut adapter_lock = adapter.lock().await;
@@ -1034,19 +1050,17 @@ where
                 }
             }
 
-            // Wait for all LLM stream subscription tasks to complete before draining
-            // This ensures no events are lost due to race conditions
-            for handle in llm_stream_handles {
-                if let Err(e) = handle.await {
-                    tracing::warn!(error = ?e, "LLM stream subscription task failed");
-                }
-            }
-
-            // Drain any remaining LLM stream events (all tasks completed, so channel has all events)
-            while let Ok(llm_event) = llm_event_rx.try_recv() {
-                let event_id = Self::encode_event_with_logging(&encoder, &llm_event);
-                event_store.store_event(&run_id, event_id, llm_event.clone()).await;
-                yield (event_id, llm_event);
+            // Flush any remaining TEXT_MESSAGE_END for streams that didn't complete normally
+            // (safety net for edge cases where StreamingJobCompleted wasn't received)
+            for (job_id, message_id) in active_message_ids.drain() {
+                tracing::debug!(
+                    job_id = job_id,
+                    "Normal completion: flushing TEXT_MESSAGE_END for unclosed stream"
+                );
+                let ag_event = AgUiEvent::text_message_end(message_id);
+                let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
+                event_store.store_event(&run_id, event_id, ag_event.clone()).await;
+                yield (event_id, ag_event);
             }
 
             // Emit STEP_FINISHED for final step if exists
