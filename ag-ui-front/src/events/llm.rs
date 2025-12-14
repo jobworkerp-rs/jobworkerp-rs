@@ -32,6 +32,7 @@ fn extract_text_from_llm_chat_result(bytes: &[u8]) -> Option<String> {
             if let Some(content) = result.content {
                 match content.content {
                     Some(message_content::Content::Text(text)) => {
+                        tracing::debug!("Extracted text content: {}", text);
                         if text.is_empty() {
                             None
                         } else {
@@ -40,15 +41,21 @@ fn extract_text_from_llm_chat_result(bytes: &[u8]) -> Option<String> {
                     }
                     Some(message_content::Content::ToolCalls(_)) => {
                         // Tool calls are not rendered as text content in AG-UI
+                        tracing::debug!("Tool calls are not rendered as text content in AG-UI");
                         None
                     }
                     Some(message_content::Content::Image(_)) => {
                         // Images are not rendered as text content
+                        tracing::debug!("Images are not rendered as text content");
                         None
                     }
-                    None => None,
+                    None => {
+                        tracing::info!("No content in LlmChatResult");
+                        None
+                    }
                 }
             } else {
+                tracing::info!("No content in LlmChatResult");
                 None
             }
         }

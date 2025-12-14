@@ -755,45 +755,67 @@ impl TaskExecutor {
                 // - Executes jobs with streaming enabled
                 // - Broadcasts intermediate results via JobResultService/ListenStream
                 // - Collects final result using collect_stream
+                // - Emits StreamingJobStarted and StreamingJobCompleted events
                 if use_streaming {
-                    let task_executor = RunStreamTaskExecutor::new(
-                        workflow_context.clone(),
-                        default_task_timeout,
-                        job_executor_wrapper.clone(),
-                        task,
-                        self.metadata.clone(),
-                    );
-                    futures::stream::once(async move {
-                        match task_executor
-                            .execute(cx, task_name.as_str(), task_context.clone())
-                            .await
-                        {
-                            Ok(ctx) => {
-                                let mut expr = Self::expression(
-                                    &*workflow_context.read().await,
-                                    Arc::new(ctx.clone()),
-                                )
-                                .await?;
-                                let result = Self::update_context_by_output(
-                                    checkpoint_repository.clone(),
-                                    execution_id.clone(),
-                                    original_task.clone(),
-                                    workflow_context.clone(),
-                                    &mut expr,
-                                    ctx,
-                                )
-                                .await?;
-                                // TODO: Return StreamingJobCompleted with job_id when available
-                                Ok(WorkflowStreamEvent::task_completed(
-                                    "runTask",
-                                    &task_name_str,
-                                    result,
-                                ))
+                    let metadata = self.metadata.clone();
+                    // Process stream events, applying update_context_by_output to StreamingJobCompleted
+                    Box::pin(async_stream::stream! {
+                        let task_executor = RunStreamTaskExecutor::new(
+                            workflow_context.clone(),
+                            default_task_timeout,
+                            job_executor_wrapper.clone(),
+                            task,
+                            metadata,
+                        );
+                        // Use execute_stream which emits StreamingJobStarted/StreamingJobCompleted events
+                        let stream = task_executor.execute_stream(
+                            cx,
+                            Arc::new(task_name.to_string()),
+                            task_context.clone(),
+                        );
+                        futures::pin_mut!(stream);
+                        while let Some(event_result) = stream.next().await {
+                            match event_result {
+                                Ok(WorkflowStreamEvent::StreamingJobCompleted { event, context }) => {
+                                    // Apply output transformation
+                                    let mut expr = match TaskExecutor::expression(
+                                        &*workflow_context.read().await,
+                                        Arc::new(context.clone()),
+                                    ).await {
+                                        Ok(e) => e,
+                                        Err(e) => {
+                                            yield Err(e);
+                                            return;
+                                        }
+                                    };
+                                    match TaskExecutor::update_context_by_output(
+                                        checkpoint_repository.clone(),
+                                        execution_id.clone(),
+                                        original_task.clone(),
+                                        workflow_context.clone(),
+                                        &mut expr,
+                                        context,
+                                    ).await {
+                                        Ok(result) => {
+                                            // Re-emit StreamingJobCompleted with updated context
+                                            yield Ok(WorkflowStreamEvent::StreamingJobCompleted {
+                                                event,
+                                                context: result,
+                                            });
+                                        }
+                                        Err(e) => {
+                                            yield Err(e);
+                                            return;
+                                        }
+                                    }
+                                }
+                                other => {
+                                    // Pass through other events (StreamingJobStarted, errors)
+                                    yield other;
+                                }
                             }
-                            Err(e) => Err(e),
                         }
                     })
-                    .boxed()
                 } else {
                     let task_executor = RunTaskExecutor::new(
                         workflow_context.clone(),

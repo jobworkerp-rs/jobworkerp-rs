@@ -147,6 +147,101 @@ pub fn convert_result_stream_to_events(
     result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id)
 }
 
+/// Convert a JSON stream to AG-UI TEXT_MESSAGE_* events.
+///
+/// This function transforms a stream of decoded JSON values (from `listen_job_result_as_json_stream`)
+/// into the AG-UI event sequence:
+/// - TEXT_MESSAGE_START (once, at the beginning)
+/// - TEXT_MESSAGE_CONTENT (for each JSON chunk, converted to text)
+/// - TEXT_MESSAGE_END (once, at the end)
+///
+/// # Arguments
+/// * `stream` - Stream of JSON values from FunctionCallHelper::listen_job_result_as_json_stream
+/// * `message_id` - MessageId to use for all events in this sequence
+///
+/// # Returns
+/// A stream of AgUiEvent representing the response
+pub fn convert_json_stream_to_events(
+    stream: std::pin::Pin<
+        Box<dyn futures::Stream<Item = anyhow::Result<serde_json::Value>> + Send>,
+    >,
+    message_id: MessageId,
+) -> impl futures::Stream<Item = AgUiEvent> + Send + 'static {
+    use crate::types::message::Role;
+    use futures::StreamExt;
+
+    let message_id_for_start = message_id.clone();
+    let message_id_for_content = message_id.clone();
+    let message_id_for_end = message_id;
+
+    // Emit TEXT_MESSAGE_START first
+    let start_stream = futures::stream::once(async move {
+        AgUiEvent::text_message_start(message_id_for_start, Role::Assistant)
+    });
+
+    // Convert JSON chunks to TEXT_MESSAGE_CONTENT events
+    let content_stream = stream.filter_map(move |result| {
+        let message_id = message_id_for_content.clone();
+
+        async move {
+            match result {
+                Ok(json) => {
+                    // Extract text from JSON value
+                    let text = extract_text_from_json(&json);
+                    if text.is_empty() {
+                        None
+                    } else {
+                        Some(AgUiEvent::text_message_content(message_id, text))
+                    }
+                }
+                Err(e) => {
+                    // Log error but continue stream
+                    tracing::warn!("Error in JSON stream: {:?}", e);
+                    None
+                }
+            }
+        }
+    });
+
+    // Emit TEXT_MESSAGE_END after stream completes
+    let end_stream =
+        futures::stream::once(async move { AgUiEvent::text_message_end(message_id_for_end) });
+
+    start_stream.chain(content_stream).chain(end_stream)
+}
+
+/// Extract text content from a JSON value.
+///
+/// The JSON may come from various runner types (LLM, Command, etc.).
+/// This function extracts text in a runner-agnostic way:
+/// - For objects with "text" or "content" fields, extract those
+/// - For strings, return directly
+/// - For other types, serialize to string
+fn extract_text_from_json(json: &serde_json::Value) -> String {
+    match json {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Object(obj) => {
+            // Try common text field names
+            if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
+                return text.to_string();
+            }
+            if let Some(content) = obj.get("content").and_then(|v| v.as_str()) {
+                return content.to_string();
+            }
+            // For LlmChatResult JSON format: content.text
+            if let Some(content_obj) = obj.get("content").and_then(|v| v.as_object()) {
+                if let Some(text) = content_obj.get("text").and_then(|v| v.as_str()) {
+                    return text.to_string();
+                }
+            }
+            // Fallback: serialize the entire object
+            serde_json::to_string(json).unwrap_or_default()
+        }
+        serde_json::Value::Null => String::new(),
+        _ => serde_json::to_string(json).unwrap_or_default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
