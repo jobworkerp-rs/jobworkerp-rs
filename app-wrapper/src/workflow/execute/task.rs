@@ -10,6 +10,7 @@ use crate::workflow::{
     execute::{
         checkpoint::{repository::CheckPointRepositoryWithId, CheckPointContext},
         context::{Then, WorkflowPosition},
+        task::stream::run::RunStreamTaskExecutor,
     },
 };
 use anyhow::Result;
@@ -21,7 +22,7 @@ use fork::ForkTaskExecutor;
 use futures::{pin_mut, StreamExt};
 use jobworkerp_base::APP_NAME;
 use opentelemetry::trace::TraceContextExt;
-use run::{RunStreamTaskExecutor, RunTaskExecutor};
+use run::RunTaskExecutor;
 use set::SetTaskExecutor;
 use std::{
     collections::{BTreeMap, HashMap},

@@ -664,7 +664,13 @@ impl WorkflowStreamEvent {
                 String::new()
             }
         };
-        let output = serde_json::to_vec(&context.output).unwrap_or_default();
+        let output = match serde_json::to_vec(&context.output) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to serialize task output: {:?}", e);
+                Vec::new()
+            }
+        };
         Self::TaskCompleted {
             event: TaskCompletedEvent {
                 task_type: task_type.to_string(),
@@ -683,7 +689,13 @@ impl WorkflowStreamEvent {
         position: &str,
         context: TaskContext,
     ) -> Self {
-        let output = serde_json::to_vec(&context.output).unwrap_or_default();
+        let output = match serde_json::to_vec(&context.output) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to serialize task output: {:?}", e);
+                Vec::new()
+            }
+        };
         Self::TaskCompleted {
             event: TaskCompletedEvent {
                 task_type: task_type.to_string(),
@@ -724,7 +736,13 @@ impl WorkflowStreamEvent {
         position: &str,
         context: TaskContext,
     ) -> Self {
-        let output = serde_json::to_vec(&context.output).unwrap_or_default();
+        let output = match serde_json::to_vec(&context.output) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to serialize streaming job output: {:?}", e);
+                Vec::new()
+            }
+        };
         Self::StreamingJobCompleted {
             event: JobCompletedEvent {
                 job_id,
@@ -755,7 +773,13 @@ impl WorkflowStreamEvent {
         position: &str,
         context: TaskContext,
     ) -> Self {
-        let output = serde_json::to_vec(&context.output).unwrap_or_default();
+        let output = match serde_json::to_vec(&context.output) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to serialize job output: {:?}", e);
+                Vec::new()
+            }
+        };
         Self::JobCompleted {
             event: JobCompletedEvent {
                 job_id,
