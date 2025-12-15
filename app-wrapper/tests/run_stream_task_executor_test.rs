@@ -328,6 +328,10 @@ fn test_listen_stream_streaming_results() -> Result<()> {
                                 eprintln!("   [{}] End: {:?}", count, trailer.metadata);
                                 break;
                             }
+                            Some(result_output_item::Item::FinalCollected(data)) => {
+                                eprintln!("   [{}] FinalCollected: {} bytes", count, data.len());
+                                break;
+                            }
                             None => {
                                 eprintln!("   [{}] Empty item", count);
                             }

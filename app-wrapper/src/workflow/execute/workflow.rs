@@ -153,19 +153,20 @@ impl WorkflowExecutor {
         }
         Ok(())
     }
-    /// Executes the workflow.
+    /// Executes the workflow and returns WorkflowStreamEvent for external streaming.
     ///
     /// This function sets the workflow status to running, validates the input schema,
-    /// transforms the input, executes the tasks, and provides a stream of workflow contexts
-    /// updated after each task execution.
+    /// transforms the input, executes the tasks, and provides a stream of workflow events
+    /// including StreamingJobStarted events for LLM streaming subscription.
     ///
     /// # Returns
-    /// A `Stream<Item = Result<Arc<RwLock<WorkflowContext>>>>` containing the updated workflow context
-    /// after each task execution.
-    pub fn execute_workflow(
+    /// A `Stream<Item = Result<WorkflowStreamEvent>>` containing workflow events
+    /// including job/task start and completion events.
+    pub fn execute_workflow_with_events(
         &self,
         cx: Arc<opentelemetry::Context>,
-    ) -> impl Stream<Item = Result<Arc<WorkflowContext>, Box<workflow::Error>>> + 'static {
+    ) -> impl Stream<Item = Result<context::WorkflowStreamEvent, Box<workflow::Error>>> + 'static
+    {
         let initial_wfc = self.workflow_context.clone();
         let workflow = self.workflow.clone();
         let job_executors = self.job_executors.clone();
@@ -229,18 +230,25 @@ impl WorkflowExecutor {
                     }
                     Err(e) => {
                         tracing::error!("Failed to load checkpoint: {:#?}", e);
-                        // yield Err(Box::new(e));
-                yield Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                    format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}, error: {:#?}",
-                      execution_id.value, workflow_name, &pos.as_json_pointer(), e),
-                    Some(
-                        WorkflowPosition::new(vec![
-                            serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
-                        ])
-                        .as_error_instance(),
-                    ),
-                    Some(format!("{e:?}")),
-                ));
+                        // Mark workflow as Faulted before yielding error (consistent with other error paths)
+                        let mut wf = initial_wfc.write().await;
+                        wf.status = WorkflowStatus::Faulted;
+                        let error_output = Arc::new(serde_json::json!({"error": format!("{e:?}")}));
+                        Self::record_workflow_output(&span, &error_output, &wf.status);
+                        wf.output = Some(error_output);
+                        drop(wf);
+
+                        yield Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                            format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}, error: {:#?}",
+                              execution_id.value, workflow_name, &pos.as_json_pointer(), e),
+                            Some(
+                                WorkflowPosition::new(vec![
+                                    serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
+                                ])
+                                .as_error_instance(),
+                            ),
+                            Some(format!("{e:?}")),
+                        ));
 
                         return;
                     }
@@ -282,11 +290,18 @@ impl WorkflowExecutor {
                             let error_output =
                                 Arc::new(serde_json::json!({"error": e.to_string()}));
                             Self::record_workflow_output(&span, &error_output, &wf.status);
-                            wf.output = Some(error_output);
-                            // hard copy
-                            let res = Arc::new((*wf).clone());
+                            wf.output = Some(error_output.clone());
                             drop(wf);
-                            yield Ok(res);
+                            yield Err(workflow::errors::ErrorFactory::new().bad_argument(
+                                format!("Workflow input validation failed: {}", e),
+                                Some(
+                                    WorkflowPosition::new(vec![
+                                        serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
+                                    ])
+                                    .as_error_instance(),
+                                ),
+                                Some(format!("{e:?}")),
+                            ));
                             return;
                         }
                     }
@@ -342,11 +357,18 @@ impl WorkflowExecutor {
                     wf.status = WorkflowStatus::Faulted;
                     let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
                     Self::record_workflow_output(&span, &error_output, &wf.status);
-                    wf.output = Some(error_output);
-                    // hard copy
-                    let res = Arc::new((*wf).clone());
+                    wf.output = Some(error_output.clone());
                     drop(wf);
-                    yield Ok(res);
+                    yield Err(workflow::errors::ErrorFactory::new().internal_error(
+                        format!("Failed to create expression: {}", e),
+                        Some(
+                            WorkflowPosition::new(vec![
+                                serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
+                            ])
+                            .as_error_instance(),
+                        ),
+                        Some(format!("{e:?}")),
+                    ));
                     return;
                 }
             };
@@ -366,11 +388,18 @@ impl WorkflowExecutor {
                         wf.status = WorkflowStatus::Faulted;
                         let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
                         Self::record_workflow_output(&span, &error_output, &wf.status);
-                        wf.output = Some(error_output);
-                        // hard copy
-                        let res = Arc::new((*wf).clone());
+                        wf.output = Some(error_output.clone());
                         drop(wf);
-                        yield Ok(res);
+                        yield Err(workflow::errors::ErrorFactory::new().internal_error(
+                            format!("Failed to transform input: {}", e),
+                            Some(
+                                WorkflowPosition::new(vec![
+                                    serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
+                                ])
+                                .as_error_instance(),
+                            ),
+                            Some(format!("{e:?}")),
+                        ));
                         return;
                     }
                 }
@@ -406,21 +435,23 @@ impl WorkflowExecutor {
             );
             while let Some(tc_result) = task_stream.next().await {
                 match tc_result {
-                    Ok(tc) => {
-                        // Update and yield workflow context
-                        let mut wf = initial_wfc.write().await;
-                        wf.output = Some(tc.output.clone());
-                        wf.position = tc.position.read().await.clone(); // XXX clone
-                        // hard copy
-                        let res = Arc::new((*wf).clone());
-                        drop(wf);
-                        tracing::debug!(
-                            "Task executed: {}, id={}, position={}",
-                            workflow.document.name.as_str(),
-                            res.id.to_string(),
-                            tc.position.read().await
-                        );
-                        yield Ok(res);
+                    Ok(event) => {
+                        // Extract context from completed events for workflow context update
+                        if let Some(tc) = event.context() {
+                            // Update workflow context
+                            let mut wf = initial_wfc.write().await;
+                            wf.output = Some(tc.output.clone());
+                            wf.position = tc.position.read().await.clone();
+                            drop(wf);
+                            tracing::debug!(
+                                "Task executed: {}, id={}, position={}",
+                                workflow.document.name.as_str(),
+                                initial_wfc.read().await.id.to_string(),
+                                tc.position.read().await
+                            );
+                        }
+                        // Yield all events (including start events)
+                        yield Ok(event);
                     }
                     Err(e) => {
                         tracing::debug!("Failed to execute task list: {:#?}", e);
@@ -500,17 +531,9 @@ impl WorkflowExecutor {
                 if let Some(output) = lock.output.as_ref() {
                     Self::record_workflow_output(&span, output, &lock.status);
                 }
-                // hard copy
-                let res = Arc::new((*lock).clone());
-
                 drop(lock);
-
-                // Yield final workflow context
-                yield Ok(res);
             } else if lock.status == WorkflowStatus::Waiting {
                 // HITL: Workflow suspended for user input
-                // Yield current workflow context with Waiting status
-                // Do NOT mark as completed, do NOT emit RUN_FINISHED
                 tracing::info!(
                     "Workflow suspended for user input: id={}, doc={:?}",
                     lock.id,
@@ -521,13 +544,7 @@ impl WorkflowExecutor {
                 if let Some(output) = lock.output.as_ref() {
                     Self::record_workflow_output(&span, output, &lock.status);
                 }
-
-                // hard copy
-                let res = Arc::new((*lock).clone());
                 drop(lock);
-
-                // Yield workflow context with Waiting status
-                yield Ok(res);
 
                 // Exit without further processing (no RUN_FINISHED)
                 tracing::debug!("Workflow execution paused, exiting early");
@@ -573,6 +590,84 @@ impl WorkflowExecutor {
                         lock.document
                     );
 
+                }
+            }
+        }
+    }
+
+    /// Executes the workflow.
+    ///
+    /// This function sets the workflow status to running, validates the input schema,
+    /// transforms the input, executes the tasks, and provides a stream of workflow contexts
+    /// updated after each task execution.
+    ///
+    /// # Returns
+    /// A `Stream<Item = Result<Arc<RwLock<WorkflowContext>>>>` containing the updated workflow context
+    /// after each task execution.
+    pub fn execute_workflow(
+        &self,
+        cx: Arc<opentelemetry::Context>,
+    ) -> impl Stream<Item = Result<Arc<WorkflowContext>, Box<workflow::Error>>> + 'static {
+        let initial_wfc = self.workflow_context.clone();
+        let event_stream = self.execute_workflow_with_events(cx);
+
+        stream! {
+            let mut event_stream = std::pin::pin!(event_stream);
+            // Track whether final context was already yielded to avoid duplicate yields
+            let mut yielded_final = false;
+
+            while let Some(result) = event_stream.next().await {
+                match result {
+                    Ok(event) => {
+                        // Only yield completed events as WorkflowContext
+                        if event.context().is_some() {
+                            let wf = initial_wfc.read().await;
+                            let status = wf.status.clone();
+                            let res = Arc::new((*wf).clone());
+                            drop(wf);
+
+                            // Mark as final if this is a terminal state
+                            if matches!(
+                                status,
+                                WorkflowStatus::Completed
+                                    | WorkflowStatus::Waiting
+                                    | WorkflowStatus::Faulted
+                                    | WorkflowStatus::Cancelled
+                            ) {
+                                yielded_final = true;
+                            }
+                            yield Ok(res);
+                        }
+                        // Start events are ignored for backward compatibility
+                    }
+                    Err(e) => {
+                        // Error occurred - WorkflowContext already has Faulted status and error in output
+                        // (set by execute_workflow_with_events before yielding Err)
+                        // First yield the faulted context to preserve workflow information (id, position, etc.)
+                        let wf = initial_wfc.read().await;
+                        let res = Arc::new((*wf).clone());
+                        drop(wf);
+
+                        yield Ok(res);
+                        // Then propagate the error so callers can detect it via is_err()
+                        yield Err(e);
+                        return;
+                    }
+                }
+            }
+            // Yield final context after stream ends only if not already yielded
+            if !yielded_final {
+                let wf = initial_wfc.read().await;
+                if matches!(
+                    wf.status,
+                    WorkflowStatus::Completed
+                        | WorkflowStatus::Waiting
+                        | WorkflowStatus::Faulted
+                        | WorkflowStatus::Cancelled
+                ) {
+                    let res = Arc::new((*wf).clone());
+                    drop(wf);
+                    yield Ok(res);
                 }
             }
         }

@@ -15,7 +15,7 @@ use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
 };
 use jobworkerp_runner::runner::workflow::InlineWorkflowRunnerSpec;
-use jobworkerp_runner::runner::{CollectStreamFuture, RunnerSpec, RunnerTrait};
+use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
@@ -371,41 +371,6 @@ impl RunnerTrait for InlineWorkflowRunner {
             .boxed();
 
         Ok(output_stream)
-    }
-
-    /// Collect streaming workflow results into a single WorkflowResult
-    ///
-    /// Strategy:
-    /// - Keeps only the last WorkflowResult (represents final workflow state)
-    /// - Intermediate results are discarded
-    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
-        use proto::jobworkerp::data::result_output_item;
-
-        Box::pin(async move {
-            let mut final_result: Option<WorkflowResult> = None;
-            let mut metadata = HashMap::new();
-            let mut stream = stream;
-
-            while let Some(item) = stream.next().await {
-                match item.item {
-                    Some(result_output_item::Item::Data(data)) => {
-                        // Keep the last valid WorkflowResult (represents final state)
-                        if let Ok(workflow_result) = WorkflowResult::decode(data.as_slice()) {
-                            final_result = Some(workflow_result);
-                        }
-                    }
-                    Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
-                        break;
-                    }
-                    None => {}
-                }
-            }
-
-            // Return the final workflow result
-            let bytes = final_result.map(|r| r.encode_to_vec()).unwrap_or_default();
-            Ok((bytes, metadata))
-        })
     }
 }
 

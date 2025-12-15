@@ -12,6 +12,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum 0.8.7",
+ "base64",
  "chrono",
  "command-utils 0.1.0",
  "deadpool-redis",
@@ -23,6 +24,7 @@ dependencies = [
  "json-patch",
  "opentelemetry 0.31.0",
  "pin-project-lite",
+ "prost 0.14.1",
  "proto",
  "rand 0.9.2",
  "serde",
@@ -2372,6 +2374,7 @@ dependencies = [
 name = "jobworkerp-main"
 version = "0.18.1"
 dependencies = [
+ "ag-ui-front",
  "anyhow",
  "app",
  "app-wrapper",

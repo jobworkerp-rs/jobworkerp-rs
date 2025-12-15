@@ -972,14 +972,22 @@ mod test {
 
             let before_count = repository.count_list_tx(repository.db_pool()).await?;
 
-            let plugin_path = if cfg!(target_os = "macos") {
-                "../target/debug/libplugin_runner_test.dylib"
+            // Determine plugin path: try release first (CI), then debug (local dev)
+            let plugin_filename = if cfg!(target_os = "macos") {
+                "libplugin_runner_test.dylib"
             } else {
-                "../target/debug/libplugin_runner_test.so"
+                "libplugin_runner_test.so"
+            };
+            let release_path = format!("../target/release/{}", plugin_filename);
+            let debug_path = format!("../target/debug/{}", plugin_filename);
+            let plugin_path = if std::path::Path::new(&release_path).is_file() {
+                release_path
+            } else {
+                debug_path
             };
 
             repository
-                .create_plugin("TestPlugin", "Test Plugin Description", plugin_path)
+                .create_plugin("TestPlugin", "Test Plugin Description", &plugin_path)
                 .await?;
 
             let after_count = repository.count_list_tx(repository.db_pool()).await?;

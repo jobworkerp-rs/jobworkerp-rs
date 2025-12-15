@@ -278,10 +278,12 @@ where
                 }
                 // Direct response requires blocking until job completion
                 // For STREAMING_TYPE_RESPONSE, we need to wait for stream
-                // For STREAMING_TYPE_INTERNAL, we wait for the collected result (no stream returned)
+                // For STREAMING_TYPE_INTERNAL, stream is also returned (with final_collected at end)
                 if worker.response_type == ResponseType::Direct as i32 {
                     // Connection kept open to maintain real-time response capability
-                    let request_streaming = streaming_type == StreamingType::Response;
+                    // Both Response and Internal types return streams
+                    let request_streaming = streaming_type == StreamingType::Response
+                        || streaming_type == StreamingType::Internal;
                     self._wait_job_for_direct_response(
                         &job_id,
                         job.data.as_ref().map(|d| d.timeout),

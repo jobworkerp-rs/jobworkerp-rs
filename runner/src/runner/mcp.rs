@@ -315,40 +315,6 @@ impl RunnerSpec for McpServerRunnerImpl {
     fn settings_schema(&self) -> String {
         "{}".to_string() // Empty JSON object (no settings required)
     }
-}
-
-impl Tracing for McpServerRunnerImpl {}
-
-#[async_trait]
-impl RunnerTrait for McpServerRunnerImpl {
-    async fn load(&mut self, _settings: Vec<u8>) -> Result<()> {
-        Ok(())
-    }
-
-    async fn run(
-        &mut self,
-        args: &[u8],
-        metadata: HashMap<String, String>,
-        using: Option<&str>,
-    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Resolve tool name and execute
-        let tool_name = match self.resolve_using(using) {
-            Ok(name) => name,
-            Err(e) => return (Err(e), metadata),
-        };
-        self.run_using(args, metadata, &tool_name).await
-    }
-
-    async fn run_stream(
-        &mut self,
-        arg: &[u8],
-        metadata: HashMap<String, String>,
-        using: Option<&str>,
-    ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Resolve tool name and execute
-        let tool_name = self.resolve_using(using)?;
-        self.run_stream_using(arg, metadata, &tool_name).await
-    }
 
     /// Collect streaming MCP results into a single McpServerResult
     ///
@@ -386,7 +352,7 @@ impl RunnerTrait for McpServerRunnerImpl {
                         metadata = trailer.metadata;
                         break;
                     }
-                    None => {}
+                    Some(result_output_item::Item::FinalCollected(_)) | None => {}
                 }
             }
 
@@ -400,6 +366,40 @@ impl RunnerTrait for McpServerRunnerImpl {
             let bytes = result.encode_to_vec();
             Ok((bytes, metadata))
         })
+    }
+}
+
+impl Tracing for McpServerRunnerImpl {}
+
+#[async_trait]
+impl RunnerTrait for McpServerRunnerImpl {
+    async fn load(&mut self, _settings: Vec<u8>) -> Result<()> {
+        Ok(())
+    }
+
+    async fn run(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+        using: Option<&str>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        // Resolve tool name and execute
+        let tool_name = match self.resolve_using(using) {
+            Ok(name) => name,
+            Err(e) => return (Err(e), metadata),
+        };
+        self.run_using(args, metadata, &tool_name).await
+    }
+
+    async fn run_stream(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+        using: Option<&str>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // Resolve tool name and execute
+        let tool_name = self.resolve_using(using)?;
+        self.run_stream_using(arg, metadata, &tool_name).await
     }
 }
 

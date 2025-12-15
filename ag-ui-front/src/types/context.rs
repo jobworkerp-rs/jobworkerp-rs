@@ -27,6 +27,10 @@ pub enum Context {
     WorkflowInline {
         /// Full workflow schema as JSON
         workflow: serde_json::Value,
+        /// Optional workflow context variables (JSON string or object)
+        /// These are passed to the workflow as initial context variables accessible via $context
+        #[serde(skip_serializing_if = "Option::is_none", rename = "workflowContext")]
+        workflow_context: Option<serde_json::Value>,
     },
 
     /// Resume from a checkpoint
@@ -63,7 +67,21 @@ impl Context {
 
     /// Create an inline workflow context (full schema)
     pub fn workflow_inline(workflow: serde_json::Value) -> Self {
-        Self::WorkflowInline { workflow }
+        Self::WorkflowInline {
+            workflow,
+            workflow_context: None,
+        }
+    }
+
+    /// Create an inline workflow context with workflow context variables
+    pub fn workflow_inline_with_context(
+        workflow: serde_json::Value,
+        workflow_context: serde_json::Value,
+    ) -> Self {
+        Self::WorkflowInline {
+            workflow,
+            workflow_context: Some(workflow_context),
+        }
     }
 
     /// Create a checkpoint resume context
@@ -121,6 +139,84 @@ mod tests {
 
         assert_eq!(json["type"], "workflow_inline");
         assert_eq!(json["data"]["workflow"]["name"], "my_workflow");
+        assert!(json["data"].get("workflowContext").is_none());
+    }
+
+    #[test]
+    fn test_workflow_inline_with_context() {
+        let workflow_schema = serde_json::json!({
+            "name": "my_workflow",
+            "tasks": [{ "name": "task1", "type": "run" }]
+        });
+        let workflow_context = serde_json::json!({
+            "runnerMessages": [{"role": "USER", "content": {"text": "Hello"}}]
+        });
+        let ctx = Context::workflow_inline_with_context(
+            workflow_schema.clone(),
+            workflow_context.clone(),
+        );
+        let json = serde_json::to_value(&ctx).unwrap();
+
+        assert_eq!(json["type"], "workflow_inline");
+        assert_eq!(json["data"]["workflow"]["name"], "my_workflow");
+        assert_eq!(
+            json["data"]["workflowContext"]["runnerMessages"][0]["content"]["text"],
+            "Hello"
+        );
+    }
+
+    #[test]
+    fn test_workflow_inline_context_deserialization_with_workflow_context_string() {
+        // Test deserialization when workflowContext is a JSON string (common from clients)
+        let json = r#"{
+            "type": "workflow_inline",
+            "data": {
+                "workflow": {"name": "test"},
+                "workflowContext": "{\"runnerMessages\":[{\"role\":\"USER\"}]}"
+            }
+        }"#;
+
+        let ctx: Context = serde_json::from_str(json).unwrap();
+        match ctx {
+            Context::WorkflowInline {
+                workflow,
+                workflow_context,
+            } => {
+                assert_eq!(workflow["name"], "test");
+                // workflowContext is deserialized as a JSON string value
+                assert!(workflow_context.is_some());
+                let wc = workflow_context.unwrap();
+                assert!(wc.is_string()); // It's a string, not parsed JSON
+            }
+            _ => panic!("Expected WorkflowInline"),
+        }
+    }
+
+    #[test]
+    fn test_workflow_inline_context_deserialization_with_workflow_context_object() {
+        // Test deserialization when workflowContext is a JSON object
+        let json = r#"{
+            "type": "workflow_inline",
+            "data": {
+                "workflow": {"name": "test"},
+                "workflowContext": {"runnerMessages":[{"role":"USER"}]}
+            }
+        }"#;
+
+        let ctx: Context = serde_json::from_str(json).unwrap();
+        match ctx {
+            Context::WorkflowInline {
+                workflow,
+                workflow_context,
+            } => {
+                assert_eq!(workflow["name"], "test");
+                assert!(workflow_context.is_some());
+                let wc = workflow_context.unwrap();
+                assert!(wc.is_object()); // It's an object
+                assert_eq!(wc["runnerMessages"][0]["role"], "USER");
+            }
+            _ => panic!("Expected WorkflowInline"),
+        }
     }
 
     #[test]

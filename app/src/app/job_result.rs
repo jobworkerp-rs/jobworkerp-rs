@@ -140,6 +140,26 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
     where
         Self: Send + 'static;
 
+    /// Listen for job result by job_id only (without worker validation)
+    ///
+    /// This method listens for results by job_id without validating the worker.
+    /// It is intended for temporary/ephemeral streaming workers that are not persisted.
+    ///
+    /// When `request_streaming` is true, the implementation may return a stream alongside
+    /// the final `JobResult`, allowing callers to receive intermediate streaming data.
+    ///
+    /// NOTE: Callers are responsible for authorization and lifecycle management,
+    /// including honoring the optional timeout. The server does not perform worker
+    /// validation or persistence for such jobs.
+    async fn listen_result_by_job_id(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        request_streaming: bool,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
+    where
+        Self: Send + 'static;
+
     async fn listen_result_stream_by_worker(
         &self,
         worker_id: Option<&WorkerId>,

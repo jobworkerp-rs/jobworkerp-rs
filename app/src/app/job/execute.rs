@@ -12,6 +12,7 @@ use command_utils::util::scoped_cache::ScopedCache;
 use futures::stream::BoxStream;
 use infra::infra::runner::rows::RunnerWithSchema;
 use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use memory_utils::cache::moka::MokaCacheImpl;
 use proto::jobworkerp::data::{
     JobId, JobResult, Priority, QueueType, ResponseType, ResultOutputItem, ResultStatus,
@@ -63,8 +64,18 @@ impl UseRunnerParserWithCache for JobExecutorWrapper {
         &self.app_module.descriptor_cache
     }
 }
+impl UseRunnerSpecFactory for JobExecutorWrapper {
+    fn runner_spec_factory(&self) -> &Arc<RunnerSpecFactory> {
+        &self.app_module.config_module.runner_factory
+    }
+}
 impl ProtobufHelper for JobExecutorWrapper {}
 impl UseJobExecutor for JobExecutorWrapper {}
+
+/// Trait for accessing RunnerSpecFactory
+pub trait UseRunnerSpecFactory {
+    fn runner_spec_factory(&self) -> &Arc<RunnerSpecFactory>;
+}
 
 // TODO integrate with function calling logic
 pub trait UseJobExecutor:
@@ -73,6 +84,7 @@ pub trait UseJobExecutor:
     + UseRunnerApp
     + UseJobResultApp
     + UseRunnerParserWithCache
+    + UseRunnerSpecFactory
     + ProtobufHelper
     + Send
     + Sync
@@ -468,15 +480,16 @@ pub trait UseJobExecutor:
             }
         }
     }
-    /// Enqueue a job with streaming internally collected by worker.
+    /// Enqueue a job with streaming internally collected by App layer.
     ///
     /// This method:
     /// 1. Enqueues a job with `StreamingType::Internal`
-    /// 2. Worker layer runs runner's `run_stream()` and collects results via `collect_stream()`
-    /// 3. Returns the collected result as a single JobResult
+    /// 2. Worker layer runs runner's `run_stream()` and returns the stream
+    /// 3. App layer collects results via `RunnerSpec::collect_stream()`
+    /// 4. Returns the collected result as a single JobResult
     ///
     /// This uses the Runner's `collect_stream` method for proper protobuf message merging.
-    /// The worker layer handles the collection, not the client side.
+    /// The App layer handles the collection via RunnerSpecFactory.
     #[allow(clippy::too_many_arguments)]
     fn enqueue_with_worker_name_and_collect_stream(
         &self,
@@ -520,8 +533,8 @@ pub trait UseJobExecutor:
                         .await?;
 
                     // Enqueue with STREAMING_TYPE_INTERNAL
-                    // Worker layer will call run_stream() and collect_stream() to merge the results
-                    let (job_id, job_result, stream) = self
+                    // Worker returns the stream, App layer collects via RunnerSpec::collect_stream
+                    let (job_id, _job_result, stream) = self
                         .enqueue_with_worker_or_temp(
                             metadata,
                             Some(wid),
@@ -529,27 +542,56 @@ pub trait UseJobExecutor:
                             job_args,
                             uniq_key,
                             job_timeout_sec,
-                            StreamingType::Internal, // Internal streaming with collected result
+                            StreamingType::Internal, // Internal streaming - returns stream to App
                             using.clone(),
                         )
                         .await?;
 
-                    // With STREAMING_TYPE_INTERNAL, the worker collects the stream
-                    // and returns the result in job_result (no stream returned to client)
-                    if let Some(res) = job_result {
-                        if stream.is_some() {
-                            tracing::warn!(
-                                "job result available for job {} with stream",
-                                job_id.value
-                            );
-                        }
-                        let output = self.extract_job_result_output(res)?;
-                        self.transform_raw_output(&rid, &rdata, output.as_slice(), using.as_deref())
+                    // With STREAMING_TYPE_INTERNAL, Worker returns stream
+                    // App layer collects via RunnerSpec::collect_stream
+                    if let Some(stream) = stream {
+                        tracing::debug!(
+                            "Collecting stream for job {} via RunnerSpec::collect_stream",
+                            job_id.value
+                        );
+
+                        // Get RunnerSpec from factory to call collect_stream
+                        let runner_spec = self
+                            .runner_spec_factory()
+                            .create_runner_spec_by_name(&rdata.name, false)
                             .await
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "Failed to create RunnerSpec for runner: {}",
+                                    &rdata.name
+                                )
+                            })?;
+
+                        // Collect stream using RunnerSpec::collect_stream
+                        let (collected_bytes, _metadata) =
+                            runner_spec.collect_stream(stream).await?;
+
+                        tracing::debug!(
+                            "Stream collected for job {}: {} bytes",
+                            job_id.value,
+                            collected_bytes.len()
+                        );
+
+                        // Transform output to JSON
+                        self.transform_raw_output(
+                            &rid,
+                            &rdata,
+                            collected_bytes.as_slice(),
+                            using.as_deref(),
+                        )
+                        .await
                     } else {
-                        tracing::error!("No job result available for job {}", job_id.value);
+                        tracing::error!(
+                            "No stream returned for job {} (STREAMING_TYPE_INTERNAL should return stream)",
+                            job_id.value
+                        );
                         Err(anyhow::anyhow!(
-                            "No job result available for job {} (STREAMING_TYPE_INTERNAL should return collected result)",
+                            "No stream returned for job {} (STREAMING_TYPE_INTERNAL should return stream)",
                             job_id.value
                         ))
                     }

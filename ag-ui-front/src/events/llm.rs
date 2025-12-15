@@ -15,9 +15,65 @@ use crate::events::types::AgUiEvent;
 use crate::types::ids::MessageId;
 use crate::types::message::Role;
 use futures::stream::{BoxStream, StreamExt};
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
+use jobworkerp_runner::jobworkerp::runner::llm::LlmChatResult;
+use prost::Message;
 use proto::jobworkerp::data::{result_output_item, ResultOutputItem};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// Extract text content from LlmChatResult protobuf bytes.
+///
+/// LLM_CHAT runner streams serialized LlmChatResult protobuf messages.
+/// This function decodes the bytes and extracts the text content.
+///
+/// Returns `Some(text)` if the protobuf decodes successfully and contains text.
+/// Falls back to UTF-8 string interpretation if protobuf decoding fails.
+pub fn extract_text_from_llm_chat_result(bytes: &[u8]) -> Option<String> {
+    match LlmChatResult::decode(bytes) {
+        Ok(result) => {
+            if let Some(content) = result.content {
+                match content.content {
+                    Some(message_content::Content::Text(text)) => {
+                        tracing::debug!("Extracted text content: {}", text);
+                        if text.is_empty() {
+                            None
+                        } else {
+                            Some(text)
+                        }
+                    }
+                    Some(message_content::Content::ToolCalls(_)) => {
+                        // Tool calls are not rendered as text content in AG-UI
+                        tracing::debug!("Tool calls are not rendered as text content in AG-UI");
+                        None
+                    }
+                    Some(message_content::Content::Image(_)) => {
+                        // Images are not rendered as text content
+                        tracing::debug!("Images are not rendered as text content");
+                        None
+                    }
+                    None => {
+                        tracing::info!("No content in LlmChatResult");
+                        None
+                    }
+                }
+            } else {
+                tracing::info!("No content in LlmChatResult");
+                None
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Failed to decode LlmChatResult from stream data: {}", e);
+            // Fallback: try interpreting as raw UTF-8 text for non-LLM streams
+            let content = String::from_utf8_lossy(bytes).to_string();
+            if content.is_empty() {
+                None
+            } else {
+                Some(content)
+            }
+        }
+    }
+}
 
 /// Convert a ResultOutputItem stream to AG-UI TEXT_MESSAGE_* events.
 ///
@@ -70,15 +126,20 @@ pub fn result_output_stream_to_ag_ui_events(
         async move {
             match item.item {
                 Some(result_output_item::Item::Data(bytes)) => {
-                    let content = String::from_utf8_lossy(&bytes).to_string();
-                    if content.is_empty() {
-                        None
-                    } else {
-                        Some(AgUiEvent::text_message_content(message_id, content))
-                    }
+                    // Decode LlmChatResult protobuf and extract text content
+                    extract_text_from_llm_chat_result(&bytes)
+                        .map(|content| AgUiEvent::text_message_content(message_id, content))
                 }
                 Some(result_output_item::Item::End(_)) => {
                     // Emit END if START was emitted (always true after start_stream runs)
+                    if start_emitted.load(Ordering::SeqCst) {
+                        Some(AgUiEvent::text_message_end(message_id))
+                    } else {
+                        None
+                    }
+                }
+                Some(result_output_item::Item::FinalCollected(_)) => {
+                    // FinalCollected is for workflow internal use, emit END event here
                     if start_emitted.load(Ordering::SeqCst) {
                         Some(AgUiEvent::text_message_end(message_id))
                     } else {
@@ -151,14 +212,16 @@ fn result_output_stream_to_ag_ui_events_internal(
         async move {
             match item.item {
                 Some(result_output_item::Item::Data(bytes)) => {
-                    let content = String::from_utf8_lossy(&bytes).to_string();
-                    if content.is_empty() {
-                        None
-                    } else {
-                        Some(AgUiEvent::text_message_content(message_id, content))
-                    }
+                    // Decode LlmChatResult protobuf and extract text content
+                    extract_text_from_llm_chat_result(&bytes)
+                        .map(|content| AgUiEvent::text_message_content(message_id, content))
                 }
                 Some(result_output_item::Item::End(_)) => {
+                    has_ended.store(true, Ordering::SeqCst);
+                    Some(AgUiEvent::text_message_end(message_id))
+                }
+                Some(result_output_item::Item::FinalCollected(_)) => {
+                    // FinalCollected is for workflow internal use, emit END event here
                     has_ended.store(true, Ordering::SeqCst);
                     Some(AgUiEvent::text_message_end(message_id))
                 }
@@ -201,8 +264,26 @@ where
 mod tests {
     use super::*;
     use futures::StreamExt;
+    use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::MessageContent;
     use proto::jobworkerp::data::Trailer;
 
+    /// Create a ResultOutputItem with LlmChatResult protobuf-encoded data (real LLM stream format)
+    fn create_llm_chat_result_item(text: &str, done: bool) -> ResultOutputItem {
+        let result = LlmChatResult {
+            content: Some(MessageContent {
+                content: Some(message_content::Content::Text(text.to_string())),
+            }),
+            reasoning_content: None,
+            done,
+            usage: None,
+        };
+        let bytes = result.encode_to_vec();
+        ResultOutputItem {
+            item: Some(result_output_item::Item::Data(bytes)),
+        }
+    }
+
+    /// Create a ResultOutputItem with raw string data (fallback test format)
     fn create_data_item(data: &str) -> ResultOutputItem {
         ResultOutputItem {
             item: Some(result_output_item::Item::Data(data.as_bytes().to_vec())),
@@ -216,6 +297,90 @@ mod tests {
             })),
         }
     }
+
+    // === Tests for LlmChatResult protobuf format (real LLM stream) ===
+
+    #[tokio::test]
+    async fn test_llm_chat_result_stream_conversion() {
+        let items = vec![
+            create_llm_chat_result_item("Hello", false),
+            create_llm_chat_result_item(" World", false),
+            create_llm_chat_result_item("", true), // Final chunk with done=true, empty text
+            create_end_item(),
+        ];
+        let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
+
+        let message_id = MessageId::new("msg_llm_test");
+        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id.clone());
+        let events: Vec<_> = event_stream.collect().await;
+
+        assert_eq!(events.len(), 4); // START + 2 CONTENT + END
+
+        // Check START event
+        match &events[0] {
+            AgUiEvent::TextMessageStart {
+                message_id: mid, ..
+            } => {
+                assert_eq!(mid, "msg_llm_test");
+            }
+            _ => panic!("Expected TextMessageStart"),
+        }
+
+        // Check CONTENT events
+        match &events[1] {
+            AgUiEvent::TextMessageContent { delta, .. } => {
+                assert_eq!(delta, "Hello");
+            }
+            _ => panic!("Expected TextMessageContent with 'Hello'"),
+        }
+
+        match &events[2] {
+            AgUiEvent::TextMessageContent { delta, .. } => {
+                assert_eq!(delta, " World");
+            }
+            _ => panic!("Expected TextMessageContent with ' World'"),
+        }
+
+        // Check END event
+        match &events[3] {
+            AgUiEvent::TextMessageEnd {
+                message_id: mid, ..
+            } => {
+                assert_eq!(mid, "msg_llm_test");
+            }
+            _ => panic!("Expected TextMessageEnd"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_llm_chat_result_unicode() {
+        let items = vec![
+            create_llm_chat_result_item("こんにちは", false),
+            create_llm_chat_result_item("🎉", false),
+            create_end_item(),
+        ];
+        let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
+
+        let message_id = MessageId::new("msg_llm_unicode");
+        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id);
+        let events: Vec<_> = event_stream.collect().await;
+
+        match &events[1] {
+            AgUiEvent::TextMessageContent { delta, .. } => {
+                assert_eq!(delta, "こんにちは");
+            }
+            _ => panic!("Expected TextMessageContent"),
+        }
+
+        match &events[2] {
+            AgUiEvent::TextMessageContent { delta, .. } => {
+                assert_eq!(delta, "🎉");
+            }
+            _ => panic!("Expected TextMessageContent"),
+        }
+    }
+
+    // === Tests for raw string fallback (non-LLM streams) ===
 
     #[tokio::test]
     async fn test_basic_stream_conversion() {
@@ -410,5 +575,54 @@ mod tests {
         // Should have START only (no END because no End item in stream)
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], AgUiEvent::TextMessageStart { .. }));
+    }
+
+    fn create_final_collected_item(data: &[u8]) -> ResultOutputItem {
+        ResultOutputItem {
+            item: Some(result_output_item::Item::FinalCollected(data.to_vec())),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_final_collected_emits_end() {
+        // Stream with FinalCollected instead of End
+        let items = vec![
+            create_data_item("Hello"),
+            create_final_collected_item(b"collected data"),
+        ];
+        let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
+
+        let message_id = MessageId::new("msg_final_collected");
+        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id.clone());
+        let events: Vec<_> = event_stream.collect().await;
+
+        // Should have START, CONTENT, END (from FinalCollected)
+        assert_eq!(events.len(), 3);
+
+        assert!(matches!(&events[0], AgUiEvent::TextMessageStart { .. }));
+        assert!(matches!(&events[1], AgUiEvent::TextMessageContent { .. }));
+        assert!(matches!(&events[2], AgUiEvent::TextMessageEnd { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_final_collected_with_end_guarantee() {
+        // Stream with FinalCollected using end guarantee function
+        let items = vec![
+            create_data_item("World"),
+            create_final_collected_item(b"workflow result"),
+        ];
+        let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
+
+        let message_id = MessageId::new("msg_final_collected_guarantee");
+        let event_stream =
+            result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id);
+        let events: Vec<_> = event_stream.collect().await;
+
+        // Should have START, CONTENT, END (from FinalCollected, no duplicate)
+        assert_eq!(events.len(), 3);
+
+        assert!(matches!(&events[0], AgUiEvent::TextMessageStart { .. }));
+        assert!(matches!(&events[1], AgUiEvent::TextMessageContent { .. }));
+        assert!(matches!(&events[2], AgUiEvent::TextMessageEnd { .. }));
     }
 }
