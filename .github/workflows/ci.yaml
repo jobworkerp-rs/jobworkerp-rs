@@ -183,11 +183,11 @@ jobs:
       #          args: --features "mysql"
       - name: Run test
         run: |
-          cargo build
-          cargo test -- --test-threads=1
+          cargo build --release
+          cargo test --release -- --test-threads=1
           cargo clean
         env:
-          PLUGINS_RUNNER_DIR: "./target/debug/"
+          PLUGINS_RUNNER_DIR: "./target/release/"
           TEST_REDIS_URL: "redis://127.0.0.1:6379"
           UV_VENV_CLEAR: 1
           RUST_BACKTRACE: 1
@@ -197,11 +197,11 @@ jobs:
           rm -f app-wrapper/test_db.sqlite3*
           rm -f infra/test_db.sqlite3*
           rm -f worker-app/test_db.sqlite3*
-          cargo build --features "mysql"
-          cargo test --features "mysql" -- --test-threads=1
+          cargo build --release --features "mysql"
+          cargo test --release --features "mysql" -- --test-threads=1
           cargo clean
         env:
-          PLUGINS_RUNNER_DIR: "./target/debug/"
+          PLUGINS_RUNNER_DIR: "./target/release/"
           TEST_REDIS_URL: "redis://127.0.0.1:6379"
           TEST_MYSQL_URL: "mysql://mysql:mysqlpw@127.0.0.1:3306/test"
           UV_VENV_CLEAR: 1

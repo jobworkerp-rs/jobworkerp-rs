@@ -1,10 +1,11 @@
-//! HTTP server implementation for AG-UI.
+//! HTTP server implementation for AG-UI (async/decoupled architecture).
 //!
 //! Provides axum-based HTTP SSE server with AG-UI protocol endpoints.
+//! Uses job queue for workflow execution instead of direct execution.
 
 use crate::config::ServerConfig;
 use crate::error::AgUiError;
-use crate::handler::AgUiHandler;
+use crate::handler_async::AsyncAgUiHandler;
 use crate::server::auth::{auth_middleware, TokenStore};
 use crate::session::{EventStore, SessionManager};
 use crate::types::RunAgentInput;
@@ -22,18 +23,18 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
-/// Application state for axum handlers.
-pub struct AppState<SM, ES>
+/// Application state for axum handlers (async version).
+pub struct AsyncAppState<SM, ES>
 where
     SM: SessionManager + 'static,
     ES: EventStore + 'static,
 {
-    pub handler: Arc<AgUiHandler<SM, ES>>,
+    pub handler: Arc<AsyncAgUiHandler<SM, ES>>,
     pub token_store: Arc<TokenStore>,
     pub config: ServerConfig,
 }
 
-impl<SM, ES> Clone for AppState<SM, ES>
+impl<SM, ES> Clone for AsyncAppState<SM, ES>
 where
     SM: SessionManager + 'static,
     ES: EventStore + 'static,
@@ -47,9 +48,9 @@ where
     }
 }
 
-/// Boot the AG-UI HTTP server.
-pub async fn boot_ag_ui_server<SM, ES>(
-    handler: AgUiHandler<SM, ES>,
+/// Boot the AG-UI HTTP server (async/decoupled version).
+pub async fn boot_ag_ui_async_server<SM, ES>(
+    handler: AsyncAgUiHandler<SM, ES>,
     config: ServerConfig,
     lock: ShutdownLock,
     shutdown_signal: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
@@ -61,7 +62,7 @@ where
     let bind_addr = config.bind_addr.clone();
     let token_store = Arc::new(TokenStore::from_env());
 
-    let app_state = Arc::new(AppState {
+    let app_state = Arc::new(AsyncAppState {
         handler: Arc::new(handler),
         token_store: token_store.clone(),
         config,
@@ -98,7 +99,7 @@ where
         .with_state(app_state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-    tracing::info!("AG-UI HTTP Server started on {}", bind_addr);
+    tracing::info!("AG-UI HTTP Async Server started on {}", bind_addr);
 
     // Graceful shutdown setup
     let shutdown_future: Pin<Box<dyn Future<Output = ()> + Send>> = match shutdown_signal {
@@ -108,7 +109,7 @@ where
             tokio::spawn(async move {
                 match tokio::signal::ctrl_c().await {
                     Ok(()) => {
-                        tracing::info!("Shutting down AG-UI server...");
+                        tracing::info!("Shutting down AG-UI async server...");
                         let _ = tx.send(());
                     }
                     Err(e) => tracing::error!("Failed to listen for ctrl_c: {:?}", e),
@@ -132,29 +133,29 @@ where
 
 /// Index handler - basic info page.
 async fn index_handler() -> &'static str {
-    "AG-UI Front Server - jobworkerp-rs workflow execution via AG-UI protocol"
+    "AG-UI Front Server (Async) - jobworkerp-rs workflow execution via AG-UI protocol (decoupled architecture)"
 }
 
 /// Health check endpoint.
 async fn health_handler() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
-        "service": "ag-ui-front"
+        "service": "ag-ui-front-async",
+        "architecture": "decoupled"
     }))
 }
 
 /// POST /ag-ui/run - Start a new workflow run and return SSE stream.
 async fn run_workflow_handler<SM, ES>(
-    State(state): State<Arc<AppState<SM, ES>>>,
+    State(state): State<Arc<AsyncAppState<SM, ES>>>,
     Json(input): Json<RunAgentInput>,
 ) -> Result<impl IntoResponse, AppError>
 where
     SM: SessionManager + Clone + Send + Sync + 'static,
     ES: EventStore + Clone + Send + Sync + 'static,
 {
-    let (session, event_stream) = state.handler.run_workflow(input).await?;
+    let (session, event_stream) = state.handler.clone().run_workflow(input).await?;
 
-    // Use the stored event IDs from the handler to ensure SSE IDs match persisted IDs
     let sse_stream = event_stream.map(move |(event_id, event)| {
         let event_type = event.event_type();
         let data = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
@@ -170,20 +171,7 @@ where
         .keep_alive(KeepAlive::default())
         .into_response();
 
-    // Add custom headers
     let mut response = response;
-
-    // Disable buffering for real-time streaming
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        header::HeaderValue::from_static("no-cache, no-store, must-revalidate"),
-    );
-    // Disable nginx buffering
-    response.headers_mut().insert(
-        header::HeaderName::from_static("x-accel-buffering"),
-        header::HeaderValue::from_static("no"),
-    );
-
     if let Ok(run_id_value) = header::HeaderValue::from_str(&session.run_id.to_string()) {
         response.headers_mut().insert(
             header::HeaderName::from_static("x-ag-ui-run-id"),
@@ -201,12 +189,8 @@ where
 }
 
 /// GET /ag-ui/stream/{run_id} - Subscribe to existing run.
-///
-/// Supports SSE reconnection via Last-Event-ID header. Returns stored events
-/// since the given ID, then continues streaming live events if the workflow
-/// is still running.
 async fn stream_handler<SM, ES>(
-    State(state): State<Arc<AppState<SM, ES>>>,
+    State(state): State<Arc<AsyncAppState<SM, ES>>>,
     Path(run_id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse, AppError>
@@ -214,15 +198,17 @@ where
     SM: SessionManager + Clone + Send + Sync + 'static,
     ES: EventStore + Clone + Send + Sync + 'static,
 {
-    // Extract Last-Event-ID header for reconnection support
     let last_event_id = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
 
-    let event_stream = state.handler.resume_stream(&run_id, last_event_id).await?;
+    let event_stream = state
+        .handler
+        .clone()
+        .resume_stream(&run_id, last_event_id)
+        .await?;
 
-    // Use the stored event IDs to ensure SSE IDs match persisted IDs for proper reconnection
     let sse_stream = event_stream.map(move |(event_id, event)| {
         let event_type = event.event_type();
         let data = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
@@ -234,49 +220,40 @@ where
         )
     });
 
-    let mut response = Sse::new(sse_stream)
-        .keep_alive(KeepAlive::default())
-        .into_response();
-
-    // Disable buffering for real-time streaming
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        header::HeaderValue::from_static("no-cache, no-store, must-revalidate"),
-    );
-    response.headers_mut().insert(
-        header::HeaderName::from_static("x-accel-buffering"),
-        header::HeaderValue::from_static("no"),
-    );
-
-    Ok(response)
+    Ok(Sse::new(sse_stream).keep_alive(KeepAlive::default()))
 }
 
-/// HITL message request body
+/// HITL message request body (extended for async version)
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct HitlMessageRequest {
-    /// Run ID of the paused workflow
     run_id: String,
-    /// Tool call results containing user input
     tool_call_results: Vec<ToolCallResultInput>,
+    /// Context for inline workflow resume (optional)
+    #[serde(default)]
+    context: Vec<HitlContext>,
 }
 
 /// Single tool call result from client
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ToolCallResultInput {
-    /// Tool call ID (must match the one issued in TOOL_CALL_START)
     tool_call_id: String,
-    /// User input result
     result: serde_json::Value,
 }
 
+/// HITL context for workflow resume
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum HitlContext {
+    /// Inline workflow definition for resume
+    #[serde(rename = "workflow_inline")]
+    WorkflowInline { workflow: serde_json::Value },
+}
+
 /// POST /ag-ui/message - Send message to running workflow (Human-in-the-Loop).
-///
-/// Resumes a paused HITL workflow with user input.
-/// Returns an SSE stream with resumed workflow events.
 async fn message_handler<SM, ES>(
-    State(state): State<Arc<AppState<SM, ES>>>,
+    State(state): State<Arc<AsyncAppState<SM, ES>>>,
     Json(body): Json<HitlMessageRequest>,
 ) -> Result<impl IntoResponse, AppError>
 where
@@ -286,9 +263,9 @@ where
     let HitlMessageRequest {
         run_id,
         mut tool_call_results,
+        context,
     } = body;
 
-    // Validate input: exactly one tool_call_result required
     if tool_call_results.len() != 1 {
         return Err(AppError(AgUiError::InvalidInput(format!(
             "tool_call_results must contain exactly 1 item, got {}",
@@ -296,20 +273,24 @@ where
         ))));
     }
 
-    // Extract the single tool call result
     let tool_call_result = tool_call_results.remove(0);
 
-    // Resume the workflow with user input
+    // Extract workflow_data from context if provided (for inline workflow resume)
+    let workflow_data: Option<String> = context.into_iter().find_map(|ctx| match ctx {
+        HitlContext::WorkflowInline { workflow } => serde_json::to_string(&workflow).ok(),
+    });
+
     let event_stream = state
         .handler
+        .clone()
         .resume_workflow(
             &run_id,
             &tool_call_result.tool_call_id,
             tool_call_result.result,
+            workflow_data.as_deref(),
         )
         .await?;
 
-    // Convert to SSE stream
     let sse_stream = event_stream.map(move |(event_id, event)| {
         let event_type = event.event_type();
         let data = match serde_json::to_string(&event) {
@@ -327,26 +308,16 @@ where
         )
     });
 
-    let mut response = Sse::new(sse_stream)
+    let response = Sse::new(sse_stream)
         .keep_alive(KeepAlive::default())
         .into_response();
-
-    // Disable buffering for real-time streaming
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        header::HeaderValue::from_static("no-cache, no-store, must-revalidate"),
-    );
-    response.headers_mut().insert(
-        header::HeaderName::from_static("x-accel-buffering"),
-        header::HeaderValue::from_static("no"),
-    );
 
     Ok(response)
 }
 
 /// DELETE /ag-ui/run/{run_id} - Cancel a running workflow.
 async fn cancel_handler<SM, ES>(
-    State(state): State<Arc<AppState<SM, ES>>>,
+    State(state): State<Arc<AsyncAppState<SM, ES>>>,
     Path(run_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError>
 where
@@ -362,7 +333,7 @@ where
 
 /// GET /ag-ui/state/{run_id} - Get current workflow state.
 async fn state_handler<SM, ES>(
-    State(state): State<Arc<AppState<SM, ES>>>,
+    State(state): State<Arc<AsyncAppState<SM, ES>>>,
     Path(run_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError>
 where
@@ -418,7 +389,6 @@ impl IntoResponse for AppError {
                 "TIMEOUT",
                 format!("Timeout after {} seconds", timeout_sec),
             ),
-            // HITL-specific errors
             AgUiError::SessionNotPaused { current_state } => (
                 StatusCode::CONFLICT,
                 "INVALID_SESSION_STATE",
