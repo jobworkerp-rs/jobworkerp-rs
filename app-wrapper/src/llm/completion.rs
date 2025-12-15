@@ -161,8 +161,11 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                     serde_json::Value::String(json_str) => {
                         // Try to parse as JSON string (in case it's escaped)
                         match serde_json::from_str::<serde_json::Value>(&json_str) {
-                            Ok(_) => json_str,             // Valid JSON string, use as-is
-                            Err(_) => json_schema.clone(), // Parse failed, use original
+                            Ok(_) => json_str, // Valid JSON string, use as-is
+                            Err(_) => {
+                                tracing::warn!("Invalid json_schema format: {}", &json_str);
+                                json_schema.clone() // Parse failed, use original
+                            }
                         }
                     }
                     _ => json_schema.clone(), // Not a string, use original
@@ -223,8 +226,11 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 serde_json::Value::String(json_str) => {
                     // Try to parse as JSON string (in case it's escaped)
                     match serde_json::from_str::<serde_json::Value>(&json_str) {
-                        Ok(_) => json_str,             // Valid JSON string, use as-is
-                        Err(_) => json_schema.clone(), // Parse failed, use original
+                        Ok(_) => json_str, // Valid JSON string, use as-is
+                        Err(_) => {
+                            tracing::warn!("Invalid json_schema format: {}", &json_str);
+                            json_schema.clone() // Parse failed, use original
+                        }
                     }
                 }
                 _ => json_schema.clone(), // Not a string, use original

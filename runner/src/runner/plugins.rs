@@ -316,6 +316,7 @@ pub trait MultiMethodPluginRunner: Send + Sync {
     fn collect_stream(
         &self,
         stream: futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
+        _using: Option<&str>,
     ) -> crate::runner::CollectStreamFuture {
         use futures::StreamExt;
         use proto::jobworkerp::data::result_output_item;

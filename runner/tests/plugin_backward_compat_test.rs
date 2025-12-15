@@ -382,7 +382,7 @@ async fn test_legacy_plugin_collect_stream_uses_last_chunk() -> Result<()> {
     let stream = futures::stream::iter(vec![chunk1, chunk2, chunk3, end]).boxed();
 
     // Collect stream - Legacy plugin should keep only last chunk
-    let (collected_data, metadata) = plugin_wrapper.collect_stream(stream).await?;
+    let (collected_data, metadata) = plugin_wrapper.collect_stream(stream, None).await?;
 
     // Should be the last chunk's data only (not concatenated)
     assert_eq!(
@@ -446,7 +446,7 @@ async fn test_hello_plugin_collect_stream_merges_chunks() -> Result<()> {
     let stream = futures::stream::iter(vec![chunk1, chunk2, chunk3, end]).boxed();
 
     // Collect stream - HelloPlugin should merge data fields
-    let (collected_data, _metadata) = plugin_wrapper.collect_stream(stream).await?;
+    let (collected_data, _metadata) = plugin_wrapper.collect_stream(stream, None).await?;
 
     // Decode and verify merged result
     let merged_result = HelloRunnerResult::decode(collected_data.as_slice())?;
