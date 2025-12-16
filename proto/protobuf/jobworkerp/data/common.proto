@@ -62,26 +62,54 @@ enum RunnerType {
   // Executes tools of MCP servers
   MCP_SERVER = 7;
 
-  // # LLM Chat Completion API Runner
+  // ============================================================
+  // Multi-method Runners (32768+)
+  // These runners support multiple methods via 'using' parameter
+  // ============================================================
+
+  // # LLM Runner (Multi-method)
+  // Unified LLM runner with 'completion' and 'chat' methods
+  // - completion: Text completion using LLM (prompt-based)
+  // - chat: Chat conversation with message history
+  // Requires 'using' parameter to specify method
+  LLM = 32768;
+
+  // # Workflow Runner (Multi-method)
+  // Unified workflow runner with 'run' and 'create' methods
+  // - run: Execute workflow with pre-configured definition (default)
+  // - create: Create new workflow worker from definition
+  // 'using' defaults to 'run' if not specified
+  WORKFLOW = 32769;
+
+  // ============================================================
+  // Legacy Runners (deprecated - use multi-method runners above)
+  // ============================================================
+
+  // # LLM Chat Completion API Runner [DEPRECATED]
+  // Deprecated: Use LLM runner with 'chat' method instead
   // Interacts with Large Language Models
   LLM_CHAT = 65533;
 
-  // # LLM Completion API Runner
+  // # LLM Completion API Runner [DEPRECATED]
+  // Deprecated: Use LLM runner with 'completion' method instead
   // Interacts with Large Language Models
   LLM_COMPLETION = 65534;
 
-  // # Inline Workflow Runner
+  // # Inline Workflow Runner [DEPRECATED]
+  // Deprecated: Use temporary worker with WORKFLOW runner instead
   // Executes a sequence of jobs as a workflow defined inline with the request
   // Jobs are executed in order and not preserved after execution completes
   INLINE_WORKFLOW = 65535;
 
-  // # Reusable Workflow Runner
+  // # Reusable Workflow Runner [DEPRECATED]
+  // Deprecated: Use WORKFLOW runner with 'run' method instead
   // Allows users to define, save, and reuse workflow definitions across
   // multiple executions Workflows are stored in the system and can be executed
   // by reference
   REUSABLE_WORKFLOW = 65532;
 
-  // # Create Workflow Runner
+  // # Create Workflow Runner [DEPRECATED]
+  // Deprecated: Use WORKFLOW runner with 'create' method instead
   // Creates workflow definitions that can be stored and reused
   // This runner is specifically designed for workflow creation, separate from execution
   CREATE_WORKFLOW = -1;

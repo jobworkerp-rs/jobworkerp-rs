@@ -203,6 +203,7 @@ impl RunnerSpec for CommandRunnerImpl {
     fn collect_stream(
         &self,
         stream: BoxStream<'static, ResultOutputItem>,
+        _using: Option<&str>,
     ) -> super::CollectStreamFuture {
         use prost::Message;
         use proto::jobworkerp::data::result_output_item;
@@ -1539,7 +1540,7 @@ mod tests {
         metadata.insert("key".to_string(), "value".to_string());
 
         let stream = create_mock_command_stream(vec![chunk], metadata.clone());
-        let (result_bytes, result_metadata) = runner.collect_stream(stream).await.unwrap();
+        let (result_bytes, result_metadata) = runner.collect_stream(stream, None).await.unwrap();
 
         let result =
             ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
@@ -1575,7 +1576,7 @@ mod tests {
         ];
 
         let stream = create_mock_command_stream(chunks, HashMap::new());
-        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (result_bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let result =
             ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
@@ -1608,7 +1609,7 @@ mod tests {
         ];
 
         let stream = create_mock_command_stream(chunks, HashMap::new());
-        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (result_bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let result =
             ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
@@ -1625,7 +1626,7 @@ mod tests {
         let chunks: Vec<CommandResult> = vec![];
 
         let stream = create_mock_command_stream(chunks, HashMap::new());
-        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (result_bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let result =
             ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();

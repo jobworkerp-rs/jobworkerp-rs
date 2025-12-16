@@ -130,6 +130,14 @@ INSERT IGNORE INTO runner (id, name, description, definition, type) VALUES (
   -1, 'CREATE_WORKFLOW',
   'Creates a new REUSABLE_WORKFLOW worker from a workflow definition. The workflow is validated and stored as a worker that can be executed multiple times.',
   'builtin-1', -1
+), (
+  32768, 'LLM',
+  'Unified LLM runner with multiple methods: completion (text completion) and chat (conversation with history). Requires using parameter to specify method.',
+  'builtin32768', 32768
+), (
+  32769, 'WORKFLOW',
+  'Unified workflow runner with multiple methods: run (execute workflow, default) and create (create workflow worker). Using defaults to run if not specified.',
+  'builtin32769', 32769
 );
 
 

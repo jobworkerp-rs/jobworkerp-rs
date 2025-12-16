@@ -87,6 +87,7 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
     fn collect_stream(
         &self,
         stream: BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
+        _using: Option<&str>,
     ) -> CollectStreamFuture {
         use futures::StreamExt;
         use proto::jobworkerp::data::result_output_item;
@@ -278,7 +279,7 @@ mod tests {
         let items = vec![create_data_item(&result), create_end_item(HashMap::new())];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmChatResult::decode(bytes.as_slice()).unwrap();
         assert!(decoded.done);
@@ -308,7 +309,7 @@ mod tests {
         ];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmChatResult::decode(bytes.as_slice()).unwrap();
         if let Some(content) = decoded.content {
@@ -338,7 +339,7 @@ mod tests {
         ];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmChatResult::decode(bytes.as_slice()).unwrap();
         if let Some(content) = decoded.content {
@@ -376,7 +377,7 @@ mod tests {
         ];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmChatResult::decode(bytes.as_slice()).unwrap();
         if let Some(content) = decoded.content {
@@ -405,7 +406,7 @@ mod tests {
         ];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmChatResult::decode(bytes.as_slice()).unwrap();
         assert_eq!(
@@ -430,7 +431,7 @@ mod tests {
         ];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, returned_metadata) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, returned_metadata) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmChatResult::decode(bytes.as_slice()).unwrap();
         if let Some(content) = decoded.content {
@@ -448,7 +449,7 @@ mod tests {
         let items = vec![create_end_item(HashMap::new())];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmChatResult::decode(bytes.as_slice()).unwrap();
         assert!(decoded.content.is_none());

@@ -823,7 +823,9 @@ async fn collect_streaming_result_static(
         };
 
         // Collect stream using RunnerSpec::collect_stream
-        let (collected_bytes, _metadata) = runner_spec.collect_stream(stream).await?;
+        let (collected_bytes, _metadata) = runner_spec
+            .collect_stream(stream, handle.using.as_deref())
+            .await?;
 
         tracing::debug!(
             "Stream collected for job {}: {} bytes",

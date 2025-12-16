@@ -100,7 +100,11 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
     /// - Concatenates reasoning content from all chunks
     /// - Uses context and usage from the final chunk (done=true)
     /// - Returns error if data items were received but all decodes failed
-    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
+    fn collect_stream(
+        &self,
+        stream: BoxStream<'static, ResultOutputItem>,
+        _using: Option<&str>,
+    ) -> CollectStreamFuture {
         use crate::jobworkerp::runner::llm::llm_completion_result::{
             message_content, GenerationContext, MessageContent, Usage,
         };
@@ -261,7 +265,7 @@ mod tests {
         let items = vec![create_data_item(&result), create_end_item(HashMap::new())];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmCompletionResult::decode(bytes.as_slice()).unwrap();
         assert!(decoded.done);
@@ -303,7 +307,7 @@ mod tests {
         ];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmCompletionResult::decode(bytes.as_slice()).unwrap();
         assert!(decoded.done);
@@ -335,7 +339,7 @@ mod tests {
         ];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmCompletionResult::decode(bytes.as_slice()).unwrap();
         assert_eq!(
@@ -360,7 +364,7 @@ mod tests {
         ];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, returned_metadata) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, returned_metadata) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmCompletionResult::decode(bytes.as_slice()).unwrap();
         if let Some(content) = decoded.content {
@@ -378,7 +382,7 @@ mod tests {
         let items = vec![create_end_item(HashMap::new())];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmCompletionResult::decode(bytes.as_slice()).unwrap();
         assert!(decoded.content.is_none());
