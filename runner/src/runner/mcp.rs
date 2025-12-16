@@ -327,6 +327,7 @@ impl RunnerSpec for McpServerRunnerImpl {
     fn collect_stream(
         &self,
         stream: BoxStream<'static, ResultOutputItem>,
+        _using: Option<&str>,
     ) -> super::CollectStreamFuture {
         use futures::StreamExt;
         use prost::Message;

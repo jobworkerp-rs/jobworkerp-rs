@@ -1,6 +1,8 @@
 use crate::workflow::execute::context::{TaskContext, WorkflowContext, WorkflowPosition};
 use anyhow::Result;
-use jobworkerp_runner::jobworkerp::runner::{inline_workflow_args, reusable_workflow_args};
+use jobworkerp_runner::jobworkerp::runner::{
+    inline_workflow_args, reusable_workflow_args, workflow_run_args,
+};
 use std::sync::Arc;
 
 pub mod repository;
@@ -64,6 +66,36 @@ impl CheckPointContext {
         }
     }
     pub fn from_reusable(checkpoint: &reusable_workflow_args::Checkpoint) -> Result<Self> {
+        match checkpoint.data.as_ref() {
+            Some(d) => Ok(CheckPointContext {
+                workflow: d
+                    .workflow
+                    .as_ref()
+                    .map(|w| WorkflowCheckPointContext {
+                        name: w.name.clone(),
+                        input: serde_json::from_str(&w.input).unwrap_or_default(),
+                        context_variables: serde_json::from_str(&w.context_variables)
+                            .unwrap_or_default(),
+                    })
+                    .ok_or(anyhow::anyhow!("Workflow context is missing"))?,
+                task: d
+                    .task
+                    .as_ref()
+                    .map(|t| TaskCheckPointContext {
+                        input: serde_json::from_str(&t.input).unwrap_or_default(),
+                        output: serde_json::from_str(&t.output).unwrap_or_default(),
+                        context_variables: serde_json::from_str(&t.context_variables)
+                            .unwrap_or_default(),
+                        flow_directive: t.flow_directive.clone(),
+                    })
+                    .ok_or(anyhow::anyhow!("Task context is missing"))?,
+                position: WorkflowPosition::parse(&checkpoint.position)?,
+            }),
+            None => Err(anyhow::anyhow!("Checkpoint data is missing")),
+        }
+    }
+
+    pub fn from_workflow_run(checkpoint: &workflow_run_args::Checkpoint) -> Result<Self> {
         match checkpoint.data.as_ref() {
             Some(d) => Ok(CheckPointContext {
                 workflow: d

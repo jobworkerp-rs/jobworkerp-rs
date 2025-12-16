@@ -164,6 +164,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
     fn collect_stream(
         &self,
         stream: BoxStream<'static, ResultOutputItem>,
+        _using: Option<&str>,
     ) -> crate::runner::CollectStreamFuture {
         let variant = self.variant.clone();
         let variant_type = self.variant_type;
@@ -208,7 +209,9 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                     let future = {
                         let guard = variant.read().await;
                         if let super::PluginRunnerVariant::MultiMethod(plugin) = &*guard {
-                            plugin.collect_stream(stream)
+                            // Pass None for using since we don't have access to it here
+                            // The plugin's collect_stream should handle this appropriately
+                            plugin.collect_stream(stream, None)
                         } else {
                             unreachable!("variant_type mismatch")
                         }

@@ -99,7 +99,11 @@ impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
     /// - Otherwise, keeps only the last WorkflowResult (represents final workflow state)
     /// - Intermediate results are discarded
     /// - Returns error if data items were received but all decodes failed
-    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
+    fn collect_stream(
+        &self,
+        stream: BoxStream<'static, ResultOutputItem>,
+        _using: Option<&str>,
+    ) -> CollectStreamFuture {
         use proto::jobworkerp::data::result_output_item;
 
         Box::pin(async move {
@@ -236,7 +240,11 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
     /// - Otherwise, keeps only the last WorkflowResult (represents final workflow state)
     /// - Intermediate results are discarded
     /// - Returns error if data items were received but all decodes failed
-    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
+    fn collect_stream(
+        &self,
+        stream: BoxStream<'static, ResultOutputItem>,
+        _using: Option<&str>,
+    ) -> CollectStreamFuture {
         use proto::jobworkerp::data::result_output_item;
 
         Box::pin(async move {
@@ -345,7 +353,7 @@ mod tests {
         let items = vec![create_data_item(&result), create_end_item(metadata.clone())];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, returned_metadata) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, returned_metadata) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = WorkflowResult::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.id, "wf-1");
@@ -376,7 +384,7 @@ mod tests {
         ];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = WorkflowResult::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.output, r#"{"step": 3, "final": true}"#);
@@ -401,7 +409,7 @@ mod tests {
         ];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, returned_metadata) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, returned_metadata) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = WorkflowResult::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.output, r#"{"final": true}"#);
@@ -416,7 +424,7 @@ mod tests {
         let items = vec![create_end_item(HashMap::new())];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
         assert!(bytes.is_empty());
     }
 
@@ -433,7 +441,7 @@ mod tests {
         let items = vec![create_data_item(&result), create_end_item(HashMap::new())];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = WorkflowResult::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.status, WorkflowStatus::Faulted as i32);
@@ -449,7 +457,7 @@ mod tests {
         let items = vec![create_data_item(&result), create_end_item(HashMap::new())];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = WorkflowResult::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.id, "rwf-1");
@@ -471,7 +479,7 @@ mod tests {
         ];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = WorkflowResult::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.id, "rwf-final");

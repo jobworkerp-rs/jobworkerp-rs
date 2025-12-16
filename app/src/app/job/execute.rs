@@ -569,7 +569,7 @@ pub trait UseJobExecutor:
 
                         // Collect stream using RunnerSpec::collect_stream
                         let (collected_bytes, _metadata) =
-                            runner_spec.collect_stream(stream).await?;
+                            runner_spec.collect_stream(stream, using.as_deref()).await?;
 
                         tracing::debug!(
                             "Stream collected for job {}: {} bytes",

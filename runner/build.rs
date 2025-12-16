@@ -44,6 +44,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "protobuf/jobworkerp/runner/mcp_server_result.proto",
                 "protobuf/jobworkerp/runner/create_workflow_args.proto",
                 "protobuf/jobworkerp/runner/create_workflow_result.proto",
+                "protobuf/jobworkerp/runner/workflow_runner_settings.proto",
+                "protobuf/jobworkerp/runner/workflow_run_args.proto",
             ],
             &["../proto/protobuf/", "protobuf"],
         )

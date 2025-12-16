@@ -1,9 +1,11 @@
 pub mod cancellation;
 
 use crate::llm::chat::LLMChatRunnerImpl;
+use crate::llm::unified::LLMUnifiedRunnerImpl;
 use crate::modules::AppWrapperModule;
 use crate::workflow::create_workflow::CreateWorkflowRunnerImpl;
 use crate::workflow::runner::reusable::ReusableWorkflowRunner;
+use crate::workflow::runner::unified::WorkflowUnifiedRunnerImpl;
 use crate::{
     llm::completion::LLMCompletionRunnerImpl, workflow::runner::inline::InlineWorkflowRunner,
 };
@@ -150,6 +152,29 @@ impl RunnerFactory {
                     create_cancel_helper(),
                 ))
                     as Box<dyn CancellableRunner + Send + Sync>)
+            }
+            // Unified multi-method runners
+            Some(RunnerType::Llm) => {
+                Some(Box::new(LLMUnifiedRunnerImpl::new_with_cancel_monitoring(
+                    self.app_module.clone(),
+                    create_cancel_helper(),
+                ))
+                    as Box<dyn CancellableRunner + Send + Sync>)
+            }
+            Some(RunnerType::Workflow) => {
+                match WorkflowUnifiedRunnerImpl::new_with_cancel_monitoring(
+                    self.app_wrapper_module.clone(),
+                    self.app_module.clone(),
+                    create_cancel_helper(),
+                ) {
+                    Ok(runner) => {
+                        Some(Box::new(runner) as Box<dyn CancellableRunner + Send + Sync>)
+                    }
+                    Err(err) => {
+                        tracing::error!("Failed to create WorkflowUnifiedRunnerImpl: {}", err);
+                        None
+                    }
+                }
             }
             _ => {
                 if let Ok(server) = self.mcp_clients.connect_server(name).await {
