@@ -4,6 +4,7 @@ use super::{
     grpc_unary::GrpcUnaryRunner,
     llm::LLMCompletionRunnerSpecImpl,
     llm_chat::LLMChatRunnerSpecImpl,
+    llm_unified::LLMUnifiedRunnerSpecImpl,
     mcp::{
         config::McpServerConfig,
         proxy::{McpServerFactory, McpServerProxy},
@@ -14,6 +15,7 @@ use super::{
     request::RequestRunner,
     slack::SlackPostMessageRunner,
     workflow::{InlineWorkflowRunnerSpecImpl, ReusableWorkflowRunnerSpecImpl},
+    workflow_unified::WorkflowUnifiedRunnerSpecImpl,
     RunnerSpec,
 };
 use anyhow::Result;
@@ -182,6 +184,14 @@ impl RunnerSpecFactory {
                 Some(Box::new(LLMCompletionRunnerSpecImpl::new())
                     as Box<dyn RunnerSpec + Send + Sync>)
             }
+            // Unified multi-method runners
+            Some(RunnerType::Llm) => {
+                Some(Box::new(LLMUnifiedRunnerSpecImpl::new()) as Box<dyn RunnerSpec + Send + Sync>)
+            }
+            Some(RunnerType::Workflow) => {
+                Some(Box::new(WorkflowUnifiedRunnerSpecImpl::new())
+                    as Box<dyn RunnerSpec + Send + Sync>)
+            }
             _ => {
                 if let Ok(server) = self.mcp_clients.as_ref().connect_server(name).await {
                     tracing::debug!("MCP server found: {}", &name);
@@ -267,5 +277,43 @@ mod test {
             .await
             .unwrap();
         assert_eq!(runner.name(), "COMMAND");
+    }
+
+    #[tokio::test]
+    async fn test_create_unified_llm_runner() {
+        let runner_factory = RunnerSpecFactory::new(
+            Arc::new(Plugins::new()),
+            Arc::new(McpServerFactory::default()),
+        );
+        let runner = runner_factory
+            .create_runner_spec_by_name(RunnerType::Llm.as_str_name(), false)
+            .await
+            .unwrap();
+        assert_eq!(runner.name(), "LLM");
+
+        // Verify method_proto_map has both methods
+        let methods = runner.method_proto_map();
+        assert!(methods.contains_key("completion"));
+        assert!(methods.contains_key("chat"));
+        assert_eq!(methods.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_create_unified_workflow_runner() {
+        let runner_factory = RunnerSpecFactory::new(
+            Arc::new(Plugins::new()),
+            Arc::new(McpServerFactory::default()),
+        );
+        let runner = runner_factory
+            .create_runner_spec_by_name(RunnerType::Workflow.as_str_name(), false)
+            .await
+            .unwrap();
+        assert_eq!(runner.name(), "WORKFLOW");
+
+        // Verify method_proto_map has both methods
+        let methods = runner.method_proto_map();
+        assert!(methods.contains_key("run"));
+        assert!(methods.contains_key("create"));
+        assert_eq!(methods.len(), 2);
     }
 }

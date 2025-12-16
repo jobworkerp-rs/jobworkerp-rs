@@ -1,3 +1,4 @@
+use crate::workflow::definition::WorkflowSchema;
 use anyhow::{anyhow, Context, Result};
 use app::module::AppModule;
 use async_trait::async_trait;
@@ -63,24 +64,25 @@ impl CreateWorkflowRunnerImpl {
             return Err(anyhow!("Worker name cannot be empty"));
         }
 
-        // 2. Validate workflow_source
+        // 2. Validate workflow_source by parsing as WorkflowSchema
         let workflow_json = match &args.workflow_source {
             Some(workflow_source) => match workflow_source {
-                WorkflowSource::WorkflowData(data) => serde_json::from_str(data)
-                    .map_err(|e| anyhow!("Invalid workflow JSON: {}", e))?,
+                WorkflowSource::WorkflowData(data) => {
+                    // Parse as WorkflowSchema to validate required fields (do, document, input)
+                    let _workflow: WorkflowSchema = serde_json::from_str(data)
+                        .or_else(|_| serde_yaml::from_str(data))
+                        .map_err(|e| anyhow!("Invalid workflow schema: {}", e))?;
+                    // Return as serde_json::Value for storage
+                    serde_json::from_str(data)
+                        .or_else(|_| serde_yaml::from_str::<serde_json::Value>(data))
+                        .map_err(|e| anyhow!("Failed to parse workflow data: {}", e))?
+                }
                 WorkflowSource::WorkflowUrl(url) => self.load_workflow_from_url(url).await?,
             },
             None => {
                 return Err(anyhow!("Workflow source is required"));
             }
         };
-
-        // TODO Validate workflow structure (using common Validator)
-        // self.validator.validate_workflow(&workflow_json).await?;
-        // tracing::debug!(
-        //     "Validated workflow JSON: {}",
-        //     serde_json::to_string_pretty(&workflow_json)?
-        // );
 
         Ok((workflow_json, args.name.clone()))
     }

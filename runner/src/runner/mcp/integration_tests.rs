@@ -1013,7 +1013,7 @@ async fn test_collect_stream_single_chunk() -> Result<()> {
         };
     };
 
-    let (result_bytes, result_metadata) = runner.collect_stream(Box::pin(stream)).await?;
+    let (result_bytes, result_metadata) = runner.collect_stream(Box::pin(stream), None).await?;
 
     let result = McpServerResult::decode(result_bytes.as_slice())?;
     assert_eq!(result.content.len(), 1);
@@ -1079,7 +1079,7 @@ async fn test_collect_stream_multiple_chunks_merges_text() -> Result<()> {
         };
     };
 
-    let (result_bytes, _) = runner.collect_stream(Box::pin(stream)).await?;
+    let (result_bytes, _) = runner.collect_stream(Box::pin(stream), None).await?;
 
     let result = McpServerResult::decode(result_bytes.as_slice())?;
 
@@ -1145,7 +1145,7 @@ async fn test_collect_stream_propagates_error_flag() -> Result<()> {
         };
     };
 
-    let (result_bytes, _) = runner.collect_stream(Box::pin(stream)).await?;
+    let (result_bytes, _) = runner.collect_stream(Box::pin(stream), None).await?;
 
     let result = McpServerResult::decode(result_bytes.as_slice())?;
 
@@ -1182,7 +1182,7 @@ async fn test_collect_stream_empty_chunks() -> Result<()> {
         };
     };
 
-    let (result_bytes, _) = runner.collect_stream(Box::pin(stream)).await?;
+    let (result_bytes, _) = runner.collect_stream(Box::pin(stream), None).await?;
 
     let result = McpServerResult::decode(result_bytes.as_slice())?;
 

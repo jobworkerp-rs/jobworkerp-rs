@@ -1,0 +1,30 @@
+document:
+  name: streaming-test
+  namespace: default
+  title: Streaming test workflow
+  version: 0.0.1
+  dsl: 0.0.1
+input:
+  schema:
+    command:
+      type: string
+      description: command to execute
+      default: echo
+    args:
+      type: array
+      description: arguments for command
+      default: ["hello", "streaming"]
+do:
+  - StreamingTask:
+      run:
+        runner:
+          name: COMMAND
+          arguments:
+            command: "${.command}"
+            args: "${.args}"
+          options:
+            channel: workflow
+            useStatic: false
+            storeSuccess: true
+            storeFailure: true
+      useStreaming: true

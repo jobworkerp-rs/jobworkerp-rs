@@ -220,6 +220,7 @@ impl MultiMethodPluginRunner for HelloPlugin {
     fn collect_stream(
         &self,
         stream: BoxStream<'static, ResultOutputItem>,
+        _using: Option<&str>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(Vec<u8>, HashMap<String, String>)>> + Send>,
     > {

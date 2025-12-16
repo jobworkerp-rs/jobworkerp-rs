@@ -59,6 +59,7 @@ pub mod grpc_unary;
 pub mod k8s_job;
 pub mod llm;
 pub mod llm_chat;
+pub mod llm_unified;
 pub mod mcp;
 pub mod plugins;
 pub mod python;
@@ -66,6 +67,7 @@ pub mod request;
 pub mod slack;
 pub mod timeout_config;
 pub mod workflow;
+pub mod workflow_unified;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_common;
@@ -266,6 +268,7 @@ pub trait RunnerSpec: Send + Sync + Any {
     ///
     /// # Arguments
     /// * `stream` - BoxStream of ResultOutputItem from run_stream()
+    /// * `using` - Optional method name for multi-method runners (LLM, WORKFLOW)
     ///
     /// # Returns
     /// Tuple of (collected_bytes, metadata_from_trailer)
@@ -275,11 +278,16 @@ pub trait RunnerSpec: Send + Sync + Any {
     /// - COMMAND: Merge stdout/stderr/exit_code from CommandResult chunks
     /// - HTTP_REQUEST: Merge body chunks with final status/headers
     /// - MCP_SERVER: Merge McpServerResult contents (TextContent concatenation)
-    /// - LLM: Merge text tokens with final tool_calls/usage
+    /// - LLM: Merge text tokens with final tool_calls/usage (method-specific)
+    /// - WORKFLOW: Keep last result for run, non-streaming for create
     ///
     /// Default implementation: keeps only the last Data item (memory efficient).
     /// Override this method for runners that need to merge/concatenate stream data.
-    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
+    fn collect_stream(
+        &self,
+        stream: BoxStream<'static, ResultOutputItem>,
+        _using: Option<&str>,
+    ) -> CollectStreamFuture {
         use futures::StreamExt;
         use proto::jobworkerp::data::result_output_item;
 

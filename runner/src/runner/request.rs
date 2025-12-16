@@ -129,6 +129,7 @@ impl RunnerSpec for RequestRunner {
     fn collect_stream(
         &self,
         stream: BoxStream<'static, ResultOutputItem>,
+        _using: Option<&str>,
     ) -> super::CollectStreamFuture {
         use prost::Message;
         use proto::jobworkerp::data::result_output_item;
@@ -647,7 +648,7 @@ pub mod tests {
         metadata.insert("request_id".to_string(), "test-123".to_string());
 
         let stream = create_mock_http_stream(vec![chunk], metadata.clone());
-        let (result_bytes, result_metadata) = runner.collect_stream(stream).await.unwrap();
+        let (result_bytes, result_metadata) = runner.collect_stream(stream, None).await.unwrap();
 
         let result =
             ProstMessageCodec::deserialize_message::<HttpResponseResult>(&result_bytes).unwrap();
@@ -690,7 +691,7 @@ pub mod tests {
         ];
 
         let stream = create_mock_http_stream(chunks, HashMap::new());
-        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (result_bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let result =
             ProstMessageCodec::deserialize_message::<HttpResponseResult>(&result_bytes).unwrap();
@@ -732,7 +733,7 @@ pub mod tests {
         ];
 
         let stream = create_mock_http_stream(chunks, HashMap::new());
-        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (result_bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let result =
             ProstMessageCodec::deserialize_message::<HttpResponseResult>(&result_bytes).unwrap();
@@ -747,7 +748,7 @@ pub mod tests {
         let chunks: Vec<HttpResponseResult> = vec![];
 
         let stream = create_mock_http_stream(chunks, HashMap::new());
-        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+        let (result_bytes, _) = runner.collect_stream(stream, None).await.unwrap();
 
         let result =
             ProstMessageCodec::deserialize_message::<HttpResponseResult>(&result_bytes).unwrap();
