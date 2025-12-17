@@ -276,6 +276,9 @@ mod tests {
             reasoning_content: None,
             done,
             usage: None,
+            pending_tool_calls: None,
+            requires_tool_execution: None,
+            tool_execution_results: vec![],
         };
         let bytes = result.encode_to_vec();
         ResultOutputItem {

@@ -2,20 +2,23 @@ use super::super::tracing::ollama_helper::OllamaTracingHelper;
 use super::conversion::ToolConverter;
 use crate::llm::generic_tracing_helper::GenericLLMTracingHelper;
 use crate::llm::ThinkTagHelper;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
 use app::app::function::{FunctionApp, FunctionAppImpl};
 use command_utils::trace::impls::GenericOtelClient;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequest;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
-use jobworkerp_runner::jobworkerp::runner::llm::{self, LlmChatArgs, LlmChatResult};
+use jobworkerp_runner::jobworkerp::runner::llm::{
+    self, LlmChatArgs, LlmChatResult, PendingToolCalls, ToolCallRequest,
+};
 use ollama_rs::generation::chat::ChatMessageResponse;
 use ollama_rs::generation::parameters::{FormatType, JsonStructure};
-use ollama_rs::generation::tools::ToolInfo;
+use ollama_rs::generation::tools::{ToolCall as OllamaToolCall, ToolInfo};
 use ollama_rs::{
     generation::chat::{request::ChatMessageRequest, ChatMessage, MessageRole},
     models::ModelOptions,
@@ -96,6 +99,16 @@ impl ThinkTagHelper for OllamaChatService {}
 
 // TODO set from job.timeout
 const DEFAULT_TIMEOUT_SEC: u32 = 300; // Default timeout for Ollama chat requests in seconds
+
+/// Internal result type for chat operations
+enum ChatInternalResult {
+    /// Final response from LLM (no more tool calls)
+    Final(Box<ChatMessageResponse>),
+    /// Pending tool calls that need client approval (manual mode)
+    PendingTools {
+        tool_calls: Vec<ollama_rs::generation::tools::ToolCall>,
+    },
+}
 
 impl OllamaChatService {
     pub fn new(
@@ -248,6 +261,21 @@ impl OllamaChatService {
         metadata: HashMap<String, String>,
     ) -> Result<LlmChatResult> {
         let metadata = Arc::new(metadata);
+
+        // Check for tool execution requests in messages (manual mode)
+        if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
+            return self
+                .handle_tool_execution(args, tool_exec_requests, cx, metadata)
+                .await;
+        }
+
+        // Determine if auto-calling is enabled (default: false = manual mode)
+        let is_auto_calling = args
+            .function_options
+            .as_ref()
+            .and_then(|fo| fo.is_auto_calling)
+            .unwrap_or(false);
+
         let options = Self::create_chat_options(&args);
         let model = args.model.clone().unwrap_or_else(|| self.model.clone());
         let mut messages = Self::convert_messages(&args);
@@ -269,22 +297,166 @@ impl OllamaChatService {
             Some(cx.clone()),
             metadata.clone(),
             args.json_schema,
+            is_auto_calling,
         )
         .await?;
 
-        let text = res.message.content.clone();
-        let (prompt, think) = Self::divide_think_tag(text);
+        // Handle the result based on whether it contains pending tool calls
+        match res {
+            ChatInternalResult::Final(response) => {
+                let text = response.message.content.clone();
+                let (prompt, think) = Self::divide_think_tag(text);
 
-        let chat_result = LlmChatResult {
-            content: Some(llm::llm_chat_result::MessageContent {
-                content: Some(message_content::Content::Text(prompt)),
-            }),
-            reasoning_content: think,
-            done: true,
-            usage: None,
-        };
+                Ok(LlmChatResult {
+                    content: Some(llm::llm_chat_result::MessageContent {
+                        content: Some(message_content::Content::Text(prompt)),
+                    }),
+                    reasoning_content: think,
+                    done: true,
+                    usage: None,
+                    pending_tool_calls: None,
+                    requires_tool_execution: None,
+                    tool_execution_results: vec![],
+                })
+            }
+            ChatInternalResult::PendingTools { tool_calls } => {
+                // Return tool calls for client approval (manual mode)
+                let pending_calls: Vec<ToolCallRequest> = tool_calls
+                    .iter()
+                    .map(|call| ToolCallRequest {
+                        call_id: uuid::Uuid::new_v4().to_string(),
+                        fn_name: call.function.name.clone(),
+                        fn_arguments: call.function.arguments.to_string(),
+                    })
+                    .collect();
 
-        Ok(chat_result)
+                let tool_calls_content: Vec<llm::llm_chat_result::message_content::ToolCall> =
+                    pending_calls
+                        .iter()
+                        .map(|tc| llm::llm_chat_result::message_content::ToolCall {
+                            call_id: tc.call_id.clone(),
+                            fn_name: tc.fn_name.clone(),
+                            fn_arguments: tc.fn_arguments.clone(),
+                        })
+                        .collect();
+
+                Ok(LlmChatResult {
+                    content: Some(llm::llm_chat_result::MessageContent {
+                        content: Some(message_content::Content::ToolCalls(
+                            llm::llm_chat_result::message_content::ToolCalls {
+                                calls: tool_calls_content,
+                            },
+                        )),
+                    }),
+                    reasoning_content: None,
+                    done: false,
+                    usage: None,
+                    pending_tool_calls: Some(PendingToolCalls {
+                        calls: pending_calls,
+                    }),
+                    requires_tool_execution: Some(true),
+                    tool_execution_results: vec![],
+                })
+            }
+        }
+    }
+
+    /// Extract tool execution requests from messages (for manual mode)
+    fn extract_tool_execution_requests(
+        &self,
+        args: &LlmChatArgs,
+    ) -> Option<Vec<ToolExecutionRequest>> {
+        use llm::llm_chat_args::message_content::Content as ProtoContent;
+
+        let requests: Vec<ToolExecutionRequest> = args
+            .messages
+            .iter()
+            .filter(|m| m.role() == ChatRole::Tool)
+            .filter_map(|m| m.content.as_ref())
+            .filter_map(|c| match &c.content {
+                Some(ProtoContent::ToolExecutionRequests(reqs)) => Some(reqs.requests.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+
+        if requests.is_empty() {
+            None
+        } else {
+            Some(requests)
+        }
+    }
+
+    /// Handle tool execution requests from client (manual mode)
+    async fn handle_tool_execution(
+        &self,
+        mut args: LlmChatArgs,
+        requests: Vec<ToolExecutionRequest>,
+        cx: opentelemetry::Context,
+        metadata: Arc<HashMap<String, String>>,
+    ) -> Result<LlmChatResult> {
+        // Execute each requested tool
+        for req in &requests {
+            let arguments: Option<serde_json::Map<String, serde_json::Value>> =
+                serde_json::from_str(&req.fn_arguments).ok();
+
+            // Execute tool via call_function_for_llm:
+            //   1. Find RunnerWithSchema by fn_name
+            //   2. Encode arguments based on Runner definition
+            //   3. Create Worker and enqueue job
+            //   4. Get job execution result
+            let result = self
+                .function_app
+                .call_function_for_llm(
+                    metadata.clone(),
+                    &req.fn_name,
+                    arguments,
+                    DEFAULT_TIMEOUT_SEC,
+                )
+                .await;
+
+            let tool_result = match result {
+                Ok(value) => value.to_string(),
+                Err(e) => format!("Error: {}", e),
+            };
+
+            // Replace tool_execution_requests TOOL message with text result
+            Self::replace_tool_execution_with_result(
+                &mut args.messages,
+                &req.call_id,
+                &tool_result,
+            );
+        }
+
+        // Continue chat with updated messages (tool results added)
+        Box::pin(self.request_chat(args, cx, (*metadata).clone())).await
+    }
+
+    /// Replace tool execution request message with actual result
+    fn replace_tool_execution_with_result(
+        messages: &mut [llm::llm_chat_args::ChatMessage],
+        call_id: &str,
+        result: &str,
+    ) {
+        use llm::llm_chat_args::message_content::Content as ProtoContent;
+
+        for msg in messages.iter_mut() {
+            if msg.role() != ChatRole::Tool {
+                continue;
+            }
+            if let Some(ref content) = msg.content {
+                if let Some(ProtoContent::ToolExecutionRequests(reqs)) = &content.content {
+                    // Check if this message contains the target call_id
+                    if reqs.requests.iter().any(|r| r.call_id == call_id) {
+                        // Replace with text result
+                        msg.content = Some(llm::llm_chat_args::MessageContent {
+                            content: Some(ProtoContent::Text(result.to_string())),
+                        });
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -297,7 +469,8 @@ impl OllamaChatService {
         parent_context: Option<opentelemetry::Context>,
         metadata: Arc<HashMap<String, String>>,
         json_schema: Option<String>,
-    ) -> Result<ChatMessageResponse> {
+        is_auto_calling: bool,
+    ) -> Result<ChatInternalResult> {
         let mut req = ChatMessageRequest::new(model.clone(), messages.lock().await.clone());
         req = req.options(options.clone());
 
@@ -416,11 +589,20 @@ impl OllamaChatService {
 
         if res.message.tool_calls.is_empty() {
             tracing::debug!("No tool calls in response");
-            Ok(res)
+            Ok(ChatInternalResult::Final(Box::new(res)))
         } else {
             tracing::debug!("Tool calls in response: {:#?}", &res.message.tool_calls);
 
-            // Process tool calls with hierarchical tracing (child spans)
+            // Check if auto-calling is enabled
+            if !is_auto_calling {
+                // Manual mode: return tool calls for client approval
+                tracing::debug!("Manual mode: returning tool calls for client approval");
+                return Ok(ChatInternalResult::PendingTools {
+                    tool_calls: res.message.tool_calls.clone(),
+                });
+            }
+
+            // Auto mode: process tool calls automatically
             let tool_calls = res.message.tool_calls.clone();
 
             // Process tool calls and get updated context for each tool call
@@ -455,6 +637,7 @@ impl OllamaChatService {
                 Some(updated_context),
                 metadata,
                 None, // json_schema is not used in recursive calls to avoid conflicts
+                is_auto_calling,
             ))
             .await;
             result
@@ -603,53 +786,306 @@ impl OllamaChatService {
         Ok(())
     }
 
+    /// Streaming chat with tool call support (manual mode with ToolExecutionRequests)
+    ///
+    /// Flow:
+    /// 1. First request: LLM may return pending_tool_calls
+    /// 2. Client sends ToolExecutionRequests to execute tools
+    /// 3. Server executes tools, yields results, then continues LLM conversation
     pub async fn request_stream_chat(
+        self: Arc<Self>,
+        args: LlmChatArgs,
+        metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, LlmChatResult>> {
+        let metadata = Arc::new(metadata);
+
+        // Check for tool execution requests in messages (manual mode continuation)
+        if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
+            return self
+                .handle_tool_execution_stream(args, tool_exec_requests, metadata)
+                .await;
+        }
+
+        // Normal streaming flow (first request or no tool execution)
+        self.create_streaming_chat(args).await
+    }
+
+    /// Wrapper method for non-Arc callers (backward compatibility)
+    pub async fn request_stream_chat_ref(
         &self,
         args: LlmChatArgs,
+        metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
+        // Clone self into Arc for internal use
+        let self_arc = Arc::new(self.clone());
+        self_arc.request_stream_chat(args, metadata).await
+    }
+
+    /// Handle tool execution requests and continue LLM conversation in streaming mode
+    async fn handle_tool_execution_stream(
+        self: Arc<Self>,
+        args: LlmChatArgs,
+        requests: Vec<ToolExecutionRequest>,
+        metadata: Arc<HashMap<String, String>>,
+    ) -> Result<BoxStream<'static, LlmChatResult>> {
+        use jobworkerp_runner::jobworkerp::runner::llm::ToolExecutionResult;
+
+        let self_clone = self.clone();
+        let args_clone = args.clone();
+        let requests_clone = requests.clone();
+        let metadata_clone = metadata.clone();
+
+        let stream = async_stream::stream! {
+            let mut updated_args = args_clone;
+            let mut tool_results_cache: Vec<(String, String, bool)> = Vec::new();
+
+            // Phase 1: Execute tools, yield results, and cache for later
+            for req in &requests_clone {
+                let arguments: Option<serde_json::Map<String, serde_json::Value>> =
+                    serde_json::from_str(&req.fn_arguments).ok();
+
+                tracing::debug!("Executing tool: {} with args: {:?}", req.fn_name, arguments);
+
+                let result = self_clone
+                    .function_app
+                    .call_function_for_llm(
+                        metadata_clone.clone(),
+                        &req.fn_name,
+                        arguments,
+                        DEFAULT_TIMEOUT_SEC,
+                    )
+                    .await;
+
+                let (tool_result, success) = match result {
+                    Ok(value) => (value.to_string(), true),
+                    Err(e) => (format!("Error: {}", e), false),
+                };
+
+                tracing::debug!("Tool {} result: {}", req.fn_name, tool_result);
+
+                // Cache result for Phase 2
+                tool_results_cache.push((req.call_id.clone(), tool_result.clone(), success));
+
+                // Yield tool execution result
+                yield LlmChatResult {
+                    content: None,
+                    reasoning_content: None,
+                    done: false,
+                    usage: None,
+                    pending_tool_calls: None,
+                    requires_tool_execution: None,
+                    tool_execution_results: vec![ToolExecutionResult {
+                        call_id: req.call_id.clone(),
+                        fn_name: req.fn_name.clone(),
+                        result: tool_result.clone(),
+                        error: if success { None } else { Some(tool_result.clone()) },
+                        success,
+                    }],
+                };
+            }
+
+            // Phase 2: Update args with cached tool results
+            for (call_id, tool_result, _success) in &tool_results_cache {
+                OllamaChatService::replace_tool_execution_with_result(
+                    &mut updated_args.messages,
+                    call_id,
+                    tool_result,
+                );
+            }
+
+            // Phase 3: Continue with LLM streaming using updated args
+            match self_clone.clone().create_streaming_chat(updated_args).await {
+                Ok(mut continuation_stream) => {
+                    while let Some(chunk) = continuation_stream.next().await {
+                        yield chunk;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to create continuation stream: {}", e);
+                    yield LlmChatResult {
+                        content: Some(llm::llm_chat_result::MessageContent {
+                            content: Some(message_content::Content::Text(
+                                format!("Continuation error: {}", e),
+                            )),
+                        }),
+                        reasoning_content: None,
+                        done: true,
+                        usage: None,
+                        pending_tool_calls: None,
+                        requires_tool_execution: None,
+                        tool_execution_results: vec![],
+                    };
+                }
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    /// Create the base streaming chat (without tool execution request handling)
+    async fn create_streaming_chat(
+        self: Arc<Self>,
+        args: LlmChatArgs,
+    ) -> Result<BoxStream<'static, LlmChatResult>> {
+        let use_function_calling = args
+            .function_options
+            .as_ref()
+            .map(|fo| fo.use_function_calling)
+            .unwrap_or(false);
+
+        // Load tools if function calling is enabled
+        let tools: Vec<ToolInfo> = if use_function_calling {
+            self.function_list(&args).await?
+        } else {
+            vec![]
+        };
+
         let options = Self::create_chat_options(&args);
         let model_name = args.model.clone().unwrap_or_else(|| self.model.clone());
         let messages = Self::convert_messages(&args);
 
-        let mut req = ChatMessageRequest::new(model_name.clone(), messages.clone());
+        let mut req = ChatMessageRequest::new(model_name, messages);
         req = req.options(options);
 
         if let Some(system_prompt) = self.system_prompt.clone() {
             req = req.template(system_prompt);
         }
 
-        // Clone the ollama instance to avoid borrowing self
-        let ollama = self.ollama.clone();
-        let stream = ollama
-            .send_chat_messages_stream(req)
-            .await
-            .map_err(|e| anyhow!("Stream chat error: {}", e))?;
+        // Add tools to request if available
+        if !tools.is_empty() {
+            req = req.tools(tools);
+        }
 
-        let mapped = stream
-            .map(|result| match result {
-                Ok(chunk) => {
-                    let text = chunk.message.content;
-                    LlmChatResult {
-                        content: Some(llm::llm_chat_result::MessageContent {
-                            content: Some(message_content::Content::Text(text)),
-                        }),
-                        reasoning_content: None,
-                        done: chunk.done,
-                        usage: None,
+        let ollama = self.ollama.clone();
+
+        // Use async_stream for stateful stream processing
+        let stream = async_stream::stream! {
+            let mut accumulated_tool_calls: Vec<OllamaToolCall> = Vec::new();
+
+            // Create base stream with tools
+            let base_stream_result = ollama
+                .send_chat_messages_stream(req)
+                .await;
+
+            match base_stream_result {
+                Ok(mut base_stream) => {
+                    while let Some(result) = base_stream.next().await {
+                        match result {
+                            Ok(chunk) => {
+                                // Accumulate tool calls
+                                if !chunk.message.tool_calls.is_empty() {
+                                    accumulated_tool_calls.extend(chunk.message.tool_calls.clone());
+                                }
+
+                                // Yield text content as it arrives
+                                if !chunk.message.content.is_empty() {
+                                    yield LlmChatResult {
+                                        content: Some(llm::llm_chat_result::MessageContent {
+                                            content: Some(message_content::Content::Text(
+                                                chunk.message.content.clone(),
+                                            )),
+                                        }),
+                                        reasoning_content: None,
+                                        done: false,
+                                        usage: None,
+                                        pending_tool_calls: None,
+                                        requires_tool_execution: None,
+                                        tool_execution_results: vec![],
+                                    };
+                                }
+                            }
+                            Err(_) => {
+                                tracing::error!("Error in stream chat");
+                                yield LlmChatResult {
+                                    content: Some(llm::llm_chat_result::MessageContent {
+                                        content: Some(message_content::Content::Text(
+                                            "Stream error".to_string(),
+                                        )),
+                                    }),
+                                    reasoning_content: None,
+                                    done: true,
+                                    usage: None,
+                                    pending_tool_calls: None,
+                                    requires_tool_execution: None,
+                                    tool_execution_results: vec![],
+                                };
+                                return;
+                            }
+                        }
                     }
-                }
-                Err(_) => {
-                    tracing::error!("Error in stream chat");
-                    LlmChatResult {
+
+                    // After stream ends, process any accumulated tool calls
+                    if !accumulated_tool_calls.is_empty() {
+                        // Convert to pending tool calls format
+                        let pending_calls: Vec<ToolCallRequest> = accumulated_tool_calls
+                            .iter()
+                            .map(|call| ToolCallRequest {
+                                call_id: uuid::Uuid::new_v4().to_string(),
+                                fn_name: call.function.name.clone(),
+                                fn_arguments: call.function.arguments.to_string(),
+                            })
+                            .collect();
+
+                        let tool_calls_content: Vec<llm::llm_chat_result::message_content::ToolCall> =
+                            pending_calls
+                                .iter()
+                                .map(|tc| llm::llm_chat_result::message_content::ToolCall {
+                                    call_id: tc.call_id.clone(),
+                                    fn_name: tc.fn_name.clone(),
+                                    fn_arguments: tc.fn_arguments.clone(),
+                                })
+                                .collect();
+
+                        // Yield tool calls with pending status
+                        yield LlmChatResult {
+                            content: Some(llm::llm_chat_result::MessageContent {
+                                content: Some(message_content::Content::ToolCalls(
+                                    llm::llm_chat_result::message_content::ToolCalls {
+                                        calls: tool_calls_content,
+                                    },
+                                )),
+                            }),
+                            reasoning_content: None,
+                            done: false,
+                            usage: None,
+                            pending_tool_calls: Some(PendingToolCalls {
+                                calls: pending_calls,
+                            }),
+                            requires_tool_execution: Some(true),
+                            tool_execution_results: vec![],
+                        };
+                    }
+
+                    // Yield final done signal
+                    yield LlmChatResult {
                         content: None,
                         reasoning_content: None,
                         done: true,
                         usage: None,
-                    }
+                        pending_tool_calls: None,
+                        requires_tool_execution: None,
+                        tool_execution_results: vec![],
+                    };
                 }
-            })
-            .boxed();
+                Err(e) => {
+                    tracing::error!("Failed to create stream: {}", e);
+                    yield LlmChatResult {
+                        content: Some(llm::llm_chat_result::MessageContent {
+                            content: Some(message_content::Content::Text(
+                                format!("Stream creation error: {}", e),
+                            )),
+                        }),
+                        reasoning_content: None,
+                        done: true,
+                        usage: None,
+                        pending_tool_calls: None,
+                        requires_tool_execution: None,
+                        tool_execution_results: vec![],
+                    };
+                }
+            }
+        };
 
-        Ok(mapped)
+        Ok(Box::pin(stream))
     }
 }

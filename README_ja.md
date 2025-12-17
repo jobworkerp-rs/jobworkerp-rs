@@ -95,13 +95,6 @@ $ cargo build --release --features mysql
 # build release binaries (use sqlite)
 $ cargo build --release
 
-# build release binaries with local LLM support (mistralrs)
-$ cargo build --release --features local_llm
-
-# build release binaries with GPU acceleration (automatically enables local_llm)
-$ cargo build --release --features metal    # macOS Metal
-$ cargo build --release --features cuda     # NVIDIA CUDA
-
 # Run the all-in-one server by release binary
 $ ./target/release/all-in-one
 
@@ -203,17 +196,23 @@ worker_runnerに組み込み定義されている機能を以下に記載しま�
 | GRPC_UNARY | gRPC通信 | gRPC unaryリクエスト | worker.runner_settings: URL+path, job.args: protobufエンコード引数 |
 | DOCKER | Dockerコンテナ実行 | docker run相当 | worker.runner_settings: FromImage/Tag, job.args: Image/Cmd など |
 | SLACK_POST_MESSAGE | Slackメッセージ投稿 | Slackチャンネルにメッセージを投稿 | worker.runner_settings: Slack API設定, job.args: チャンネル、メッセージ内容など |
-| LLM_COMPLETION | LLM文章生成 | 各種LLM(外部サーバ/ローカル実行)を利用 | worker.runner_settings: モデル設定, job.args: プロンプト/オプション |
-| LLM_CHAT | LLMチャット補完 | 大規模言語モデルとの対話的チャット | worker.runner_settings: モデル設定, job.args: チャットメッセージ/オプション |
-| CREATE_WORKFLOW | ワークフロー作成 | 再利用可能なワークフロー定義を作成 | worker.runner_settings: 空, job.args: ワークフロー定義データ |
-| INLINE_WORKFLOW/REUSABLE_WORKFLOW | ワークフロー実行 | 複数のジョブを定義された順序で実行 | worker.runner_settings: ワークフロー定義, job.args: 入力データ |
+| LLM | LLM実行（マルチメソッド） | 各種LLM(外部サーバ/ローカル実行)を利用 | using: "completion"または"chat", worker.runner_settings: モデル設定, job.args: プロンプト/メッセージ |
+| WORKFLOW | ワークフロー実行（マルチメソッド） | 複数のジョブを定義された順序で実行 | using: "run"(デフォルト)または"create", worker.runner_settings: ワークフロー定義, job.args: 入力データ |
 
-#### LLM_COMPLETION と LLM_CHAT の詳細
+#### LLMランナーの詳細
 
-LLM_COMPLETIONとLLM_CHATの両方のランナーは以下のLLM実行方式をサポートしています：
+LLMランナーはマルチメソッドランナーとして、`using`パラメータで以下のメソッドを指定します：
 
+- **completion**: テキスト補完（プロンプトベース）
+- **chat**: チャット会話（メッセージ履歴付き、ツール呼び出し対応）
+
+**対応するLLM実行方式**:
 - **外部サーバー**: Ollama、OpenAI API互換サーバー等
 - **ローカル実行**: MistralRSを使用したオンデバイス推論（`local_llm` feature必須）
+
+**ツール呼び出し（Tool Calling）**: chatメソッドでは、FunctionSetを指定することでLLMにツールを提供できます。`is_auto_calling`オプションで自動/手動モードを切り替え可能です：
+- `is_auto_calling: true` - LLMがツール呼び出しを返すと自動実行
+- `is_auto_calling: false`（デフォルト）- ツール呼び出しをクライアントに返却し、クライアント側で確認・修正後に実行をリクエスト
 
 **ローカルLLM機能の有効化**:
 ```bash
@@ -225,7 +224,9 @@ cargo build --release --features metal  # macOS Metal
 cargo build --release --features cuda   # NVIDIA CUDA
 ```
 
-**注意**: LLM_COMPLETIONまたはLLM_CHATでSettings::Localを使用する場合は、必ず上記のいずれかのfeatureでビルドしてください。feature無しビルドでローカルLLMを使用しようとするとエラーメッセージが表示されます。
+**注意**: Settings::Localを使用する場合は、必ず上記のいずれかのfeatureでビルドしてください。
+
+**非推奨**: `LLM_COMPLETION`と`LLM_CHAT`は非推奨です。代わりに`LLM`ランナーの`using`パラメータを使用してください。
 
 ### ジョブキュー種別
 
