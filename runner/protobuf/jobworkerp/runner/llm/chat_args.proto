@@ -37,6 +37,9 @@ message LLMChatArgs {
     optional bool use_runners_as_function = 3;
     // use workers as function (exclusive with function_set_name)
     optional bool use_workers_as_function = 4;
+    // automatically execute tool calls (default: false = manual mode)
+    // When false, tool calls are returned to the client for approval before execution
+    optional bool is_auto_calling = 5;
   }
 
   enum ChatRole {
@@ -71,6 +74,16 @@ message LLMChatArgs {
     // Tool calls
     message ToolCalls { repeated ToolCall calls = 1; }
 
+    // Tool execution request (client requesting server to execute a tool)
+    message ToolExecutionRequest {
+      string call_id = 1;
+      string fn_name = 2;
+      string fn_arguments = 3;  // JSON string of arguments (can be modified by client)
+    }
+
+    // Multiple tool execution requests
+    message ToolExecutionRequests { repeated ToolExecutionRequest requests = 1; }
+
     oneof content {
       // The role of the message.
       string text = 1;
@@ -78,8 +91,11 @@ message LLMChatArgs {
       // The content of the message.
       Image image = 2;
 
-      // The content of the message.
+      // Tool calls from LLM (ASSISTANT role)
       ToolCalls tool_calls = 3;
+
+      // Tool execution requests from client (TOOL role, requesting server to execute)
+      ToolExecutionRequests tool_execution_requests = 4;
     }
   }
 

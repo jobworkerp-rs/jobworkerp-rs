@@ -465,9 +465,7 @@ pub mod test {
         module::{AppConfigModule, AppModule},
     };
     use anyhow::Result;
-    use infra::infra::{
-        module::RedisRdbOptionalRepositoryModule, test::new_for_test_config_rdb, IdGeneratorWrapper,
-    };
+    use infra::infra::{module::RedisRdbOptionalRepositoryModule, IdGeneratorWrapper};
     use jobworkerp_runner::runner::{
         factory::RunnerSpecFactory, mcp::proxy::McpServerFactory, plugins::Plugins,
     };
@@ -485,27 +483,28 @@ pub mod test {
         enable_rdb_indexing: bool,
     ) -> Result<AppModule> {
         use infra::infra::module::rdb::test::setup_test_rdb_module;
+        use infra::infra::module::redis::test::setup_test_redis_module;
         use infra::infra::module::HybridRepositoryModule;
-        // let redis_client = setup_test_redis_client()?;
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Scalable,
             restore_at_startup: Some(false),
         });
         let id_generator = Arc::new(IdGeneratorWrapper::new());
-        let module = new_for_test_config_rdb();
         let plugins = Arc::new(Plugins::new());
         let runner_factory = Arc::new(RunnerSpecFactory::new(
             plugins,
             Arc::new(McpServerFactory::default()),
         ));
 
-        // First create the Hybrid module normally (this creates both Redis and RDB modules)
-        let mut repositories =
-            HybridRepositoryModule::new(&module, id_generator.clone(), runner_factory.clone())
-                .await;
+        // Create Redis and RDB modules separately using test setup functions
+        // to avoid SQLite database lock issues caused by multiple connection pools
+        let redis_module = setup_test_redis_module().await;
+        let rdb_module = setup_test_rdb_module(enable_rdb_indexing).await;
 
-        // Replace the RDB module with one that has RDB indexing enabled/disabled as requested
-        repositories.rdb_chan_module = setup_test_rdb_module(enable_rdb_indexing).await;
+        let repositories = HybridRepositoryModule {
+            redis_module,
+            rdb_chan_module: rdb_module,
+        };
 
         let repositories = Arc::new(repositories);
         let mc_config = memory_utils::cache::stretto::MemoryCacheConfig {

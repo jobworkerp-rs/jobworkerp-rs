@@ -291,6 +291,14 @@ enum StreamingType {
   // collected using collect_stream() and returned as a single JobResult.
   // Useful for workflow tasks that need the final result but want to use
   // streaming-capable runners internally for better resource management.
+  //
+  // Key behavior differences from STREAMING_TYPE_RESPONSE:
+  // - Even with ResponseType::Direct workers, enqueue returns immediately
+  //   (does not wait for job completion) to allow stream subscription
+  //   before data is published
+  // - The caller is responsible for subscribing to the stream and collecting
+  //   results using RunnerSpec::collect_stream()
+  // - Final collected result is sent as ResultOutputItem::final_collected
   STREAMING_TYPE_INTERNAL = 2;
 }
 

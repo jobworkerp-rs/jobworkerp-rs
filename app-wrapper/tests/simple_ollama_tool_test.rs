@@ -93,6 +93,7 @@ fn create_chat_args_with_tools(message: &str) -> LlmChatArgs {
             use_runners_as_function: Some(false),
             use_workers_as_function: Some(false),
             function_set_name: Some("ollama_tool_test".to_string()),
+            is_auto_calling: Some(true), // auto mode for existing tests
         }),
         json_schema: None,
     }

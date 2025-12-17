@@ -67,4 +67,38 @@ message LLMChatResult {
 
   // information about the inferencing process
   optional Usage usage = 4;
+
+  // Pending tool calls that require client approval (manual mode)
+  // When is_auto_calling=false and LLM requests tool calls, these are returned
+  // instead of being executed automatically
+  optional PendingToolCalls pending_tool_calls = 5;
+
+  // Indicates if response requires tool execution continuation
+  // True when pending_tool_calls is set and tool execution is needed
+  optional bool requires_tool_execution = 6;
+
+  // Tool execution results (for streaming mode)
+  // Contains results of executed tools during streaming
+  repeated ToolExecutionResult tool_execution_results = 7;
+}
+
+// Pending tool calls to be executed (for manual mode)
+message PendingToolCalls {
+  repeated ToolCallRequest calls = 1;
+}
+
+// Tool call request details
+message ToolCallRequest {
+  string call_id = 1;
+  string fn_name = 2;
+  string fn_arguments = 3;  // JSON string of arguments
+}
+
+// Tool execution result (for streaming mode)
+message ToolExecutionResult {
+  string call_id = 1;              // Corresponding tool call ID
+  string fn_name = 2;              // Executed function name
+  string result = 3;               // Execution result (JSON string)
+  optional string error = 4;       // Error message (on failure)
+  bool success = 5;                // Success/failure flag
 }
