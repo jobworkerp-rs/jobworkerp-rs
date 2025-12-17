@@ -236,8 +236,10 @@ impl RunnerTrait for LLMChatRunnerImpl {
             args.json_schema = Some(processed_schema);
         }
 
-        if let Some(ollama) = self.ollama.as_mut() {
-            let stream = ollama.request_stream_chat(args).await?;
+        if let Some(ollama) = self.ollama.as_ref() {
+            let stream = ollama
+                .request_stream_chat_ref(args, metadata.clone())
+                .await?;
 
             let req_meta = Arc::new(metadata.clone());
             let cancel_token = cancellation_token.clone();

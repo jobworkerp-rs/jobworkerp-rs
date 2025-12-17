@@ -239,10 +239,8 @@ impl WorkflowUnifiedRunnerImpl {
         let context_json = Arc::new(
             args.workflow_context
                 .as_deref()
-                .map(|c| {
-                    serde_json::from_str(c).unwrap_or(serde_json::Value::Object(Default::default()))
-                })
-                .unwrap_or_else(|| serde_json::Value::Object(Default::default())),
+                .map(serde_json::from_str)
+                .unwrap_or_else(|| Ok(serde_json::Value::Object(Default::default())))?,
         );
         let chpoint = if let Some(ch) = args.from_checkpoint.as_ref() {
             Some(CheckPointContext::from_workflow_run(ch)?)

@@ -1,5 +1,5 @@
 use crate::jobworkerp::runner::llm::llm_chat_result::{message_content, MessageContent, Usage};
-use crate::jobworkerp::runner::llm::LlmChatResult;
+use crate::jobworkerp::runner::llm::{LlmChatResult, ToolExecutionResult};
 use crate::{jobworkerp::runner::llm::LlmRunnerSettings, schema_to_json_string};
 use futures::stream::BoxStream;
 use prost::Message;
@@ -96,6 +96,7 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
             let mut combined_text = String::new();
             let mut combined_reasoning = String::new();
             let mut collected_tool_calls: Vec<message_content::ToolCall> = Vec::new();
+            let mut collected_tool_execution_results: Vec<ToolExecutionResult> = Vec::new();
             let mut final_usage: Option<Usage> = None;
             let mut metadata = HashMap::new();
             let mut stream = stream;
@@ -140,6 +141,12 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                                 // to preserve previously recorded usage
                                 if chunk.done && chunk.usage.is_some() {
                                     final_usage = chunk.usage;
+                                }
+
+                                // Collect tool execution results
+                                if !chunk.tool_execution_results.is_empty() {
+                                    collected_tool_execution_results
+                                        .extend(chunk.tool_execution_results);
                                 }
                             }
                             Err(e) => {
@@ -205,6 +212,9 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                 },
                 done: true,
                 usage: final_usage,
+                pending_tool_calls: None,
+                requires_tool_execution: None,
+                tool_execution_results: collected_tool_execution_results,
             };
 
             let bytes = result.encode_to_vec();
@@ -232,6 +242,9 @@ mod tests {
             reasoning_content: reasoning.map(|r| r.to_string()),
             done,
             usage: None,
+            pending_tool_calls: None,
+            requires_tool_execution: None,
+            tool_execution_results: vec![],
         }
     }
 
@@ -248,6 +261,9 @@ mod tests {
             reasoning_content: None,
             done,
             usage: None,
+            pending_tool_calls: None,
+            requires_tool_execution: None,
+            tool_execution_results: vec![],
         }
     }
 

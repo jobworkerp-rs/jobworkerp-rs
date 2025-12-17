@@ -300,6 +300,7 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
 ///
 /// This test verifies that the streaming results are properly collected
 /// using the collect_stream mechanism moved to RunnerSpec trait.
+/// TODO cannot pass the test...
 #[test]
 #[ignore = "Requires Redis, running worker process, and same RDB as worker process"]
 fn test_run_stream_task_executor_collect_stream() -> Result<()> {
@@ -422,15 +423,26 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
             eprintln!("✅ Execution succeeded!");
             eprintln!("   Output: {:?}", task_context.raw_output);
 
-            // Verify output contains all lines (collected from stream)
+            // // Verify output contains all lines (collected from stream)
+            // let output_str = task_context.raw_output.to_string();
+            // eprintln!("   Output string: {}", output_str);
+            // // The output should contain the collected results
+            // assert!(
+            //     output_str.contains("Line")
+            //         || output_str.contains("stdout")
+            //         || output_str.contains("exit_code"),
+            //     "Output should contain the collected stream data"
+            // );
+            // Verify output contains expected data from stream collection
             let output_str = task_context.raw_output.to_string();
             eprintln!("   Output string: {}", output_str);
-            // The output should contain the collected results
+            // TODO: Define expected output format and use more specific assertions
+            // For now, verify the output is non-empty and contains some expected data
+            assert!(!output_str.is_empty(), "Output should not be empty");
             assert!(
-                output_str.contains("Line")
-                    || output_str.contains("stdout")
-                    || output_str.contains("exit_code"),
-                "Output should contain the collected stream data"
+                output_str.contains("Line") || output_str.contains("exit_code"),
+                "Output should contain 'Line' (stdout) or 'exit_code' (result): got {}",
+                output_str
             );
         } else {
             return Err(anyhow::anyhow!("Final context should be set"));

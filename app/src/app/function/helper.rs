@@ -435,14 +435,26 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         async move {
             let settings = request_args.remove("settings");
 
-            // All runners now use unified 'arguments' field
-            // tool_name is passed separately via 'using' parameter to worker layer
-            let arguments = request_args.get("arguments").cloned().ok_or_else(|| {
-                JobWorkerError::InvalidParameter(format!(
-                    "Failed to find 'arguments' in request_args: {:#?}",
+            // Try to get 'arguments' field first (standard format from structured tool schemas)
+            // If not found, use the entire request_args as arguments (LLM tool call format)
+            // This supports both:
+            // - Standard format: {"arguments": {...}, "settings": {...}}
+            // - LLM tool call format: {"command": "date", ...} (direct arguments)
+            let arguments = if let Some(args) = request_args.get("arguments").cloned() {
+                args
+            } else if !request_args.is_empty() {
+                // Use remaining request_args as arguments (after settings removal)
+                tracing::debug!(
+                    "No 'arguments' field found, using request_args as arguments: {:#?}",
                     &request_args
-                ))
-            })?;
+                );
+                Value::Object(request_args)
+            } else {
+                return Err(JobWorkerError::InvalidParameter(
+                    "No arguments provided: request_args is empty".to_string(),
+                )
+                .into());
+            };
 
             tracing::debug!(
                 "runner settings: {:#?}, arguments: {:#?}",
