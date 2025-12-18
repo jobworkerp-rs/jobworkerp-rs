@@ -100,13 +100,6 @@ $ cargo build --release --features mysql
 # build release binaries (use sqlite)
 $ cargo build --release
 
-# build release binaries with local LLM support (mistralrs)
-$ cargo build --release --features local_llm
-
-# build release binaries with GPU acceleration (automatically enables local_llm)
-$ cargo build --release --features metal    # macOS Metal
-$ cargo build --release --features cuda     # NVIDIA CUDA
-
 # Run the all-in-one server by release binary
 $ ./target/release/all-in-one
 
@@ -210,17 +203,23 @@ Each feature requires setting necessary values in protobuf format for worker.run
 | GRPC_UNARY | gRPC communication | gRPC unary requests | worker.runner_settings: URL+path, job.args: protobuf encoded arguments |
 | DOCKER | Docker container execution | Equivalent to docker run | worker.runner_settings: FromImage/Tag, job.args: Image/Cmd, etc. |
 | SLACK_POST_MESSAGE | Slack message posting | Posts messages to Slack channels | worker.runner_settings: Slack API settings, job.args: channel, message content, etc. |
-| LLM_COMPLETION | LLM text generation | Uses various LLMs (external servers/local execution) | worker.runner_settings: model settings, job.args: prompts/options |
-| LLM_CHAT | LLM chat completion | Interactive chat with Large Language Models | worker.runner_settings: model settings, job.args: chat messages/options |
-| CREATE_WORKFLOW | Workflow creation | Creates workflow definitions for reusable execution | worker.runner_settings: empty, job.args: workflow definition data |
-| INLINE_WORKFLOW/REUSABLE_WORKFLOW | Workflow execution | Executes multiple jobs in defined order | worker.runner_settings: workflow definition, job.args: input data |
+| LLM | LLM execution (multi-method) | Uses various LLMs (external servers/local execution) | using: "completion" or "chat", worker.runner_settings: model settings, job.args: prompts/messages |
+| WORKFLOW | Workflow execution (multi-method) | Executes multiple jobs in defined order | using: "run" (default) or "create", worker.runner_settings: workflow definition, job.args: input data |
 
-#### LLM_COMPLETION and LLM_CHAT Details
+#### LLM Runner Details
 
-Both LLM_COMPLETION and LLM_CHAT runners support the following LLM execution methods:
+The LLM runner is a multi-method runner that uses the `using` parameter to specify the method:
 
+- **completion**: Text completion (prompt-based)
+- **chat**: Chat conversation (with message history and tool calling support)
+
+**Supported LLM Execution Methods**:
 - **External servers**: Ollama, OpenAI API-compatible servers, etc.
 - **Local execution**: On-device inference using MistralRS (requires `local_llm` feature)
+
+**Tool Calling**: The chat method supports providing tools to the LLM via FunctionSets. The `is_auto_calling` option controls automatic/manual mode:
+- `is_auto_calling: true` - Automatically execute tools when LLM returns tool calls
+- `is_auto_calling: false` (default) - Return tool calls to client for review/modification before execution
 
 **Enabling Local LLM Features**:
 ```bash
@@ -232,7 +231,9 @@ cargo build --release --features metal  # macOS Metal
 cargo build --release --features cuda   # NVIDIA CUDA
 ```
 
-**Note**: When using Settings::Local for either LLM_COMPLETION or LLM_CHAT, you must build with one of the above features. Attempting to use local LLM without the proper feature will display an error message.
+**Note**: When using Settings::Local, you must build with one of the above features.
+
+**Deprecated**: `LLM_COMPLETION` and `LLM_CHAT` are deprecated. Use the `LLM` runner with the `using` parameter instead.
 
 ### Job Queue Types
 
