@@ -19,9 +19,13 @@ use genai::resolver::{Endpoint, ServiceTargetResolver};
 use genai::{Client, ServiceTarget};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequest;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
-use jobworkerp_runner::jobworkerp::runner::llm::{llm_chat_result, LlmChatArgs, LlmChatResult};
+use jobworkerp_runner::jobworkerp::runner::llm::{
+    llm_chat_result, LlmChatArgs, LlmChatResult, PendingToolCalls, ToolCallRequest,
+};
 use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,6 +33,16 @@ use tokio::sync::Mutex;
 
 // Default timeout for tool calls in seconds
 const DEFAULT_TIMEOUT_SEC: u32 = 300;
+
+/// Internal result type for chat operations
+enum ChatInternalResult {
+    /// Final response from LLM (no more tool calls)
+    Final(Box<genai::chat::ChatResponse>),
+    /// Pending tool calls that need client approval (manual mode)
+    PendingTools {
+        tool_calls: Vec<genai::chat::ToolCall>,
+    },
+}
 
 pub struct GenaiLLMConfig {
     pub model_name: String,
@@ -190,6 +204,11 @@ impl GenaiChatService {
                                 .collect();
                             GenaiMessageContent::from_tool_calls(calls)
                         }
+                        Some(ProtoContent::ToolExecutionRequests(_)) => {
+                            // Tool execution requests are handled separately in request_chat
+                            // They should not be converted to chat messages directly
+                            return None;
+                        }
                         None => return None,
                     },
                     None => return None,
@@ -238,6 +257,21 @@ impl GenaiChatService {
         metadata: HashMap<String, String>,
     ) -> Result<LlmChatResult> {
         let metadata = Arc::new(metadata);
+
+        // Check for tool execution requests in messages (manual mode)
+        if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
+            return self
+                .handle_tool_execution(args, tool_exec_requests, cx, metadata)
+                .await;
+        }
+
+        // Determine if auto-calling is enabled (default: false = manual mode)
+        let is_auto_calling = args
+            .function_options
+            .as_ref()
+            .and_then(|fo| fo.is_auto_calling)
+            .unwrap_or(false);
+
         let options = self.options(&args);
         let tools = Arc::new(self.function_list(&args).await?);
         let model = args.model.clone().unwrap_or_else(|| self.model.clone());
@@ -265,28 +299,175 @@ impl GenaiChatService {
             tools,
             Some(cx.clone()),
             metadata.clone(),
+            is_auto_calling,
         )
         .await?;
 
-        let (prompt, think) = Self::divide_think_tag(res.first_text().unwrap_or("").to_string());
+        // Handle the result based on whether it contains pending tool calls
+        match res {
+            ChatInternalResult::Final(response) => {
+                let (prompt, think) =
+                    Self::divide_think_tag(response.first_text().unwrap_or("").to_string());
 
-        let chat_result = LlmChatResult {
-            content: Some(llm_chat_result::MessageContent {
-                content: Some(message_content::Content::Text(prompt)),
-            }),
-            reasoning_content: think,
-            done: true,
-            usage: Some(llm_chat_result::Usage {
-                model: res.model_iden.model_name.to_string(),
-                prompt_tokens: res.usage.prompt_tokens.map(|v| v as u32),
-                completion_tokens: res.usage.completion_tokens.map(|v| v as u32),
-                ..Default::default()
-            }),
-        };
+                Ok(LlmChatResult {
+                    content: Some(llm_chat_result::MessageContent {
+                        content: Some(message_content::Content::Text(prompt)),
+                    }),
+                    reasoning_content: think,
+                    done: true,
+                    usage: Some(llm_chat_result::Usage {
+                        model: response.model_iden.model_name.to_string(),
+                        prompt_tokens: response.usage.prompt_tokens.map(|v| v as u32),
+                        completion_tokens: response.usage.completion_tokens.map(|v| v as u32),
+                        ..Default::default()
+                    }),
+                    pending_tool_calls: None,
+                    requires_tool_execution: None,
+                    tool_execution_results: vec![],
+                })
+            }
+            ChatInternalResult::PendingTools { tool_calls } => {
+                // Return tool calls for client approval (manual mode)
+                let pending_calls: Vec<ToolCallRequest> = tool_calls
+                    .iter()
+                    .map(|call| ToolCallRequest {
+                        call_id: call.call_id.clone(),
+                        fn_name: call.fn_name.clone(),
+                        fn_arguments: call.fn_arguments.to_string(),
+                    })
+                    .collect();
 
-        Ok(chat_result)
+                let tool_calls_content: Vec<llm_chat_result::message_content::ToolCall> =
+                    pending_calls
+                        .iter()
+                        .map(|tc| llm_chat_result::message_content::ToolCall {
+                            call_id: tc.call_id.clone(),
+                            fn_name: tc.fn_name.clone(),
+                            fn_arguments: tc.fn_arguments.clone(),
+                        })
+                        .collect();
+
+                Ok(LlmChatResult {
+                    content: Some(llm_chat_result::MessageContent {
+                        content: Some(message_content::Content::ToolCalls(
+                            llm_chat_result::message_content::ToolCalls {
+                                calls: tool_calls_content,
+                            },
+                        )),
+                    }),
+                    reasoning_content: None,
+                    done: false,
+                    usage: None,
+                    pending_tool_calls: Some(PendingToolCalls {
+                        calls: pending_calls,
+                    }),
+                    requires_tool_execution: Some(true),
+                    tool_execution_results: vec![],
+                })
+            }
+        }
     }
 
+    /// Extract tool execution requests from messages (for manual mode)
+    fn extract_tool_execution_requests(
+        &self,
+        args: &LlmChatArgs,
+    ) -> Option<Vec<ToolExecutionRequest>> {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+
+        let requests: Vec<ToolExecutionRequest> = args
+            .messages
+            .iter()
+            .filter(|m| m.role() == ChatRole::Tool)
+            .filter_map(|m| m.content.as_ref())
+            .filter_map(|c| match &c.content {
+                Some(ProtoContent::ToolExecutionRequests(reqs)) => Some(reqs.requests.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+
+        if requests.is_empty() {
+            None
+        } else {
+            Some(requests)
+        }
+    }
+
+    /// Handle tool execution requests from client (manual mode)
+    async fn handle_tool_execution(
+        &self,
+        mut args: LlmChatArgs,
+        requests: Vec<ToolExecutionRequest>,
+        cx: opentelemetry::Context,
+        metadata: Arc<HashMap<String, String>>,
+    ) -> Result<LlmChatResult> {
+        // Execute each requested tool
+        for req in &requests {
+            let arguments: Option<serde_json::Map<String, serde_json::Value>> =
+                serde_json::from_str(&req.fn_arguments).ok();
+
+            // Execute tool via call_function_for_llm:
+            //   1. Find RunnerWithSchema by fn_name
+            //   2. Encode arguments based on Runner definition
+            //   3. Create Worker and enqueue job
+            //   4. Get job execution result
+            let result = self
+                .function_app
+                .call_function_for_llm(
+                    metadata.clone(),
+                    &req.fn_name,
+                    arguments,
+                    DEFAULT_TIMEOUT_SEC,
+                )
+                .await;
+
+            let tool_result = match result {
+                Ok(value) => value.to_string(),
+                Err(e) => format!("Error: {}", e),
+            };
+
+            // Replace tool_execution_requests TOOL message with text result
+            Self::replace_tool_execution_with_result(
+                &mut args.messages,
+                &req.call_id,
+                &tool_result,
+            );
+        }
+
+        // Continue chat with updated messages (tool results added)
+        Box::pin(self.request_chat(args, cx, (*metadata).clone())).await
+    }
+
+    /// Replace tool execution request message with actual result
+    fn replace_tool_execution_with_result(
+        messages: &mut [jobworkerp::runner::llm::llm_chat_args::ChatMessage],
+        call_id: &str,
+        result: &str,
+    ) {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::MessageContent;
+
+        for msg in messages.iter_mut() {
+            if msg.role() != ChatRole::Tool {
+                continue;
+            }
+            if let Some(ref content) = msg.content {
+                if let Some(ProtoContent::ToolExecutionRequests(reqs)) = &content.content {
+                    // Check if this message contains the target call_id
+                    if reqs.requests.iter().any(|r| r.call_id == call_id) {
+                        // Replace with text result
+                        msg.content = Some(MessageContent {
+                            content: Some(ProtoContent::Text(result.to_string())),
+                        });
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn request_chat_internal_with_tracing(
         self: Arc<Self>,
         model: String,
@@ -295,7 +476,8 @@ impl GenaiChatService {
         tools: Arc<Vec<Tool>>,
         parent_context: Option<opentelemetry::Context>,
         metadata: Arc<HashMap<String, String>>,
-    ) -> Result<genai::chat::ChatResponse> {
+        is_auto_calling: bool,
+    ) -> Result<ChatInternalResult> {
         let current_messages = messages.lock().await.clone();
 
         // Execute with tracing using generic_tracing_helper approach
@@ -380,7 +562,14 @@ impl GenaiChatService {
             if !tool_calls.is_empty() {
                 tracing::debug!("Tool calls in response: {:#?}", &tool_calls);
 
-                // Process tool calls
+                // Check if auto-calling is enabled
+                if !is_auto_calling {
+                    // Manual mode: return tool calls for client approval
+                    tracing::debug!("Manual mode: returning tool calls for client approval");
+                    return Ok(ChatInternalResult::PendingTools { tool_calls });
+                }
+
+                // Auto mode: process tool calls automatically
                 let updated_context = if GenericLLMTracingHelper::get_otel_client(&*self).is_some()
                 {
                     self.process_tool_calls_with_tracing(
@@ -408,12 +597,13 @@ impl GenaiChatService {
                     tools,
                     Some(updated_context),
                     metadata,
+                    is_auto_calling,
                 ))
                 .await;
             }
         }
 
-        Ok(res)
+        Ok(ChatInternalResult::Final(Box::new(res)))
     }
 
     fn extract_tool_calls(
@@ -553,9 +743,151 @@ impl GenaiChatService {
         args: LlmChatArgs,
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        let metadata_arc = Arc::new(metadata.clone());
+
+        // Check for tool execution requests in messages (manual mode continuation)
+        if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
+            return self
+                .handle_tool_execution_stream(args, tool_exec_requests, metadata_arc, metadata)
+                .await;
+        }
+
+        // Normal streaming flow
+        self.create_chat_stream(args, metadata).await
+    }
+
+    /// Handle tool execution requests and continue LLM conversation in streaming mode
+    async fn handle_tool_execution_stream(
+        &self,
+        args: LlmChatArgs,
+        requests: Vec<ToolExecutionRequest>,
+        metadata_arc: Arc<HashMap<String, String>>,
+        metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        use jobworkerp_runner::jobworkerp::runner::llm::ToolExecutionResult;
+
+        let self_clone = self.clone();
+        let args_clone = args.clone();
+        let requests_clone = requests.clone();
+        let metadata_arc_clone = metadata_arc.clone();
+        let metadata_clone = metadata.clone();
+
+        let metadata_trailer = Trailer {
+            metadata: metadata.clone(),
+        };
+
+        let stream = async_stream::stream! {
+            let mut updated_args = args_clone;
+            let mut tool_results_cache: Vec<(String, String, bool)> = Vec::new();
+
+            // Phase 1: Execute tools, yield results, and cache for later
+            for req in &requests_clone {
+                let arguments: Option<serde_json::Map<String, serde_json::Value>> =
+                    serde_json::from_str(&req.fn_arguments).ok();
+
+                tracing::debug!("Executing tool: {} with args: {:?}", req.fn_name, arguments);
+
+                let result = self_clone
+                    .function_app
+                    .call_function_for_llm(
+                        metadata_arc_clone.clone(),
+                        &req.fn_name,
+                        arguments,
+                        DEFAULT_TIMEOUT_SEC,
+                    )
+                    .await;
+
+                let (tool_result, success) = match result {
+                    Ok(value) => (value.to_string(), true),
+                    Err(e) => (format!("Error: {}", e), false),
+                };
+
+                tracing::debug!("Tool {} result: {}", req.fn_name, tool_result);
+
+                // Cache result for Phase 2
+                tool_results_cache.push((req.call_id.clone(), tool_result.clone(), success));
+
+                // Yield tool execution result
+                let llm_result = LlmChatResult {
+                    content: None,
+                    reasoning_content: None,
+                    done: false,
+                    usage: None,
+                    pending_tool_calls: None,
+                    requires_tool_execution: None,
+                    tool_execution_results: vec![ToolExecutionResult {
+                        call_id: req.call_id.clone(),
+                        fn_name: req.fn_name.clone(),
+                        result: tool_result.clone(),
+                        error: if success { None } else { Some(tool_result.clone()) },
+                        success,
+                    }],
+                };
+                let bytes = prost::Message::encode_to_vec(&llm_result);
+                if !bytes.is_empty() {
+                    yield ResultOutputItem {
+                        item: Some(result_output_item::Item::Data(bytes)),
+                    };
+                }
+            }
+
+            // Phase 2: Update args with cached tool results
+            for (call_id, tool_result, _success) in &tool_results_cache {
+                GenaiChatService::replace_tool_execution_with_result(
+                    &mut updated_args.messages,
+                    call_id,
+                    tool_result,
+                );
+            }
+
+            // Phase 3: Continue with LLM streaming using updated args
+            match self_clone.create_chat_stream(updated_args, metadata_clone).await {
+                Ok(mut continuation_stream) => {
+                    while let Some(item) = continuation_stream.next().await {
+                        yield item;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to create continuation stream: {}", e);
+                    let llm_result = LlmChatResult {
+                        content: Some(llm_chat_result::MessageContent {
+                            content: Some(message_content::Content::Text(
+                                format!("Continuation error: {}", e),
+                            )),
+                        }),
+                        done: true,
+                        ..Default::default()
+                    };
+                    let bytes = prost::Message::encode_to_vec(&llm_result);
+                    if !bytes.is_empty() {
+                        yield ResultOutputItem {
+                            item: Some(result_output_item::Item::Data(bytes)),
+                        };
+                    }
+                    yield ResultOutputItem {
+                        item: Some(result_output_item::Item::End(metadata_trailer.clone())),
+                    };
+                }
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    /// Create the base streaming chat (without tool execution request handling)
+    async fn create_chat_stream(
+        &self,
+        args: LlmChatArgs,
+        metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let options = self.options(&args);
+        let tools = self.function_list(&args).await?;
         let messages = self.trans_messages(args);
-        let chat_req = ChatRequest::new(messages);
+        let chat_req = if tools.is_empty() {
+            ChatRequest::new(messages)
+        } else {
+            ChatRequest::new(messages).with_tools(tools)
+        };
         tracing::debug!(
             "Genai LLM(stream): model: {}, Chat request: {:?}, options: {:?}",
             &self.model,
@@ -569,141 +901,164 @@ impl GenaiChatService {
             .map_err(|e| anyhow::anyhow!("Failed to request generation: {:#?}", e))?;
 
         // Clone the model name to use inside the closure
-        let model_name = Arc::new(res.model_iden.model_name.to_string().clone());
+        let model_name = res.model_iden.model_name.to_string();
 
-        // XXX TODO tracing metadata
-        let metadata = Trailer { metadata };
-        let metadata_clone = metadata.clone();
-        let stream = res
-            .stream
-            .filter_map(move |event_result| {
-                let value = model_name.clone();
-                let metadata = metadata.clone();
-                async move {
-                    match event_result {
-                        Ok(event) => match event {
-                            ChatStreamEvent::Start => {
-                                // Ignore start event
-                                None
+        let metadata_trailer = Trailer {
+            metadata: metadata.clone(),
+        };
+
+        // Use async_stream to accumulate tool calls during streaming
+        let mut base_stream = res.stream;
+        let stream = async_stream::stream! {
+            let mut accumulated_tool_calls: Vec<genai::chat::ToolCall> = Vec::new();
+            let mut stream_error = false;
+
+            while let Some(event_result) = base_stream.next().await {
+                match event_result {
+                    Ok(event) => match event {
+                        ChatStreamEvent::Start => {
+                            // Ignore start event
+                        }
+                        ChatStreamEvent::Chunk(chunk) => {
+                            let llm_result = LlmChatResult {
+                                content: Some(llm_chat_result::MessageContent {
+                                    content: Some(message_content::Content::Text(
+                                        chunk.content,
+                                    )),
+                                }),
+                                done: false,
+                                ..Default::default()
+                            };
+                            let bytes = prost::Message::encode_to_vec(&llm_result);
+                            if !bytes.is_empty() {
+                                yield ResultOutputItem {
+                                    item: Some(result_output_item::Item::Data(bytes)),
+                                };
                             }
-                            ChatStreamEvent::Chunk(chunk) => {
+                        }
+                        ChatStreamEvent::ReasoningChunk(chunk) => {
+                            let llm_result = LlmChatResult {
+                                reasoning_content: Some(chunk.content),
+                                done: false,
+                                ..Default::default()
+                            };
+                            let bytes = prost::Message::encode_to_vec(&llm_result);
+                            if !bytes.is_empty() {
+                                yield ResultOutputItem {
+                                    item: Some(result_output_item::Item::Data(bytes)),
+                                };
+                            }
+                        }
+                        ChatStreamEvent::ToolCallChunk(tool_chunk) => {
+                            // Accumulate tool calls during streaming
+                            // GenAI sends complete ToolCall in each chunk (not partial like OpenAI)
+                            tracing::debug!(
+                                "Accumulating tool call: {:?}",
+                                &tool_chunk.tool_call
+                            );
+                            accumulated_tool_calls.push(tool_chunk.tool_call);
+                        }
+                        ChatStreamEvent::End(end) => {
+                            // If we have accumulated tool calls, yield them as pending_tool_calls
+                            if !accumulated_tool_calls.is_empty() {
+                                let pending_calls: Vec<ToolCallRequest> = accumulated_tool_calls
+                                    .iter()
+                                    .map(|call| ToolCallRequest {
+                                        call_id: call.call_id.clone(),
+                                        fn_name: call.fn_name.clone(),
+                                        fn_arguments: call.fn_arguments.to_string(),
+                                    })
+                                    .collect();
+
+                                let tool_calls_content: Vec<llm_chat_result::message_content::ToolCall> =
+                                    pending_calls
+                                        .iter()
+                                        .map(|tc| llm_chat_result::message_content::ToolCall {
+                                            call_id: tc.call_id.clone(),
+                                            fn_name: tc.fn_name.clone(),
+                                            fn_arguments: tc.fn_arguments.clone(),
+                                        })
+                                        .collect();
+
                                 let llm_result = LlmChatResult {
                                     content: Some(llm_chat_result::MessageContent {
-                                        content: Some(message_content::Content::Text(
-                                            chunk.content,
+                                        content: Some(message_content::Content::ToolCalls(
+                                            llm_chat_result::message_content::ToolCalls {
+                                                calls: tool_calls_content,
+                                            },
                                         )),
                                     }),
                                     done: false,
-                                    // Set other fields as needed
+                                    pending_tool_calls: Some(PendingToolCalls {
+                                        calls: pending_calls,
+                                    }),
+                                    requires_tool_execution: Some(true),
                                     ..Default::default()
                                 };
-                                // Encode LlmChatResult to Protobuf
-                                let bytes = match prost::Message::encode_to_vec(&llm_result) {
-                                    bytes if !bytes.is_empty() => bytes,
-                                    _ => {
-                                        tracing::error!(
-                                            "Failed to encode LlmChatResult to protobuf"
-                                        );
-                                        return None;
-                                    }
-                                };
-                                Some(ResultOutputItem {
-                                    item: Some(result_output_item::Item::Data(bytes)),
-                                })
+                                let bytes = prost::Message::encode_to_vec(&llm_result);
+                                if !bytes.is_empty() {
+                                    yield ResultOutputItem {
+                                        item: Some(result_output_item::Item::Data(bytes)),
+                                    };
+                                }
                             }
-                            ChatStreamEvent::ReasoningChunk(chunk) => {
-                                let llm_result = LlmChatResult {
-                                    reasoning_content: Some(chunk.content),
-                                    done: false,
-                                    // Set other fields as needed
+
+                            // End event - send LlmChatResult with done flag set to true
+                            let mut llm_result = LlmChatResult {
+                                done: true,
+                                ..Default::default()
+                            };
+                            if let Some(usage) = end.captured_usage {
+                                llm_result.usage = Some(llm_chat_result::Usage {
+                                    model: model_name.clone(),
+                                    prompt_tokens: usage.prompt_tokens.map(|v| v as u32),
+                                    completion_tokens: usage
+                                        .completion_tokens
+                                        .map(|v| v as u32),
                                     ..Default::default()
-                                };
-                                // Encode LlmChatResult to Protobuf
-                                let bytes = match prost::Message::encode_to_vec(&llm_result) {
-                                    bytes if !bytes.is_empty() => bytes,
-                                    _ => {
-                                        tracing::error!(
-                                            "Failed to encode reasoning LlmChatResult to protobuf"
-                                        );
-                                        return None;
-                                    }
-                                };
-                                Some(ResultOutputItem {
+                                });
+                            }
+                            if let Some(text) =
+                                end.captured_content.as_ref().and_then(|c| c.first_text())
+                            {
+                                llm_result.content = Some(llm_chat_result::MessageContent {
+                                    content: Some(message_content::Content::Text(
+                                        text.to_string(),
+                                    )),
+                                });
+                            }
+                            if let Some(reasoning) = end.captured_reasoning_content {
+                                llm_result.reasoning_content = Some(reasoning);
+                            }
+                            let bytes = prost::Message::encode_to_vec(&llm_result);
+                            if !bytes.is_empty() {
+                                yield ResultOutputItem {
                                     item: Some(result_output_item::Item::Data(bytes)),
-                                })
-                            }
-                            ChatStreamEvent::ToolCallChunk(c) => {
-                                // Tool calls in streaming should be handled differently
-                                // For now, we'll log and ignore, but this could be enhanced
-                                tracing::warn!(
-                                    "Tool call chunks in streaming not yet supported: {c:?}",
-                                );
-                                None
-                            }
-                            ChatStreamEvent::End(end) => {
-                                // End event - send LlmChatResult with done flag set to true
-                                let mut llm_result = LlmChatResult {
-                                    done: true,
-                                    ..Default::default()
                                 };
-                                if let Some(usage) = end.captured_usage {
-                                    llm_result.usage = Some(llm_chat_result::Usage {
-                                        model: value.to_string(),
-                                        prompt_tokens: usage.prompt_tokens.map(|v| v as u32),
-                                        completion_tokens: usage
-                                            .completion_tokens
-                                            .map(|v| v as u32),
-                                        ..Default::default()
-                                    });
-                                }
-                                if let Some(text) =
-                                    end.captured_content.as_ref().and_then(|c| c.first_text())
-                                {
-                                    llm_result.content = Some(llm_chat_result::MessageContent {
-                                        content: Some(message_content::Content::Text(
-                                            text.to_string(),
-                                        )),
-                                    });
-                                }
-                                if let Some(reasoning) = end.captured_reasoning_content {
-                                    llm_result.reasoning_content = Some(reasoning);
-                                }
-                                // Encode completion message to Protobuf
-                                let bytes = match prost::Message::encode_to_vec(&llm_result) {
-                                    bytes if !bytes.is_empty() => bytes,
-                                    _ => {
-                                        // If encoding fails, send an empty End signal
-                                        return Some(ResultOutputItem {
-                                            item: Some(result_output_item::Item::End(
-                                                metadata.clone(),
-                                            )),
-                                        });
-                                    }
-                                };
-                                Some(ResultOutputItem {
-                                    item: Some(result_output_item::Item::Data(bytes)),
-                                })
                             }
-                        },
-                        Err(e) => {
-                            tracing::error!("Error in chat stream: {:?}", e);
-                            // On error, send termination signal
-                            Some(ResultOutputItem {
-                                item: Some(result_output_item::Item::End(metadata.clone())),
-                            })
                         }
+                    },
+                    Err(e) => {
+                        tracing::error!("Error in chat stream: {:?}", e);
+                        stream_error = true;
+                        break;
                     }
                 }
-            })
-            .chain(futures::stream::once(async move {
-                // Always send End item at the end of the stream
-                ResultOutputItem {
-                    item: Some(result_output_item::Item::End(metadata_clone)),
-                }
-            }))
-            .boxed();
+            }
 
-        Ok(stream)
+            // Always send End item at the end of the stream
+            if stream_error {
+                yield ResultOutputItem {
+                    item: Some(result_output_item::Item::End(metadata_trailer.clone())),
+                };
+            } else {
+                yield ResultOutputItem {
+                    item: Some(result_output_item::Item::End(metadata_trailer)),
+                };
+            }
+        };
+
+        Ok(Box::pin(stream))
     }
 }
 
