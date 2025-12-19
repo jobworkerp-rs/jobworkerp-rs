@@ -31,7 +31,7 @@ use proto::jobworkerp::data::{
     Job, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
     ResponseType, ResultOutputItem, StreamingType, WorkerData, WorkerId,
 };
-use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 pub trait JobCacheKeys {
     fn find_cache_key(id: &JobId) -> String {
@@ -264,8 +264,8 @@ where
                 // TTL prevents job orphaning when worker fails unexpectedly
                 if worker.queue_type == QueueType::Normal as i32 {
                     if let Some(job_data) = &job.data {
-                        // Safety margin prevents premature cleanup during normal completion
-                        let ttl = Duration::from_millis(job_data.timeout + 300_000);
+                        // For timeout=0 (unlimited), uses expire_job_result_seconds from config
+                        let ttl = self.calculate_job_ttl(job_data.timeout);
                         self.redis_job_repository()
                             .create_with_expire(&job_id, job_data, ttl)
                             .await?;

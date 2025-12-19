@@ -818,15 +818,18 @@ impl JobApp for RdbChanJobAppImpl {
                 match self.rdb_job_repository().find(id).await? {
                     Some(job) => {
                         // Cache job from RDB with individual TTL to prevent premature eviction
+                        // For timeout=0 (unlimited), uses expire_job_result_seconds from config
                         if let Some(data) = &job.data {
-                            let job_ttl = Duration::from_millis(data.timeout + 300_000); // timeout + 5min safety buffer
+                            let job_ttl = self.calculate_job_ttl(data.timeout);
                             tracing::debug!(
                                 "Found job {} from RDB, caching with TTL {:?}",
                                 id.value,
                                 job_ttl
                             );
                             // Store in cache separately with TTL
-                            let _ = self.set_cache(k.clone(), job.clone(), Some(&job_ttl)).await;
+                            let _ = self
+                                .set_cache(k.clone(), job.clone(), job_ttl.as_ref())
+                                .await;
                         }
                         Ok(Some(job))
                     }
@@ -1171,9 +1174,11 @@ where
                 } = &job
                 {
                     let cache_key = Arc::new(Self::find_cache_key(id));
-                    let job_ttl = Duration::from_millis(job_data.timeout + 300_000); // timeout(ms) + 5min buffer
+                    // For timeout=0 (unlimited), uses expire_job_result_seconds from config
+                    let job_ttl = self.calculate_job_ttl(job_data.timeout);
 
-                    self.set_cache(cache_key, job.clone(), Some(&job_ttl)).await;
+                    self.set_cache(cache_key, job.clone(), job_ttl.as_ref())
+                        .await;
                     tracing::debug!(
                         "Cached Direct Response job {} with TTL {:?} for running job visibility",
                         id.value,
