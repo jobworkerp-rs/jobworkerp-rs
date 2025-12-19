@@ -874,10 +874,10 @@ pub trait FunctionApp:
                         data: Some(rdata),
                         ..
                     },
-                    tool_name_opt,
+                    _tool_name_opt,
                 ))) => {
                     let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
-                    let runner = RunnerWithSchema {
+                    let _runner = RunnerWithSchema {
                         id: Some(rid),
                         data: Some(rdata.clone()),
                         settings_schema: String::new(),
@@ -885,8 +885,6 @@ pub trait FunctionApp:
                     };
                     let (settings, args) = match Self::prepare_runner_call_arguments(
                         arguments.unwrap_or_default(),
-                        &runner,
-                        tool_name_opt.clone(),
                     ).await {
                         Ok((s, a)) => (s, a),
                         Err(e) => {
@@ -911,13 +909,11 @@ pub trait FunctionApp:
                         yield result;
                     }
                 }
-                Ok(Some((runner, tool_name_opt))) => {
+                Ok(Some((runner, _tool_name_opt))) => {
                     if let Some(rdata) = &runner.data {
                         let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
                         let (settings, args) = match Self::prepare_runner_call_arguments(
                             arguments.unwrap_or_default(),
-                            &runner,
-                            tool_name_opt.clone(),
                         ).await {
                             Ok((s, a)) => (s, a),
                             Err(e) => {

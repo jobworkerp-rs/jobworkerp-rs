@@ -13,9 +13,9 @@ use crate::workflow::{
     },
 };
 use anyhow::Result;
-use app::app::job::execute::{JobExecutorWrapper, UseJobExecutor};
-use async_stream::stream;
+use app::app::job::execute::JobExecutorWrapper;
 use command_utils::trace::Tracing;
+use futures::stream::BoxStream;
 use proto::jobworkerp::data::{
     JobId, QueueType, ResponseType, RunnerId, StreamingType, WorkerData,
 };
@@ -107,7 +107,6 @@ impl RunStreamTaskExecutor {
 }
 
 /// Handle for a started streaming job, containing all info needed to collect results
-/// NOTE: stream field was removed - use listen_result_by_job_id to subscribe to job results
 pub struct StreamingJobHandle {
     pub job_id: JobId,
     pub runner_id: RunnerId,
@@ -119,6 +118,15 @@ pub struct StreamingJobHandle {
     pub timeout_sec: u32,
 }
 
+/// Preparation result containing everything needed for streaming
+struct StreamingPreparation {
+    handle: StreamingJobHandle,
+    position: String,
+    task_context: TaskContext,
+    /// Stream subscription - subscribed immediately after job enqueue to avoid race condition
+    stream: BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
+}
+
 impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
     fn execute_stream(
         &self,
@@ -126,445 +134,584 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
         task_name: Arc<String>,
         task_context: TaskContext,
     ) -> impl futures::Stream<Item = Result<WorkflowStreamEvent, Box<workflow::Error>>> + Send {
-        // Clone all required values for the stream
+        // Clone all required values
         let workflow_context = self.workflow_context.clone();
         let job_executor_wrapper = self.job_executor_wrapper.clone();
         let task = self.task.clone();
         let base_metadata = self.metadata.clone();
         let default_timeout = self.default_task_timeout;
 
-        // Use a wrapper stream that first runs preparation, then chains event and completion streams
-        stream! {
-            let mut task_context = task_context;
+        // Create channel for streaming events
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<
+            Result<WorkflowStreamEvent, Box<workflow::Error>>,
+        >();
 
-            let workflow::RunTask {
-                metadata: task_metadata,
-                timeout,
-                run,
-                ..
-            } = &task;
+        // Spawn a task that handles the entire execution
+        // This avoids the stream! macro's blocking yield behavior
+        tokio::spawn(async move {
+            // Run preparation phase
+            let prep_result = prepare_streaming_job(
+                &workflow_context,
+                &job_executor_wrapper,
+                &task,
+                &base_metadata,
+                default_timeout,
+                &cx,
+                &task_name,
+                task_context,
+            )
+            .await;
 
-            // === 1. Timeout setting ===
-            // Round up to at least 1 second to avoid immediate timeouts for sub-second durations
-            let timeout_sec = if let Some(workflow::TaskTimeout::Timeout(duration)) = timeout {
-                std::cmp::max(1, duration.after.to_millis().div_ceil(1000) as u32)
-            } else {
-                default_timeout.as_secs() as u32
-            };
-
-            // === 2. Metadata merge ===
-            let mut metadata = (*base_metadata).clone();
-            for (k, v) in task_metadata {
-                if !metadata.contains_key(k) {
-                    if let Some(v) = v.as_str() {
-                        metadata.insert(k.clone(), v.to_string());
-                    }
-                }
-            }
-            RunStreamTaskExecutor::inject_metadata_from_context(&mut metadata, &cx);
-            let metadata = Arc::new(metadata);
-
-            // === 3. Position setup ("run" added) ===
-            task_context.add_position_name("run".to_string()).await;
-
-            // === 4. Expression evaluation ===
-            let expression = match RunStreamTaskExecutor::expression(
-                &*workflow_context.read().await,
-                Arc::new(task_context.clone()),
-            ).await {
-                Ok(e) => e,
-                Err(mut e) => {
-                    let pos = task_context.position.read().await;
-                    e.position(&pos);
-                    yield Err(e);
-                    return;
-                }
-            };
-
-            // === 5. Start job based on configuration ===
-            let handle_result: Result<StreamingJobHandle, Box<workflow::Error>> = match run {
-                // Worker configuration
-                workflow::RunTaskConfiguration::Worker(workflow::RunWorker {
-                    worker: RunJobWorker { arguments, name: worker_name, using },
-                }) => {
-                    task_context.add_position_name("worker".to_string()).await;
-
-                    tracing::debug!("raw arguments: {:#?}", arguments);
-                    let args = match RunStreamTaskExecutor::transform_map(
-                        task_context.input.clone(),
-                        arguments.clone(),
-                        &expression,
-                    ) {
-                        Ok(args) => args,
-                        Err(mut e) => {
-                            task_context.position.write().await.push("arguments".to_string());
-                            e.position(&*task_context.position.read().await);
-                            yield Err(e);
-                            return;
-                        }
-                    };
-                    tracing::debug!("transformed arguments: {:#?}", args);
-
-                    // Start worker streaming job
-                    match start_worker_streaming_job_static(
-                        &job_executor_wrapper,
-                        metadata.clone(),
-                        worker_name,
-                        args,
-                        timeout_sec,
-                        using.clone(),
-                    ).await {
-                        Ok(h) => Ok(h),
-                        Err(e) => {
-                            let pos = task_context.position.read().await.as_error_instance();
-                            Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                                "Failed to start streaming job by jobworkerp".to_string(),
-                                Some(pos),
-                                Some(format!("{e:?}")),
-                            ))
-                        }
-                    }
-                }
-
-                // Function(WorkerFunction) configuration
-                workflow::RunTaskConfiguration::Function(workflow::RunFunction {
-                    function: workflow::RunJobFunction::WorkerFunction { arguments, using, worker_name },
-                }) => {
-                    task_context.add_position_name("function".to_string()).await;
-
-                    tracing::debug!("raw arguments: {:#?}", arguments);
-                    let args = match RunStreamTaskExecutor::transform_map(
-                        task_context.input.clone(),
-                        arguments.clone(),
-                        &expression,
-                    ) {
-                        Ok(args) => args,
-                        Err(mut e) => {
-                            task_context.position.write().await.push("arguments".to_string());
-                            e.position(&*task_context.position.read().await);
-                            yield Err(e);
-                            return;
-                        }
-                    };
-                    tracing::debug!("transformed arguments: {:#?}", args);
-
-                    // Start worker streaming job
-                    match start_worker_streaming_job_static(
-                        &job_executor_wrapper,
-                        metadata.clone(),
-                        worker_name,
-                        args,
-                        timeout_sec,
-                        using.clone(),
-                    ).await {
-                        Ok(h) => Ok(h),
-                        Err(e) => {
-                            let pos = task_context.position.read().await.as_error_instance();
-                            Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                                "Failed to start streaming job by jobworkerp".to_string(),
-                                Some(pos),
-                                Some(format!("{e:?}")),
-                            ))
-                        }
-                    }
-                }
-
-                // Runner configuration
-                workflow::RunTaskConfiguration::Runner(workflow::RunRunner {
-                    runner: RunJobRunner { arguments, name: runner_name, options, settings, using },
-                }) => {
-                    task_context.add_position_name("runner".to_string()).await;
-
-                    tracing::debug!("raw arguments: {:#?}", arguments);
-                    let args = match RunStreamTaskExecutor::transform_map(
-                        task_context.input.clone(),
-                        arguments.clone(),
-                        &expression,
-                    ) {
-                        Ok(args) => args,
-                        Err(mut e) => {
-                            task_context.position.write().await.push("arguments".to_string());
-                            e.position(&*task_context.position.read().await);
-                            yield Err(e);
-                            return;
-                        }
-                    };
-                    tracing::debug!("transformed arguments: {:#?}", args);
-
-                    let transformed_settings = match RunStreamTaskExecutor::transform_map(
-                        task_context.input.clone(),
-                        settings.clone(),
-                        &expression,
-                    ) {
-                        Ok(s) => s,
-                        Err(mut e) => {
-                            task_context.position.write().await.push("settings".to_string());
-                            e.position(&*task_context.position.read().await);
-                            yield Err(e);
-                            return;
-                        }
-                    };
-
-                    // Start runner streaming job
-                    match start_runner_streaming_job_static(
-                        &job_executor_wrapper,
-                        metadata.clone(),
-                        timeout_sec,
-                        runner_name,
-                        Some(transformed_settings),
-                        options.clone(),
-                        args,
-                        &task_name,
-                        using.clone(),
-                    ).await {
-                        Ok(h) => Ok(h),
-                        Err(e) => {
-                            let pos = task_context.position.read().await.as_error_instance();
-                            Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                                "Failed to start streaming runner job by jobworkerp".to_string(),
-                                Some(pos),
-                                Some(format!("{e:?}")),
-                            ))
-                        }
-                    }
-                }
-
-                // Function(RunnerFunction) configuration
-                workflow::RunTaskConfiguration::Function(workflow::RunFunction {
-                    function: workflow::RunJobFunction::RunnerFunction { arguments, options, runner_name, settings, using },
-                }) => {
-                    task_context.add_position_name("function".to_string()).await;
-
-                    tracing::debug!("raw arguments: {:#?}", arguments);
-                    let args = match RunStreamTaskExecutor::transform_map(
-                        task_context.input.clone(),
-                        arguments.clone(),
-                        &expression,
-                    ) {
-                        Ok(args) => args,
-                        Err(mut e) => {
-                            task_context.position.write().await.push("arguments".to_string());
-                            e.position(&*task_context.position.read().await);
-                            yield Err(e);
-                            return;
-                        }
-                    };
-                    tracing::debug!("transformed arguments: {:#?}", args);
-
-                    let transformed_settings = match RunStreamTaskExecutor::transform_map(
-                        task_context.input.clone(),
-                        settings.clone(),
-                        &expression,
-                    ) {
-                        Ok(s) => s,
-                        Err(mut e) => {
-                            task_context.position.write().await.push("settings".to_string());
-                            e.position(&*task_context.position.read().await);
-                            yield Err(e);
-                            return;
-                        }
-                    };
-
-                    // Start runner streaming job
-                    match start_runner_streaming_job_static(
-                        &job_executor_wrapper,
-                        metadata.clone(),
-                        timeout_sec,
-                        runner_name,
-                        Some(transformed_settings),
-                        options.clone(),
-                        args,
-                        &task_name,
-                        using.clone(),
-                    ).await {
-                        Ok(h) => Ok(h),
-                        Err(e) => {
-                            let pos = task_context.position.read().await.as_error_instance();
-                            Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                                "Failed to start streaming runner job by jobworkerp".to_string(),
-                                Some(pos),
-                                Some(format!("{e:?}")),
-                            ))
-                        }
-                    }
-                }
-
-                // Script configuration is not supported for streaming
-                workflow::RunTaskConfiguration::Script(_) => {
-                    let pos = task_context.position.read().await.as_error_instance();
-                    yield Err(workflow::errors::ErrorFactory::new().not_implemented(
-                        "RunStreamTaskExecutor does not support Script configurations".to_string(),
-                        Some(pos),
-                        Some("Use RunTaskExecutor for Script configurations".to_string()),
-                    ));
-                    return;
-                }
-            };
-
-            // Handle job start result
-            let handle = match handle_result {
-                Ok(h) => h,
+            let prep = match prep_result {
+                Ok(p) => p,
                 Err(e) => {
-                    yield Err(e);
+                    let _ = event_tx.send(Err(e));
                     return;
                 }
             };
 
-            // === 6. Prepare streaming ===
-            let position = task_context.position.read().await.as_json_pointer();
-            let job_id = handle.job_id.value;
+            let job_id = prep.handle.job_id.value;
+            let position = prep.position.clone();
+            let mut task_context = prep.task_context;
+            // Stream is already subscribed in prepare_streaming_job to avoid race condition
+            let stream = prep.stream;
 
-            // === 7. Spawn background task for streaming and result collection ===
-            // This architecture solves the async_stream blocking problem:
-            // - Spawn a task that subscribes to Pub/Sub and sends events via channel
-            // - Main stream yields events from channel (non-blocking)
-            // - Background task also collects bytes for downstream workflow
-            use app::app::job_result::UseJobResultApp;
-            use proto::jobworkerp::data::result_output_item::Item;
+            // Emit StreamingJobStarted immediately
+            let _ = event_tx.send(Ok(WorkflowStreamEvent::streaming_job_started(
+                job_id,
+                &prep.handle.runner_name,
+                &prep.handle.worker_name,
+                &position,
+            )));
 
-            // NOTE: Using unbounded_channel for simplicity. In practice, LLM token generation
-            // is slower than network transmission, so backpressure is unlikely. If OOM becomes
-            // a concern under extreme load, consider switching to bounded channel with backpressure.
-            let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<Result<WorkflowStreamEvent, Box<workflow::Error>>>();
-            let (result_tx, result_rx) = tokio::sync::oneshot::channel::<Result<serde_json::Value, anyhow::Error>>();
+            // Process stream and forward events
+            let output = process_stream(
+                stream,
+                job_id,
+                &prep.handle,
+                &job_executor_wrapper,
+                &event_tx,
+            )
+            .await;
 
-            let job_executor_wrapper_clone = job_executor_wrapper.clone();
-            let handle_clone = handle;
-            let position_clone = position.clone();
-            let task_context_clone = task_context.clone();
-
-            tokio::spawn(async move {
-                let timeout_ms = Some(handle_clone.timeout_sec as u64 * 1000);
-
-                // First, emit StreamingJobStarted
-                let _ = event_tx.send(Ok(WorkflowStreamEvent::streaming_job_started(
-                    job_id,
-                    &handle_clone.runner_name,
-                    &handle_clone.worker_name,
-                    &position_clone,
-                )));
-
-                // Subscribe to stream and forward events
-                let output = match job_executor_wrapper_clone
-                    .job_result_app()
-                    .listen_result_by_job_id(&handle_clone.job_id, timeout_ms, true)
-                    .await
-                {
-                    Ok((_job_result, Some(mut stream))) => {
-                        use futures::StreamExt;
-                        // FinalCollected contains the aggregated result from collect_stream()
-                        // and should be used as the task output
-                        let mut final_collected_bytes: Option<Vec<u8>> = None;
-                        // Keep only the last Data chunk (consistent with runner's collect_stream())
-                        let mut last_data_bytes: Option<Vec<u8>> = None;
-
-                        while let Some(item) = stream.next().await {
-                            match item.item {
-                                Some(Item::Data(data)) => {
-                                    // Keep only the last Data (consistent with workflow runner's collect_stream())
-                                    // Each Data is forwarded to UI for real-time display
-                                    let _ = event_tx.send(Ok(WorkflowStreamEvent::streaming_data(job_id, data.clone())));
-                                    last_data_bytes = Some(data);
-                                }
-                                Some(Item::End(_trailer)) => {
-                                    break;
-                                }
-                                Some(Item::FinalCollected(data)) => {
-                                    // Use FinalCollected as the authoritative task output
-                                    final_collected_bytes = Some(data);
-                                }
-                                None => {}
-                            }
-                        }
-
-                        // Prefer FinalCollected (properly aggregated by runner), fall back to last Data
-                        let output_bytes = final_collected_bytes.or(last_data_bytes).unwrap_or_else(|| {
-                            tracing::warn!(
-                                "No FinalCollected or Data received for job {}, using empty output",
-                                job_id
-                            );
-                            Vec::new()
-                        });
-
-                        tracing::debug!(
-                            "Stream collected for job {}: {} bytes",
-                            job_id,
-                            output_bytes.len()
-                        );
-
-                        // Transform collected bytes to JSON output
-                        job_executor_wrapper_clone
-                            .transform_raw_output(
-                                &handle_clone.runner_id,
-                                &handle_clone.runner_data,
-                                output_bytes.as_slice(),
-                                handle_clone.using.as_deref(),
-                            )
-                            .await
-                    }
-                    Ok((_job_result, None)) => {
-                        tracing::warn!("No stream available for job {}, using fallback", job_id);
-                        collect_streaming_result_static(&job_executor_wrapper_clone, handle_clone).await
-                    }
-                    Err(e) => {
-                        Err(anyhow::anyhow!("Failed to subscribe to stream: {:?}", e))
-                    }
-                };
-
-                // Send result back
-                let _ = result_tx.send(output);
-
-                // Signal end of events
-                drop(event_tx);
-            });
-
-            // === 8. Yield events from channel (non-blocking) ===
-            while let Some(event) = event_rx.recv().await {
-                yield event;
+            // Set output on task context
+            match output {
+                Ok(o) => {
+                    task_context.set_raw_output(o);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to process stream for job {}: {:?}", job_id, e);
+                    let _ = event_tx.send(Err(workflow::errors::ErrorFactory::new()
+                        .service_unavailable(
+                            "Failed to process streaming result".to_string(),
+                            None,
+                            Some(format!("{e:?}")),
+                        )));
+                    return;
+                }
             }
 
-            // === 9. Get result and complete ===
-            let output = match result_rx.await {
-                Ok(Ok(o)) => o,
-                Ok(Err(e)) => {
-                    let pos = task_context_clone.position.read().await.as_error_instance();
-                    yield Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                        "Failed to collect streaming result".to_string(),
-                        Some(pos),
-                        Some(format!("{e:?}")),
-                    ));
-                    return;
-                }
-                Err(_recv_err) => {
-                    let pos = task_context_clone.position.read().await.as_error_instance();
-                    yield Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                        "Streaming result collection task was dropped".to_string(),
-                        Some(pos),
-                        None,
-                    ));
-                    return;
-                }
-            };
-            task_context.set_raw_output(output);
-
-            // === 10. Position cleanup ===
+            // Position cleanup
             task_context.remove_position().await; // "worker"/"runner"/"function"
             task_context.remove_position().await; // "run"
 
-            // === 11. Emit StreamingJobCompleted event ===
-            yield Ok(WorkflowStreamEvent::streaming_job_completed(
+            // Emit StreamingJobCompleted
+            let _ = event_tx.send(Ok(WorkflowStreamEvent::streaming_job_completed(
                 job_id,
                 None, // job_result_id
                 &position,
                 task_context,
-            ));
-        }
+            )));
+
+            // Channel is dropped when this task ends, signaling end of stream
+        });
+
+        // Return stream from channel receiver
+        tokio_stream::wrappers::UnboundedReceiverStream::new(event_rx)
     }
 }
 
-/// Start a worker streaming job and return handle with job_id (static version for use in stream)
-/// NOTE: Uses existing worker, which may have response_type=Direct causing wait behavior.
-/// Consider using runner-based streaming for immediate StreamingJobStarted events.
+/// Prepare streaming job: evaluate expressions, start job, return handle
+#[allow(clippy::too_many_arguments)]
+async fn prepare_streaming_job(
+    workflow_context: &Arc<RwLock<WorkflowContext>>,
+    job_executor_wrapper: &Arc<JobExecutorWrapper>,
+    task: &workflow::RunTask,
+    base_metadata: &Arc<HashMap<String, String>>,
+    default_timeout: Duration,
+    cx: &Arc<opentelemetry::Context>,
+    task_name: &Arc<String>,
+    task_context: TaskContext,
+) -> Result<StreamingPreparation, Box<workflow::Error>> {
+    let workflow::RunTask {
+        metadata: task_metadata,
+        timeout,
+        run,
+        ..
+    } = task;
+
+    // === 1. Timeout setting ===
+    let timeout_sec = if let Some(workflow::TaskTimeout::Timeout(duration)) = timeout {
+        std::cmp::max(1, duration.after.to_millis().div_ceil(1000) as u32)
+    } else {
+        default_timeout.as_secs() as u32
+    };
+
+    // === 2. Metadata merge ===
+    let mut metadata = (**base_metadata).clone();
+    for (k, v) in task_metadata {
+        if !metadata.contains_key(k) {
+            if let Some(v) = v.as_str() {
+                metadata.insert(k.clone(), v.to_string());
+            }
+        }
+    }
+    RunStreamTaskExecutor::inject_metadata_from_context(&mut metadata, cx);
+    let metadata = Arc::new(metadata);
+
+    // === 3. Position setup ===
+    task_context.add_position_name("run".to_string()).await;
+
+    // === 4. Expression evaluation ===
+    let expression = match RunStreamTaskExecutor::expression(
+        &*workflow_context.read().await,
+        Arc::new(task_context.clone()),
+    )
+    .await
+    {
+        Ok(e) => e,
+        Err(mut e) => {
+            let pos = task_context.position.read().await;
+            e.position(&pos);
+            return Err(e);
+        }
+    };
+
+    // === 5. Start job based on configuration ===
+    let handle = match run {
+        // Worker configuration
+        workflow::RunTaskConfiguration::Worker(workflow::RunWorker {
+            worker:
+                RunJobWorker {
+                    arguments,
+                    name: worker_name,
+                    using,
+                },
+        }) => {
+            task_context.add_position_name("worker".to_string()).await;
+
+            let args = match RunStreamTaskExecutor::transform_map(
+                task_context.input.clone(),
+                arguments.clone(),
+                &expression,
+            ) {
+                Ok(args) => args,
+                Err(mut e) => {
+                    task_context
+                        .position
+                        .write()
+                        .await
+                        .push("arguments".to_string());
+                    e.position(&*task_context.position.read().await);
+                    return Err(e);
+                }
+            };
+
+            // Capture position before await to avoid blocking_read() in async context
+            let pos_for_err = task_context.position.read().await.as_error_instance();
+            start_worker_streaming_job_static(
+                job_executor_wrapper,
+                metadata.clone(),
+                worker_name,
+                args,
+                timeout_sec,
+                using.clone(),
+            )
+            .await
+            .map_err(|e| {
+                workflow::errors::ErrorFactory::new().service_unavailable(
+                    "Failed to start streaming job by jobworkerp".to_string(),
+                    Some(pos_for_err),
+                    Some(format!("{e:?}")),
+                )
+            })?
+        }
+
+        // Function(WorkerFunction) configuration
+        workflow::RunTaskConfiguration::Function(workflow::RunFunction {
+            function:
+                workflow::RunJobFunction::WorkerFunction {
+                    arguments,
+                    using,
+                    worker_name,
+                },
+        }) => {
+            task_context.add_position_name("function".to_string()).await;
+
+            let args = match RunStreamTaskExecutor::transform_map(
+                task_context.input.clone(),
+                arguments.clone(),
+                &expression,
+            ) {
+                Ok(args) => args,
+                Err(mut e) => {
+                    task_context
+                        .position
+                        .write()
+                        .await
+                        .push("arguments".to_string());
+                    e.position(&*task_context.position.read().await);
+                    return Err(e);
+                }
+            };
+
+            // Capture position before await to avoid blocking_read() in async context
+            let pos_for_err = task_context.position.read().await.as_error_instance();
+            start_worker_streaming_job_static(
+                job_executor_wrapper,
+                metadata.clone(),
+                worker_name,
+                args,
+                timeout_sec,
+                using.clone(),
+            )
+            .await
+            .map_err(|e| {
+                workflow::errors::ErrorFactory::new().service_unavailable(
+                    "Failed to start streaming job by jobworkerp".to_string(),
+                    Some(pos_for_err),
+                    Some(format!("{e:?}")),
+                )
+            })?
+        }
+
+        // Runner configuration
+        workflow::RunTaskConfiguration::Runner(workflow::RunRunner {
+            runner:
+                RunJobRunner {
+                    arguments,
+                    name: runner_name,
+                    options,
+                    settings,
+                    using,
+                },
+        }) => {
+            task_context.add_position_name("runner".to_string()).await;
+
+            let args = match RunStreamTaskExecutor::transform_map(
+                task_context.input.clone(),
+                arguments.clone(),
+                &expression,
+            ) {
+                Ok(args) => args,
+                Err(mut e) => {
+                    task_context
+                        .position
+                        .write()
+                        .await
+                        .push("arguments".to_string());
+                    e.position(&*task_context.position.read().await);
+                    return Err(e);
+                }
+            };
+
+            let transformed_settings = match RunStreamTaskExecutor::transform_map(
+                task_context.input.clone(),
+                settings.clone(),
+                &expression,
+            ) {
+                Ok(s) => s,
+                Err(mut e) => {
+                    task_context
+                        .position
+                        .write()
+                        .await
+                        .push("settings".to_string());
+                    e.position(&*task_context.position.read().await);
+                    return Err(e);
+                }
+            };
+
+            // Capture position before await to avoid blocking_read() in async context
+            let pos_for_err = task_context.position.read().await.as_error_instance();
+            start_runner_streaming_job_static(
+                job_executor_wrapper,
+                metadata.clone(),
+                timeout_sec,
+                runner_name,
+                Some(transformed_settings),
+                options.clone(),
+                args,
+                task_name,
+                using.clone(),
+            )
+            .await
+            .map_err(|e| {
+                workflow::errors::ErrorFactory::new().service_unavailable(
+                    "Failed to start streaming runner job by jobworkerp".to_string(),
+                    Some(pos_for_err),
+                    Some(format!("{e:?}")),
+                )
+            })?
+        }
+
+        // Function(RunnerFunction) configuration
+        workflow::RunTaskConfiguration::Function(workflow::RunFunction {
+            function:
+                workflow::RunJobFunction::RunnerFunction {
+                    arguments,
+                    options,
+                    runner_name,
+                    settings,
+                    using,
+                },
+        }) => {
+            task_context.add_position_name("function".to_string()).await;
+
+            let args = match RunStreamTaskExecutor::transform_map(
+                task_context.input.clone(),
+                arguments.clone(),
+                &expression,
+            ) {
+                Ok(args) => args,
+                Err(mut e) => {
+                    task_context
+                        .position
+                        .write()
+                        .await
+                        .push("arguments".to_string());
+                    e.position(&*task_context.position.read().await);
+                    return Err(e);
+                }
+            };
+
+            let transformed_settings = match RunStreamTaskExecutor::transform_map(
+                task_context.input.clone(),
+                settings.clone(),
+                &expression,
+            ) {
+                Ok(s) => s,
+                Err(mut e) => {
+                    task_context
+                        .position
+                        .write()
+                        .await
+                        .push("settings".to_string());
+                    e.position(&*task_context.position.read().await);
+                    return Err(e);
+                }
+            };
+
+            // Capture position before await to avoid blocking_read() in async context
+            let pos_for_err = task_context.position.read().await.as_error_instance();
+            start_runner_streaming_job_static(
+                job_executor_wrapper,
+                metadata.clone(),
+                timeout_sec,
+                runner_name,
+                Some(transformed_settings),
+                options.clone(),
+                args,
+                task_name,
+                using.clone(),
+            )
+            .await
+            .map_err(|e| {
+                workflow::errors::ErrorFactory::new().service_unavailable(
+                    "Failed to start streaming runner job by jobworkerp".to_string(),
+                    Some(pos_for_err),
+                    Some(format!("{e:?}")),
+                )
+            })?
+        }
+
+        // Script configuration is not supported for streaming
+        workflow::RunTaskConfiguration::Script(_) => {
+            let pos = task_context.position.read().await.as_error_instance();
+            return Err(workflow::errors::ErrorFactory::new().not_implemented(
+                "RunStreamTaskExecutor does not support Script configurations".to_string(),
+                Some(pos),
+                Some("Use RunTaskExecutor for Script configurations".to_string()),
+            ));
+        }
+    };
+
+    // Capture position for both success and error cases
+    let pos_for_err = task_context.position.read().await.as_error_instance();
+    let position = task_context.position.read().await.as_json_pointer();
+
+    // Subscribe to stream IMMEDIATELY after job enqueue to avoid race condition
+    // This must happen before worker completes and publishes stream data
+    use infra::infra::job_result::pubsub::JobResultSubscriber;
+    let timeout_ms = Some(timeout_sec as u64 * 1000);
+
+    // Try redis repository first (Scalable mode), then channel repository (Standalone mode)
+    let stream =
+        if let Some(pubsub_repo) = job_executor_wrapper.redis_job_result_pubsub_repository() {
+            pubsub_repo
+                .subscribe_result_stream(&handle.job_id, timeout_ms)
+                .await
+        } else if let Some(pubsub_repo) = job_executor_wrapper.chan_job_result_pubsub_repository() {
+            pubsub_repo
+                .subscribe_result_stream(&handle.job_id, timeout_ms)
+                .await
+        } else {
+            Err(anyhow::anyhow!(
+                "No pubsub repository available for streaming"
+            ))
+        }
+        .map_err(|e| {
+            workflow::errors::ErrorFactory::new().service_unavailable(
+                "Failed to subscribe to result stream".to_string(),
+                Some(pos_for_err),
+                Some(format!("{e:?}")),
+            )
+        })?;
+
+    Ok(StreamingPreparation {
+        handle,
+        position,
+        task_context,
+        stream,
+    })
+}
+
+/// Process stream: forward events to channel and collect output
+async fn process_stream(
+    mut stream: BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
+    job_id: i64,
+    handle: &StreamingJobHandle,
+    job_executor_wrapper: &Arc<JobExecutorWrapper>,
+    event_tx: &tokio::sync::mpsc::UnboundedSender<
+        Result<WorkflowStreamEvent, Box<workflow::Error>>,
+    >,
+) -> Result<serde_json::Value> {
+    use app::app::job::execute::UseJobExecutor;
+    use futures::StreamExt;
+    use proto::jobworkerp::data::result_output_item::Item;
+
+    let mut final_collected_bytes: Option<Vec<u8>> = None;
+    let mut all_data_chunks: Vec<Vec<u8>> = Vec::new();
+
+    // Use timeout for each stream item to prevent hanging indefinitely
+    let item_timeout = std::time::Duration::from_secs(handle.timeout_sec as u64);
+
+    loop {
+        match tokio::time::timeout(item_timeout, stream.next()).await {
+            Ok(Some(item)) => {
+                match item.item {
+                    Some(Item::Data(data)) => {
+                        // Forward to UI for real-time display
+                        let _ = event_tx.send(Ok(WorkflowStreamEvent::streaming_data(
+                            job_id,
+                            data.clone(),
+                        )));
+                        // Collect all chunks for later aggregation
+                        all_data_chunks.push(data);
+                    }
+                    Some(Item::End(_trailer)) => {
+                        tracing::debug!("Stream ended for job {}", job_id);
+                        break;
+                    }
+                    Some(Item::FinalCollected(data)) => {
+                        // Use FinalCollected as the authoritative task output
+                        final_collected_bytes = Some(data);
+                    }
+                    None => {}
+                }
+            }
+            Ok(None) => {
+                // Stream ended without End message
+                tracing::debug!("Stream closed without End message for job {}", job_id);
+                break;
+            }
+            Err(_) => {
+                // Timeout waiting for next item
+                tracing::warn!(
+                    "Timeout waiting for stream item for job {} ({}s), ending stream processing",
+                    job_id,
+                    handle.timeout_sec
+                );
+                break;
+            }
+        }
+    }
+
+    // Prefer FinalCollected (properly aggregated by runner)
+    // Otherwise, use runner_spec.collect_stream to properly aggregate Data chunks
+    let output_bytes = if let Some(bytes) = final_collected_bytes {
+        tracing::debug!("Using FinalCollected for job {}", job_id);
+        bytes
+    } else if !all_data_chunks.is_empty() {
+        // No FinalCollected - use runner_spec to aggregate chunks
+        if let Some(runner_spec) = handle.runner_spec.as_ref() {
+            tracing::debug!(
+                "Using runner_spec.collect_stream for job {} ({} chunks)",
+                job_id,
+                all_data_chunks.len()
+            );
+            // Create a stream from collected chunks
+            let chunk_stream = futures::stream::iter(all_data_chunks.into_iter().map(|data| {
+                proto::jobworkerp::data::ResultOutputItem {
+                    item: Some(Item::Data(data)),
+                }
+            }))
+            .chain(futures::stream::once(async {
+                proto::jobworkerp::data::ResultOutputItem {
+                    item: Some(Item::End(proto::jobworkerp::data::Trailer::default())),
+                }
+            }));
+            match runner_spec
+                .collect_stream(Box::pin(chunk_stream), handle.using.as_deref())
+                .await
+            {
+                Ok((bytes, _metadata)) => bytes,
+                Err(e) => {
+                    tracing::warn!("Failed to collect stream for job {}: {:?}", job_id, e);
+                    Vec::new()
+                }
+            }
+        } else {
+            // No runner_spec available - concatenate all chunks as fallback
+            // This may not produce semantically correct output for all runner types,
+            // but preserves all data rather than losing chunks
+            tracing::warn!(
+                "No runner_spec available for job {}, concatenating {} chunks as fallback",
+                job_id,
+                all_data_chunks.len()
+            );
+            all_data_chunks.concat()
+        }
+    } else {
+        tracing::warn!(
+            "No FinalCollected or Data received for job {}, using empty output",
+            job_id
+        );
+        Vec::new()
+    };
+
+    tracing::debug!(
+        "Stream collected for job {}: {} bytes",
+        job_id,
+        output_bytes.len()
+    );
+
+    // Transform collected bytes to JSON output
+    job_executor_wrapper
+        .transform_raw_output(
+            &handle.runner_id,
+            &handle.runner_data,
+            output_bytes.as_slice(),
+            handle.using.as_deref(),
+        )
+        .await
+}
+
+/// Start a worker streaming job and return handle with job_id
+///
+/// For streaming jobs, we need to return immediately after enqueue to subscribe
+/// to stream before any data is published. Therefore, even if the worker has
+/// response_type=Direct, we override it to NoResult for enqueue to avoid blocking.
 async fn start_worker_streaming_job_static(
     job_executor_wrapper: &Arc<JobExecutorWrapper>,
     metadata: Arc<HashMap<String, String>>,
@@ -587,7 +734,7 @@ async fn start_worker_streaming_job_static(
         .map_err(|e| anyhow::anyhow!("Failed to find worker '{}': {:#?}", worker_name, e))?
         .ok_or_else(|| anyhow::anyhow!("Worker '{}' not found", worker_name))?;
 
-    let (wid, worker_data) = match worker {
+    let (_wid, worker_data) = match worker {
         Worker {
             id: Some(wid),
             data: Some(worker_data),
@@ -599,15 +746,6 @@ async fn start_worker_streaming_job_static(
             ))
         }
     };
-
-    // Warn if worker has response_type=Direct which may cause blocking behavior
-    if worker_data.response_type == proto::jobworkerp::data::ResponseType::Direct as i32 {
-        tracing::warn!(
-            "Worker '{}' has response_type=Direct which may block streaming. \
-             Consider using runner-based streaming or setting response_type=NoResult for immediate event delivery.",
-            worker_name
-        );
-    }
 
     // Find runner for this worker
     let runner = job_executor_wrapper
@@ -646,11 +784,20 @@ async fn start_worker_streaming_job_static(
         .transform_job_args(&rid, &rdata, &args, using.as_deref())
         .await?;
 
-    // Enqueue with streaming - stream is not used here, we use listen_result_by_job_id later
+    // For streaming jobs, use the existing worker (with worker_id) to preserve pooling.
+    // This is critical for heavy resources like local LLMs where use_static=true enables
+    // runner instance reuse without re-initialization.
+    //
+    // StreamingType::Internal is used here because:
+    // 1. We want the runner to use run_stream() internally for streaming output
+    // 2. The app layer returns immediately (even for Direct response_type workers)
+    //    allowing us to subscribe to the stream before data is published
+    // 3. The final result is collected via collect_stream() and sent as FinalCollected
+    // 4. Workflow steps receive a single aggregated result, not raw stream chunks
     let (job_id, _job_result, _stream) = job_executor_wrapper
         .enqueue_with_worker_or_temp(
             metadata,
-            Some(wid),
+            Some(_wid), // Use existing worker to preserve pooling (use_static)
             worker_data,
             job_args,
             None, // uniq_key
@@ -678,9 +825,9 @@ async fn start_worker_streaming_job_static(
     })
 }
 
-/// Start a runner streaming job and return handle with job_id (static version for use in stream)
-/// Uses NoResult response_type to avoid waiting for job completion, allowing StreamingJobStarted
-/// to be yielded immediately after enqueue. Stream is obtained via listen_result_by_job_id.
+/// Start a runner streaming job and return handle with job_id
+/// Uses NoResult response_type to avoid waiting for job completion, allowing
+/// stream subscription immediately after enqueue.
 #[allow(clippy::too_many_arguments)]
 async fn start_runner_streaming_job_static(
     job_executor_wrapper: &Arc<JobExecutorWrapper>,
@@ -724,7 +871,6 @@ async fn start_runner_streaming_job_static(
 
     // Create temporary worker for streaming
     // Use NoResult response_type to avoid waiting for job completion
-    // This allows StreamingJobStarted to be yielded immediately after enqueue
     let worker_name = format!("{}_streaming_{}", task_name, runner_name);
     let mut worker_data =
         RunStreamTaskExecutor::function_options_to_worker_data(options, &worker_name).unwrap_or(
@@ -752,8 +898,7 @@ async fn start_runner_streaming_job_static(
     worker_data.store_failure = true;
     worker_data.broadcast_results = true;
 
-    // Enqueue with streaming - stream is not used here, we use listen_result_by_job_id later
-    // setup_worker_and_enqueue_with_json_full_output handles transform_job_args internally
+    // Enqueue with streaming - returns immediately (NoResult)
     let (job_id, _job_result, _stream) = job_executor_wrapper
         .setup_worker_and_enqueue_with_json_full_output(
             metadata,
@@ -783,102 +928,4 @@ async fn start_runner_streaming_job_static(
         using,
         timeout_sec,
     })
-}
-
-/// Collect streaming result from handle (static version for use in stream)
-/// Uses listen_result_by_job_id to subscribe to the job result stream.
-/// Falls back to JobResult.data.output if stream is unavailable (job already completed).
-async fn collect_streaming_result_static(
-    job_executor_wrapper: &Arc<JobExecutorWrapper>,
-    handle: StreamingJobHandle,
-) -> Result<serde_json::Value> {
-    use app::app::job::execute::UseJobExecutor;
-    use app::app::job_result::UseJobResultApp;
-
-    // Subscribe to job result via listen_result_by_job_id
-    let timeout = Some(handle.timeout_sec as u64 * 1000); // Convert to milliseconds
-    let (job_result, stream_opt) = job_executor_wrapper
-        .job_result_app()
-        .listen_result_by_job_id(&handle.job_id, timeout, true)
-        .await?;
-
-    if let Some(stream) = stream_opt {
-        // Stream is available - collect it
-        // Get runner spec (use the one from handle if available, otherwise create new)
-        let runner_spec = match handle.runner_spec {
-            Some(spec) => spec,
-            None => {
-                use app::app::job::execute::UseRunnerSpecFactory;
-                job_executor_wrapper
-                    .runner_spec_factory()
-                    .create_runner_spec_by_name(&handle.runner_name, false)
-                    .await
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Failed to create RunnerSpec for runner: {}",
-                            &handle.runner_name
-                        )
-                    })?
-            }
-        };
-
-        // Collect stream using RunnerSpec::collect_stream
-        let (collected_bytes, _metadata) = runner_spec
-            .collect_stream(stream, handle.using.as_deref())
-            .await?;
-
-        tracing::debug!(
-            "Stream collected for job {}: {} bytes",
-            handle.job_id.value,
-            collected_bytes.len()
-        );
-
-        // Transform output to JSON
-        job_executor_wrapper
-            .transform_raw_output(
-                &handle.runner_id,
-                &handle.runner_data,
-                collected_bytes.as_slice(),
-                handle.using.as_deref(),
-            )
-            .await
-    } else {
-        // Stream unavailable (job already completed) - fallback to JobResult.data.output
-        tracing::debug!(
-            "No stream available for job {} (already completed), using JobResult.data.output as fallback",
-            handle.job_id.value
-        );
-
-        if let Some(data) = &job_result.data {
-            if let Some(output) = &data.output {
-                if !output.items.is_empty() {
-                    // Transform output to JSON
-                    job_executor_wrapper
-                        .transform_raw_output(
-                            &handle.runner_id,
-                            &handle.runner_data,
-                            output.items.as_slice(),
-                            handle.using.as_deref(),
-                        )
-                        .await
-                } else {
-                    // Output items is empty - return error or empty JSON
-                    Err(anyhow::anyhow!(
-                        "Job {} completed but output items is empty",
-                        handle.job_id.value
-                    ))
-                }
-            } else {
-                Err(anyhow::anyhow!(
-                    "Job {} completed but output is None",
-                    handle.job_id.value
-                ))
-            }
-        } else {
-            Err(anyhow::anyhow!(
-                "Job {} completed but has no result data",
-                handle.job_id.value
-            ))
-        }
-    }
 }

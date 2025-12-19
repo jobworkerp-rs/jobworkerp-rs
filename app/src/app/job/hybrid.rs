@@ -849,6 +849,23 @@ impl JobApp for HybridJobAppImpl {
         if let Some(jid) = data.job_id.as_ref() {
             let res = match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
+                    // IMPORTANT: Publish stream data BEFORE enqueue_result_direct.
+                    // enqueue_result_direct triggers BLPOP completion on client side (wait_for_result_queue_for_response).
+                    // If stream data is published after, the client may have already returned from
+                    // wait_for_result_queue_for_response and miss the stream data.
+                    if let Some(stream) = stream {
+                        let pubsub_repo = self.job_result_pubsub_repository().clone();
+                        tracing::debug!(
+                            "complete_job(direct): publish stream data BEFORE result: {}",
+                            &jid.value
+                        );
+                        pubsub_repo.publish_result_stream_data(*jid, stream).await?;
+                        tracing::debug!(
+                            "complete_job(direct): stream data published: {}",
+                            &jid.value
+                        );
+                    }
+
                     // send result for direct or listen after response
                     let res = self
                         .redis_job_repository()
@@ -863,19 +880,6 @@ impl JobApp for HybridJobAppImpl {
                         .inspect_err(|e| {
                             tracing::warn!("complete_job: pubsub publish error: {:?}", e)
                         });
-                    // stream data
-                    if let Some(stream) = stream {
-                        let pubsub_repo = self.job_result_pubsub_repository().clone();
-                        tracing::debug!(
-                            "complete_job(direct): publish stream data: {}",
-                            &jid.value
-                        );
-                        pubsub_repo.publish_result_stream_data(*jid, stream).await?;
-                        tracing::debug!(
-                            "complete_job(direct): stream data published and status deleted: {}",
-                            &jid.value
-                        );
-                    }
                     res
                 }
                 Ok(ResponseType::NoResult) => {

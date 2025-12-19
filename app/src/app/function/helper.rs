@@ -166,12 +166,8 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 }
             }
 
-            let (settings, arguments) = Self::prepare_runner_call_arguments(
-                arguments.unwrap_or_default(),
-                &runner,
-                tool_name_opt.clone(),
-            )
-            .await?;
+            let (settings, arguments) =
+                Self::prepare_runner_call_arguments(arguments.unwrap_or_default()).await?;
             if let RunnerWithSchema {
                 id: Some(_id),
                 data: Some(runner_data),
@@ -429,17 +425,16 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
 
     fn prepare_runner_call_arguments(
         mut request_args: Map<String, Value>,
-        _runner: &RunnerWithSchema, // Reserved for future validation logic
-        _tool_name_opt: Option<String>, // tool_name now passed via 'using' parameter
-    ) -> impl Future<Output = Result<(Option<Value>, Value)>> + Send + '_ {
+    ) -> impl Future<Output = Result<(Option<Value>, Value)>> + Send {
         async move {
             let settings = request_args.remove("settings");
 
             // Try to get 'arguments' field first (standard format from structured tool schemas)
             // If not found, use the entire request_args as arguments (LLM tool call format)
-            // This supports both:
+            // This supports:
             // - Standard format: {"arguments": {...}, "settings": {...}}
             // - LLM tool call format: {"command": "date", ...} (direct arguments)
+            // - No-argument tools: {} (empty object is valid for tools that require no arguments)
             let arguments = if let Some(args) = request_args.get("arguments").cloned() {
                 args
             } else if !request_args.is_empty() {
@@ -450,10 +445,9 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 );
                 Value::Object(request_args)
             } else {
-                return Err(JobWorkerError::InvalidParameter(
-                    "No arguments provided: request_args is empty".to_string(),
-                )
-                .into());
+                // Empty request_args is valid for no-argument tools
+                tracing::debug!("Empty request_args, using empty object for no-argument tool");
+                Value::Object(Map::new())
             };
 
             tracing::debug!(

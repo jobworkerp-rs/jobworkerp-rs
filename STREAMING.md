@@ -1,0 +1,175 @@
+# Streaming in jobworkerp-rs
+
+This document describes the streaming functionality in jobworkerp-rs, including the different streaming types and their behavior.
+
+## Overview
+
+jobworkerp-rs supports streaming execution for runners that implement the `run_stream()` method. Streaming allows runners to emit results incrementally rather than returning a single result at the end of execution. This is particularly useful for:
+
+- LLM responses that generate tokens incrementally
+- Long-running commands that produce output over time
+- Real-time progress updates
+
+## StreamingType
+
+The `StreamingType` enum controls how streaming is handled for job execution. It is specified when enqueueing a job.
+
+### STREAMING_TYPE_NONE (0)
+
+Default mode. No streaming is used.
+
+- Runner's `run()` method is called (not `run_stream()`)
+- Result is returned as a single `JobResult` after job completion
+- For `ResponseType::Direct` workers, the enqueue call blocks until completion
+
+### STREAMING_TYPE_RESPONSE (1)
+
+Full streaming mode for client consumption.
+
+- Runner's `run_stream()` method is called
+- Results are streamed back to the client via pub/sub as `ResultOutputItem` messages
+- Client receives `Data` chunks as they are produced, followed by `End` trailer
+- For `ResponseType::Direct` workers, the enqueue call blocks and returns the stream
+- Compatible with `request_streaming=true` (legacy boolean field)
+
+### STREAMING_TYPE_INTERNAL (2)
+
+Internal streaming mode for workflow orchestration.
+
+- Runner's `run_stream()` method is called internally
+- Results are collected using `RunnerSpec::collect_stream()`
+- Final aggregated result is sent as `ResultOutputItem::FinalCollected`
+- **Key behavior**: Even for `ResponseType::Direct` workers, enqueue returns immediately
+- Caller is responsible for subscribing to the stream and collecting results
+
+This mode is designed for workflow steps that:
+1. Need to leverage streaming-capable runners (e.g., LLM with incremental token generation)
+2. Want the final aggregated result as a single chunk for the next workflow step
+3. Need to preserve worker pooling (`use_static=true`) for heavy resources like local LLMs
+
+## Behavior Matrix
+
+| StreamingType | ResponseType | Enqueue Behavior | Result Delivery |
+|---------------|--------------|------------------|-----------------|
+| None | Direct | Blocks until completion | Single JobResult |
+| None | NoResult | Returns immediately | Via Listen/store |
+| Response | Direct | Blocks, returns stream | Stream via pub/sub |
+| Response | NoResult | Returns immediately | Stream via pub/sub |
+| Internal | Direct | **Returns immediately** | Stream + FinalCollected |
+| Internal | NoResult | Returns immediately | Stream + FinalCollected |
+
+Note: `Internal` mode always returns immediately regardless of `ResponseType`, allowing the caller to subscribe to the stream before data is published.
+
+## ResultOutputItem Message Types
+
+When using streaming modes, results are delivered as `ResultOutputItem` messages:
+
+```protobuf
+message ResultOutputItem {
+  oneof item {
+    bytes data = 1;           // Incremental data chunk
+    Trailer end = 2;          // End of stream marker
+    bytes final_collected = 3; // Aggregated result (Internal mode)
+  }
+}
+```
+
+- **Data**: Individual chunks of streaming output
+- **End**: Marks the end of the stream with optional metadata
+- **FinalCollected**: Contains the result of `collect_stream()` aggregation (only in Internal mode)
+
+## Usage Examples
+
+### Client-facing Streaming (Response mode)
+
+```rust
+// Enqueue with Response streaming
+let (job_id, _result, stream) = job_app.enqueue_job(
+    metadata,
+    Some(&worker_id),
+    None,
+    args,
+    None,
+    0,
+    Priority::Medium as i32,
+    timeout,
+    None,
+    StreamingType::Response,
+    None,
+).await?;
+
+// Consume stream
+while let Some(item) = stream.next().await {
+    match item.item {
+        Some(Item::Data(data)) => { /* process chunk */ }
+        Some(Item::End(_)) => break,
+        _ => {}
+    }
+}
+```
+
+### Workflow Internal Streaming (Internal mode)
+
+```rust
+// Enqueue with Internal streaming - returns immediately
+let (job_id, _result, _stream) = job_app.enqueue_job(
+    metadata,
+    Some(&worker_id),
+    None,
+    args,
+    None,
+    0,
+    Priority::Medium as i32,
+    timeout,
+    None,
+    StreamingType::Internal,
+    None,
+).await?;
+
+// Subscribe to stream separately
+let stream = pubsub_repo.subscribe_result_stream(&job_id, timeout_ms).await?;
+
+// Collect results
+let mut final_result = None;
+while let Some(item) = stream.next().await {
+    match item.item {
+        Some(Item::Data(data)) => { /* forward to UI or collect */ }
+        Some(Item::FinalCollected(data)) => {
+            final_result = Some(data);
+        }
+        Some(Item::End(_)) => break,
+        _ => {}
+    }
+}
+
+// Use final_result for next workflow step
+```
+
+## Worker Pooling and use_static
+
+When using `use_static=true` on workers (e.g., for local LLMs), the runner instance is pooled and reused across job executions. This is critical for resources that have expensive initialization.
+
+`StreamingType::Internal` preserves this pooling behavior by:
+1. Using the existing `worker_id` when enqueueing (not creating a temp worker)
+2. Returning immediately from enqueue (not blocking on Direct response)
+3. Allowing the caller to manage stream subscription independently
+
+This ensures that heavy resources like local LLM models are not re-initialized for each job.
+
+## Implementation Notes
+
+### Race Condition Prevention
+
+For `Internal` mode, the enqueue returns immediately to allow the caller to subscribe to the pub/sub stream before the worker publishes data. This prevents a race condition where:
+1. Job is enqueued and worker starts processing
+2. Worker completes and publishes stream data
+3. Caller tries to subscribe but data is already gone (pub/sub doesn't buffer)
+
+### collect_stream()
+
+Each runner implementing streaming should provide a `collect_stream()` method in its `RunnerSpec` trait implementation. This method:
+1. Receives the stream of `ResultOutputItem`
+2. Aggregates/merges the data chunks appropriately for the runner type
+3. Returns the final collected bytes
+
+For example, an LLM runner might concatenate all token chunks, while a command runner might merge stdout/stderr appropriately.
