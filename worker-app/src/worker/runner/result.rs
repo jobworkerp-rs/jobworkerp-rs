@@ -283,6 +283,9 @@ pub trait RunnerResultHandler {
                     )
                 }
             }
+            Some(JobWorkerError::CancelledError(mes)) => {
+                (ResultStatus::Cancelled, Some(format!("cancelled: {mes:?}")))
+            }
             Some(JobWorkerError::OtherError(msg)) => (
                 ResultStatus::OtherError,
                 Some(format!("other error: {msg:?}")),
@@ -621,10 +624,28 @@ mod tests {
         assert!(mes.result().is_err());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
-            &job.data.unwrap(),
+            &job.data.clone().unwrap(),
             Err(anyhow::anyhow!("test")),
         );
         assert_eq!(status, ResultStatus::OtherError);
+        assert!(mes.result().is_err());
+
+        // CancelledError should result in Cancelled status (not retryable)
+        let (status, mes) = runner.job_result_status(
+            &worker.retry_policy,
+            &job.data.clone().unwrap(),
+            Err(JobWorkerError::CancelledError("job was cancelled".to_string()).into()),
+        );
+        assert_eq!(status, ResultStatus::Cancelled);
+        assert!(mes.result().is_err());
+
+        // CancelledError with no_retry_worker should also result in Cancelled (not MaxRetry)
+        let (status, mes) = runner.job_result_status(
+            &no_retry_worker.retry_policy,
+            &job.data.unwrap(),
+            Err(JobWorkerError::CancelledError("job was cancelled".to_string()).into()),
+        );
+        assert_eq!(status, ResultStatus::Cancelled);
         assert!(mes.result().is_err());
 
         Ok(())

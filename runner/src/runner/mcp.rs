@@ -13,6 +13,7 @@ use command_utils::trace::Tracing;
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::ProstMessageCodec;
 use jobworkerp_base::codec::UseProstCodec;
+use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_base::APP_WORKER_NAME;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry::Context;
@@ -416,7 +417,7 @@ impl McpServerRunnerImpl {
 
         let result = async {
             if cancellation_token.is_cancelled() {
-                return Err(anyhow!("MCP tool call was cancelled before execution"));
+                return Err(JobWorkerError::CancelledError("MCP tool call was cancelled before execution".to_string()).into());
             }
 
             let span = Self::otel_span_from_metadata(
@@ -461,7 +462,7 @@ impl McpServerRunnerImpl {
                 },
                 _ = cancellation_token.cancelled() => {
                     tracing::info!("MCP tool call was cancelled for tool '{}'", tool_name);
-                    return Err(anyhow!("MCP tool call was cancelled"));
+                    return Err(JobWorkerError::CancelledError("MCP tool call was cancelled".to_string()).into());
                 }
             };
 
@@ -596,7 +597,10 @@ impl McpServerRunnerImpl {
         let cancellation_token = self.get_cancellation_token().await;
 
         if cancellation_token.is_cancelled() {
-            return Err(anyhow!("MCP stream request was cancelled before execution"));
+            return Err(JobWorkerError::CancelledError(
+                "MCP stream request was cancelled before execution".to_string(),
+            )
+            .into());
         }
 
         let arg_json = String::from_utf8(arg.to_vec())?;

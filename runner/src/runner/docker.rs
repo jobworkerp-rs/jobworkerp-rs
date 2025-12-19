@@ -330,7 +330,7 @@ impl RunnerTrait for DockerExecRunner {
 
                 if cancellation_token.is_cancelled() {
                     tracing::info!("Docker exec execution was cancelled before create_exec");
-                    return Err(anyhow::anyhow!("Docker exec execution was cancelled before create_exec"));
+                    return Err(JobWorkerError::CancelledError("Docker exec execution was cancelled before create_exec".to_string()).into());
                 }
 
                 // non interactive
@@ -340,7 +340,7 @@ impl RunnerTrait for DockerExecRunner {
                     }
                     _ = cancellation_token.cancelled() => {
                         tracing::info!("Docker exec creation was cancelled");
-                        return Err(anyhow::anyhow!("Docker exec creation was cancelled"));
+                        return Err(JobWorkerError::CancelledError("Docker exec creation was cancelled".to_string()).into());
                     }
                 };
 
@@ -349,7 +349,7 @@ impl RunnerTrait for DockerExecRunner {
                     start_result = docker.start_exec(&exec, None) => start_result,
                     _ = cancellation_token.cancelled() => {
                         tracing::info!("Docker exec start was cancelled");
-                        return Err(anyhow::anyhow!("Docker exec start was cancelled"));
+                        return Err(JobWorkerError::CancelledError("Docker exec start was cancelled".to_string()).into());
                     }
                 };
 
@@ -370,7 +370,7 @@ impl RunnerTrait for DockerExecRunner {
                             }
                             _ = cancellation_token.cancelled() => {
                                 tracing::info!("Docker exec output reading was cancelled");
-                                return Err(anyhow::anyhow!("Docker exec output reading was cancelled"));
+                                return Err(JobWorkerError::CancelledError("Docker exec output reading was cancelled".to_string()).into());
                             }
                         }
                     }
@@ -610,7 +610,7 @@ impl RunnerTrait for DockerRunner {
             if let Some(docker) = self.docker.as_ref() {
                 if cancellation_token.is_cancelled() {
                     tracing::info!("Docker execution was cancelled before create_image");
-                    return Err(anyhow::anyhow!("Docker execution was cancelled before create_image"));
+                    return Err(JobWorkerError::CancelledError("Docker execution was cancelled before create_image".to_string()).into());
                 }
 
                 // create image if not exist
@@ -622,7 +622,7 @@ impl RunnerTrait for DockerRunner {
                     }
                     _ = cancellation_token.cancelled() => {
                         tracing::info!("Docker image creation was cancelled");
-                        return Err(anyhow::anyhow!("Docker image creation was cancelled"));
+                        return Err(JobWorkerError::CancelledError("Docker image creation was cancelled".to_string()).into());
                     }
                 }
 
@@ -635,7 +635,7 @@ impl RunnerTrait for DockerRunner {
                     result = docker.create_container::<&str, String>(None, config) => result?,
                     _ = cancellation_token.cancelled() => {
                         tracing::info!("Docker container creation was cancelled");
-                        return Err(anyhow::anyhow!("Docker container creation was cancelled"));
+                        return Err(JobWorkerError::CancelledError("Docker container creation was cancelled".to_string()).into());
                     }
                 };
                 let id = created.id;
@@ -657,7 +657,7 @@ impl RunnerTrait for DockerRunner {
                     ) => result?,
                     _ = cancellation_token.cancelled() => {
                         tracing::info!("Docker container attach was cancelled");
-                        return Err(anyhow::anyhow!("Docker container attach was cancelled"));
+                        return Err(JobWorkerError::CancelledError("Docker container attach was cancelled".to_string()).into());
                     }
                 };
 
@@ -670,7 +670,7 @@ impl RunnerTrait for DockerRunner {
                     result = docker.start_container::<String>(&id, None) => result?,
                     _ = cancellation_token.cancelled() => {
                         tracing::info!("Docker container start was cancelled");
-                        return Err(anyhow::anyhow!("Docker container start was cancelled"));
+                        return Err(JobWorkerError::CancelledError("Docker container start was cancelled".to_string()).into());
                     }
                 }
 
@@ -699,7 +699,7 @@ impl RunnerTrait for DockerRunner {
                         }
                         _ = cancellation_token.cancelled() => {
                             tracing::info!("Docker output reading was cancelled");
-                            return Err(anyhow::anyhow!("Docker output reading was cancelled"));
+                            return Err(JobWorkerError::CancelledError("Docker output reading was cancelled".to_string()).into());
                         }
                     }
                 }
