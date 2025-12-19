@@ -277,20 +277,39 @@ where
                     }
                 }
                 // Direct response requires blocking until job completion
-                // For STREAMING_TYPE_RESPONSE, we need to wait for stream
-                // For STREAMING_TYPE_INTERNAL, stream is also returned (with final_collected at end)
+                // EXCEPT for STREAMING_TYPE_INTERNAL - these jobs should return immediately
+                // so the caller can subscribe to the stream before data is published.
+                //
+                // StreamingType::Internal means the job uses streaming internally (run_stream())
+                // but the final result is collected via collect_stream() and returned as a single
+                // chunk. This is typically used by workflow steps that need the final result but
+                // want to leverage streaming-capable runners for better resource management.
+                // The caller subscribes to the stream, collects chunks, and receives FinalCollected.
                 if worker.response_type == ResponseType::Direct as i32 {
-                    // Connection kept open to maintain real-time response capability
-                    // Both Response and Internal types return streams
-                    let request_streaming = streaming_type == StreamingType::Response
-                        || streaming_type == StreamingType::Internal;
-                    self._wait_job_for_direct_response(
-                        &job_id,
-                        job.data.as_ref().map(|d| d.timeout),
-                        request_streaming,
-                    )
-                    .await
-                    .map(|(r, stream)| (job_id, Some(r), stream))
+                    if streaming_type == StreamingType::Internal {
+                        // For Internal streaming jobs with Direct response_type:
+                        // Return immediately without waiting for job completion.
+                        // The caller is responsible for subscribing to the stream
+                        // and collecting results via RunnerSpec::collect_stream().
+                        // This allows the caller to subscribe before worker publishes
+                        // stream data (avoiding race condition where data is published
+                        // before subscriber is ready).
+                        tracing::debug!(
+                            "Internal streaming job with Direct response_type: returning immediately (job_id={})",
+                            job_id.value
+                        );
+                        Ok((job_id, None, None))
+                    } else {
+                        // Non-Internal streaming or no streaming: wait for job completion
+                        let request_streaming = streaming_type == StreamingType::Response;
+                        self._wait_job_for_direct_response(
+                            &job_id,
+                            job.data.as_ref().map(|d| d.timeout),
+                            request_streaming,
+                        )
+                        .await
+                        .map(|(r, stream)| (job_id, Some(r), stream))
+                    }
                 } else {
                     Ok((job_id, None, None))
                 }

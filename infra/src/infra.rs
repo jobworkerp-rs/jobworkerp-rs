@@ -148,6 +148,9 @@ pub mod test {
         use infra_utils::infra::test::{REDIS_CONFIG, SQLITE_CONFIG};
         use jobworkerp_base::JOB_STATUS_CONFIG;
 
+        // Disable WAL for tests to ensure cross-process visibility
+        std::env::set_var("SQLITE_DISABLE_WAL", "1");
+
         InfraConfigModule {
             rdb_config: Some(SQLITE_CONFIG.clone()),
             redis_config: Some(REDIS_CONFIG.clone()),
