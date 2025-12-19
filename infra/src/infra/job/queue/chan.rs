@@ -429,6 +429,7 @@ impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
     /// Subscribe to job cancellation notifications with timeout and cleanup support
     ///
     /// **BroadcastChan implementation (Memory environment)** also supports timeout functionality
+    /// **timeout=0 means unlimited**: No automatic timeout, waits until cleanup signal
     async fn subscribe_job_cancellation_with_timeout(
         &self,
         callback: Box<dyn Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static>,
@@ -436,12 +437,22 @@ impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
         mut cleanup_receiver: tokio::sync::oneshot::Receiver<()>,
     ) -> Result<()> {
         let broadcast_chan = self.broadcast_cancel_chan().clone();
-        let timeout_duration = std::time::Duration::from_millis(job_timeout_ms + 30_000);
 
-        tracing::debug!(
-            "Started memory cancellation subscription with {} ms timeout",
-            timeout_duration.as_millis()
-        );
+        // timeout=0 means unlimited (no timeout), otherwise job timeout + 30 seconds margin
+        let timeout_duration = if job_timeout_ms == 0 {
+            None
+        } else {
+            Some(std::time::Duration::from_millis(job_timeout_ms + 30_000))
+        };
+
+        if let Some(timeout) = timeout_duration {
+            tracing::debug!(
+                "Started memory cancellation subscription with {} ms timeout",
+                timeout.as_millis()
+            );
+        } else {
+            tracing::debug!("Started memory cancellation subscription with no timeout (unlimited)");
+        }
 
         tokio::spawn(async move {
             use futures::StreamExt;
@@ -451,35 +462,58 @@ impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
             let mut stream = BroadcastStream::new(receiver);
 
             loop {
-                tokio::select! {
-                    // Receive BroadcastChan messages (with timeout)
-                    msg_result = tokio::time::timeout(timeout_duration, stream.next()) => {
-                        match msg_result {
-                            Ok(Some(Ok(data))) => {
-                                if let Ok(job_id) = <ChanJobQueueRepositoryImpl as UseJobqueueAndCodec>::deserialize_message::<JobId>(&data) {
-                                    if let Err(e) = callback(job_id).await {
-                                        tracing::error!("Cancellation callback error: {:?}", e);
-                                    }
+                // Handle message reception with optional timeout
+                let msg_opt = if let Some(timeout) = timeout_duration {
+                    // With timeout
+                    tokio::select! {
+                        msg_result = tokio::time::timeout(timeout, stream.next()) => {
+                            match msg_result {
+                                Ok(msg) => Some(msg),
+                                Err(_timeout) => {
+                                    tracing::info!("Memory cancellation subscription timed out after {} ms", timeout.as_millis());
+                                    break;
                                 }
                             }
-                            Ok(Some(Err(e))) => {
-                                tracing::error!("Broadcast receive error: {:?}", e);
-                                break;
-                            }
-                            Ok(None) => {
-                                tracing::info!("Memory broadcast stream ended");
-                                break;
-                            }
-                            Err(_timeout) => {
-                                // Timeout for automatic termination
-                                tracing::info!("Memory cancellation subscription timed out after {} ms", timeout_duration.as_millis());
-                                break;
+                        }
+                        _ = &mut cleanup_receiver => {
+                            tracing::debug!("Received cleanup signal, terminating memory subscription");
+                            break;
+                        }
+                    }
+                } else {
+                    // No timeout (unlimited) - wait indefinitely
+                    tokio::select! {
+                        msg = stream.next() => Some(msg),
+                        _ = &mut cleanup_receiver => {
+                            tracing::debug!("Received cleanup signal, terminating memory subscription");
+                            break;
+                        }
+                    }
+                };
+
+                // Process received message
+                match msg_opt {
+                    Some(Some(Ok(data))) => {
+                        if let Ok(job_id) =
+                            <ChanJobQueueRepositoryImpl as UseJobqueueAndCodec>::deserialize_message::<
+                                JobId,
+                            >(&data)
+                        {
+                            if let Err(e) = callback(job_id).await {
+                                tracing::error!("Cancellation callback error: {:?}", e);
                             }
                         }
                     }
-                    // Manual cleanup signal
-                    _ = &mut cleanup_receiver => {
-                        tracing::debug!("Received cleanup signal, terminating memory subscription");
+                    Some(Some(Err(e))) => {
+                        tracing::error!("Broadcast receive error: {:?}", e);
+                        break;
+                    }
+                    Some(None) => {
+                        tracing::info!("Memory broadcast stream ended");
+                        break;
+                    }
+                    None => {
+                        // This case shouldn't happen, but handle it gracefully
                         break;
                     }
                 }

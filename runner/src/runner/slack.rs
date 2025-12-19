@@ -128,7 +128,7 @@ impl RunnerTrait for SlackPostMessageRunner {
                 let r = tokio::select! {
                     send_result = slack.send_message(&message) => send_result,
                     _ = cancellation_token.cancelled() => {
-                        return Err(anyhow!("Slack message sending was cancelled"));
+                        return Err(JobWorkerError::CancelledError("Slack message sending was cancelled".to_string()).into());
                     }
                 };
                 match r {

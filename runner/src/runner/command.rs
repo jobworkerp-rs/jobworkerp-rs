@@ -333,7 +333,7 @@ impl RunnerTrait for CommandRunnerImpl {
             } => spawn_result,
             _ = cancellation_token.cancelled() => {
                 tracing::info!("Command execution was cancelled before spawn");
-                return Err(anyhow::anyhow!("Command execution was cancelled before spawn"));
+                return Err(JobWorkerError::CancelledError("Command execution was cancelled before spawn".to_string()).into());
             }
         };
 
@@ -431,10 +431,26 @@ impl RunnerTrait for CommandRunnerImpl {
                             }
                             _ = cancellation_token.cancelled() => {
                                 tracing::info!("Command execution cancelled during output reading");
+
+                                // Stop memory monitoring task before returning
+                                if let Some((handle, stop_tx)) = memory_monitor_handle {
+                                    let _ = stop_tx.send(());
+                                    let handle_clone = handle.abort_handle();
+                                    match tokio::time::timeout(Duration::from_millis(500), handle).await {
+                                        Ok(_) => {
+                                            tracing::debug!("Memory monitor task stopped on cancellation");
+                                        }
+                                        Err(_) => {
+                                            tracing::warn!("Memory monitor task didn't complete in time on cancellation, aborting");
+                                            handle_clone.abort();
+                                        }
+                                    }
+                                }
+
                                 if let Some(mut child) = self.consume_child() {
                                     Self::graceful_kill_process(&mut child).await;
                                 }
-                                return Err(anyhow::anyhow!("Command execution was cancelled during output reading"));
+                                return Err(JobWorkerError::CancelledError("Command execution was cancelled during output reading".to_string()).into());
                             }
                         }
                     }
@@ -483,7 +499,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                 tracing::info!("Command execution was cancelled during process execution");
                                 // Gracefully kill the child process using shared function
                                 Self::graceful_kill_process(&mut child).await;
-                                return Err(anyhow::anyhow!("Command execution was cancelled during process execution"));
+                                return Err(JobWorkerError::CancelledError("Command execution was cancelled during process execution".to_string()).into());
                             }
                         }
                     }

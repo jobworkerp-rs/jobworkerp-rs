@@ -11,6 +11,7 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
@@ -397,7 +398,7 @@ impl RunnerTrait for PythonCommandRunner {
 
             if cancellation_token.is_cancelled() {
                 tracing::info!("Python command execution was cancelled before spawn");
-                return Err(anyhow::anyhow!("Python command execution was cancelled before spawn"));
+                return Err(JobWorkerError::CancelledError("Python command execution was cancelled before spawn".to_string()).into());
             }
 
             let child = command.spawn().context("Failed to execute Python script")?;
@@ -414,7 +415,7 @@ impl RunnerTrait for PythonCommandRunner {
                     if let Some(pid) = child_id {
                         let _ = Self::kill_process_by_pid(pid);
                     }
-                    return Err(anyhow::anyhow!("Python command execution was cancelled during process execution"));
+                    return Err(JobWorkerError::CancelledError("Python command execution was cancelled during process execution".to_string()).into());
                 }
             };
 

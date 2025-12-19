@@ -6,6 +6,7 @@ use command_utils::trace::Tracing;
 use futures::stream::{BoxStream, StreamExt};
 use genai::GenaiChatService;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_base::APP_WORKER_NAME;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmRunnerSettings};
 use jobworkerp_runner::runner::cancellation_helper::{
@@ -146,7 +147,13 @@ impl RunnerTrait for LLMChatRunnerImpl {
 
         // Early cancellation check prevents wasted LLM service calls
         if cancellation_token.is_cancelled() {
-            return (Err(anyhow!("LLM chat execution was cancelled")), metadata);
+            return (
+                Err(
+                    JobWorkerError::CancelledError("LLM chat execution was cancelled".to_string())
+                        .into(),
+                ),
+                metadata,
+            );
         }
 
         let span = Self::otel_span_from_metadata(&metadata, APP_WORKER_NAME, "llm_chat_run");
@@ -179,7 +186,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
                 let res = tokio::select! {
                     result = ollama.request_chat(args, cx, metadata_clone.clone()) => result?,
                     _ = cancellation_token.cancelled() => {
-                        return Err(anyhow!("LLM chat (Ollama) request was cancelled"));
+                        return Err(JobWorkerError::CancelledError("LLM chat (Ollama) request was cancelled".to_string()).into());
                     }
                 };
 
@@ -192,7 +199,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
                 let res = tokio::select! {
                     result = genai.request_chat(args, cx, metadata_clone.clone()) => result?,
                     _ = cancellation_token.cancelled() => {
-                        return Err(anyhow!("LLM chat (GenAI) request was cancelled"));
+                        return Err(JobWorkerError::CancelledError("LLM chat (GenAI) request was cancelled".to_string()).into());
                     }
                 };
 

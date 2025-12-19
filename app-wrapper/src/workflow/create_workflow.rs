@@ -3,6 +3,7 @@ use anyhow::{anyhow, Context, Result};
 use app::module::AppModule;
 use async_trait::async_trait;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::create_workflow_args::{WorkerOptions, WorkflowSource};
 use jobworkerp_runner::jobworkerp::runner::create_workflow_result::WorkerId as CreateWorkflowWorkerId;
 use jobworkerp_runner::jobworkerp::runner::{CreateWorkflowArgs, CreateWorkflowResult};
@@ -261,7 +262,10 @@ impl RunnerTrait for CreateWorkflowRunnerImpl {
                     .is_cancelled()
             {
                 tracing::warn!("CREATE_WORKFLOW execution cancelled before creating worker");
-                return Err(anyhow!("CREATE_WORKFLOW execution cancelled"));
+                return Err(JobWorkerError::CancelledError(
+                    "CREATE_WORKFLOW execution cancelled".to_string(),
+                )
+                .into());
             }
             // 3. Create actual worker (using AppModule)
             let worker_id = self

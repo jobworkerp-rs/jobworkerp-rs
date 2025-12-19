@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use command_utils::trace::impls::GenericOtelClient;
 use futures::stream::BoxStream;
 use futures::StreamExt;
+use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{self, LlmCompletionArgs, LlmCompletionResult};
@@ -253,7 +254,7 @@ impl OllamaService {
                 generation_result.map_err(|e| anyhow!("Generation error(generation): {}", e))?
             }
             _ = cancellation_token.cancelled() => {
-                return Err(anyhow!("Ollama generation was cancelled"));
+                return Err(JobWorkerError::CancelledError("Ollama generation was cancelled".to_string()).into());
             }
         };
 

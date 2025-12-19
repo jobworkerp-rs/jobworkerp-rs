@@ -6,6 +6,7 @@ use base64::Engine;
 use command_utils::protobuf::ProtobufDescriptor;
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use jobworkerp_base::error::JobWorkerError;
 use net_utils::grpc::reflection::GrpcReflectionClient;
 use net_utils::grpc::RawBytesCodec;
 use prost_reflect::{DescriptorPool, MessageDescriptor};
@@ -506,7 +507,7 @@ impl RunnerTrait for GrpcUnaryRunner {
                                 .map_err(|_| tonic::Status::new(tonic::Code::DeadlineExceeded, format!("Request timed out after {} ms", req.timeout)))?
                         }
                         _ = cancellation_token.cancelled() => {
-                            return Err(anyhow!("gRPC request was cancelled"));
+                            return Err(JobWorkerError::CancelledError("gRPC request was cancelled".to_string()).into());
                         }
                     }
                 } else {
@@ -515,7 +516,7 @@ impl RunnerTrait for GrpcUnaryRunner {
                             response_result.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
                         }
                         _ = cancellation_token.cancelled() => {
-                            return Err(anyhow!("gRPC request was cancelled"));
+                            return Err(JobWorkerError::CancelledError("gRPC request was cancelled".to_string()).into());
                         }
                     }
                 };

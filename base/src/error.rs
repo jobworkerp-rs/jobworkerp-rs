@@ -42,6 +42,8 @@ pub enum JobWorkerError {
     // KubeClientError(kube_client::error::Error),
     #[error("RuntimeError({0})")]
     RuntimeError(String),
+    #[error("CancelledError({0})")]
+    CancelledError(String),
     #[error("OtherError({0})")]
     OtherError(String),
 }
