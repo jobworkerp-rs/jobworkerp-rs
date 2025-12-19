@@ -38,6 +38,29 @@ impl JobExecutorWrapper {
     pub fn new(app_module: Arc<AppModule>) -> Self {
         Self { app_module }
     }
+
+    /// Access to repository module for advanced streaming operations
+    /// Returns None if redis module is not available (standalone mode)
+    pub fn redis_job_result_pubsub_repository(
+        &self,
+    ) -> Option<&infra::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl> {
+        self.app_module
+            .repositories
+            .redis_module
+            .as_ref()
+            .map(|m| &m.redis_job_result_pubsub_repository)
+    }
+
+    /// Access to channel-based job result pubsub repository for standalone mode
+    pub fn chan_job_result_pubsub_repository(
+        &self,
+    ) -> Option<&infra::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl> {
+        self.app_module
+            .repositories
+            .rdb_module
+            .as_ref()
+            .map(|m| &m.chan_job_result_pubsub_repository)
+    }
 }
 impl UseJobResultApp for JobExecutorWrapper {
     fn job_result_app(&self) -> &Arc<dyn JobResultApp + 'static> {
@@ -469,132 +492,6 @@ pub trait UseJobExecutor:
                         using, // Pass using parameter for MCP/Plugin workers
                     )
                     .await
-                } else {
-                    Err(anyhow::anyhow!(
-                        "Not found runner: {:?}",
-                        worker_data.runner_id.as_ref()
-                    ))
-                }
-            } else {
-                Err(anyhow::anyhow!("Not found worker: {}", worker_name))
-            }
-        }
-    }
-    /// Enqueue a job with streaming internally collected by App layer.
-    ///
-    /// This method:
-    /// 1. Enqueues a job with `StreamingType::Internal`
-    /// 2. Worker layer runs runner's `run_stream()` and returns the stream
-    /// 3. App layer collects results via `RunnerSpec::collect_stream()`
-    /// 4. Returns the collected result as a single JobResult
-    ///
-    /// This uses the Runner's `collect_stream` method for proper protobuf message merging.
-    /// The App layer handles the collection via RunnerSpecFactory.
-    #[allow(clippy::too_many_arguments)]
-    fn enqueue_with_worker_name_and_collect_stream(
-        &self,
-        metadata: Arc<HashMap<String, String>>, // metadata for job
-        worker_name: &str,                      // runner(runner) name
-        job_args: &serde_json::Value,           // enqueue job args
-        uniq_key: Option<String>, // unique key for job (if not exists, use default values)
-        job_timeout_sec: u32,     // job timeout in seconds
-        using: Option<String>,    // using parameter for MCP/Plugin runners
-    ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
-        async move {
-            let worker = self
-                .worker_app()
-                .find_by_name(worker_name)
-                .await?
-                .ok_or_else(|| {
-                    JobWorkerError::WorkerNotFound(format!("Not found worker: {worker_name}"))
-                })?;
-            if let Worker {
-                id: Some(wid),
-                data: Some(worker_data),
-            } = worker
-            {
-                if let Some(RunnerWithSchema {
-                    id: Some(rid),
-                    data: Some(rdata),
-                    ..
-                }) =
-                    self.runner_app()
-                        .find_runner(worker_data.runner_id.as_ref().ok_or(
-                            JobWorkerError::NotFound(format!(
-                                "Not found runner for worker {}: {:?}",
-                                worker_name,
-                                worker_data.runner_id.as_ref()
-                            )),
-                        )?)
-                        .await?
-                {
-                    let job_args = self
-                        .transform_job_args(&rid, &rdata, job_args, using.as_deref())
-                        .await?;
-
-                    // Enqueue with STREAMING_TYPE_INTERNAL
-                    // Worker returns the stream, App layer collects via RunnerSpec::collect_stream
-                    let (job_id, _job_result, stream) = self
-                        .enqueue_with_worker_or_temp(
-                            metadata,
-                            Some(wid),
-                            worker_data,
-                            job_args,
-                            uniq_key,
-                            job_timeout_sec,
-                            StreamingType::Internal, // Internal streaming - returns stream to App
-                            using.clone(),
-                        )
-                        .await?;
-
-                    // With STREAMING_TYPE_INTERNAL, Worker returns stream
-                    // App layer collects via RunnerSpec::collect_stream
-                    if let Some(stream) = stream {
-                        tracing::debug!(
-                            "Collecting stream for job {} via RunnerSpec::collect_stream",
-                            job_id.value
-                        );
-
-                        // Get RunnerSpec from factory to call collect_stream
-                        let runner_spec = self
-                            .runner_spec_factory()
-                            .create_runner_spec_by_name(&rdata.name, false)
-                            .await
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "Failed to create RunnerSpec for runner: {}",
-                                    &rdata.name
-                                )
-                            })?;
-
-                        // Collect stream using RunnerSpec::collect_stream
-                        let (collected_bytes, _metadata) =
-                            runner_spec.collect_stream(stream, using.as_deref()).await?;
-
-                        tracing::debug!(
-                            "Stream collected for job {}: {} bytes",
-                            job_id.value,
-                            collected_bytes.len()
-                        );
-
-                        // Transform output to JSON
-                        self.transform_raw_output(
-                            &rid,
-                            &rdata,
-                            collected_bytes.as_slice(),
-                            using.as_deref(),
-                        )
-                        .await
-                    } else {
-                        tracing::error!(
-                            "No stream returned for job {} (STREAMING_TYPE_INTERNAL should return stream)",
-                            job_id.value
-                        );
-                        Err(anyhow::anyhow!(
-                            "No stream returned for job {} (STREAMING_TYPE_INTERNAL should return stream)",
-                            job_id.value
-                        ))
-                    }
                 } else {
                     Err(anyhow::anyhow!(
                         "Not found runner: {:?}",

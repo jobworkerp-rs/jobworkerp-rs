@@ -50,7 +50,7 @@ graph TB
 
 #### Result Retrieval and Notification
 - Two methods for retrieving job execution results: Direct retrieval (DIRECT), No result retrieval (NONE)
-- Real-time result notification (broadcast_results): Result distribution to multiple clients, streaming retrieval
+- Real-time result notification (broadcast_results): Result distribution to multiple clients, streaming retrieval (See [STREAMING.md](STREAMING.md) for details)
 
 #### Execution Environment and Scalability
 - Job execution channel configuration with parallel execution settings per channel

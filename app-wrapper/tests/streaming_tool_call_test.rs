@@ -124,7 +124,9 @@ async fn test_streaming_manual_mode_returns_pending_tool_calls() -> Result<()> {
     println!("=== Phase 1: Sending streaming request with manual mode ===");
     let stream = timeout(
         TEST_TIMEOUT,
-        service.clone().request_stream_chat(args.clone(), metadata.clone()),
+        service
+            .clone()
+            .request_stream_chat(args.clone(), metadata.clone()),
     )
     .await??;
 
@@ -226,7 +228,9 @@ async fn test_streaming_manual_mode_returns_pending_tool_calls() -> Result<()> {
 
     let stream = timeout(
         TEST_TIMEOUT,
-        service.clone().request_stream_chat(continuation_args, metadata.clone()),
+        service
+            .clone()
+            .request_stream_chat(continuation_args, metadata.clone()),
     )
     .await??;
 

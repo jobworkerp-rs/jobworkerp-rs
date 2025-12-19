@@ -527,22 +527,47 @@ async fn test_manual_mode_invalid_function_name() -> Result<()> {
     println!("Testing with invalid function name...");
     let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await??;
 
-    // Should complete (with error message in response)
+    // Should complete (with error message in response or structured error in tool_execution_results)
     println!("Result: done={}", result.done);
+    println!(
+        "Tool execution results count: {}",
+        result.tool_execution_results.len()
+    );
 
-    if let Some(content) = &result.content {
-        if let Some(ResultContent::Text(text)) = &content.content {
-            println!("Response text: {}", text);
-            // Response should contain error information
-            assert!(
-                text.to_lowercase().contains("error")
-                    || text.to_lowercase().contains("not found")
-                    || text.to_lowercase().contains("fail")
-                    || !text.is_empty(), // At least some response
-                "Should have some response for invalid function"
+    // Check for structured error in tool_execution_results
+    let has_structured_error = result.tool_execution_results.iter().any(|r| {
+        let is_error = !r.success || r.error.is_some();
+        if is_error {
+            println!(
+                "  Tool result: fn_name={}, success={}, error={:?}",
+                r.fn_name, r.success, r.error
             );
         }
-    }
+        is_error
+    });
+
+    // Check for error indication in text response
+    let has_text_error = if let Some(content) = &result.content {
+        if let Some(ResultContent::Text(text)) = &content.content {
+            println!("Response text: {}", text);
+            let lower = text.to_lowercase();
+            lower.contains("error")
+                || lower.contains("not found")
+                || lower.contains("fail")
+                || lower.contains("unknown")
+                || lower.contains("invalid")
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // Either structured error or text error should be present
+    assert!(
+        has_structured_error || has_text_error,
+        "Invalid function name should produce either structured error (tool_execution_results with success=false or error field) or text error indication"
+    );
 
     Ok(())
 }

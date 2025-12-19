@@ -340,7 +340,8 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
                     name: worker_name.to_string(),
                     arguments: {
                         let mut args = serde_json::Map::new();
-                        // Use printf to output multiple lines for stream testing
+                        // Use sleep to give time for subscribe to connect before job completes
+                        // This avoids race condition where publish happens before subscribe
                         args.insert("command".to_string(), serde_json::json!("sh"));
                         args.insert(
                             "args".to_string(),
