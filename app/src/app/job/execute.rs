@@ -708,48 +708,6 @@ pub trait UseJobExecutor:
             .map_err(|e| anyhow::anyhow!("Failed to parse output: {:#?}", e))
         }
     }
-    fn parse_job_result(
-        job_result: JobResult,
-        runner_data: &RunnerData,
-    ) -> Result<Option<serde_json::Value>> {
-        let output = job_result
-            .data
-            .as_ref()
-            .and_then(|r| r.output.as_ref().map(|o| &o.items));
-        if let Some(output) = output {
-            let result_descriptor =
-                Self::parse_job_result_schema_descriptor(runner_data, DEFAULT_METHOD_NAME)?;
-            if let Some(desc) = result_descriptor {
-                match ProtobufDescriptor::get_message_from_bytes(desc, output) {
-                    Ok(m) => {
-                        let j = ProtobufDescriptor::message_to_json_value(&m)?;
-                        tracing::debug!(
-                            "Result schema exists. decode message with proto: {:#?}",
-                            j
-                        );
-                        Ok(Some(j))
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to parse result schema: {:#?}", e);
-                        Err(JobWorkerError::RuntimeError(format!(
-                            "Failed to parse result schema: {e:#?}"
-                        )))
-                    }
-                }
-            } else {
-                let text = String::from_utf8_lossy(output);
-                tracing::debug!("No result schema: {}", text);
-                Ok(Some(serde_json::Value::String(text.to_string())))
-            }
-            .map_err(|e| {
-                JobWorkerError::RuntimeError(format!("Failed to parse output: {e:#?}")).into()
-            })
-        } else {
-            tracing::warn!("No output found");
-            Ok(None)
-        }
-    }
-
     #[inline]
     fn decode_job_result_output(
         &self,

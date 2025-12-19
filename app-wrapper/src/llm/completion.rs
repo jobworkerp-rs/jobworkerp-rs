@@ -6,6 +6,7 @@ use command_utils::trace::Tracing;
 use futures::stream::{BoxStream, StreamExt};
 use genai::GenaiCompletionService;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_base::APP_WORKER_NAME;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmCompletionArgs, LlmRunnerSettings};
 use jobworkerp_runner::runner::cancellation_helper::{
@@ -135,7 +136,10 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         // Early cancellation check prevents wasted LLM service calls
         if cancellation_token.is_cancelled() {
             return (
-                Err(anyhow!("LLM completion execution was cancelled")),
+                Err(JobWorkerError::CancelledError(
+                    "LLM completion execution was cancelled".to_string(),
+                )
+                .into()),
                 metadata,
             );
         }
@@ -191,7 +195,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 let res = tokio::select! {
                     result = genai.request_chat(args, cx, metadata_clone.clone()) => result?,
                     _ = cancellation_token.cancelled() => {
-                        return Err(anyhow!("LLM completion (GenAI) request was cancelled"));
+                        return Err(JobWorkerError::CancelledError("LLM completion (GenAI) request was cancelled".to_string()).into());
                     }
                 };
                 let mut buf = Vec::with_capacity(res.encoded_len());
@@ -241,9 +245,10 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         // Early cancellation check prevents wasted LLM service calls
         if cancellation_token.is_cancelled() {
             tracing::info!("LLM completion stream execution was cancelled before service call");
-            return Err(anyhow!(
-                "LLM completion stream execution was cancelled before service call"
-            ));
+            return Err(JobWorkerError::CancelledError(
+                "LLM completion stream execution was cancelled before service call".to_string(),
+            )
+            .into());
         }
 
         if let Some(ollama) = self.ollama.as_mut() {
@@ -307,7 +312,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 result = genai.request_chat_stream(args, metadata) => result?,
                 _ = cancellation_token.cancelled() => {
                     tracing::info!("LLM completion stream (GenAI) request was cancelled");
-                    return Err(anyhow!("LLM completion stream (GenAI) request was cancelled"));
+                    return Err(JobWorkerError::CancelledError("LLM completion stream (GenAI) request was cancelled".to_string()).into());
                 }
             };
 

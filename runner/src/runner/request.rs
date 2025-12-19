@@ -203,7 +203,7 @@ impl RunnerTrait for RequestRunner {
 
         let result = async {
             if cancellation_token.is_cancelled() {
-                return Err(anyhow!("HTTP request was cancelled before execution"));
+                return Err(JobWorkerError::CancelledError("HTTP request was cancelled before execution".to_string()).into());
             }
 
             if let Some(url) = self.url.as_ref() {
@@ -273,7 +273,7 @@ impl RunnerTrait for RequestRunner {
                         }
                     }
                     _ = cancellation_token.cancelled() => {
-                        Err(anyhow!("HTTP request was cancelled"))
+                        Err(JobWorkerError::CancelledError("HTTP request was cancelled".to_string()).into())
                     }
                 };
                 result
