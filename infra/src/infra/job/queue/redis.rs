@@ -357,18 +357,23 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
 
     /// Subscribe to job cancellation notifications with timeout and cleanup support
     ///
-    /// **Leak prevention**: Job timeout + margin for automatic disconnection
+    /// **Leak prevention**: Job timeout + margin for automatic disconnection (when timeout > 0)
+    /// **timeout=0 means unlimited**: No automatic timeout, waits until cleanup signal
     /// **Simple design**: No complex control needed, leverages redis-rs standard functionality
     async fn subscribe_job_cancellation_with_timeout(
         &self,
         callback: Box<dyn Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static>,
-        job_timeout_ms: u64, // Job timeout time (milliseconds)
+        job_timeout_ms: u64, // Job timeout time (milliseconds), 0 means unlimited
         mut cleanup_receiver: tokio::sync::oneshot::Receiver<()>,
     ) -> Result<()> {
         const JOB_CANCELLATION_CHANNEL: &str = "job_cancellation_channel";
 
-        // Job timeout + 30 seconds margin for pubsub timeout setting
-        let pubsub_timeout = std::time::Duration::from_millis(job_timeout_ms + 30_000);
+        // timeout=0 means unlimited (no timeout), otherwise job timeout + 30 seconds margin
+        let pubsub_timeout = if job_timeout_ms == 0 {
+            None
+        } else {
+            Some(std::time::Duration::from_millis(job_timeout_ms + 30_000))
+        };
 
         let mut pubsub = self
             .job_result_pubsub_repository
@@ -379,8 +384,10 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
         pubsub.subscribe(JOB_CANCELLATION_CHANNEL).await?;
 
         tracing::debug!(
-            "Started job cancellation subscription with {} ms timeout on channel: {}",
-            pubsub_timeout.as_millis(),
+            "Started job cancellation subscription with {:?} timeout on channel: {}",
+            pubsub_timeout
+                .map(|d| format!("{} ms", d.as_millis()))
+                .unwrap_or_else(|| "unlimited".to_string()),
             JOB_CANCELLATION_CHANNEL
         );
 
@@ -389,8 +396,20 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
 
         loop {
             tokio::select! {
-                // Receive pubsub messages (with application-level timeout)
-                msg_result = tokio::time::timeout(pubsub_timeout, message_stream.next()) => {
+                // Receive pubsub messages (with optional application-level timeout)
+                msg_result = async {
+                    match pubsub_timeout {
+                        Some(timeout) => {
+                            tokio::time::timeout(timeout, message_stream.next())
+                                .await
+                                .map_err(|_| ()) // Convert timeout error to Err(())
+                        }
+                        None => {
+                            // No timeout - wait indefinitely
+                            Ok(message_stream.next().await)
+                        }
+                    }
+                } => {
                     match msg_result {
                         Ok(Some(message)) => {
                             match message.get_payload::<Vec<u8>>() {
@@ -417,9 +436,9 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
                             tracing::debug!("Pubsub connection ended");
                             break;
                         }
-                        Err(_timeout) => {
+                        Err(()) => {
                             // Application-level timeout occurred
-                            tracing::debug!("Pubsub connection timed out after {} ms", pubsub_timeout.as_millis());
+                            tracing::debug!("Pubsub connection timed out after {:?}", pubsub_timeout);
                             break;
                         }
                     }

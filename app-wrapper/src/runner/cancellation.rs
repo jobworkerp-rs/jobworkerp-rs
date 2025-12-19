@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use infra::infra::job::queue::JobQueueCancellationRepository;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::JobId;
 use std::sync::Arc;
 use std::time::Duration;
@@ -91,7 +92,10 @@ impl RunnerCancellationManager {
         let token = if let Some(existing_token) = &self.cancellation_token {
             if existing_token.is_cancelled() {
                 self.cancellation_token = None;
-                return Err(anyhow::anyhow!("Token was cancelled before start"));
+                return Err(JobWorkerError::CancelledError(
+                    "Token was cancelled before start".to_string(),
+                )
+                .into());
             }
             existing_token.clone()
         } else {
