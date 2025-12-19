@@ -30,17 +30,29 @@ where
 {
     const INDIVIDUAL_JOB_KEY_PREFIX: &'static str = "JOB_INDIVIDUAL:";
 
-    // create with individual key TTL for running job visibility (replaces old create)
-    async fn create_with_expire(&self, id: &JobId, job: &JobData, ttl: Duration) -> Result<()> {
+    /// Create job with optional TTL for running job visibility.
+    /// If ttl is None, the key will not expire (for unlimited timeout jobs).
+    async fn create_with_expire(
+        &self,
+        id: &JobId,
+        job: &JobData,
+        ttl: Option<Duration>,
+    ) -> Result<()> {
         let job_key = format!("{}{}", Self::INDIVIDUAL_JOB_KEY_PREFIX, id.value);
         let serialized_job = Self::serialize_job(job);
 
         let mut conn = self.redis_pool().get().await?;
 
-        let result: Result<String> = conn
-            .set_ex(&job_key, serialized_job, ttl.as_secs())
-            .await
-            .map_err(|e| JobWorkerError::RedisError(e).into());
+        let result: Result<String> = match ttl {
+            Some(duration) => conn
+                .set_ex(&job_key, serialized_job, duration.as_secs())
+                .await
+                .map_err(|e| JobWorkerError::RedisError(e).into()),
+            None => conn
+                .set(&job_key, serialized_job)
+                .await
+                .map_err(|e| JobWorkerError::RedisError(e).into()),
+        };
 
         match result {
             Ok(_) => Ok(()),
@@ -48,19 +60,27 @@ where
         }
     }
 
-    async fn upsert(&self, id: &JobId, job: &JobData, ttl: Duration) -> Result<bool> {
+    /// Upsert job with optional TTL.
+    /// If ttl is None, the key will not expire (for unlimited timeout jobs).
+    async fn upsert(&self, id: &JobId, job: &JobData, ttl: Option<Duration>) -> Result<bool> {
         let job_key = format!("{}{}", Self::INDIVIDUAL_JOB_KEY_PREFIX, id.value);
         let serialized_job = Self::serialize_job(job);
 
         let mut conn = self.redis_pool().get().await?;
 
-        let result: Result<String> = conn
-            .set_ex(&job_key, serialized_job, ttl.as_secs())
-            .await
-            .map_err(|e| JobWorkerError::RedisError(e).into());
+        let result: Result<String> = match ttl {
+            Some(duration) => conn
+                .set_ex(&job_key, serialized_job, duration.as_secs())
+                .await
+                .map_err(|e| JobWorkerError::RedisError(e).into()),
+            None => conn
+                .set(&job_key, serialized_job)
+                .await
+                .map_err(|e| JobWorkerError::RedisError(e).into()),
+        };
 
         match result {
-            Ok(_) => Ok(true), // Always consider upsert as successful update
+            Ok(_) => Ok(true),
             Err(e) => Err(e),
         }
     }
@@ -230,7 +250,7 @@ async fn redis_test() -> Result<()> {
     repo.delete(&id).await?;
 
     // create and find
-    let ttl = Duration::from_secs(3600); // 1 hour TTL
+    let ttl = Some(Duration::from_secs(3600)); // 1 hour TTL
     repo.create_with_expire(&id, job, ttl).await?;
     let res = repo.find(&id).await?;
     assert_eq!(res.and_then(|r| r.data).as_ref(), Some(job));
@@ -305,7 +325,7 @@ async fn redis_individual_ttl_test() -> Result<()> {
     };
 
     // Test create_with_expire and find
-    let ttl = Duration::from_secs(10); // 10 seconds TTL
+    let ttl = Some(Duration::from_secs(10)); // 10 seconds TTL
     repo.create_with_expire(&id, job, ttl).await?;
 
     // Should be able to find from individual key

@@ -18,6 +18,7 @@ use jobworkerp_base::{error::JobWorkerError, job_status_config::JobStatusConfig}
 use proto::jobworkerp::data::{Job, JobData};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use self::resource::{load_db_config_from_env, load_redis_config_from_env};
 
@@ -87,6 +88,9 @@ pub fn load_job_queue_config_from_env() -> Result<JobQueueConfig> {
         })
 }
 
+/// Safety buffer added to job timeout for TTL (5 minutes in milliseconds)
+const JOB_TTL_SAFETY_BUFFER_MS: u64 = 300_000;
+
 pub trait UseJobQueueConfig {
     fn job_queue_config(&self) -> &JobQueueConfig;
 
@@ -99,6 +103,23 @@ pub trait UseJobQueueConfig {
             .as_ref()
             .map(|d| self.is_run_after_job_data(d))
             .unwrap_or(false)
+    }
+
+    /// Calculate TTL for job cache/Redis storage.
+    /// For timeout=0 (unlimited), uses `expire_job_result_seconds` from config as max TTL.
+    /// If `expire_job_result_seconds` is also 0, returns None (no expiration).
+    /// For other timeouts, adds a 5-minute safety buffer.
+    fn calculate_job_ttl(&self, timeout_ms: u64) -> Option<Duration> {
+        if timeout_ms == 0 {
+            let expire_seconds = self.job_queue_config().expire_job_result_seconds;
+            if expire_seconds == 0 {
+                None
+            } else {
+                Some(Duration::from_secs(expire_seconds as u64))
+            }
+        } else {
+            Some(Duration::from_millis(timeout_ms + JOB_TTL_SAFETY_BUFFER_MS))
+        }
     }
 }
 

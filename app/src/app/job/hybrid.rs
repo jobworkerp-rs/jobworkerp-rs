@@ -30,7 +30,6 @@ use proto::jobworkerp::data::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct HybridJobAppImpl {
@@ -948,8 +947,9 @@ impl JobApp for HybridJobAppImpl {
             tracing::debug!("Found job {} from RDB", id.value);
 
             // Cache in Redis with appropriate TTL for future lookups
+            // For timeout=0 (unlimited), uses expire_job_result_seconds from config
             if let Some(job_data) = &job.data {
-                let ttl = Duration::from_secs(3600);
+                let ttl = self.calculate_job_ttl(job_data.timeout);
                 if let Err(e) = self
                     .redis_job_repository()
                     .create_with_expire(id, job_data, ttl)
