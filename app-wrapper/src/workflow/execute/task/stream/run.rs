@@ -142,8 +142,9 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
         let default_timeout = self.default_task_timeout;
 
         // Create channel for streaming events
-        let (event_tx, event_rx) =
-            tokio::sync::mpsc::unbounded_channel::<Result<WorkflowStreamEvent, Box<workflow::Error>>>();
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<
+            Result<WorkflowStreamEvent, Box<workflow::Error>>,
+        >();
 
         // Spawn a task that handles the entire execution
         // This avoids the stream! macro's blocking yield behavior
@@ -200,11 +201,12 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
                 }
                 Err(e) => {
                     tracing::error!("Failed to process stream for job {}: {:?}", job_id, e);
-                    let _ = event_tx.send(Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                        "Failed to process streaming result".to_string(),
-                        None,
-                        Some(format!("{e:?}")),
-                    )));
+                    let _ = event_tx.send(Err(workflow::errors::ErrorFactory::new()
+                        .service_unavailable(
+                            "Failed to process streaming result".to_string(),
+                            None,
+                            Some(format!("{e:?}")),
+                        )));
                     return;
                 }
             }
@@ -289,7 +291,12 @@ async fn prepare_streaming_job(
     let handle = match run {
         // Worker configuration
         workflow::RunTaskConfiguration::Worker(workflow::RunWorker {
-            worker: RunJobWorker { arguments, name: worker_name, using },
+            worker:
+                RunJobWorker {
+                    arguments,
+                    name: worker_name,
+                    using,
+                },
         }) => {
             task_context.add_position_name("worker".to_string()).await;
 
@@ -300,7 +307,11 @@ async fn prepare_streaming_job(
             ) {
                 Ok(args) => args,
                 Err(mut e) => {
-                    task_context.position.write().await.push("arguments".to_string());
+                    task_context
+                        .position
+                        .write()
+                        .await
+                        .push("arguments".to_string());
                     e.position(&*task_context.position.read().await);
                     return Err(e);
                 }
@@ -328,7 +339,12 @@ async fn prepare_streaming_job(
 
         // Function(WorkerFunction) configuration
         workflow::RunTaskConfiguration::Function(workflow::RunFunction {
-            function: workflow::RunJobFunction::WorkerFunction { arguments, using, worker_name },
+            function:
+                workflow::RunJobFunction::WorkerFunction {
+                    arguments,
+                    using,
+                    worker_name,
+                },
         }) => {
             task_context.add_position_name("function".to_string()).await;
 
@@ -339,7 +355,11 @@ async fn prepare_streaming_job(
             ) {
                 Ok(args) => args,
                 Err(mut e) => {
-                    task_context.position.write().await.push("arguments".to_string());
+                    task_context
+                        .position
+                        .write()
+                        .await
+                        .push("arguments".to_string());
                     e.position(&*task_context.position.read().await);
                     return Err(e);
                 }
@@ -367,7 +387,14 @@ async fn prepare_streaming_job(
 
         // Runner configuration
         workflow::RunTaskConfiguration::Runner(workflow::RunRunner {
-            runner: RunJobRunner { arguments, name: runner_name, options, settings, using },
+            runner:
+                RunJobRunner {
+                    arguments,
+                    name: runner_name,
+                    options,
+                    settings,
+                    using,
+                },
         }) => {
             task_context.add_position_name("runner".to_string()).await;
 
@@ -378,7 +405,11 @@ async fn prepare_streaming_job(
             ) {
                 Ok(args) => args,
                 Err(mut e) => {
-                    task_context.position.write().await.push("arguments".to_string());
+                    task_context
+                        .position
+                        .write()
+                        .await
+                        .push("arguments".to_string());
                     e.position(&*task_context.position.read().await);
                     return Err(e);
                 }
@@ -391,7 +422,11 @@ async fn prepare_streaming_job(
             ) {
                 Ok(s) => s,
                 Err(mut e) => {
-                    task_context.position.write().await.push("settings".to_string());
+                    task_context
+                        .position
+                        .write()
+                        .await
+                        .push("settings".to_string());
                     e.position(&*task_context.position.read().await);
                     return Err(e);
                 }
@@ -422,7 +457,14 @@ async fn prepare_streaming_job(
 
         // Function(RunnerFunction) configuration
         workflow::RunTaskConfiguration::Function(workflow::RunFunction {
-            function: workflow::RunJobFunction::RunnerFunction { arguments, options, runner_name, settings, using },
+            function:
+                workflow::RunJobFunction::RunnerFunction {
+                    arguments,
+                    options,
+                    runner_name,
+                    settings,
+                    using,
+                },
         }) => {
             task_context.add_position_name("function".to_string()).await;
 
@@ -433,7 +475,11 @@ async fn prepare_streaming_job(
             ) {
                 Ok(args) => args,
                 Err(mut e) => {
-                    task_context.position.write().await.push("arguments".to_string());
+                    task_context
+                        .position
+                        .write()
+                        .await
+                        .push("arguments".to_string());
                     e.position(&*task_context.position.read().await);
                     return Err(e);
                 }
@@ -446,7 +492,11 @@ async fn prepare_streaming_job(
             ) {
                 Ok(s) => s,
                 Err(mut e) => {
-                    task_context.position.write().await.push("settings".to_string());
+                    task_context
+                        .position
+                        .write()
+                        .await
+                        .push("settings".to_string());
                     e.position(&*task_context.position.read().await);
                     return Err(e);
                 }
@@ -496,28 +546,27 @@ async fn prepare_streaming_job(
     let timeout_ms = Some(timeout_sec as u64 * 1000);
 
     // Try redis repository first (Scalable mode), then channel repository (Standalone mode)
-    let stream = if let Some(pubsub_repo) =
-        job_executor_wrapper.redis_job_result_pubsub_repository()
-    {
-        pubsub_repo
-            .subscribe_result_stream(&handle.job_id, timeout_ms)
-            .await
-    } else if let Some(pubsub_repo) = job_executor_wrapper.chan_job_result_pubsub_repository() {
-        pubsub_repo
-            .subscribe_result_stream(&handle.job_id, timeout_ms)
-            .await
-    } else {
-        Err(anyhow::anyhow!(
-            "No pubsub repository available for streaming"
-        ))
-    }
-    .map_err(|e| {
-        workflow::errors::ErrorFactory::new().service_unavailable(
-            "Failed to subscribe to result stream".to_string(),
-            Some(pos_for_err),
-            Some(format!("{e:?}")),
-        )
-    })?;
+    let stream =
+        if let Some(pubsub_repo) = job_executor_wrapper.redis_job_result_pubsub_repository() {
+            pubsub_repo
+                .subscribe_result_stream(&handle.job_id, timeout_ms)
+                .await
+        } else if let Some(pubsub_repo) = job_executor_wrapper.chan_job_result_pubsub_repository() {
+            pubsub_repo
+                .subscribe_result_stream(&handle.job_id, timeout_ms)
+                .await
+        } else {
+            Err(anyhow::anyhow!(
+                "No pubsub repository available for streaming"
+            ))
+        }
+        .map_err(|e| {
+            workflow::errors::ErrorFactory::new().service_unavailable(
+                "Failed to subscribe to result stream".to_string(),
+                Some(pos_for_err),
+                Some(format!("{e:?}")),
+            )
+        })?;
 
     Ok(StreamingPreparation {
         handle,
@@ -533,7 +582,9 @@ async fn process_stream(
     job_id: i64,
     handle: &StreamingJobHandle,
     job_executor_wrapper: &Arc<JobExecutorWrapper>,
-    event_tx: &tokio::sync::mpsc::UnboundedSender<Result<WorkflowStreamEvent, Box<workflow::Error>>>,
+    event_tx: &tokio::sync::mpsc::UnboundedSender<
+        Result<WorkflowStreamEvent, Box<workflow::Error>>,
+    >,
 ) -> Result<serde_json::Value> {
     use app::app::job::execute::UseJobExecutor;
     use futures::StreamExt;
@@ -551,8 +602,10 @@ async fn process_stream(
                 match item.item {
                     Some(Item::Data(data)) => {
                         // Forward to UI for real-time display
-                        let _ = event_tx
-                            .send(Ok(WorkflowStreamEvent::streaming_data(job_id, data.clone())));
+                        let _ = event_tx.send(Ok(WorkflowStreamEvent::streaming_data(
+                            job_id,
+                            data.clone(),
+                        )));
                         // Collect all chunks for later aggregation
                         all_data_chunks.push(data);
                     }

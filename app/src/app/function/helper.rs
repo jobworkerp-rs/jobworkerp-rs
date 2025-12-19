@@ -166,12 +166,8 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 }
             }
 
-            let (settings, arguments) = Self::prepare_runner_call_arguments(
-                arguments.unwrap_or_default(),
-                &runner,
-                tool_name_opt.clone(),
-            )
-            .await?;
+            let (settings, arguments) =
+                Self::prepare_runner_call_arguments(arguments.unwrap_or_default()).await?;
             if let RunnerWithSchema {
                 id: Some(_id),
                 data: Some(runner_data),
@@ -429,9 +425,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
 
     fn prepare_runner_call_arguments(
         mut request_args: Map<String, Value>,
-        _runner: &RunnerWithSchema, // Reserved for future validation logic
-        _tool_name_opt: Option<String>, // tool_name now passed via 'using' parameter
-    ) -> impl Future<Output = Result<(Option<Value>, Value)>> + Send + '_ {
+    ) -> impl Future<Output = Result<(Option<Value>, Value)>> + Send {
         async move {
             let settings = request_args.remove("settings");
 
