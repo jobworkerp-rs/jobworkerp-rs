@@ -22,6 +22,302 @@ use proto::jobworkerp::data::{result_output_item, ResultOutputItem};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+/// Extracted tool call information from LlmChatResult.
+#[derive(Debug, Clone)]
+pub struct ExtractedToolCall {
+    pub call_id: String,
+    pub fn_name: String,
+    pub fn_arguments: String,
+}
+
+/// Result of extracting tool calls from LlmChatResult.
+#[derive(Debug, Clone)]
+pub struct ExtractedToolCalls {
+    /// List of tool calls
+    pub tool_calls: Vec<ExtractedToolCall>,
+    /// Whether the client needs to execute these tools (HITL mode)
+    /// - true: requires_tool_execution=true, client must approve and send results
+    /// - false: auto-calling mode, tools were already executed by server
+    pub requires_execution: bool,
+}
+
+/// Extract tool calls from LlmChatResult bytes (supports both protobuf and JSON formats).
+///
+/// This function extracts tool call information from both:
+/// - `content.tool_calls` (auto-calling mode, for display only)
+/// - `pending_tool_calls` (HITL mode, requires client execution)
+///
+/// The bytes can be either:
+/// - Protobuf-encoded LlmChatResult (from streaming data)
+/// - JSON-serialized serde_json::Value (from StreamingJobCompleted context.output)
+///
+/// Returns `Some(ExtractedToolCalls)` if tool calls are found.
+pub fn extract_tool_calls_from_llm_result(bytes: &[u8]) -> Option<ExtractedToolCalls> {
+    // First try protobuf decoding
+    if let Ok(result) = LlmChatResult::decode(bytes) {
+        if let Some(extracted) = extract_tool_calls_from_protobuf_result(&result) {
+            return Some(extracted);
+        }
+    }
+
+    // Fallback: try JSON decoding (for StreamingJobCompleted context.output)
+    if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        if let Some(extracted) = extract_tool_calls_from_json(&json_value) {
+            return Some(extracted);
+        }
+    }
+
+    tracing::trace!("No tool calls found in bytes (tried both protobuf and JSON)");
+    None
+}
+
+/// Extract tool calls from a protobuf LlmChatResult.
+fn extract_tool_calls_from_protobuf_result(result: &LlmChatResult) -> Option<ExtractedToolCalls> {
+    // Check for pending_tool_calls first (HITL mode)
+    if let Some(pending) = &result.pending_tool_calls {
+        if !pending.calls.is_empty() {
+            let tool_calls = pending
+                .calls
+                .iter()
+                .map(|call| ExtractedToolCall {
+                    call_id: call.call_id.clone(),
+                    fn_name: call.fn_name.clone(),
+                    fn_arguments: call.fn_arguments.clone(),
+                })
+                .collect();
+            let requires_execution = result.requires_tool_execution.unwrap_or(true);
+            tracing::debug!(
+                "Extracted {} pending tool calls from protobuf, requires_execution={}",
+                pending.calls.len(),
+                requires_execution
+            );
+            return Some(ExtractedToolCalls {
+                tool_calls,
+                requires_execution,
+            });
+        }
+    }
+
+    // Check for content.tool_calls (auto-calling mode, for display)
+    if let Some(content) = &result.content {
+        if let Some(message_content::Content::ToolCalls(tool_calls)) = &content.content {
+            if !tool_calls.calls.is_empty() {
+                let extracted = tool_calls
+                    .calls
+                    .iter()
+                    .map(|call| ExtractedToolCall {
+                        call_id: call.call_id.clone(),
+                        fn_name: call.fn_name.clone(),
+                        fn_arguments: call.fn_arguments.clone(),
+                    })
+                    .collect();
+                tracing::debug!(
+                    "Extracted {} tool calls from protobuf content (auto-calling mode)",
+                    tool_calls.calls.len()
+                );
+                return Some(ExtractedToolCalls {
+                    tool_calls: extracted,
+                    requires_execution: false,
+                });
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract tool calls from JSON value (for StreamingJobCompleted context.output).
+///
+/// The JSON structure mirrors the protobuf LlmChatResult:
+/// ```json
+/// {
+///   "pendingToolCalls": {
+///     "calls": [
+///       { "callId": "...", "fnName": "...", "fnArguments": "..." }
+///     ]
+///   },
+///   "requiresToolExecution": true
+/// }
+/// ```
+/// or snake_case variant:
+/// ```json
+/// {
+///   "pending_tool_calls": {
+///     "calls": [
+///       { "call_id": "...", "fn_name": "...", "fn_arguments": "..." }
+///     ]
+///   },
+///   "requires_tool_execution": true
+/// }
+/// ```
+fn extract_tool_calls_from_json(value: &serde_json::Value) -> Option<ExtractedToolCalls> {
+    let obj = value.as_object()?;
+
+    // Check for pending_tool_calls (snake_case or camelCase)
+    let pending_calls = obj
+        .get("pending_tool_calls")
+        .or_else(|| obj.get("pendingToolCalls"));
+
+    if let Some(pending) = pending_calls {
+        if let Some(calls_arr) = pending.get("calls").and_then(|c| c.as_array()) {
+            if !calls_arr.is_empty() {
+                let tool_calls: Vec<ExtractedToolCall> = calls_arr
+                    .iter()
+                    .filter_map(|call| {
+                        let call_obj = call.as_object()?;
+                        let call_id = call_obj
+                            .get("call_id")
+                            .or_else(|| call_obj.get("callId"))
+                            .and_then(|v| v.as_str())?
+                            .to_string();
+                        let fn_name = call_obj
+                            .get("fn_name")
+                            .or_else(|| call_obj.get("fnName"))
+                            .and_then(|v| v.as_str())?
+                            .to_string();
+                        let fn_arguments = call_obj
+                            .get("fn_arguments")
+                            .or_else(|| call_obj.get("fnArguments"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        Some(ExtractedToolCall {
+                            call_id,
+                            fn_name,
+                            fn_arguments,
+                        })
+                    })
+                    .collect();
+
+                if !tool_calls.is_empty() {
+                    let requires_execution = obj
+                        .get("requires_tool_execution")
+                        .or_else(|| obj.get("requiresToolExecution"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+
+                    tracing::debug!(
+                        "Extracted {} pending tool calls from JSON, requires_execution={}",
+                        tool_calls.len(),
+                        requires_execution
+                    );
+                    return Some(ExtractedToolCalls {
+                        tool_calls,
+                        requires_execution,
+                    });
+                }
+            }
+        }
+    }
+
+    // Check for content.tool_calls
+    // Note: Even if tool_calls are in content, check requires_tool_execution flag
+    // to determine if this is HITL mode
+    if let Some(content) = obj.get("content") {
+        if let Some(content_obj) = content.as_object() {
+            // Check for toolCalls in content object
+            let tool_calls_value = content_obj
+                .get("tool_calls")
+                .or_else(|| content_obj.get("toolCalls"))
+                .or_else(|| content_obj.get("content").and_then(|c| {
+                    c.as_object()
+                        .and_then(|co| co.get("ToolCalls").or_else(|| co.get("tool_calls")))
+                }));
+
+            if let Some(tc) = tool_calls_value {
+                let calls_arr = tc
+                    .get("calls")
+                    .and_then(|c| c.as_array())
+                    .or_else(|| tc.as_array());
+
+                if let Some(calls) = calls_arr {
+                    if !calls.is_empty() {
+                        let extracted: Vec<ExtractedToolCall> = calls
+                            .iter()
+                            .filter_map(|call| {
+                                let call_obj = call.as_object()?;
+                                let call_id = call_obj
+                                    .get("call_id")
+                                    .or_else(|| call_obj.get("callId"))
+                                    .and_then(|v| v.as_str())?
+                                    .to_string();
+                                let fn_name = call_obj
+                                    .get("fn_name")
+                                    .or_else(|| call_obj.get("fnName"))
+                                    .and_then(|v| v.as_str())?
+                                    .to_string();
+                                let fn_arguments = call_obj
+                                    .get("fn_arguments")
+                                    .or_else(|| call_obj.get("fnArguments"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                Some(ExtractedToolCall {
+                                    call_id,
+                                    fn_name,
+                                    fn_arguments,
+                                })
+                            })
+                            .collect();
+
+                        if !extracted.is_empty() {
+                            // Check requires_tool_execution flag at root level
+                            // This determines if it's HITL mode (requires client approval)
+                            let requires_execution = obj
+                                .get("requires_tool_execution")
+                                .or_else(|| obj.get("requiresToolExecution"))
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+
+                            tracing::debug!(
+                                "Extracted {} tool calls from JSON content, requires_execution={}",
+                                extracted.len(),
+                                requires_execution
+                            );
+                            return Some(ExtractedToolCalls {
+                                tool_calls: extracted,
+                                requires_execution,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Convert extracted tool calls to AG-UI TOOL_CALL events.
+///
+/// Generates TOOL_CALL_START and TOOL_CALL_ARGS events for each tool call.
+/// Note: TOOL_CALL_END is NOT generated here - it should be emitted:
+/// - Immediately after ARGS in auto-calling mode
+/// - After client sends result in HITL mode
+pub fn tool_calls_to_ag_ui_events(
+    tool_calls: &[ExtractedToolCall],
+    parent_message_id: Option<&MessageId>,
+) -> Vec<AgUiEvent> {
+    let mut events = Vec::new();
+
+    for call in tool_calls {
+        // TOOL_CALL_START
+        events.push(AgUiEvent::tool_call_start(
+            call.call_id.clone(),
+            call.fn_name.clone(),
+            parent_message_id.map(|m| m.to_string()),
+        ));
+
+        // TOOL_CALL_ARGS (full arguments as single delta)
+        events.push(AgUiEvent::tool_call_args(
+            call.call_id.clone(),
+            call.fn_arguments.clone(),
+        ));
+    }
+
+    events
+}
+
 /// Extract text content from LlmChatResult protobuf bytes.
 ///
 /// LLM_CHAT runner streams serialized LlmChatResult protobuf messages.
@@ -284,6 +580,162 @@ mod tests {
         ResultOutputItem {
             item: Some(result_output_item::Item::Data(bytes)),
         }
+    }
+
+    // === Tests for tool call extraction ===
+
+    #[test]
+    fn test_extract_pending_tool_calls() {
+        use jobworkerp_runner::jobworkerp::runner::llm::{PendingToolCalls, ToolCallRequest};
+
+        let result = LlmChatResult {
+            content: None,
+            reasoning_content: None,
+            done: false,
+            usage: None,
+            pending_tool_calls: Some(PendingToolCalls {
+                calls: vec![
+                    ToolCallRequest {
+                        call_id: "call_1".to_string(),
+                        fn_name: "http_request".to_string(),
+                        fn_arguments: r#"{"url":"https://example.com"}"#.to_string(),
+                    },
+                    ToolCallRequest {
+                        call_id: "call_2".to_string(),
+                        fn_name: "command".to_string(),
+                        fn_arguments: r#"{"cmd":"ls -la"}"#.to_string(),
+                    },
+                ],
+            }),
+            requires_tool_execution: Some(true),
+            tool_execution_results: vec![],
+        };
+        let bytes = result.encode_to_vec();
+
+        let extracted = extract_tool_calls_from_llm_result(&bytes);
+        assert!(extracted.is_some());
+
+        let extracted = extracted.unwrap();
+        assert_eq!(extracted.tool_calls.len(), 2);
+        assert!(extracted.requires_execution);
+
+        assert_eq!(extracted.tool_calls[0].call_id, "call_1");
+        assert_eq!(extracted.tool_calls[0].fn_name, "http_request");
+        assert_eq!(extracted.tool_calls[1].call_id, "call_2");
+        assert_eq!(extracted.tool_calls[1].fn_name, "command");
+    }
+
+    #[test]
+    fn test_extract_content_tool_calls() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::ToolCalls;
+
+        let result = LlmChatResult {
+            content: Some(MessageContent {
+                content: Some(message_content::Content::ToolCalls(ToolCalls {
+                    calls: vec![
+                        jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::ToolCall {
+                            call_id: "call_auto_1".to_string(),
+                            fn_name: "fetch".to_string(),
+                            fn_arguments: r#"{"url":"https://api.example.com"}"#.to_string(),
+                        },
+                    ],
+                })),
+            }),
+            reasoning_content: None,
+            done: false,
+            usage: None,
+            pending_tool_calls: None,
+            requires_tool_execution: None,
+            tool_execution_results: vec![],
+        };
+        let bytes = result.encode_to_vec();
+
+        let extracted = extract_tool_calls_from_llm_result(&bytes);
+        assert!(extracted.is_some());
+
+        let extracted = extracted.unwrap();
+        assert_eq!(extracted.tool_calls.len(), 1);
+        assert!(!extracted.requires_execution); // Auto-calling mode
+
+        assert_eq!(extracted.tool_calls[0].call_id, "call_auto_1");
+        assert_eq!(extracted.tool_calls[0].fn_name, "fetch");
+    }
+
+    #[test]
+    fn test_tool_calls_to_events() {
+        let tool_calls = vec![
+            ExtractedToolCall {
+                call_id: "call_1".to_string(),
+                fn_name: "http_request".to_string(),
+                fn_arguments: r#"{"url":"https://example.com"}"#.to_string(),
+            },
+            ExtractedToolCall {
+                call_id: "call_2".to_string(),
+                fn_name: "command".to_string(),
+                fn_arguments: r#"{"cmd":"ls"}"#.to_string(),
+            },
+        ];
+
+        let events = tool_calls_to_ag_ui_events(&tool_calls, None);
+
+        // 2 tool calls * 2 events each (START + ARGS) = 4 events
+        assert_eq!(events.len(), 4);
+
+        // First tool call
+        assert!(
+            matches!(&events[0], AgUiEvent::ToolCallStart { tool_call_id, tool_call_name, .. } if tool_call_id == "call_1" && tool_call_name == "http_request")
+        );
+        assert!(
+            matches!(&events[1], AgUiEvent::ToolCallArgs { tool_call_id, delta, .. } if tool_call_id == "call_1" && delta.contains("url"))
+        );
+
+        // Second tool call
+        assert!(
+            matches!(&events[2], AgUiEvent::ToolCallStart { tool_call_id, tool_call_name, .. } if tool_call_id == "call_2" && tool_call_name == "command")
+        );
+        assert!(
+            matches!(&events[3], AgUiEvent::ToolCallArgs { tool_call_id, delta, .. } if tool_call_id == "call_2" && delta.contains("cmd"))
+        );
+    }
+
+    #[test]
+    fn test_tool_calls_to_events_with_parent() {
+        let tool_calls = vec![ExtractedToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "test".to_string(),
+            fn_arguments: "{}".to_string(),
+        }];
+
+        let parent_id = MessageId::new("msg_parent");
+        let events = tool_calls_to_ag_ui_events(&tool_calls, Some(&parent_id));
+
+        match &events[0] {
+            AgUiEvent::ToolCallStart {
+                parent_message_id, ..
+            } => {
+                assert_eq!(parent_message_id.as_deref(), Some("msg_parent"));
+            }
+            _ => panic!("Expected ToolCallStart"),
+        }
+    }
+
+    #[test]
+    fn test_extract_no_tool_calls() {
+        let result = LlmChatResult {
+            content: Some(MessageContent {
+                content: Some(message_content::Content::Text("Hello".to_string())),
+            }),
+            reasoning_content: None,
+            done: false,
+            usage: None,
+            pending_tool_calls: None,
+            requires_tool_execution: None,
+            tool_execution_results: vec![],
+        };
+        let bytes = result.encode_to_vec();
+
+        let extracted = extract_tool_calls_from_llm_result(&bytes);
+        assert!(extracted.is_none());
     }
 
     /// Create a ResultOutputItem with raw string data (fallback test format)
@@ -627,5 +1079,98 @@ mod tests {
         assert!(matches!(&events[0], AgUiEvent::TextMessageStart { .. }));
         assert!(matches!(&events[1], AgUiEvent::TextMessageContent { .. }));
         assert!(matches!(&events[2], AgUiEvent::TextMessageEnd { .. }));
+    }
+
+    // === Tests for JSON format tool call extraction ===
+
+    #[test]
+    fn test_extract_tool_calls_from_json_snake_case() {
+        let json = serde_json::json!({
+            "pending_tool_calls": {
+                "calls": [
+                    {
+                        "call_id": "call_json_1",
+                        "fn_name": "http_request",
+                        "fn_arguments": r#"{"url":"https://example.com"}"#
+                    },
+                    {
+                        "call_id": "call_json_2",
+                        "fn_name": "command",
+                        "fn_arguments": r#"{"cmd":"ls"}"#
+                    }
+                ]
+            },
+            "requires_tool_execution": true
+        });
+        let bytes = serde_json::to_vec(&json).unwrap();
+
+        let extracted = extract_tool_calls_from_llm_result(&bytes);
+        assert!(extracted.is_some());
+
+        let extracted = extracted.unwrap();
+        assert_eq!(extracted.tool_calls.len(), 2);
+        assert!(extracted.requires_execution);
+
+        assert_eq!(extracted.tool_calls[0].call_id, "call_json_1");
+        assert_eq!(extracted.tool_calls[0].fn_name, "http_request");
+        assert_eq!(extracted.tool_calls[1].call_id, "call_json_2");
+        assert_eq!(extracted.tool_calls[1].fn_name, "command");
+    }
+
+    #[test]
+    fn test_extract_tool_calls_from_json_camel_case() {
+        let json = serde_json::json!({
+            "pendingToolCalls": {
+                "calls": [
+                    {
+                        "callId": "call_camel_1",
+                        "fnName": "fetch",
+                        "fnArguments": r#"{"url":"https://api.example.com"}"#
+                    }
+                ]
+            },
+            "requiresToolExecution": true
+        });
+        let bytes = serde_json::to_vec(&json).unwrap();
+
+        let extracted = extract_tool_calls_from_llm_result(&bytes);
+        assert!(extracted.is_some());
+
+        let extracted = extracted.unwrap();
+        assert_eq!(extracted.tool_calls.len(), 1);
+        assert!(extracted.requires_execution);
+
+        assert_eq!(extracted.tool_calls[0].call_id, "call_camel_1");
+        assert_eq!(extracted.tool_calls[0].fn_name, "fetch");
+    }
+
+    #[test]
+    fn test_extract_tool_calls_from_json_no_tool_calls() {
+        let json = serde_json::json!({
+            "content": {
+                "content": {
+                    "Text": "Hello, world!"
+                }
+            },
+            "done": true
+        });
+        let bytes = serde_json::to_vec(&json).unwrap();
+
+        let extracted = extract_tool_calls_from_llm_result(&bytes);
+        assert!(extracted.is_none());
+    }
+
+    #[test]
+    fn test_extract_tool_calls_from_json_empty_calls() {
+        let json = serde_json::json!({
+            "pending_tool_calls": {
+                "calls": []
+            },
+            "requires_tool_execution": true
+        });
+        let bytes = serde_json::to_vec(&json).unwrap();
+
+        let extracted = extract_tool_calls_from_llm_result(&bytes);
+        assert!(extracted.is_none());
     }
 }

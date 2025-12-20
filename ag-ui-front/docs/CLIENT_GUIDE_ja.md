@@ -9,8 +9,9 @@
 3. [API エンドポイント](#api-エンドポイント)
 4. [SSE イベント](#sse-イベント)
 5. [Human-in-the-Loop (HITL)](#human-in-the-loop-hitl)
-6. [エラーハンドリング](#エラーハンドリング)
-7. [実装例](#実装例)
+6. [LLM ツール呼び出し HITL](#llm-ツール呼び出し-hitl)
+7. [エラーハンドリング](#エラーハンドリング)
+8. [実装例](#実装例)
 
 ---
 
@@ -410,6 +411,259 @@ event: STEP_STARTED
 data: {"type":"STEP_STARTED","stepId":"task2","stepName":"next_task","timestamp":...}
 ...
 ```
+
+---
+
+## LLM ツール呼び出し HITL
+
+LLM_CHAT ランナーで `isAutoCalling: false` を設定すると、LLM がツール呼び出しを要求した際にユーザー承認が必要になります。これはワークフロー HITL（チェックポイントベース）とは異なり、LLM のファンクションコーリングを処理します。
+
+### 概要
+
+LLM ツール呼び出し HITL により、ユーザーは以下のことができます：
+- LLM が要求したツール呼び出しを実行前にレビュー
+- ツール呼び出しの引数を承認、修正、または拒否
+- ツール実行結果を LLM に返送
+
+### LLM ツール呼び出し HITL の有効化
+
+ワークフローの `functionOptions` で `isAutoCalling: false` を設定します：
+
+```json
+{
+  "context": [{
+    "type": "workflow_inline",
+    "data": {
+      "workflow": {
+        "do": [{
+          "ChatTask": {
+            "run": {
+              "runner": {
+                "name": "LLM_CHAT",
+                "arguments": {
+                  "functionOptions": {
+                    "useFunctionCalling": true,
+                    "functionSetName": "command-functions",
+                    "isAutoCalling": false
+                  }
+                }
+              }
+            }
+          }
+        }]
+      }
+    }
+  }]
+}
+```
+
+### LLM ツール呼び出しフロー
+
+```text
+クライアント                    AG-UI Server                    LLM
+   |                              |                             |
+   |-- POST /ag-ui/run ---------->|                             |
+   |                              |-- LLM_CHAT 実行 ----------->|
+   |                              |<-- ツール呼び出し要求 -------|
+   |<-- TOOL_CALL_START ----------|   (pending_tool_calls)      |
+   |<-- TOOL_CALL_ARGS -----------|                             |
+   |   (ストリーム一時停止)        |                             |
+   |                              |                             |
+   |   [ユーザーがツールを承認]    |                             |
+   |                              |                             |
+   |-- POST /ag-ui/message ------>|                             |
+   |   (toolCallResults)          |                             |
+   |<-- TOOL_CALL_RESULT ---------|                             |
+   |<-- TOOL_CALL_END ------------|                             |
+   |<-- RUN_FINISHED -------------|                             |
+   |                              |                             |
+   |   [クライアントがツール結果を|                             |
+   |    含めて新規リクエスト送信] |                             |
+   |                              |                             |
+   |-- POST /ag-ui/run ---------->|                             |
+   |   (messages に TOOL ロール)  |-- LLM_CHAT 実行 ----------->|
+   |                              |   (ツール結果を含む)        |
+   |<-- TEXT_MESSAGE_* -----------|<-- LLM 応答 ----------------|
+```
+
+### ツール呼び出しイベントシーケンス
+
+1. **TOOL_CALL_START** - LLM からのツール呼び出し要求
+
+```json
+{
+  "type": "TOOL_CALL_START",
+  "toolCallId": "call_abc123",
+  "toolCallName": "COMMAND___run",
+  "parentMessageId": "msg-1",
+  "timestamp": 1702345678000
+}
+```
+
+2. **TOOL_CALL_ARGS** - ツール引数（デルタでストリーミング）
+
+```json
+{
+  "type": "TOOL_CALL_ARGS",
+  "toolCallId": "call_abc123",
+  "delta": "{\"command\": \"date\"}",
+  "timestamp": 1702345678001
+}
+```
+
+この時点で `requires_tool_execution` が true（HITL モード）の場合、ストリームは一時停止してユーザー承認を待ちます。
+
+### ツール名の形式
+
+ツール名は `RUNNER___method` のパターンに従います：
+- `RUNNER` はランナー名（例：`COMMAND`, `HTTP_REQUEST`）
+- `___`（トリプルアンダースコア）がセパレータ
+- `method` はメソッド名（例：`run`, `get`）
+
+例：
+- `COMMAND___run` - シェルコマンドを実行
+- `HTTP_REQUEST___get` - HTTP GET リクエストを実行
+
+**推奨:** ユーザーへの表示時は、可読性のため `___` を `/` に変換：
+- `COMMAND___run` → `COMMAND/run`
+
+### ツール呼び出し結果の送信
+
+```http
+POST /ag-ui/message
+Content-Type: application/json
+
+{
+  "runId": "run-456",
+  "toolCallResults": [
+    {
+      "toolCallId": "call_abc123",
+      "result": {
+        "command": "date"
+      }
+    }
+  ]
+}
+```
+
+**レスポンスイベント:**
+
+```text
+event: TOOL_CALL_RESULT
+data: {"type":"TOOL_CALL_RESULT","toolCallId":"call_abc123","result":{"command":"date"},"timestamp":...}
+
+event: TOOL_CALL_END
+data: {"type":"TOOL_CALL_END","toolCallId":"call_abc123","timestamp":...}
+
+event: RUN_FINISHED
+data: {"type":"RUN_FINISHED","runId":"run-456","timestamp":...}
+```
+
+### 会話の継続
+
+`RUN_FINISHED` を受信後、ツール結果を messages に含めて新しい `/ag-ui/run` リクエストを送信します：
+
+```json
+{
+  "context": [{ "type": "workflow_inline", "data": { ... } }],
+  "messages": [
+    { "role": "user", "content": "date コマンドを実行して" },
+    { "role": "assistant", "content": "" },
+    { "role": "tool", "content": "Tool: COMMAND/run\nArguments: {\"command\":\"date\"}\nResult: {\"command\":\"date\"}" }
+  ]
+}
+```
+
+LLM はツール結果を処理して会話を続行します。
+
+### クライアント実装例
+
+```typescript
+// 保留中のツール呼び出しを追跡
+const toolCallsRef = useRef<Map<string, ToolCall>>(new Map());
+let pendingToolCalls: ToolCall[] = [];
+
+function handleEvent(event: AgUiEvent) {
+  switch (event.type) {
+    case 'TOOL_CALL_START':
+      toolCallsRef.current.set(event.toolCallId, {
+        id: event.toolCallId,
+        name: event.toolCallName,
+        arguments: {},
+        argumentsRaw: '',
+        status: 'pending'
+      });
+      break;
+
+    case 'TOOL_CALL_ARGS':
+      const toolCall = toolCallsRef.current.get(event.toolCallId);
+      if (toolCall) {
+        toolCall.argumentsRaw += event.delta;
+        try {
+          toolCall.arguments = JSON.parse(toolCall.argumentsRaw);
+        } catch {
+          // JSON を蓄積中
+        }
+      }
+      break;
+
+    case 'RUN_FINISHED':
+      // 承認が必要な保留中のツール呼び出しをチェック
+      pendingToolCalls = Array.from(toolCallsRef.current.values())
+        .filter(tc => tc.status === 'pending');
+
+      if (pendingToolCalls.length > 0) {
+        // 承認 UI を表示
+        showToolApprovalUI(pendingToolCalls);
+      }
+      break;
+  }
+}
+
+// ツール呼び出しを承認
+async function approveToolCall(toolCallId: string, result: unknown) {
+  const response = await fetch(`${baseUrl}/ag-ui/message`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      runId: currentRunId,
+      toolCallResults: [{ toolCallId, result }]
+    })
+  });
+
+  // SSE レスポンスを処理し、フォローアップを送信
+  // ...
+
+  // RUN_FINISHED 後、ツール結果を含めて会話を継続
+  await sendFollowUpWithToolResult(toolCallId, result);
+}
+
+// 表示用にツール名をフォーマット
+function formatToolName(name: string): string {
+  return name.replace(/___/g, '/');
+}
+```
+
+### ツール呼び出しの拒否
+
+ツール呼び出しを拒否するには、拒否を示す結果を送信します：
+
+```json
+{
+  "runId": "run-456",
+  "toolCallResults": [
+    {
+      "toolCallId": "call_abc123",
+      "result": {
+        "rejected": true,
+        "reason": "ユーザーがこのコマンドの実行を拒否しました"
+      }
+    }
+  ]
+}
+```
+
+LLM はこの拒否を受け取り、フォローアップリクエストで適切に応答できます。
 
 ---
 

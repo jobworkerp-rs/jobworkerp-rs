@@ -741,6 +741,7 @@ where
                                 let tool_call_start = AgUiEvent::tool_call_start(
                                     tool_call_id.clone(),
                                     "HUMAN_INPUT".to_string(),
+                                    None,
                                 );
                                 let start_event_id =
                                     Self::encode_event_with_logging(&encoder, &tool_call_start);
@@ -764,6 +765,7 @@ where
                                     tool_call_id,
                                     checkpoint_position: workflow_result.position.clone(),
                                     workflow_name: workflow_name.clone(),
+                                    pending_tool_calls: vec![], // Traditional HITL (HUMAN_INPUT)
                                 };
                                 if !session_manager
                                     .set_paused_with_hitl_info(&session_id, hitl_info)

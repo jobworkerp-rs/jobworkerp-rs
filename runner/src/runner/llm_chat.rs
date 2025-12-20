@@ -1,5 +1,5 @@
 use crate::jobworkerp::runner::llm::llm_chat_result::{message_content, MessageContent, Usage};
-use crate::jobworkerp::runner::llm::{LlmChatResult, ToolExecutionResult};
+use crate::jobworkerp::runner::llm::{LlmChatResult, PendingToolCalls, ToolExecutionResult};
 use crate::{jobworkerp::runner::llm::LlmRunnerSettings, schema_to_json_string};
 use futures::stream::BoxStream;
 use prost::Message;
@@ -105,6 +105,9 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
             let mut decode_failure_count = 0;
             let mut data_item_count = 0;
             let mut successful_decode_count = 0;
+            // HITL support: collect pending_tool_calls and requires_tool_execution flags
+            let mut collected_pending_tool_calls: Option<PendingToolCalls> = None;
+            let mut collected_requires_tool_execution: Option<bool> = None;
 
             while let Some(item) = stream.next().await {
                 match item.item {
@@ -147,6 +150,14 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                                 if !chunk.tool_execution_results.is_empty() {
                                     collected_tool_execution_results
                                         .extend(chunk.tool_execution_results);
+                                }
+
+                                // HITL support: collect pending_tool_calls and requires_tool_execution
+                                if chunk.pending_tool_calls.is_some() {
+                                    collected_pending_tool_calls = chunk.pending_tool_calls;
+                                }
+                                if chunk.requires_tool_execution.is_some() {
+                                    collected_requires_tool_execution = chunk.requires_tool_execution;
                                 }
                             }
                             Err(e) => {
@@ -202,7 +213,7 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                 None
             };
 
-            // Build collected result
+            // Build collected result with preserved HITL flags
             let result = LlmChatResult {
                 content: final_content,
                 reasoning_content: if combined_reasoning.is_empty() {
@@ -212,8 +223,8 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                 },
                 done: true,
                 usage: final_usage,
-                pending_tool_calls: None,
-                requires_tool_execution: None,
+                pending_tool_calls: collected_pending_tool_calls,
+                requires_tool_execution: collected_requires_tool_execution,
                 tool_execution_results: collected_tool_execution_results,
             };
 
