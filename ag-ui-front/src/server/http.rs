@@ -271,10 +271,11 @@ struct ToolCallResultInput {
     result: serde_json::Value,
 }
 
-/// POST /ag-ui/message - Send message to running workflow (Human-in-the-Loop).
+/// POST /ag-ui/message - Send tool call result for LLM HITL.
 ///
-/// Resumes a paused HITL workflow with user input.
-/// Returns an SSE stream with resumed workflow events.
+/// Accepts tool call results from the client and returns TOOL_CALL_RESULT/TOOL_CALL_END events.
+/// After receiving these events, the client should send a new /ag-ui/run request
+/// with the tool results included in the message history to continue the conversation.
 async fn message_handler<SM, ES>(
     State(state): State<Arc<AppState<SM, ES>>>,
     Json(body): Json<HitlMessageRequest>,
@@ -285,28 +286,20 @@ where
 {
     let HitlMessageRequest {
         run_id,
-        mut tool_call_results,
+        tool_call_results,
     } = body;
 
-    // Validate input: exactly one tool_call_result required
-    if tool_call_results.len() != 1 {
-        return Err(AppError(AgUiError::InvalidInput(format!(
-            "tool_call_results must contain exactly 1 item, got {}",
-            tool_call_results.len()
-        ))));
+    // Validate input: at least one tool_call_result required
+    if tool_call_results.is_empty() {
+        return Err(AppError(AgUiError::InvalidInput(
+            "tool_call_results must contain at least 1 item".to_string(),
+        )));
     }
 
-    // Extract the single tool call result
-    let tool_call_result = tool_call_results.remove(0);
-
-    // Resume the workflow with user input
+    // Process tool call results and emit events
     let event_stream = state
         .handler
-        .resume_workflow(
-            &run_id,
-            &tool_call_result.tool_call_id,
-            tool_call_result.result,
-        )
+        .handle_tool_call_results(&run_id, tool_call_results.into_iter().map(|r| (r.tool_call_id, r.result)).collect())
         .await?;
 
     // Convert to SSE stream

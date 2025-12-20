@@ -3,7 +3,7 @@
 //! This module provides a Redis-based implementation of the SessionManager trait,
 //! enabling session persistence across multiple AG-UI server instances.
 
-use super::manager::{HitlWaitingInfo, Session, SessionManager, SessionState};
+use super::manager::{HitlWaitingInfo, PendingToolCallInfo, Session, SessionManager, SessionState};
 use crate::types::ids::{RunId, ThreadId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -16,12 +16,42 @@ const SESSION_KEY_PREFIX: &str = "ag_ui:session:";
 /// Redis key prefix for run_id index
 const RUN_ID_INDEX_PREFIX: &str = "ag_ui:run_index:";
 
+/// Serializable pending tool call info for Redis storage
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RedisPendingToolCallInfo {
+    call_id: String,
+    fn_name: String,
+    fn_arguments: String,
+}
+
+impl From<&PendingToolCallInfo> for RedisPendingToolCallInfo {
+    fn from(info: &PendingToolCallInfo) -> Self {
+        Self {
+            call_id: info.call_id.clone(),
+            fn_name: info.fn_name.clone(),
+            fn_arguments: info.fn_arguments.clone(),
+        }
+    }
+}
+
+impl From<RedisPendingToolCallInfo> for PendingToolCallInfo {
+    fn from(data: RedisPendingToolCallInfo) -> Self {
+        Self {
+            call_id: data.call_id,
+            fn_name: data.fn_name,
+            fn_arguments: data.fn_arguments,
+        }
+    }
+}
+
 /// Serializable HITL waiting info for Redis storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RedisHitlWaitingInfo {
     tool_call_id: String,
     checkpoint_position: String,
     workflow_name: String,
+    #[serde(default)]
+    pending_tool_calls: Vec<RedisPendingToolCallInfo>,
 }
 
 impl From<&HitlWaitingInfo> for RedisHitlWaitingInfo {
@@ -30,6 +60,11 @@ impl From<&HitlWaitingInfo> for RedisHitlWaitingInfo {
             tool_call_id: info.tool_call_id.clone(),
             checkpoint_position: info.checkpoint_position.clone(),
             workflow_name: info.workflow_name.clone(),
+            pending_tool_calls: info
+                .pending_tool_calls
+                .iter()
+                .map(RedisPendingToolCallInfo::from)
+                .collect(),
         }
     }
 }
@@ -40,6 +75,11 @@ impl From<RedisHitlWaitingInfo> for HitlWaitingInfo {
             tool_call_id: data.tool_call_id,
             checkpoint_position: data.checkpoint_position,
             workflow_name: data.workflow_name,
+            pending_tool_calls: data
+                .pending_tool_calls
+                .into_iter()
+                .map(PendingToolCallInfo::from)
+                .collect(),
         }
     }
 }

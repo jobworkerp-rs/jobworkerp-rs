@@ -9,8 +9,9 @@ This document is a guide for client implementers using the AG-UI Front HTTP API.
 3. [API Endpoints](#api-endpoints)
 4. [SSE Events](#sse-events)
 5. [Human-in-the-Loop (HITL)](#human-in-the-loop-hitl)
-6. [Error Handling](#error-handling)
-7. [Implementation Examples](#implementation-examples)
+6. [LLM Tool Calling HITL](#llm-tool-calling-hitl)
+7. [Error Handling](#error-handling)
+8. [Implementation Examples](#implementation-examples)
 
 ---
 
@@ -410,6 +411,260 @@ event: STEP_STARTED
 data: {"type":"STEP_STARTED","stepId":"task2","stepName":"next_task","timestamp":...}
 ...
 ```
+
+---
+
+## LLM Tool Calling HITL
+
+When using the LLM_CHAT runner with `isAutoCalling: false`, the LLM can request tool calls that require user approval before execution. This is different from workflow HITL (checkpoint-based) as it handles LLM function calling.
+
+### Overview
+
+LLM Tool Calling HITL allows users to:
+- Review tool calls requested by the LLM before execution
+- Approve, modify, or reject tool call arguments
+- Provide tool execution results back to the LLM
+
+### Enabling LLM Tool Calling HITL
+
+Set `isAutoCalling: false` in the workflow's `functionOptions`:
+
+```json
+{
+  "context": [{
+    "type": "workflow_inline",
+    "data": {
+      "workflow": {
+        "do": [{
+          "ChatTask": {
+            "run": {
+              "runner": {
+                "name": "LLM_CHAT",
+                "arguments": {
+                  "functionOptions": {
+                    "useFunctionCalling": true,
+                    "functionSetName": "command-functions",
+                    "isAutoCalling": false
+                  }
+                }
+              }
+            }
+          }
+        }]
+      }
+    }
+  }]
+}
+```
+
+### LLM Tool Calling Flow
+
+```text
+Client                         AG-UI Server                    LLM
+   |                              |                             |
+   |-- POST /ag-ui/run ---------->|                             |
+   |                              |-- Execute LLM_CHAT -------->|
+   |                              |<-- Tool call request -------|
+   |<-- TOOL_CALL_START ----------|   (pending_tool_calls)      |
+   |<-- TOOL_CALL_ARGS -----------|                             |
+   |   (Stream paused)            |                             |
+   |                              |                             |
+   |   [User approves tool]       |                             |
+   |                              |                             |
+   |-- POST /ag-ui/message ------>|                             |
+   |   (toolCallResults)          |                             |
+   |<-- TOOL_CALL_RESULT ---------|                             |
+   |<-- TOOL_CALL_END ------------|                             |
+   |<-- RUN_FINISHED -------------|                             |
+   |                              |                             |
+   |   [Client sends follow-up    |                             |
+   |    with tool result in       |                             |
+   |    messages]                 |                             |
+   |                              |                             |
+   |-- POST /ag-ui/run ---------->|                             |
+   |   (messages with TOOL role)  |-- Execute LLM_CHAT -------->|
+   |                              |   (with tool result)        |
+   |<-- TEXT_MESSAGE_* -----------|<-- LLM response ------------|
+```
+
+### Tool Call Event Sequence
+
+1. **TOOL_CALL_START** - Indicates a tool call request from LLM
+
+```json
+{
+  "type": "TOOL_CALL_START",
+  "toolCallId": "call_abc123",
+  "toolCallName": "COMMAND___run",
+  "parentMessageId": "msg-1",
+  "timestamp": 1702345678000
+}
+```
+
+2. **TOOL_CALL_ARGS** - Tool arguments (streamed as delta)
+
+```json
+{
+  "type": "TOOL_CALL_ARGS",
+  "toolCallId": "call_abc123",
+  "delta": "{\"command\": \"date\"}",
+  "timestamp": 1702345678001
+}
+```
+
+At this point, if `requires_tool_execution` is true (HITL mode), the stream pauses and waits for user approval.
+
+### Tool Name Format
+
+Tool names follow the pattern `RUNNER___method` where:
+- `RUNNER` is the runner name (e.g., `COMMAND`, `HTTP_REQUEST`)
+- `___` (triple underscore) is the separator
+- `method` is the method name (e.g., `run`, `get`)
+
+Examples:
+- `COMMAND___run` - Execute a shell command
+- `HTTP_REQUEST___get` - Make an HTTP GET request
+
+**Recommendation:** When displaying to users, convert `___` to `/` for readability:
+- `COMMAND___run` → `COMMAND/run`
+
+### Submitting Tool Call Result
+
+```http
+POST /ag-ui/message
+Content-Type: application/json
+
+{
+  "runId": "run-456",
+  "toolCallResults": [
+    {
+      "toolCallId": "call_abc123",
+      "result": {
+        "command": "date"
+      }
+    }
+  ]
+}
+```
+
+**Response Events:**
+
+```text
+event: TOOL_CALL_RESULT
+data: {"type":"TOOL_CALL_RESULT","toolCallId":"call_abc123","result":{"command":"date"},"timestamp":...}
+
+event: TOOL_CALL_END
+data: {"type":"TOOL_CALL_END","toolCallId":"call_abc123","timestamp":...}
+
+event: RUN_FINISHED
+data: {"type":"RUN_FINISHED","runId":"run-456","timestamp":...}
+```
+
+### Continuing the Conversation
+
+After receiving `RUN_FINISHED`, send a new `/ag-ui/run` request with the tool result included in the messages:
+
+```json
+{
+  "context": [{ "type": "workflow_inline", "data": { ... } }],
+  "messages": [
+    { "role": "user", "content": "Run the date command" },
+    { "role": "assistant", "content": "" },
+    { "role": "tool", "content": "Tool: COMMAND/run\nArguments: {\"command\":\"date\"}\nResult: {\"command\":\"date\"}" }
+  ]
+}
+```
+
+The LLM will process the tool result and continue the conversation.
+
+### Client Implementation Example
+
+```typescript
+// Track pending tool calls
+const toolCallsRef = useRef<Map<string, ToolCall>>(new Map());
+let pendingToolCalls: ToolCall[] = [];
+
+function handleEvent(event: AgUiEvent) {
+  switch (event.type) {
+    case 'TOOL_CALL_START':
+      toolCallsRef.current.set(event.toolCallId, {
+        id: event.toolCallId,
+        name: event.toolCallName,
+        arguments: {},
+        argumentsRaw: '',
+        status: 'pending'
+      });
+      break;
+
+    case 'TOOL_CALL_ARGS':
+      const toolCall = toolCallsRef.current.get(event.toolCallId);
+      if (toolCall) {
+        toolCall.argumentsRaw += event.delta;
+        try {
+          toolCall.arguments = JSON.parse(toolCall.argumentsRaw);
+        } catch {
+          // Still accumulating JSON
+        }
+      }
+      break;
+
+    case 'RUN_FINISHED':
+      // Check for pending tool calls requiring approval
+      pendingToolCalls = Array.from(toolCallsRef.current.values())
+        .filter(tc => tc.status === 'pending');
+
+      if (pendingToolCalls.length > 0) {
+        // Show approval UI
+        showToolApprovalUI(pendingToolCalls);
+      }
+      break;
+  }
+}
+
+// Approve a tool call
+async function approveToolCall(toolCallId: string, result: unknown) {
+  const response = await fetch(`${baseUrl}/ag-ui/message`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      runId: currentRunId,
+      toolCallResults: [{ toolCallId, result }]
+    })
+  });
+
+  // Process SSE response, then send follow-up
+  // ...
+
+  // After RUN_FINISHED, continue conversation with tool result
+  await sendFollowUpWithToolResult(toolCallId, result);
+}
+
+// Format tool name for display
+function formatToolName(name: string): string {
+  return name.replace(/___/g, '/');
+}
+```
+
+### Rejecting a Tool Call
+
+To reject a tool call, send a result indicating rejection:
+
+```json
+{
+  "runId": "run-456",
+  "toolCallResults": [
+    {
+      "toolCallId": "call_abc123",
+      "result": {
+        "rejected": true,
+        "reason": "User declined to execute this command"
+      }
+    }
+  ]
+}
+```
+
+The LLM will receive this rejection and can respond accordingly in the follow-up request.
 
 ---
 

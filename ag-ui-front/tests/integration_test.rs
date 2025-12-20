@@ -437,6 +437,7 @@ async fn test_hitl_session_state_transitions() {
         tool_call_id: format!("wait_{}", run_id),
         checkpoint_position: "/do/0".to_string(),
         workflow_name: "test_workflow".to_string(),
+        pending_tool_calls: vec![],
     };
     let updated = session_manager
         .set_paused_with_hitl_info(&session.session_id, hitl_info.clone())
@@ -502,6 +503,7 @@ async fn test_hitl_session_lookup_by_run_id() {
         tool_call_id: format!("wait_{}", run_id),
         checkpoint_position: "/do/1/do/0".to_string(),
         workflow_name: "nested_workflow".to_string(),
+        pending_tool_calls: vec![],
     };
     session_manager
         .set_paused_with_hitl_info(&session.session_id, hitl_info)
@@ -537,7 +539,7 @@ async fn test_hitl_tool_call_event_sequence() {
         AgUiEvent::step_started("prepare_step", "Prepare for approval"),
         AgUiEvent::step_finished("prepare_step", None),
         // 3. TOOL_CALL events for HITL
-        AgUiEvent::tool_call_start(format!("wait_{}", run_id), "HUMAN_INPUT".to_string()),
+        AgUiEvent::tool_call_start(format!("wait_{}", run_id), "HUMAN_INPUT".to_string(), None),
         AgUiEvent::tool_call_args(
             format!("wait_{}", run_id),
             serde_json::to_string(&args_json).unwrap(),
@@ -596,7 +598,7 @@ async fn test_hitl_resume_event_sequence() {
     let args_json = serde_json::json!({"prompt": "Enter approval"});
     let wait_events = [
         AgUiEvent::run_started(run_id, "hitl_thread"),
-        AgUiEvent::tool_call_start(tool_call_id.clone(), "HUMAN_INPUT".to_string()),
+        AgUiEvent::tool_call_start(tool_call_id.clone(), "HUMAN_INPUT".to_string(), None),
         AgUiEvent::tool_call_args(
             tool_call_id.clone(),
             serde_json::to_string(&args_json).unwrap(),
@@ -679,6 +681,7 @@ async fn test_multiple_hitl_waits_in_workflow() {
         tool_call_id: format!("wait_1_{}", run_id),
         checkpoint_position: "/do/0".to_string(),
         workflow_name: "multi_wait_workflow".to_string(),
+        pending_tool_calls: vec![],
     };
     session_manager
         .set_paused_with_hitl_info(&session.session_id, hitl_info_1)
@@ -696,7 +699,11 @@ async fn test_multiple_hitl_waits_in_workflow() {
         .store_event(
             run_id.as_str(),
             1,
-            AgUiEvent::tool_call_start(format!("wait_1_{}", run_id), "HUMAN_INPUT".to_string()),
+            AgUiEvent::tool_call_start(
+                format!("wait_1_{}", run_id),
+                "HUMAN_INPUT".to_string(),
+                None,
+            ),
         )
         .await;
 
@@ -717,6 +724,7 @@ async fn test_multiple_hitl_waits_in_workflow() {
         tool_call_id: format!("wait_2_{}", run_id),
         checkpoint_position: "/do/1".to_string(),
         workflow_name: "multi_wait_workflow".to_string(),
+        pending_tool_calls: vec![],
     };
     session_manager
         .set_paused_with_hitl_info(&session.session_id, hitl_info_2.clone())
@@ -725,7 +733,11 @@ async fn test_multiple_hitl_waits_in_workflow() {
         .store_event(
             run_id.as_str(),
             3,
-            AgUiEvent::tool_call_start(format!("wait_2_{}", run_id), "HUMAN_INPUT".to_string()),
+            AgUiEvent::tool_call_start(
+                format!("wait_2_{}", run_id),
+                "HUMAN_INPUT".to_string(),
+                None,
+            ),
         )
         .await;
 
@@ -789,7 +801,7 @@ async fn test_hitl_event_replay_on_reconnect() {
         AgUiEvent::run_started(run_id, "thread"),
         AgUiEvent::step_started("step_1", "First step"),
         AgUiEvent::step_finished("step_1", None),
-        AgUiEvent::tool_call_start(tool_call_id.clone(), "HUMAN_INPUT".to_string()),
+        AgUiEvent::tool_call_start(tool_call_id.clone(), "HUMAN_INPUT".to_string(), None),
         AgUiEvent::tool_call_args(
             tool_call_id.clone(),
             serde_json::to_string(&args_json).unwrap(),
@@ -895,6 +907,7 @@ async fn test_hitl_tool_call_id_validation() {
         tool_call_id: expected_tool_call_id.clone(),
         checkpoint_position: "/do/0".to_string(),
         workflow_name: "test_workflow".to_string(),
+        pending_tool_calls: vec![],
     };
     session_manager
         .set_paused_with_hitl_info(&session.session_id, hitl_info)
@@ -1224,6 +1237,7 @@ async fn test_hitl_atomic_resume_from_paused() {
         tool_call_id: format!("wait_{}", run_id),
         checkpoint_position: "/do/0".to_string(),
         workflow_name: "atomic_test_workflow".to_string(),
+        pending_tool_calls: vec![],
     };
     session_manager
         .set_paused_with_hitl_info(&session.session_id, hitl_info)

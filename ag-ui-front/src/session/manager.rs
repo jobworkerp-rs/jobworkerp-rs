@@ -23,15 +23,29 @@ pub enum SessionState {
     Error,
 }
 
+/// Information about a pending tool call for HITL
+#[derive(Debug, Clone)]
+pub struct PendingToolCallInfo {
+    /// Tool call ID
+    pub call_id: String,
+    /// Function/runner name
+    pub fn_name: String,
+    /// Function arguments (JSON string)
+    pub fn_arguments: String,
+}
+
 /// Information about HITL waiting state
 #[derive(Debug, Clone)]
 pub struct HitlWaitingInfo {
-    /// Tool call ID for the waiting state (format: wait_{run_id})
+    /// Primary tool call ID for the waiting state (format: wait_{run_id} or call_id from LLM)
     pub tool_call_id: String,
     /// Checkpoint position (JSON Pointer format)
     pub checkpoint_position: String,
     /// Workflow name for checkpoint lookup
     pub workflow_name: String,
+    /// List of pending tool calls that need client approval
+    /// Empty for traditional HITL (HUMAN_INPUT), populated for LLM tool calls
+    pub pending_tool_calls: Vec<PendingToolCallInfo>,
 }
 
 /// Session information
