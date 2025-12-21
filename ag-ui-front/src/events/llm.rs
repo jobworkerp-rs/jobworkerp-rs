@@ -128,28 +128,83 @@ fn extract_tool_calls_from_protobuf_result(result: &LlmChatResult) -> Option<Ext
 
 /// Extract tool calls from JSON value (for StreamingJobCompleted context.output).
 ///
-/// The JSON structure mirrors the protobuf LlmChatResult:
+/// This function handles multiple JSON structures because the protobuf `LlmChatResult`
+/// uses `oneof` for content types, and different serialization paths produce different
+/// JSON shapes. Additionally, the auto-calling mode vs HITL mode affects where tool
+/// calls appear in the response.
+///
+/// # Supported JSON Structures
+///
+/// ## 1. HITL Mode: `pending_tool_calls` / `pendingToolCalls` (root level)
+///
+/// When `isAutoCalling: false`, the LLM returns pending tool calls at the root level:
+/// ```json
+/// {
+///   "pending_tool_calls": {
+///     "calls": [{ "call_id": "...", "fn_name": "...", "fn_arguments": "..." }]
+///   },
+///   "requires_tool_execution": true
+/// }
+/// ```
+/// or camelCase (prost JSON serialization):
 /// ```json
 /// {
 ///   "pendingToolCalls": {
-///     "calls": [
-///       { "callId": "...", "fnName": "...", "fnArguments": "..." }
-///     ]
+///     "calls": [{ "callId": "...", "fnName": "...", "fnArguments": "..." }]
 ///   },
 ///   "requiresToolExecution": true
+/// }
+/// ```
+///
+/// ## 2. Auto-calling Mode: `content.tool_calls` / `content.toolCalls`
+///
+/// When `isAutoCalling: true`, tool calls are nested inside the `content` field:
+/// ```json
+/// {
+///   "content": {
+///     "tool_calls": {
+///       "calls": [{ "call_id": "...", "fn_name": "...", "fn_arguments": "..." }]
+///     }
+///   }
+/// }
+/// ```
+///
+/// ## 3. Nested oneof: `content.content.ToolCalls` / `content.content.tool_calls`
+///
+/// Due to protobuf `oneof MessageContent { ToolCalls tool_calls = N; ... }` serialization,
+/// tool calls may be double-nested when the content wrapper contains another content field:
+/// ```json
+/// {
+///   "content": {
+///     "content": {
+///       "ToolCalls": { "calls": [...] }
+///     }
+///   }
 /// }
 /// ```
 /// or snake_case variant:
 /// ```json
 /// {
-///   "pending_tool_calls": {
-///     "calls": [
-///       { "call_id": "...", "fn_name": "...", "fn_arguments": "..." }
-///     ]
-///   },
-///   "requires_tool_execution": true
+///   "content": {
+///     "content": {
+///       "tool_calls": { "calls": [...] }
+///     }
+///   }
 /// }
 /// ```
+///
+/// # Search Path Summary
+///
+/// | Path | Mode | Description |
+/// |------|------|-------------|
+/// | `pending_tool_calls` / `pendingToolCalls` | HITL | Root-level pending calls |
+/// | `content.tool_calls` / `content.toolCalls` | Auto | Direct tool calls in content |
+/// | `content.content.ToolCalls` | Auto | Protobuf oneof with PascalCase key |
+/// | `content.content.tool_calls` | Auto | Protobuf oneof with snake_case key |
+///
+/// The `requires_tool_execution` flag is always checked at the root level to determine
+/// whether the client should wait for user approval (HITL mode) or if tools were
+/// auto-executed.
 fn extract_tool_calls_from_json(value: &serde_json::Value) -> Option<ExtractedToolCalls> {
     let obj = value.as_object()?;
 
@@ -219,10 +274,12 @@ fn extract_tool_calls_from_json(value: &serde_json::Value) -> Option<ExtractedTo
             let tool_calls_value = content_obj
                 .get("tool_calls")
                 .or_else(|| content_obj.get("toolCalls"))
-                .or_else(|| content_obj.get("content").and_then(|c| {
-                    c.as_object()
-                        .and_then(|co| co.get("ToolCalls").or_else(|| co.get("tool_calls")))
-                }));
+                .or_else(|| {
+                    content_obj.get("content").and_then(|c| {
+                        c.as_object()
+                            .and_then(|co| co.get("ToolCalls").or_else(|| co.get("tool_calls")))
+                    })
+                });
 
             if let Some(tc) = tool_calls_value {
                 let calls_arr = tc

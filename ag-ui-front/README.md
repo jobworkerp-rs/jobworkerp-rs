@@ -17,7 +17,7 @@ AG-UI Front implements the [AG-UI protocol](https://docs.ag-ui.com/) and provide
 
 ## Architecture
 
-```
+```text
 ┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
 │   Client    │────>│  AG-UI Front     │────>│  jobworkerp-rs  │
 │  (Browser/  │<────│  (HTTP SSE)      │<────│  (Workflow)     │
@@ -131,7 +131,7 @@ When `isAutoCalling: false` is set in the LLM_CHAT runner, the workflow pauses w
 
 **Flow:**
 
-```
+```text
 Client                         AG-UI Server                    LLM
    |                              |                             |
    |-- POST /ag-ui/run ---------->|                             |
