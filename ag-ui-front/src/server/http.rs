@@ -299,7 +299,13 @@ where
     // Process tool call results and emit events
     let event_stream = state
         .handler
-        .handle_tool_call_results(&run_id, tool_call_results.into_iter().map(|r| (r.tool_call_id, r.result)).collect())
+        .handle_tool_call_results(
+            &run_id,
+            tool_call_results
+                .into_iter()
+                .map(|r| (r.tool_call_id, r.result))
+                .collect(),
+        )
         .await?;
 
     // Convert to SSE stream

@@ -157,7 +157,8 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                                     collected_pending_tool_calls = chunk.pending_tool_calls;
                                 }
                                 if chunk.requires_tool_execution.is_some() {
-                                    collected_requires_tool_execution = chunk.requires_tool_execution;
+                                    collected_requires_tool_execution =
+                                        chunk.requires_tool_execution;
                                 }
                             }
                             Err(e) => {
