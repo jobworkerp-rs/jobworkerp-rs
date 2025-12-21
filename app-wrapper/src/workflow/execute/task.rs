@@ -400,7 +400,7 @@ impl TaskExecutor {
             let mut timed_out = false;
 
             loop {
-                match tokio::time::timeout_a(deadline, res.next()).await {
+                match tokio::time::timeout_at(deadline, res.next()).await {
                     Ok(Some(item)) => {
                         match &item {
                             Ok(event) => {
