@@ -5,10 +5,12 @@
 use crate::config::AgUiServerConfig;
 use crate::error::{AgUiError, Result};
 use crate::events::{
-    extract_text_from_llm_chat_result, shared_adapter, AgUiEvent, EventEncoder,
-    SharedWorkflowEventAdapter,
+    extract_text_from_llm_chat_result, extract_tool_calls_from_llm_result, shared_adapter,
+    tool_calls_to_ag_ui_events, AgUiEvent, EventEncoder, SharedWorkflowEventAdapter,
 };
-use crate::session::{EventStore, HitlWaitingInfo, Session, SessionManager, SessionState};
+use crate::session::{
+    EventStore, HitlWaitingInfo, PendingToolCallInfo, Session, SessionManager, SessionState,
+};
 use crate::types::ids::MessageId;
 use crate::types::{RunAgentInput, RunId, ThreadId, WorkflowState, WorkflowStatus};
 use app::module::AppModule;
@@ -337,7 +339,110 @@ where
         Ok(WorkflowState::new("unknown").with_status(WorkflowStatus::Pending))
     }
 
-    /// Resume a paused HITL workflow with user input.
+    /// Handle tool call results for LLM HITL.
+    ///
+    /// This method:
+    /// 1. Validates session is in Paused state
+    /// 2. Validates tool_call_ids match pending tool calls
+    /// 3. Emits TOOL_CALL_RESULT and TOOL_CALL_END events
+    /// 4. Updates session state to Completed
+    ///
+    /// After this, the client should send a new /ag-ui/run request
+    /// with the tool results included in the message history.
+    pub async fn handle_tool_call_results(
+        &self,
+        run_id: &str,
+        tool_results: Vec<(String, serde_json::Value)>, // (tool_call_id, result)
+    ) -> Result<Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>> {
+        let run_id_typed = RunId::new(run_id);
+
+        // 1. Find session and validate state
+        let session = self
+            .session_manager
+            .get_session_by_run_id(&run_id_typed)
+            .await
+            .ok_or_else(|| AgUiError::SessionNotFound(run_id.to_string()))?;
+
+        if session.state != SessionState::Paused {
+            return Err(AgUiError::SessionNotPaused {
+                current_state: format!("{:?}", session.state),
+            });
+        }
+
+        // 2. Get HITL waiting info and validate tool_call_ids
+        let hitl_info =
+            session
+                .hitl_waiting_info
+                .as_ref()
+                .ok_or_else(|| AgUiError::HitlInfoNotFound {
+                    session_id: session.session_id.clone(),
+                })?;
+
+        // Validate all tool_call_ids
+        for (tool_call_id, _) in &tool_results {
+            let is_valid = hitl_info
+                .pending_tool_calls
+                .iter()
+                .any(|tc| &tc.call_id == tool_call_id);
+            if !is_valid {
+                let expected = hitl_info
+                    .pending_tool_calls
+                    .iter()
+                    .map(|tc| tc.call_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(AgUiError::InvalidToolCallId {
+                    expected,
+                    actual: tool_call_id.clone(),
+                });
+            }
+        }
+
+        // 3. Emit TOOL_CALL_RESULT and TOOL_CALL_END events for each result
+        let mut events = Vec::new();
+        for (tool_call_id, result) in &tool_results {
+            let result_event = AgUiEvent::tool_call_result(tool_call_id.clone(), result.clone());
+            let result_event_id = Self::encode_event_with_logging(&self.encoder, &result_event);
+            self.event_store
+                .store_event(run_id, result_event_id, result_event.clone())
+                .await;
+            events.push((result_event_id, result_event));
+
+            let end_event = AgUiEvent::tool_call_end(tool_call_id.clone());
+            let end_event_id = Self::encode_event_with_logging(&self.encoder, &end_event);
+            self.event_store
+                .store_event(run_id, end_event_id, end_event.clone())
+                .await;
+            events.push((end_event_id, end_event));
+        }
+
+        // 4. Emit RUN_FINISHED to signal client can proceed
+        let adapter = shared_adapter(run_id_typed.clone(), session.thread_id.clone());
+        let adapter_lock = adapter.lock().await;
+        let run_finished_event = adapter_lock.workflow_completed(None);
+        drop(adapter_lock);
+
+        let run_finished_id = Self::encode_event_with_logging(&self.encoder, &run_finished_event);
+        self.event_store
+            .store_event(run_id, run_finished_id, run_finished_event.clone())
+            .await;
+        events.push((run_finished_id, run_finished_event));
+
+        // 5. Update session state to Completed
+        self.session_manager
+            .set_session_state(&session.session_id, SessionState::Completed)
+            .await;
+
+        tracing::info!(
+            run_id = %run_id,
+            tool_count = tool_results.len(),
+            "Tool call results processed, session completed"
+        );
+
+        Ok(Box::pin(futures::stream::iter(events)))
+    }
+
+    /// Resume a paused HITL workflow with user input (checkpoint-based).
     ///
     /// This method:
     /// 1. Validates session is in Paused state
@@ -346,6 +451,8 @@ where
     /// 4. Injects user_input into checkpoint
     /// 5. Restarts workflow execution from checkpoint
     /// 6. Returns event stream for resumed execution
+    ///
+    /// Note: For LLM tool call HITL, use handle_tool_call_results instead.
     pub async fn resume_workflow(
         &self,
         run_id: &str,
@@ -376,9 +483,31 @@ where
                     session_id: session.session_id.clone(),
                 })?;
 
-        if hitl_info.tool_call_id != tool_call_id {
+        // Validate tool_call_id
+        // For LLM tool calls (pending_tool_calls non-empty), check if tool_call_id matches any pending call
+        // For traditional HITL (pending_tool_calls empty), check if tool_call_id matches the primary ID
+        let is_valid_tool_call_id = if !hitl_info.pending_tool_calls.is_empty() {
+            hitl_info
+                .pending_tool_calls
+                .iter()
+                .any(|tc| tc.call_id == tool_call_id)
+        } else {
+            hitl_info.tool_call_id == tool_call_id
+        };
+
+        if !is_valid_tool_call_id {
+            let expected = if !hitl_info.pending_tool_calls.is_empty() {
+                hitl_info
+                    .pending_tool_calls
+                    .iter()
+                    .map(|tc| tc.call_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                hitl_info.tool_call_id.clone()
+            };
             return Err(AgUiError::InvalidToolCallId {
-                expected: hitl_info.tool_call_id.clone(),
+                expected,
                 actual: tool_call_id.to_string(),
             });
         }
@@ -414,12 +543,13 @@ where
 
         // 4. Modify checkpoint with user_input
         // Set user_input as task.output (becomes next task's input) and in context_variables
+        let user_input_for_event = user_input.clone();
         let mut ctx_vars = (*checkpoint.workflow.context_variables).clone();
         ctx_vars.insert("user_input".to_string(), user_input.clone());
 
         let modified_checkpoint = CheckPointContext {
             task: app_wrapper::workflow::execute::checkpoint::TaskCheckPointContext {
-                output: Arc::new(user_input),
+                output: Arc::new(user_input.clone()),
                 ..checkpoint.task.clone()
             },
             workflow: app_wrapper::workflow::execute::checkpoint::WorkflowCheckPointContext {
@@ -490,20 +620,53 @@ where
         }
 
         // 9. Emit TOOL_CALL_RESULT and TOOL_CALL_END events
-        let tool_call_result = AgUiEvent::tool_call_result(
-            tool_call_id.to_string(),
-            serde_json::json!({"status": "resumed"}),
-        );
-        let result_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_result);
-        self.event_store
-            .store_event(run_id, result_event_id, tool_call_result.clone())
-            .await;
+        // For LLM tool calls (pending_tool_calls non-empty), emit events for the specific tool
+        // For traditional HITL (pending_tool_calls empty), emit events for the primary tool_call_id
+        let mut tool_events_vec = Vec::new();
 
-        let tool_call_end = AgUiEvent::tool_call_end(tool_call_id.to_string());
-        let end_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_end);
-        self.event_store
-            .store_event(run_id, end_event_id, tool_call_end.clone())
-            .await;
+        if !hitl_info.pending_tool_calls.is_empty() {
+            // LLM tool call mode: emit TOOL_CALL_RESULT and TOOL_CALL_END for the matched tool
+            let tool_call_result_event =
+                AgUiEvent::tool_call_result(tool_call_id.to_string(), user_input_for_event);
+            let result_event_id =
+                Self::encode_event_with_logging(&self.encoder, &tool_call_result_event);
+            self.event_store
+                .store_event(run_id, result_event_id, tool_call_result_event.clone())
+                .await;
+            tool_events_vec.push((result_event_id, tool_call_result_event));
+
+            let tool_call_end_event = AgUiEvent::tool_call_end(tool_call_id.to_string());
+            let end_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_end_event);
+            self.event_store
+                .store_event(run_id, end_event_id, tool_call_end_event.clone())
+                .await;
+            tool_events_vec.push((end_event_id, tool_call_end_event));
+
+            tracing::info!(
+                tool_call_id = %tool_call_id,
+                pending_count = hitl_info.pending_tool_calls.len(),
+                "LLM tool call result received"
+            );
+        } else {
+            // Traditional HITL mode: emit status-based result
+            let tool_call_result_event = AgUiEvent::tool_call_result(
+                tool_call_id.to_string(),
+                serde_json::json!({"status": "resumed"}),
+            );
+            let result_event_id =
+                Self::encode_event_with_logging(&self.encoder, &tool_call_result_event);
+            self.event_store
+                .store_event(run_id, result_event_id, tool_call_result_event.clone())
+                .await;
+            tool_events_vec.push((result_event_id, tool_call_result_event));
+
+            let tool_call_end_event = AgUiEvent::tool_call_end(tool_call_id.to_string());
+            let end_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_end_event);
+            self.event_store
+                .store_event(run_id, end_event_id, tool_call_end_event.clone())
+                .await;
+            tool_events_vec.push((end_event_id, tool_call_end_event));
+        }
 
         // 10. Register executor for cancellation support
         let executor = Arc::new(executor);
@@ -530,10 +693,7 @@ where
         );
 
         // Prepend the tool_call events to the workflow stream
-        let tool_events = futures::stream::iter(vec![
-            (result_event_id, tool_call_result),
-            (end_event_id, tool_call_end),
-        ]);
+        let tool_events = futures::stream::iter(tool_events_vec);
 
         let combined_stream = tool_events.chain(workflow_stream);
 
@@ -834,20 +994,141 @@ where
                             continue;
                         }
 
-                        // Handle StreamingJobCompleted: emit TEXT_MESSAGE_END
-                        if let WorkflowStreamEvent::StreamingJobCompleted { event: job_completed, .. } = &event {
+                        // Handle StreamingJobCompleted: emit TEXT_MESSAGE_END and check for LLM tool calls
+                        if let WorkflowStreamEvent::StreamingJobCompleted { event: job_completed, context: tc } = &event {
                             let job_id = job_completed.job_id;
-                            if let Some(message_id) = active_message_ids.remove(&job_id) {
+                            let message_id = active_message_ids.remove(&job_id);
+
+                            // Debug log the output content for troubleshooting
+                            tracing::debug!(
+                                job_id = job_id,
+                                output_len = job_completed.output.len(),
+                                output_preview = %String::from_utf8_lossy(&job_completed.output[..std::cmp::min(500, job_completed.output.len())]),
+                                "StreamingJobCompleted: checking for tool calls"
+                            );
+
+                            // Check for LLM tool calls in the output (both auto-calling and HITL modes)
+                            let extracted_tool_calls = extract_tool_calls_from_llm_result(&job_completed.output);
+
+                            // Emit TOOL_CALL events for both modes (display purpose)
+                            if let Some(ref tool_calls) = extracted_tool_calls {
+                                if !tool_calls.tool_calls.is_empty() {
+                                    tracing::info!(
+                                        job_id = job_id,
+                                        tool_count = tool_calls.tool_calls.len(),
+                                        requires_execution = tool_calls.requires_execution,
+                                        "StreamingJobCompleted: detected LLM tool calls"
+                                    );
+
+                                    // Emit TOOL_CALL_START and TOOL_CALL_ARGS for each tool call
+                                    let tool_events = tool_calls_to_ag_ui_events(
+                                        &tool_calls.tool_calls,
+                                        message_id.as_ref(),
+                                    );
+                                    for tool_event in tool_events {
+                                        let event_id = Self::encode_event_with_logging(&encoder, &tool_event);
+                                        event_store.store_event(&run_id, event_id, tool_event.clone()).await;
+                                        yield (event_id, tool_event);
+                                    }
+                                }
+                            }
+
+                            // Emit TEXT_MESSAGE_END for the text portion
+                            if let Some(msg_id) = message_id.clone() {
                                 tracing::info!(
                                     job_id = job_id,
                                     "StreamingJobCompleted: emitting TEXT_MESSAGE_END"
                                 );
 
-                                let ag_event = AgUiEvent::text_message_end(message_id);
+                                let ag_event = AgUiEvent::text_message_end(msg_id);
                                 let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
                                 event_store.store_event(&run_id, event_id, ag_event.clone()).await;
                                 yield (event_id, ag_event);
                             }
+
+                            // HITL mode: If requires_execution is true, pause for client approval
+                            if let Some(ref tool_calls) = extracted_tool_calls {
+                                tracing::info!(
+                                    job_id = job_id,
+                                    requires_execution = tool_calls.requires_execution,
+                                    tool_count = tool_calls.tool_calls.len(),
+                                    "StreamingJobCompleted: HITL check - requires_execution={}, tool_count={}",
+                                    tool_calls.requires_execution,
+                                    tool_calls.tool_calls.len()
+                                );
+                                if tool_calls.requires_execution && !tool_calls.tool_calls.is_empty() {
+                                    tracing::info!(
+                                        "LLM tool calls require client approval (HITL mode)"
+                                    );
+
+                                    // Get checkpoint position for later resume
+                                    let current_position = tc.position.read().await.as_json_pointer();
+                                    tracing::info!(
+                                        checkpoint_position = %current_position,
+                                        "HITL: checkpoint position for resume"
+                                    );
+
+                                    // Convert extracted tool calls to PendingToolCallInfo
+                                    let pending_tool_calls: Vec<PendingToolCallInfo> = tool_calls.tool_calls.iter()
+                                        .map(|tc| PendingToolCallInfo {
+                                            call_id: tc.call_id.clone(),
+                                            fn_name: tc.fn_name.clone(),
+                                            fn_arguments: tc.fn_arguments.clone(),
+                                        })
+                                        .collect();
+
+                                    // Use first tool call ID as the primary identifier
+                                    let primary_tool_call_id = tool_calls.tool_calls[0].call_id.clone();
+
+                                    // Update session state to Paused with HITL info for later resume
+                                    let hitl_info = HitlWaitingInfo {
+                                        tool_call_id: primary_tool_call_id.clone(),
+                                        checkpoint_position: current_position,
+                                        workflow_name: workflow_name.clone(),
+                                        pending_tool_calls,
+                                    };
+                                    if !session_manager.set_paused_with_hitl_info(&session_id, hitl_info).await {
+                                        tracing::error!(
+                                            session_id = %session_id,
+                                            run_id = %run_id,
+                                            "Failed to persist LLM HITL waiting info, emitting RUN_ERROR"
+                                        );
+
+                                        let adapter_lock = adapter.lock().await;
+                                        let error_event = adapter_lock.workflow_error(
+                                            "Failed to persist LLM HITL waiting state".to_string(),
+                                            "HITL_PERSISTENCE_ERROR",
+                                            None,
+                                        );
+                                        drop(adapter_lock);
+
+                                        let error_event_id = Self::encode_event_with_logging(&encoder, &error_event);
+                                        event_store.store_event(&run_id, error_event_id, error_event.clone()).await;
+                                        yield (error_event_id, error_event);
+
+                                        session_manager.set_session_state(&session_id, SessionState::Error).await;
+                                        return;
+                                    }
+
+                                    // Remove executor from registry
+                                    {
+                                        let mut registry = executor_registry.write().await;
+                                        registry.remove(&run_id_for_cleanup);
+                                        tracing::debug!(
+                                            run_id = %run_id_for_cleanup,
+                                            "Removed executor from registry for LLM HITL pause"
+                                        );
+                                    }
+
+                                    // Exit stream without emitting RUN_FINISHED - client needs to approve tool calls
+                                    tracing::info!(
+                                        "Workflow paused for LLM tool call approval, session {} is now Paused",
+                                        session_id
+                                    );
+                                    return;
+                                }
+                            }
+
                             // Continue to process context for state snapshot
                         }
 
@@ -930,6 +1211,7 @@ where
                                 let tool_call_start = AgUiEvent::tool_call_start(
                                     tool_call_id.clone(),
                                     "HUMAN_INPUT".to_string(),
+                                    None,
                                 );
                                 let start_event_id = Self::encode_event_with_logging(&encoder, &tool_call_start);
                                 event_store.store_event(&run_id, start_event_id, tool_call_start.clone()).await;
@@ -952,6 +1234,7 @@ where
                                     tool_call_id: tool_call_id.clone(),
                                     checkpoint_position,
                                     workflow_name: workflow_name.clone(),
+                                    pending_tool_calls: vec![], // Traditional HITL (HUMAN_INPUT)
                                 };
                                 if !session_manager.set_paused_with_hitl_info(&session_id, hitl_info).await {
                                     // Failed to persist HITL state - emit RUN_ERROR and set session to Error

@@ -10,8 +10,9 @@ pub mod types;
 pub use adapter::{shared_adapter, SharedWorkflowEventAdapter, WorkflowEventAdapter};
 pub use encoder::{encode_comment, encode_retry, EventEncoder};
 pub use llm::{
-    extract_text_from_llm_chat_result, result_output_stream_to_ag_ui_events,
-    result_output_stream_to_ag_ui_events_with_end_guarantee, LlmStreamingResult,
+    extract_text_from_llm_chat_result, extract_tool_calls_from_llm_result,
+    result_output_stream_to_ag_ui_events, result_output_stream_to_ag_ui_events_with_end_guarantee,
+    tool_calls_to_ag_ui_events, ExtractedToolCall, ExtractedToolCalls, LlmStreamingResult,
 };
 pub use state_diff::{calculate_state_diff, create_state_delta_event, StateTracker};
 pub use types::AgUiEvent;

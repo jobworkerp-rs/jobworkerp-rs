@@ -304,11 +304,12 @@ impl AgUiEvent {
     pub fn tool_call_start(
         tool_call_id: impl Into<String>,
         tool_call_name: impl Into<String>,
+        parent_message_id: Option<String>,
     ) -> Self {
         AgUiEvent::ToolCallStart {
             tool_call_id: tool_call_id.into(),
             tool_call_name: tool_call_name.into(),
-            parent_message_id: None,
+            parent_message_id,
             timestamp: Some(Self::now_timestamp()),
         }
     }
@@ -593,7 +594,7 @@ mod tests {
 
     #[test]
     fn test_builder_tool_call_lifecycle() {
-        let start = AgUiEvent::tool_call_start("call_1", "http_request");
+        let start = AgUiEvent::tool_call_start("call_1", "http_request", None);
         let args = AgUiEvent::tool_call_args("call_1", r#"{"url":"https://example.com"}"#);
         let end = AgUiEvent::tool_call_end("call_1");
         let result = AgUiEvent::tool_call_result("call_1", serde_json::json!({"status": 200}));
@@ -602,6 +603,18 @@ mod tests {
         assert_eq!(args.event_type(), "TOOL_CALL_ARGS");
         assert_eq!(end.event_type(), "TOOL_CALL_END");
         assert_eq!(result.event_type(), "TOOL_CALL_RESULT");
+
+        // Test with parent_message_id
+        let start_with_parent =
+            AgUiEvent::tool_call_start("call_2", "command", Some("msg_123".to_string()));
+        match start_with_parent {
+            AgUiEvent::ToolCallStart {
+                parent_message_id, ..
+            } => {
+                assert_eq!(parent_message_id, Some("msg_123".to_string()));
+            }
+            _ => panic!("Expected ToolCallStart"),
+        }
     }
 
     #[test]
