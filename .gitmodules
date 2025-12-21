@@ -13,3 +13,6 @@
 [submodule "modules/memory-utils"]
 	path = modules/memory-utils
 	url = https://github.com/sutr-app/memory-utils.git
+[submodule "admin-ui"]
+	path = admin-ui
+	url = https://github.com/jobworkerp-rs/admin-ui.git

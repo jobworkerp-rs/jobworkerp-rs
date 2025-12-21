@@ -1,6 +1,6 @@
-# GitHub Actions optimized Dockerfile
-# Requires pre-built binary at ./target/release/all-in-one
-# For local development with full build, use `Dockerfile.full` instead
+# Full multi-stage build Dockerfile for local development
+# This builds everything inside Docker (no pre-built binaries required)
+# For GitHub Actions, use `Dockerfile` instead (requires pre-built binary)
 
 # Admin UI Build Stage
 FROM node:20-slim AS ui-builder
@@ -22,6 +22,33 @@ COPY admin-ui/ .
 # Build the application
 RUN pnpm build
 
+# Rust Build Stage
+FROM rust:1-bookworm AS rust-builder
+
+RUN apt-get update && apt-get install -y protobuf-compiler libssl-dev pkg-config \
+    && apt-get clean -y && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy source code
+COPY Cargo.toml Cargo.lock ./
+COPY proto proto/
+COPY base base/
+COPY runner runner/
+COPY infra infra/
+COPY app app/
+COPY app-wrapper app-wrapper/
+COPY worker-app worker-app/
+COPY grpc-front grpc-front/
+COPY worker-main worker-main/
+COPY mcp-server mcp-server/
+COPY ag-ui-front ag-ui-front/
+COPY modules modules/
+COPY plugins plugins/
+
+# Build release binary
+RUN cargo build --release --bin all-in-one
+
 # Runtime Stage
 FROM nvcr.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
@@ -37,8 +64,8 @@ RUN /sbin/ldconfig
 
 WORKDIR /home/jobworkerp
 
-# Copy pre-built all-in-one binary (built by GitHub Actions or locally)
-COPY --chown=jobworkerp:jobworkerp ./target/release/all-in-one .
+# Copy glibc-built all-in-one binary from rust-builder
+COPY --from=rust-builder --chown=jobworkerp:jobworkerp /build/target/release/all-in-one .
 
 # Copy admin-ui built assets
 COPY --from=ui-builder /app/dist /usr/share/nginx/html
