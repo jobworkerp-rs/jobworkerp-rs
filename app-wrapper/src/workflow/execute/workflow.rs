@@ -41,7 +41,7 @@ impl UseExpressionTransformer for WorkflowExecutor {}
 impl UseExpression for WorkflowExecutor {}
 impl Tracing for WorkflowExecutor {}
 
-const DEFAULT_TASK_TIMEOUT_SEC: u64 = 1200; // 20 minutes
+const DEFAULT_TASK_TIMEOUT_SEC: u64 = 3600; // 60 minutes
 const ROOT_TASK_NAME: &str = "ROOT";
 
 impl WorkflowTracing for WorkflowExecutor {}
