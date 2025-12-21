@@ -476,15 +476,21 @@ impl WorkflowExecutor {
                 if let Some(output) = workflow.output.as_ref() {
                     if let Some(as_) = output.as_.as_ref() {
                         let wfr = initial_wfc.read().await;
-                        let expression_result = WorkflowExecutor::expression(
-                            &wfr,
-                            Arc::new(TaskContext::new(
-                                None,
-                                wfr.input.clone(),
-                                Arc::new(Mutex::new(serde_json::Map::new())),
-                            )),
-                        )
-                        .await;
+                        // Build TaskContext with correct $input and $output for workflow output transform
+                        let last_output = wfr
+                            .output
+                            .clone()
+                            .unwrap_or_else(|| Arc::new(serde_json::Value::Null));
+                        let context_vars = wfr.context_variables.clone();
+                        let mut task_context = TaskContext::new(
+                            None,
+                            wfr.input.clone(), // $input = workflow input
+                            context_vars,      // include exported variables
+                        );
+                        task_context.output = last_output; // $output = last task's output
+
+                        let expression_result =
+                            WorkflowExecutor::expression(&wfr, Arc::new(task_context)).await;
                         drop(wfr);
 
                         if let Ok(expression) = expression_result {
