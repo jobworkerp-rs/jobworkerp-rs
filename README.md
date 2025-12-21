@@ -118,6 +118,52 @@ $ docker-compose up
 $ docker-compose -f docker-compose-scalable.yml up --scale worker=3
 ```
 
+#### Building Docker Image Locally
+
+There are two Dockerfiles available for the all-in-one image:
+
+| Dockerfile | Purpose | Description |
+|------------|---------|-------------|
+| `Dockerfile` | GitHub Actions / Pre-built binary | Requires pre-built `./target/release/all-in-one` binary. Builds only admin-ui inside Docker. |
+| `Dockerfile.full` | Local development | Full multi-stage build. Builds both Rust binary and admin-ui inside Docker. No pre-built binary required. |
+
+```shell
+# Option 1: Using pre-built binary (Dockerfile)
+# First build the Rust binary locally
+$ cargo build --release
+# Then build the Docker image
+$ docker build -t jobworkerp-all-in-one .
+
+# Option 2: Full build inside Docker (Dockerfile.full)
+# No pre-built binary required - everything is built inside Docker
+$ docker build -f Dockerfile.full -t jobworkerp-all-in-one .
+
+# Run the container
+# - Port 80: Admin UI (nginx)
+# - Port 9000: gRPC-Web (for admin-ui to connect)
+$ docker run -p 80:80 -p 9000:9000 \
+  -e VITE_GRPC_ENDPOINT=http://localhost:9000 \
+  -e USE_GRPC_WEB=true \
+  -e JOB_STATUS_RDB_INDEXING=true \
+  jobworkerp-all-in-one
+
+# For remote access, replace localhost with your server's IP address
+$ docker run -p 80:80 -p 9000:9000 \
+  -e VITE_GRPC_ENDPOINT=http://<your-server-ip>:9000 \
+  -e USE_GRPC_WEB=true \
+  -e JOB_STATUS_RDB_INDEXING=true \
+  jobworkerp-all-in-one
+```
+
+**Required environment variables for admin-ui:**
+| Variable | Description |
+|----------|-------------|
+| `VITE_GRPC_ENDPOINT` | gRPC-Web endpoint URL that admin-ui connects to |
+| `USE_GRPC_WEB` | Must be `true` to enable gRPC-Web protocol |
+| `JOB_STATUS_RDB_INDEXING` | Must be `true` to display job list in admin-ui |
+
+> **Note**: `Dockerfile.full` takes longer to build but is convenient for local development as it doesn't require a local Rust toolchain.
+
 ### Execution Examples Using jobworkerp-client
 
 Using [jobworkerp-client](https://github.com/jobworkerp-rs/jobworkerp-client-rs), you can create/retrieve workers, enqueue jobs, and get processing results as follows:

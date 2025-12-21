@@ -113,6 +113,52 @@ $ docker-compose up
 $ docker-compose -f docker-compose-scalable.yml up --scale worker=3
 ```
 
+### ローカルでのDockerイメージビルド
+
+all-in-oneイメージ用に2つのDockerfileがあります：
+
+| Dockerfile | 用途 | 説明 |
+|------------|------|------|
+| `Dockerfile` | GitHub Actions / ビルド済みバイナリ用 | 事前にビルドされた `./target/release/all-in-one` が必要。admin-uiのみDocker内でビルド。 |
+| `Dockerfile.full` | ローカル開発用 | フルマルチステージビルド。RustバイナリとAdmin UIの両方をDocker内でビルド。事前ビルド不要。 |
+
+```shell
+# オプション1: ビルド済みバイナリを使用 (Dockerfile)
+# まずRustバイナリをローカルでビルド
+$ cargo build --release
+# Dockerイメージをビルド
+$ docker build -t jobworkerp-all-in-one .
+
+# オプション2: Docker内でフルビルド (Dockerfile.full)
+# 事前ビルド不要 - すべてDocker内でビルドされます
+$ docker build -f Dockerfile.full -t jobworkerp-all-in-one .
+
+# コンテナを実行
+# - ポート80: Admin UI (nginx)
+# - ポート9000: gRPC-Web (admin-uiが接続)
+$ docker run -p 80:80 -p 9000:9000 \
+  -e VITE_GRPC_ENDPOINT=http://localhost:9000 \
+  -e USE_GRPC_WEB=true \
+  -e JOB_STATUS_RDB_INDEXING=true \
+  jobworkerp-all-in-one
+
+# リモートアクセスの場合、localhostをサーバーのIPアドレスに置き換えてください
+$ docker run -p 80:80 -p 9000:9000 \
+  -e VITE_GRPC_ENDPOINT=http://<サーバーのIPアドレス>:9000 \
+  -e USE_GRPC_WEB=true \
+  -e JOB_STATUS_RDB_INDEXING=true \
+  jobworkerp-all-in-one
+```
+
+**admin-uiに必要な環境変数:**
+| 変数名 | 説明 |
+|--------|------|
+| `VITE_GRPC_ENDPOINT` | admin-uiが接続するgRPC-WebエンドポイントURL |
+| `USE_GRPC_WEB` | gRPC-Webプロトコルを有効にするため`true`が必須 |
+| `JOB_STATUS_RDB_INDEXING` | admin-uiでジョブ一覧を表示するため`true`が必須 |
+
+> **注意**: `Dockerfile.full`はビルドに時間がかかりますが、ローカルにRustツールチェーンが不要なため、ローカル開発時に便利です。
+
 ### クライアントによる実行例
 
 [jobworkerp-client](https://github.com/jobworkerp-rs/jobworkerp-client-rs)をつかって以下のようにworkerの作成・取得、jobのenqueue、処理結果の取得が可能です。
