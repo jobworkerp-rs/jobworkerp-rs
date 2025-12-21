@@ -15,4 +15,4 @@
 	url = https://github.com/sutr-app/memory-utils.git
 [submodule "admin-ui"]
 	path = admin-ui
-	url = git@github.com:jobworkerp-rs/admin-ui.git
+	url = https://github.com/jobworkerp-rs/admin-ui.git
