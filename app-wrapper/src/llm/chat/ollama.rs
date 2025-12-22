@@ -304,14 +304,21 @@ impl OllamaChatService {
         // Handle the result based on whether it contains pending tool calls
         match res {
             ChatInternalResult::Final(response) => {
-                let text = response.message.content.clone();
-                let (prompt, think) = Self::divide_think_tag(text);
+                // Use ollama-rs thinking field if available, otherwise fall back to tag parsing
+                let (content_text, reasoning) =
+                    if let Some(thinking) = response.message.thinking.clone() {
+                        // ollama-rs provides thinking separately
+                        (response.message.content.clone(), Some(thinking))
+                    } else {
+                        // Fall back to manual tag parsing for older versions
+                        Self::divide_think_tag(response.message.content.clone())
+                    };
 
                 Ok(LlmChatResult {
                     content: Some(llm::llm_chat_result::MessageContent {
-                        content: Some(message_content::Content::Text(prompt)),
+                        content: Some(message_content::Content::Text(content_text)),
                     }),
-                    reasoning_content: think,
+                    reasoning_content: reasoning,
                     done: true,
                     usage: None,
                     pending_tool_calls: None,

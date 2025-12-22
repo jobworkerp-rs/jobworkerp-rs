@@ -59,6 +59,8 @@ pub struct TaskExecutor {
     pub task_name: String,
     pub task: Arc<Task>,
     pub metadata: Arc<HashMap<String, String>>,
+    /// Whether to emit StreamingData events (for ag-ui-front real-time streaming)
+    pub emit_streaming_data: bool,
 }
 impl UseExpression for TaskExecutor {}
 impl UseJqAndTemplateTransformer for TaskExecutor {}
@@ -74,6 +76,7 @@ impl TaskExecutor {
         task_name: &str,
         task: Arc<Task>,
         metadata: Arc<HashMap<String, String>>,
+        emit_streaming_data: bool,
     ) -> Self {
         // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
         Self {
@@ -84,6 +87,7 @@ impl TaskExecutor {
             task_name: task_name.to_owned(),
             task,
             metadata,
+            emit_streaming_data,
         }
     }
 
@@ -699,6 +703,7 @@ impl TaskExecutor {
                 let job_executor_wrapper_clone = job_executor_wrapper.clone();
                 let metadata_clone = self.metadata.clone();
                 let default_task_timeout = self.default_task_timeout;
+                let emit_streaming = self.emit_streaming_data;
 
                 Box::pin(stream! {
                     // lifetime issue workaround: executor needs to be created inside the stream
@@ -710,6 +715,7 @@ impl TaskExecutor {
                         job_executor_wrapper_clone,
                         checkpoint_repository.clone(),
                         execution_id.clone(),
+                        emit_streaming,
                     );
 
                     let mut base_stream = executor.execute_stream(cx, task_name, task_context);
@@ -722,6 +728,7 @@ impl TaskExecutor {
                 let task_clone = task.clone();
                 let job_executor_wrapper_clone = job_executor_wrapper.clone();
                 let metadata_clone = self.metadata.clone();
+                let emit_streaming = self.emit_streaming_data;
 
                 Box::pin(stream! {
                     // lifetime issue workaround: executor needs to be created inside the stream
@@ -733,6 +740,7 @@ impl TaskExecutor {
                         checkpoint_repository.clone(),
                         execution_id.clone(),
                         metadata_clone,
+                        emit_streaming,
                     );
 
                     let mut base_stream = executor.execute_stream(cx, task_name, task_context);
@@ -751,6 +759,7 @@ impl TaskExecutor {
                     checkpoint_repository.clone(),
                     execution_id.clone(),
                     self.metadata.clone(),
+                    self.emit_streaming_data,
                 );
                 let task_name_str = task_name.to_string();
                 futures::stream::once(async move {
@@ -859,7 +868,7 @@ impl TaskExecutor {
                         futures::pin_mut!(stream);
                         while let Some(event_result) = stream.next().await {
                             match event_result {
-                                Ok(WorkflowStreamEvent::StreamingJobCompleted { mut event, context }) => {
+                                Ok(WorkflowStreamEvent::StreamingJobCompleted { job_id, job_result_id, position, context }) => {
                                     // Apply output transformation
                                     let mut expr = match TaskExecutor::expression(
                                         &*workflow_context.read().await,
@@ -880,26 +889,14 @@ impl TaskExecutor {
                                         context,
                                     ).await {
                                         Ok(result) => {
-                                            // Update event.output with transformed output
-                                            match serde_json::to_vec(&result.output) {
-                                                Ok(output_bytes) => {
-                                                    event.output = output_bytes;
-                                                    // Re-emit StreamingJobCompleted with updated event and context
-                                                    yield Ok(WorkflowStreamEvent::StreamingJobCompleted {
-                                                        event,
-                                                        context: result,
-                                                    });
-                                                }
-                                                Err(e) => {
-                                                    let pos = result.position.read().await.as_json_pointer();
-                                                    yield Err(workflow::errors::ErrorFactory::new().internal_error(
-                                                        format!("Failed to serialize output: {}", e),
-                                                        Some(pos),
-                                                        None,
-                                                    ));
-                                                    return;
-                                                }
-                                            }
+                                            // Re-emit StreamingJobCompleted with updated context
+                                            // Output is accessible via result.output
+                                            yield Ok(WorkflowStreamEvent::StreamingJobCompleted {
+                                                job_id,
+                                                job_result_id,
+                                                position,
+                                                context: result,
+                                            });
                                         }
                                         Err(e) => {
                                             yield Err(e);
@@ -1032,6 +1029,7 @@ impl TaskExecutor {
                     checkpoint_repository.clone(),
                     execution_id.clone(),
                     self.metadata.clone(),
+                    self.emit_streaming_data,
                 );
                 let task_name_str = task_name.to_string();
                 futures::stream::once(async move {
@@ -1215,6 +1213,7 @@ mod tests {
         RunTask, RunTaskConfiguration, SetTask, Task, TaskList, WorkflowName, WorkflowSchema,
         WorkflowVersion,
     };
+    use crate::workflow::execute::context::{JobId, JobResultId};
     use app::module::test::create_hybrid_test_app;
     use futures::StreamExt;
     use std::str::FromStr;
@@ -1325,8 +1324,13 @@ mod tests {
         expected_task_type: &str,
         expected_task_name: &str,
     ) -> bool {
-        if let Ok(WorkflowStreamEvent::TaskCompleted { event, .. }) = event {
-            event.task_type == expected_task_type && event.task_name == expected_task_name
+        if let Ok(WorkflowStreamEvent::TaskCompleted {
+            task_type,
+            task_name,
+            ..
+        }) = event
+        {
+            task_type == expected_task_type && task_name == expected_task_name
         } else {
             false
         }
@@ -1337,32 +1341,34 @@ mod tests {
         match event {
             Ok(evt) => {
                 let variant = match evt {
-                    WorkflowStreamEvent::TaskCompleted { event, .. } => {
-                        format!(
-                            "TaskCompleted(type={}, name={})",
-                            event.task_type, event.task_name
-                        )
+                    WorkflowStreamEvent::TaskCompleted {
+                        task_type,
+                        task_name,
+                        ..
+                    } => {
+                        format!("TaskCompleted(type={}, name={})", task_type, task_name)
                     }
-                    WorkflowStreamEvent::TaskStarted { event } => {
-                        format!(
-                            "TaskStarted(type={}, name={})",
-                            event.task_type, event.task_name
-                        )
+                    WorkflowStreamEvent::TaskStarted {
+                        task_type,
+                        task_name,
+                        ..
+                    } => {
+                        format!("TaskStarted(type={}, name={})", task_type, task_name)
                     }
-                    WorkflowStreamEvent::JobStarted { event } => {
-                        format!("JobStarted(job_id={})", event.job_id)
+                    WorkflowStreamEvent::JobStarted { job_id, .. } => {
+                        format!("JobStarted(job_id={})", job_id.value)
                     }
-                    WorkflowStreamEvent::JobCompleted { event, .. } => {
-                        format!("JobCompleted(job_id={})", event.job_id)
+                    WorkflowStreamEvent::JobCompleted { job_id, .. } => {
+                        format!("JobCompleted(job_id={})", job_id.value)
                     }
-                    WorkflowStreamEvent::StreamingJobStarted { event } => {
-                        format!("StreamingJobStarted(job_id={})", event.job_id)
+                    WorkflowStreamEvent::StreamingJobStarted { job_id, .. } => {
+                        format!("StreamingJobStarted(job_id={})", job_id.value)
                     }
                     WorkflowStreamEvent::StreamingData { job_id, .. } => {
-                        format!("StreamingData(job_id={})", job_id)
+                        format!("StreamingData(job_id={})", job_id.value)
                     }
-                    WorkflowStreamEvent::StreamingJobCompleted { event, .. } => {
-                        format!("StreamingJobCompleted(job_id={})", event.job_id)
+                    WorkflowStreamEvent::StreamingJobCompleted { job_id, .. } => {
+                        format!("StreamingJobCompleted(job_id={})", job_id.value)
                     }
                 };
                 format!("Ok({})", variant)
@@ -1401,6 +1407,7 @@ mod tests {
                 "run_command",
                 Arc::new(workflow.do_.0[0].get("run_command").unwrap().clone()),
                 Arc::new(HashMap::new()),
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             // Execute and collect events
@@ -1471,6 +1478,7 @@ mod tests {
                 "set_value",
                 Arc::new(workflow.do_.0[0].get("set_value").unwrap().clone()),
                 Arc::new(HashMap::new()),
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             let task_context = TaskContext::new(
@@ -1576,15 +1584,19 @@ mod tests {
             assert!(task_started.context().is_none());
 
             // StreamingJobStarted - no context
-            let streaming_started =
-                WorkflowStreamEvent::streaming_job_started(123, "COMMAND", "worker1", "/do/task1");
+            let streaming_started = WorkflowStreamEvent::streaming_job_started(
+                JobId { value: 123 },
+                "COMMAND",
+                Some("worker1".to_string()),
+                "/do/task1",
+            );
             assert!(streaming_started.is_start_event());
             assert!(streaming_started.context().is_none());
 
             // StreamingJobCompleted - has context
             let streaming_completed = WorkflowStreamEvent::streaming_job_completed(
-                123,
-                Some(456),
+                JobId { value: 123 },
+                Some(JobResultId { value: 456 }),
                 "/do/task1",
                 task_context.clone(),
             );
@@ -1592,14 +1604,22 @@ mod tests {
             assert!(streaming_completed.context().is_some());
 
             // JobStarted - no context
-            let job_started =
-                WorkflowStreamEvent::job_started(789, "HTTP_REQUEST", "worker2", "/do/task2");
+            let job_started = WorkflowStreamEvent::job_started(
+                JobId { value: 789 },
+                "HTTP_REQUEST",
+                Some("worker2".to_string()),
+                "/do/task2",
+            );
             assert!(job_started.is_start_event());
             assert!(job_started.context().is_none());
 
             // JobCompleted - has context
-            let job_completed =
-                WorkflowStreamEvent::job_completed(789, Some(1000), "/do/task2", task_context);
+            let job_completed = WorkflowStreamEvent::job_completed(
+                JobId { value: 789 },
+                Some(JobResultId { value: 1000 }),
+                "/do/task2",
+                task_context,
+            );
             assert!(job_completed.is_completed_event());
             assert!(job_completed.context().is_some());
         });
@@ -1616,11 +1636,20 @@ mod tests {
             let task_started = WorkflowStreamEvent::task_started("runTask", "t1", "/do/task1");
             assert_eq!(task_started.position(), "/do/task1");
 
-            let job_started = WorkflowStreamEvent::job_started(1, "CMD", "w1", "/do/job1");
+            let job_started = WorkflowStreamEvent::job_started(
+                JobId { value: 1 },
+                "CMD",
+                Some("w1".to_string()),
+                "/do/job1",
+            );
             assert_eq!(job_started.position(), "/do/job1");
 
-            let streaming_started =
-                WorkflowStreamEvent::streaming_job_started(2, "LLM", "w2", "/do/stream1");
+            let streaming_started = WorkflowStreamEvent::streaming_job_started(
+                JobId { value: 2 },
+                "LLM",
+                Some("w2".to_string()),
+                "/do/stream1",
+            );
             assert_eq!(streaming_started.position(), "/do/stream1");
 
             // Completed events get position from TaskContext
@@ -1680,6 +1709,7 @@ mod tests {
                 "set_with_timeout",
                 Arc::new(task_with_timeout),
                 Arc::new(HashMap::new()),
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             let resolved = task_executor.resolve_timeout();
@@ -1731,6 +1761,7 @@ mod tests {
                 "set_no_timeout",
                 Arc::new(task_without_timeout),
                 Arc::new(HashMap::new()),
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             let resolved = task_executor.resolve_timeout();
@@ -1808,6 +1839,7 @@ mod tests {
                 "do_with_timeout",
                 Arc::new(do_task_with_short_timeout),
                 Arc::new(HashMap::new()),
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             let task_context = TaskContext::new(
@@ -1913,6 +1945,7 @@ mod tests {
                 "set_with_ref_timeout",
                 Arc::new(task_with_ref_timeout),
                 Arc::new(HashMap::new()),
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             let resolved = task_executor.resolve_timeout();

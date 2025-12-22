@@ -7,6 +7,7 @@ use crate::workflow::{
 };
 use chrono::{DateTime, FixedOffset};
 pub use infra::workflow::position::WorkflowPosition;
+pub use proto::jobworkerp::data::{JobId, JobResultId};
 use std::{collections::BTreeMap, fmt, ops::Deref, str::FromStr, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
@@ -483,84 +484,67 @@ impl From<jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus
     }
 }
 
-// Re-export protobuf types for workflow events
-pub use proto::jobworkerp::data::{
-    workflow_event, JobCompletedEvent, JobStartedEvent, TaskCompletedEvent, TaskStartedEvent,
-    WorkflowCancelledEvent, WorkflowEvent,
-};
-
-/// Internal representation combining WorkflowEvent with TaskContext
+/// Internal representation for workflow streaming events.
 ///
-/// protobuf's WorkflowEvent is serializable but doesn't contain TaskContext.
-/// This enum is used for internal processing, and can be converted to
-/// WorkflowEvent for external output (gRPC/serialization).
+/// Pure Rust enum for memory efficiency - no protobuf dependency.
+/// Completed events contain TaskContext for state access (use context.output for output data).
+///
+/// Type conventions:
+/// - `job_id`: Uses proto `JobId` type for type safety
+/// - `job_result_id`: Uses proto `JobResultId` type (Option for cases where result is not stored)
+/// - `worker_name`: Option because Runner-based jobs use temporary workers (not registered)
+/// - `position`: String for logging purposes (JSON Pointer format)
 #[derive(Debug, Clone)]
 pub enum WorkflowStreamEvent {
-    // Job execution tasks (RunTask)
+    // Streaming job events (LLM streaming)
     StreamingJobStarted {
-        event: JobStartedEvent,
+        job_id: JobId,
+        runner_name: String,
+        /// None for Runner-based jobs (temporary worker), Some for Worker-based jobs
+        worker_name: Option<String>,
+        position: String,
     },
-    /// Streaming data chunk for real-time LLM output
-    /// Each chunk is yielded as it arrives from Redis Pub/Sub
-    StreamingData {
-        job_id: i64,
-        data: Vec<u8>,
-    },
+    /// Streaming data chunk for real-time LLM output.
+    /// Each chunk is yielded as it arrives from Redis Pub/Sub.
+    /// Only emitted when emit_streaming_data flag is true (ag-ui-front).
+    StreamingData { job_id: JobId, data: Vec<u8> },
     StreamingJobCompleted {
-        event: JobCompletedEvent,
+        job_id: JobId,
+        job_result_id: Option<JobResultId>,
+        position: String,
         context: TaskContext,
     },
+
+    // Non-streaming job events
     JobStarted {
-        event: JobStartedEvent,
+        job_id: JobId,
+        runner_name: String,
+        /// None for Runner-based jobs (temporary worker), Some for Worker-based jobs
+        worker_name: Option<String>,
+        position: String,
     },
     JobCompleted {
-        event: JobCompletedEvent,
+        job_id: JobId,
+        job_result_id: Option<JobResultId>,
+        position: String,
         context: TaskContext,
     },
-    // Generic tasks (ForTask, SwitchTask, DoTask, etc.)
+
+    // Generic task events (ForTask, SwitchTask, DoTask, etc.)
     TaskStarted {
-        event: TaskStartedEvent,
+        task_type: String,
+        task_name: String,
+        position: String,
     },
     TaskCompleted {
-        event: TaskCompletedEvent,
+        task_type: String,
+        task_name: String,
+        position: String,
         context: TaskContext,
     },
-    // Reserved for future use
-    // WorkflowCancelled { event: WorkflowCancelledEvent },
 }
 
 impl WorkflowStreamEvent {
-    /// Convert to protobuf WorkflowEvent (for gRPC/serialization)
-    pub fn to_proto(&self) -> WorkflowEvent {
-        use proto::jobworkerp::data::StreamingDataEvent;
-        match self {
-            Self::StreamingJobStarted { event } => WorkflowEvent {
-                event: Some(workflow_event::Event::StreamingJobStarted(event.clone())),
-            },
-            Self::StreamingData { job_id, data } => WorkflowEvent {
-                event: Some(workflow_event::Event::StreamingData(StreamingDataEvent {
-                    job_id: *job_id,
-                    data: data.clone(),
-                })),
-            },
-            Self::StreamingJobCompleted { event, .. } => WorkflowEvent {
-                event: Some(workflow_event::Event::StreamingJobCompleted(event.clone())),
-            },
-            Self::JobStarted { event } => WorkflowEvent {
-                event: Some(workflow_event::Event::JobStarted(event.clone())),
-            },
-            Self::JobCompleted { event, .. } => WorkflowEvent {
-                event: Some(workflow_event::Event::JobCompleted(event.clone())),
-            },
-            Self::TaskStarted { event } => WorkflowEvent {
-                event: Some(workflow_event::Event::TaskStarted(event.clone())),
-            },
-            Self::TaskCompleted { event, .. } => WorkflowEvent {
-                event: Some(workflow_event::Event::TaskCompleted(event.clone())),
-            },
-        }
-    }
-
     /// Get TaskContext reference (only for completed events)
     pub fn context(&self) -> Option<&TaskContext> {
         match self {
@@ -627,24 +611,34 @@ impl WorkflowStreamEvent {
     /// Returns empty string for StreamingData which has no position
     pub fn position(&self) -> &str {
         match self {
-            Self::StreamingJobStarted { event } => &event.position,
+            Self::StreamingJobStarted { position, .. } => position,
             Self::StreamingData { .. } => "",
-            Self::StreamingJobCompleted { event, .. } => &event.position,
-            Self::JobStarted { event } => &event.position,
-            Self::JobCompleted { event, .. } => &event.position,
-            Self::TaskStarted { event } => &event.position,
-            Self::TaskCompleted { event, .. } => &event.position,
+            Self::StreamingJobCompleted { position, .. } => position,
+            Self::JobStarted { position, .. } => position,
+            Self::JobCompleted { position, .. } => position,
+            Self::TaskStarted { position, .. } => position,
+            Self::TaskCompleted { position, .. } => position,
+        }
+    }
+
+    /// Get job_id from the event (only for job events)
+    pub fn job_id(&self) -> Option<JobId> {
+        match self {
+            Self::StreamingJobStarted { job_id, .. } => Some(*job_id),
+            Self::StreamingData { job_id, .. } => Some(*job_id),
+            Self::StreamingJobCompleted { job_id, .. } => Some(*job_id),
+            Self::JobStarted { job_id, .. } => Some(*job_id),
+            Self::JobCompleted { job_id, .. } => Some(*job_id),
+            _ => None,
         }
     }
 
     /// Create TaskStarted event from task information
     pub fn task_started(task_type: &str, task_name: &str, position: &str) -> Self {
         Self::TaskStarted {
-            event: TaskStartedEvent {
-                task_type: task_type.to_string(),
-                task_name: task_name.to_string(),
-                position: position.to_string(),
-            },
+            task_type: task_type.to_string(),
+            task_name: task_name.to_string(),
+            position: position.to_string(),
         }
     }
 
@@ -664,20 +658,10 @@ impl WorkflowStreamEvent {
                 String::new()
             }
         };
-        let output = match serde_json::to_vec(&context.output) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("Failed to serialize task output: {:?}", e);
-                Vec::new()
-            }
-        };
         Self::TaskCompleted {
-            event: TaskCompletedEvent {
-                task_type: task_type.to_string(),
-                task_name: task_name.to_string(),
-                position,
-                output,
-            },
+            task_type: task_type.to_string(),
+            task_name: task_name.to_string(),
+            position,
             context,
         }
     }
@@ -689,104 +673,87 @@ impl WorkflowStreamEvent {
         position: &str,
         context: TaskContext,
     ) -> Self {
-        let output = match serde_json::to_vec(&context.output) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("Failed to serialize task output: {:?}", e);
-                Vec::new()
-            }
-        };
         Self::TaskCompleted {
-            event: TaskCompletedEvent {
-                task_type: task_type.to_string(),
-                task_name: task_name.to_string(),
-                position: position.to_string(),
-                output,
-            },
+            task_type: task_type.to_string(),
+            task_name: task_name.to_string(),
+            position: position.to_string(),
             context,
         }
     }
 
     /// Create StreamingJobStarted event
+    ///
+    /// # Arguments
+    /// * `job_id` - Job ID (proto type)
+    /// * `runner_name` - Runner name
+    /// * `worker_name` - Worker name (None for Runner-based jobs with temporary workers)
+    /// * `position` - Position in workflow
     pub fn streaming_job_started(
-        job_id: i64,
+        job_id: JobId,
         runner_name: &str,
-        worker_name: &str,
+        worker_name: Option<String>,
         position: &str,
     ) -> Self {
         Self::StreamingJobStarted {
-            event: JobStartedEvent {
-                job_id,
-                runner_name: runner_name.to_string(),
-                worker_name: worker_name.to_string(),
-                position: position.to_string(),
-            },
+            job_id,
+            runner_name: runner_name.to_string(),
+            worker_name,
+            position: position.to_string(),
         }
     }
 
     /// Create StreamingData event for real-time LLM output chunks
-    pub fn streaming_data(job_id: i64, data: Vec<u8>) -> Self {
+    pub fn streaming_data(job_id: JobId, data: Vec<u8>) -> Self {
         Self::StreamingData { job_id, data }
     }
 
     /// Create StreamingJobCompleted event
     pub fn streaming_job_completed(
-        job_id: i64,
-        job_result_id: Option<i64>,
+        job_id: JobId,
+        job_result_id: Option<JobResultId>,
         position: &str,
         context: TaskContext,
     ) -> Self {
-        let output = match serde_json::to_vec(&context.output) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("Failed to serialize streaming job output: {:?}", e);
-                Vec::new()
-            }
-        };
         Self::StreamingJobCompleted {
-            event: JobCompletedEvent {
-                job_id,
-                job_result_id,
-                position: position.to_string(),
-                output,
-            },
+            job_id,
+            job_result_id,
+            position: position.to_string(),
             context,
         }
     }
 
     /// Create JobStarted event (non-streaming)
-    pub fn job_started(job_id: i64, runner_name: &str, worker_name: &str, position: &str) -> Self {
+    ///
+    /// # Arguments
+    /// * `job_id` - Job ID (proto type)
+    /// * `runner_name` - Runner name
+    /// * `worker_name` - Worker name (None for Runner-based jobs with temporary workers)
+    /// * `position` - Position in workflow
+    pub fn job_started(
+        job_id: JobId,
+        runner_name: &str,
+        worker_name: Option<String>,
+        position: &str,
+    ) -> Self {
         Self::JobStarted {
-            event: JobStartedEvent {
-                job_id,
-                runner_name: runner_name.to_string(),
-                worker_name: worker_name.to_string(),
-                position: position.to_string(),
-            },
+            job_id,
+            runner_name: runner_name.to_string(),
+            worker_name,
+            position: position.to_string(),
         }
     }
 
     /// Create JobCompleted event (non-streaming)
     pub fn job_completed(
-        job_id: i64,
-        job_result_id: Option<i64>,
+        job_id: JobId,
+        job_result_id: Option<JobResultId>,
         position: &str,
         context: TaskContext,
     ) -> Self {
-        let output = match serde_json::to_vec(&context.output) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("Failed to serialize job output: {:?}", e);
-                Vec::new()
-            }
-        };
         Self::JobCompleted {
-            event: JobCompletedEvent {
-                job_id,
-                job_result_id,
-                position: position.to_string(),
-                output,
-            },
+            job_id,
+            job_result_id,
+            position: position.to_string(),
             context,
         }
     }
