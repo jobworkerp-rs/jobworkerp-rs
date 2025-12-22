@@ -288,21 +288,25 @@ impl OllamaService {
                     .map(|d| (d as f64 / 1_000_000_000.0) as f32),
             }),
         };
-        if args
+        // Use ollama-rs thinking field if available, otherwise fall back to tag parsing
+        let (content_text, reasoning) = if let Some(thinking) = res.thinking.clone() {
+            // ollama-rs provides thinking separately
+            (res.response.clone(), Some(thinking))
+        } else if args
             .options
             .as_ref()
             .is_some_and(|o| o.extract_reasoning_content())
         {
-            let (prompt, think) = Self::divide_think_tag(res.response);
-            result.content = Some(llm::llm_completion_result::MessageContent {
-                content: Some(message_content::Content::Text(prompt)),
-            });
-            result.reasoning_content = think;
+            // Fall back to manual tag parsing
+            Self::divide_think_tag(res.response.clone())
         } else {
-            result.content = Some(llm::llm_completion_result::MessageContent {
-                content: Some(message_content::Content::Text(res.response)),
-            });
-        }
+            (res.response.clone(), None)
+        };
+
+        result.content = Some(llm::llm_completion_result::MessageContent {
+            content: Some(message_content::Content::Text(content_text)),
+        });
+        result.reasoning_content = reasoning;
         Ok(result)
     }
 }
