@@ -32,6 +32,7 @@ pub struct ForTaskStreamExecutor {
     execution_id: Option<Arc<ExecutionId>>,
     // Metadata for the task, can be used for logging or tracing
     metadata: Arc<HashMap<String, String>>,
+    emit_streaming_data: bool,
 }
 impl UseExpression for ForTaskStreamExecutor {}
 impl UseJqAndTemplateTransformer for ForTaskStreamExecutor {}
@@ -51,6 +52,7 @@ impl ForTaskStreamExecutor {
         >,
         execution_id: Option<Arc<ExecutionId>>,
         metadata: Arc<HashMap<String, String>>,
+        emit_streaming_data: bool,
     ) -> Self {
         Self {
             workflow_context,
@@ -60,6 +62,7 @@ impl ForTaskStreamExecutor {
             checkpoint_repository,
             execution_id,
             metadata,
+            emit_streaming_data,
         }
     }
 
@@ -290,6 +293,7 @@ impl ForTaskStreamExecutor {
             let on_error = self.task.on_error;
             let cancel_tx_clone = cancel_tx.clone();
             let mut cancel_rx_clone = cancel_rx.clone();
+            let emit_streaming_data = self.emit_streaming_data;
 
             // Spawn this task asynchronously
             join_set.spawn(async move {
@@ -320,6 +324,7 @@ impl ForTaskStreamExecutor {
                     job_executor_wrapper_clone,
                     checkpoint_repository.clone(),
                     execution_id,
+                    emit_streaming_data,
                 );
 
                 // Save position for potential Wait error reporting
@@ -557,6 +562,7 @@ impl ForTaskStreamExecutor {
                             self.job_executor_wrapper.clone(),
                             self.checkpoint_repository.clone(),
                             self.execution_id.clone(),
+                            self.emit_streaming_data,
                         );
 
                         // Save position for potential Wait error reporting

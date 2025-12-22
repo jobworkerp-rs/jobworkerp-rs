@@ -35,6 +35,8 @@ pub struct ForkTaskExecutor {
     task: workflow::ForkTask,
     execution_id: Option<Arc<ExecutionId>>,
     metadata: Arc<HashMap<String, String>>,
+    /// Whether to emit StreamingData events
+    pub emit_streaming_data: bool,
 }
 
 impl Tracing for ForkTaskExecutor {}
@@ -50,6 +52,7 @@ impl ForkTaskExecutor {
         >,
         execution_id: Option<Arc<ExecutionId>>,
         metadata: Arc<HashMap<String, String>>,
+        emit_streaming_data: bool,
     ) -> Self {
         Self {
             workflow_context,
@@ -59,6 +62,7 @@ impl ForkTaskExecutor {
             task,
             execution_id,
             metadata,
+            emit_streaming_data,
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -75,6 +79,7 @@ impl ForkTaskExecutor {
         default_task_timeout: Duration,
         metadata: Arc<HashMap<String, String>>,
         cx: Arc<opentelemetry::Context>,
+        emit_streaming_data: bool,
     ) -> futures::stream::BoxStream<'static, Result<WorkflowStreamEvent, Box<workflow::Error>>>
     {
         let task_executor = TaskExecutor::new(
@@ -85,6 +90,7 @@ impl ForkTaskExecutor {
             name,
             task,
             metadata,
+            emit_streaming_data,
         );
         task_executor
             .execute(cx, prev_context.clone(), execution_id)
@@ -131,6 +137,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                     let execution_id = self.execution_id.clone();
                     let cxc = cx.clone();
                     let default_task_timeout = self.default_task_timeout;
+                    let emit_streaming = self.emit_streaming_data;
                     let future = Box::pin(async move {
                         Self::execute_task(
                             &name,
@@ -143,6 +150,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                             default_task_timeout,
                             metadata_clone,
                             cxc,
+                            emit_streaming,
                         )
                         .await
                     });
@@ -346,6 +354,7 @@ mod tests {
                 None,
                 None,
                 metadata,
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             let input = json!({"initial": "value"});
@@ -421,6 +430,7 @@ mod tests {
                 None,
                 None,
                 metadata,
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             // execute
@@ -503,6 +513,7 @@ mod tests {
                 None,
                 None,
                 metadata,
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             // execute

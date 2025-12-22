@@ -29,6 +29,7 @@ pub struct TryTaskExecutor {
     >,
     execution_id: Option<Arc<ExecutionId>>, // execution id for checkpoint
     metadata: Arc<std::collections::HashMap<String, String>>,
+    emit_streaming_data: bool,
 }
 impl TryTaskExecutor {
     #[allow(clippy::too_many_arguments)]
@@ -42,6 +43,7 @@ impl TryTaskExecutor {
         >,
         execution_id: Option<Arc<ExecutionId>>,
         metadata: Arc<std::collections::HashMap<String, String>>,
+        emit_streaming_data: bool,
     ) -> Self {
         Self {
             workflow_context,
@@ -51,6 +53,7 @@ impl TryTaskExecutor {
             checkpoint_repository,
             execution_id,
             metadata,
+            emit_streaming_data,
         }
     }
 }
@@ -202,6 +205,7 @@ impl TryTaskExecutor {
             self.job_executors.clone(),
             self.checkpoint_repository.clone(),
             self.execution_id.clone(),
+            self.emit_streaming_data,
         ));
 
         let mut stream = do_stream_executor
@@ -533,6 +537,7 @@ mod tests {
             None,
             None,
             Arc::new(Default::default()),
+            false, // emit_streaming_data (tests don't need streaming events)
         );
 
         (try_executor, workflow_context, task_context)
