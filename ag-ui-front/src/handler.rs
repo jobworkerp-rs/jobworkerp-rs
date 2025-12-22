@@ -919,8 +919,9 @@ where
             let mut prev_position: Option<String> = None;
 
             // Execute workflow with events (includes StreamingJobStarted/StreamingData for LLM streaming)
+            // ag-ui-front needs streaming data for real-time UI updates
             let cx = Arc::new(opentelemetry::Context::current());
-            let workflow_stream = executor.execute_workflow_with_events(cx);
+            let workflow_stream = executor.execute_workflow_with_events(cx, true);
 
             // Pin the stream for iteration
             tokio::pin!(workflow_stream);
@@ -935,14 +936,14 @@ where
                 match result {
                     Ok(event) => {
                         // Handle StreamingJobStarted: emit TEXT_MESSAGE_START
-                        if let WorkflowStreamEvent::StreamingJobStarted { event: job_started } = &event {
-                            let job_id = job_started.job_id;
+                        if let WorkflowStreamEvent::StreamingJobStarted { job_id, worker_name, position, .. } = &event {
+                            let job_id = *job_id;
                             let message_id = MessageId::random();
 
                             tracing::info!(
                                 job_id = job_id,
-                                worker_name = %job_started.worker_name,
-                                position = %job_started.position,
+                                worker_name = %worker_name,
+                                position = %position,
                                 "StreamingJobStarted: emitting TEXT_MESSAGE_START"
                             );
 
@@ -995,20 +996,23 @@ where
                         }
 
                         // Handle StreamingJobCompleted: emit TEXT_MESSAGE_END and check for LLM tool calls
-                        if let WorkflowStreamEvent::StreamingJobCompleted { event: job_completed, context: tc } = &event {
-                            let job_id = job_completed.job_id;
+                        if let WorkflowStreamEvent::StreamingJobCompleted { job_id, context: tc, .. } = &event {
+                            let job_id = *job_id;
                             let message_id = active_message_ids.remove(&job_id);
+
+                            // Serialize tc.output for tool call extraction
+                            let output_bytes = serde_json::to_vec(&tc.output).unwrap_or_default();
 
                             // Debug log the output content for troubleshooting
                             tracing::debug!(
                                 job_id = job_id,
-                                output_len = job_completed.output.len(),
-                                output_preview = %String::from_utf8_lossy(&job_completed.output[..std::cmp::min(500, job_completed.output.len())]),
+                                output_len = output_bytes.len(),
+                                output_preview = %String::from_utf8_lossy(&output_bytes[..std::cmp::min(500, output_bytes.len())]),
                                 "StreamingJobCompleted: checking for tool calls"
                             );
 
                             // Check for LLM tool calls in the output (both auto-calling and HITL modes)
-                            let extracted_tool_calls = extract_tool_calls_from_llm_result(&job_completed.output);
+                            let extracted_tool_calls = extract_tool_calls_from_llm_result(&output_bytes);
 
                             // Emit TOOL_CALL events for both modes (display purpose)
                             if let Some(ref tool_calls) = extracted_tool_calls {
