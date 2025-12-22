@@ -1213,6 +1213,7 @@ mod tests {
         RunTask, RunTaskConfiguration, SetTask, Task, TaskList, WorkflowName, WorkflowSchema,
         WorkflowVersion,
     };
+    use crate::workflow::execute::context::{JobId, JobResultId};
     use app::module::test::create_hybrid_test_app;
     use futures::StreamExt;
     use std::str::FromStr;
@@ -1355,19 +1356,19 @@ mod tests {
                         format!("TaskStarted(type={}, name={})", task_type, task_name)
                     }
                     WorkflowStreamEvent::JobStarted { job_id, .. } => {
-                        format!("JobStarted(job_id={})", job_id)
+                        format!("JobStarted(job_id={})", job_id.value)
                     }
                     WorkflowStreamEvent::JobCompleted { job_id, .. } => {
-                        format!("JobCompleted(job_id={})", job_id)
+                        format!("JobCompleted(job_id={})", job_id.value)
                     }
                     WorkflowStreamEvent::StreamingJobStarted { job_id, .. } => {
-                        format!("StreamingJobStarted(job_id={})", job_id)
+                        format!("StreamingJobStarted(job_id={})", job_id.value)
                     }
                     WorkflowStreamEvent::StreamingData { job_id, .. } => {
-                        format!("StreamingData(job_id={})", job_id)
+                        format!("StreamingData(job_id={})", job_id.value)
                     }
                     WorkflowStreamEvent::StreamingJobCompleted { job_id, .. } => {
-                        format!("StreamingJobCompleted(job_id={})", job_id)
+                        format!("StreamingJobCompleted(job_id={})", job_id.value)
                     }
                 };
                 format!("Ok({})", variant)
@@ -1583,15 +1584,19 @@ mod tests {
             assert!(task_started.context().is_none());
 
             // StreamingJobStarted - no context
-            let streaming_started =
-                WorkflowStreamEvent::streaming_job_started(123, "COMMAND", "worker1", "/do/task1");
+            let streaming_started = WorkflowStreamEvent::streaming_job_started(
+                JobId { value: 123 },
+                "COMMAND",
+                Some("worker1".to_string()),
+                "/do/task1",
+            );
             assert!(streaming_started.is_start_event());
             assert!(streaming_started.context().is_none());
 
             // StreamingJobCompleted - has context
             let streaming_completed = WorkflowStreamEvent::streaming_job_completed(
-                123,
-                Some(456),
+                JobId { value: 123 },
+                Some(JobResultId { value: 456 }),
                 "/do/task1",
                 task_context.clone(),
             );
@@ -1599,14 +1604,22 @@ mod tests {
             assert!(streaming_completed.context().is_some());
 
             // JobStarted - no context
-            let job_started =
-                WorkflowStreamEvent::job_started(789, "HTTP_REQUEST", "worker2", "/do/task2");
+            let job_started = WorkflowStreamEvent::job_started(
+                JobId { value: 789 },
+                "HTTP_REQUEST",
+                Some("worker2".to_string()),
+                "/do/task2",
+            );
             assert!(job_started.is_start_event());
             assert!(job_started.context().is_none());
 
             // JobCompleted - has context
-            let job_completed =
-                WorkflowStreamEvent::job_completed(789, Some(1000), "/do/task2", task_context);
+            let job_completed = WorkflowStreamEvent::job_completed(
+                JobId { value: 789 },
+                Some(JobResultId { value: 1000 }),
+                "/do/task2",
+                task_context,
+            );
             assert!(job_completed.is_completed_event());
             assert!(job_completed.context().is_some());
         });
@@ -1623,11 +1636,20 @@ mod tests {
             let task_started = WorkflowStreamEvent::task_started("runTask", "t1", "/do/task1");
             assert_eq!(task_started.position(), "/do/task1");
 
-            let job_started = WorkflowStreamEvent::job_started(1, "CMD", "w1", "/do/job1");
+            let job_started = WorkflowStreamEvent::job_started(
+                JobId { value: 1 },
+                "CMD",
+                Some("w1".to_string()),
+                "/do/job1",
+            );
             assert_eq!(job_started.position(), "/do/job1");
 
-            let streaming_started =
-                WorkflowStreamEvent::streaming_job_started(2, "LLM", "w2", "/do/stream1");
+            let streaming_started = WorkflowStreamEvent::streaming_job_started(
+                JobId { value: 2 },
+                "LLM",
+                Some("w2".to_string()),
+                "/do/stream1",
+            );
             assert_eq!(streaming_started.position(), "/do/stream1");
 
             // Completed events get position from TaskContext

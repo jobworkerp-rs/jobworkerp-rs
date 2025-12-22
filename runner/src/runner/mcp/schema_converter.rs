@@ -116,12 +116,16 @@ pub fn validate_using_name(name: &str) -> Result<()> {
 struct ProtoGenContext {
     /// Nested message definitions (collected during field processing)
     nested_messages: Vec<String>,
+    /// Indent level for nested messages (consistent for all nested messages)
+    nested_indent: String,
 }
 
 impl ProtoGenContext {
     fn new() -> Self {
         Self {
             nested_messages: Vec::new(),
+            // All nested messages are placed inside the top-level message, so use single indent
+            nested_indent: "  ".to_string(),
         }
     }
 }
@@ -167,7 +171,7 @@ pub fn json_schema_to_protobuf(
     );
 
     let mut ctx = ProtoGenContext::new();
-    let fields = extract_fields_from_schema(json_schema, &message_name, 0, &mut ctx)?;
+    let fields = extract_fields_from_schema(json_schema, &message_name, "", 0, &mut ctx)?;
 
     // Build nested messages string (indent each line for proper nesting)
     let nested_messages_str = if ctx.nested_messages.is_empty() {
@@ -187,9 +191,17 @@ pub fn json_schema_to_protobuf(
 }
 
 /// Extract Protobuf field definitions from JSON Schema properties
+///
+/// # Arguments
+/// * `schema` - The JSON Schema for the message
+/// * `_message_name` - The message name (unused, kept for API consistency)
+/// * `parent_path` - Path prefix for nested message names (e.g., "User" -> "UserAddress")
+/// * `depth` - Current nesting depth
+/// * `ctx` - Context for collecting nested message definitions
 fn extract_fields_from_schema(
     schema: &Value,
     _message_name: &str,
+    parent_path: &str,
     depth: usize,
     ctx: &mut ProtoGenContext,
 ) -> Result<Vec<String>> {
@@ -225,7 +237,8 @@ fn extract_fields_from_schema(
 
     let mut fields = Vec::new();
     for (i, (field_name, field_schema)) in properties.iter().enumerate() {
-        let field_type = json_type_to_proto_type(field_schema, field_name, depth, ctx)?;
+        let field_type =
+            json_type_to_proto_type(field_schema, field_name, parent_path, depth, ctx)?;
         let optional_prefix = if required.contains(field_name.as_str()) {
             ""
         } else {
@@ -253,11 +266,13 @@ fn extract_fields_from_schema(
 /// # Arguments
 /// * `schema` - The JSON Schema for the field
 /// * `field_name` - The field name (used for generating nested message names)
+/// * `parent_path` - Path prefix for nested message names (e.g., "User" -> "UserAddress")
 /// * `depth` - Current nesting depth
 /// * `ctx` - Context for collecting nested message definitions
 fn json_type_to_proto_type(
     schema: &Value,
     field_name: &str,
+    parent_path: &str,
     depth: usize,
     ctx: &mut ProtoGenContext,
 ) -> Result<String> {
@@ -285,12 +300,12 @@ fn json_type_to_proto_type(
             let items = schema
                 .get("items")
                 .ok_or_else(|| anyhow!("Array type must have 'items' property"))?;
-            let item_type = json_type_to_proto_type(items, field_name, depth, ctx)?;
+            let item_type = json_type_to_proto_type(items, field_name, parent_path, depth, ctx)?;
             format!("repeated {}", item_type)
         }
         "object" => {
             // Generate nested message for object types
-            generate_nested_message(schema, field_name, depth, ctx)?
+            generate_nested_message(schema, field_name, parent_path, depth, ctx)?
         }
         "null" => {
             return Err(anyhow!("Null type is not supported in Protobuf conversion"));
@@ -307,9 +322,17 @@ fn json_type_to_proto_type(
 /// Generate a nested message definition for an object type
 ///
 /// Returns the message type name and adds the message definition to the context
+///
+/// # Arguments
+/// * `schema` - The JSON Schema for the object
+/// * `field_name` - The field name (used for generating message name)
+/// * `parent_path` - Path prefix for nested message names (e.g., "User" -> "UserAddress")
+/// * `depth` - Current nesting depth
+/// * `ctx` - Context for collecting nested message definitions
 fn generate_nested_message(
     schema: &Value,
     field_name: &str,
+    parent_path: &str,
     depth: usize,
     ctx: &mut ProtoGenContext,
 ) -> Result<String> {
@@ -332,16 +355,26 @@ fn generate_nested_message(
         return Ok("string".to_string());
     }
 
-    // Generate message name from field name (PascalCase)
-    let message_name = to_pascal_case(&sanitize_name(field_name));
+    // Generate message name from field name with parent path prefix to ensure uniqueness
+    // e.g., "address" under "user" becomes "UserAddress", "address" under "company" becomes "CompanyAddress"
+    let field_pascal = to_pascal_case(&sanitize_name(field_name));
+    let message_name = if parent_path.is_empty() {
+        field_pascal.clone()
+    } else {
+        format!("{}{}", parent_path, field_pascal)
+    };
 
-    // Calculate indentation for nested message
-    let base_indent = "  ".repeat(depth + 1);
+    // Build new parent path for nested children
+    let new_parent_path = message_name.clone();
 
-    // Extract fields for this nested message
-    let nested_fields = extract_fields_from_schema(schema, &message_name, depth + 1, ctx)?;
+    // Clone the indent string to avoid borrow conflict
+    let base_indent = ctx.nested_indent.clone();
 
-    // Build nested message definition
+    // Extract fields for this nested message (fields inside nested message need depth+1 indent)
+    let nested_fields =
+        extract_fields_from_schema(schema, &message_name, &new_parent_path, 1, ctx)?;
+
+    // Build nested message definition with consistent indentation
     let message_def = format!(
         "{}message {} {{\n{}\n{}}}",
         base_indent,
@@ -695,13 +728,14 @@ mod tests {
 
         let result = json_schema_to_protobuf(&schema, "api", "create_user").unwrap();
 
-        // Should contain both nested message definitions
+        // Should contain both nested message definitions with path-based naming
         assert!(result.contains("message User {"));
-        assert!(result.contains("message Address {"));
+        // Address is nested under User, so it becomes UserAddress
+        assert!(result.contains("message UserAddress {"));
         assert!(result.contains("string city = 1;"));
         assert!(result.contains("optional string zip = 2;"));
-        // User should reference Address
-        assert!(result.contains("Address address"));
+        // User should reference UserAddress
+        assert!(result.contains("UserAddress address"));
     }
 
     #[test]
@@ -788,9 +822,101 @@ mod tests {
 
         let result = json_schema_to_protobuf(&schema, "org", "structure").unwrap();
 
-        // Should contain all three levels of nested messages
+        // Should contain all three levels of nested messages with path-based naming
         assert!(result.contains("message Company {"));
-        assert!(result.contains("message Department {"));
-        assert!(result.contains("message Team {"));
+        // Department is nested under Company, so it becomes CompanyDepartment
+        assert!(result.contains("message CompanyDepartment {"));
+        // Team is nested under CompanyDepartment, so it becomes CompanyDepartmentTeam
+        assert!(result.contains("message CompanyDepartmentTeam {"));
+    }
+
+    #[test]
+    fn test_json_schema_to_protobuf_duplicate_field_names() {
+        // Test that duplicate field names at different paths produce unique message names
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "user": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "address": {
+                            "type": "object",
+                            "properties": {
+                                "city": {"type": "string"},
+                                "country": {"type": "string"}
+                            }
+                        }
+                    }
+                },
+                "company": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "address": {
+                            "type": "object",
+                            "properties": {
+                                "street": {"type": "string"},
+                                "building": {"type": "string"}
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let result = json_schema_to_protobuf(&schema, "api", "create").unwrap();
+
+        // Both user and company have "address" fields, but they should have unique message names
+        assert!(result.contains("message User {"));
+        assert!(result.contains("message Company {"));
+        // UserAddress and CompanyAddress should be distinct
+        assert!(result.contains("message UserAddress {"));
+        assert!(result.contains("message CompanyAddress {"));
+        // User.address should reference UserAddress
+        assert!(result.contains("UserAddress address"));
+        // Company.address should reference CompanyAddress
+        assert!(result.contains("CompanyAddress address"));
+        // Verify the fields are correctly in each message
+        assert!(result.contains("city"));
+        assert!(result.contains("country"));
+        assert!(result.contains("street"));
+        assert!(result.contains("building"));
+    }
+
+    #[test]
+    fn test_json_schema_to_protobuf_consistent_indent() {
+        // Verify all nested messages have consistent indentation
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "level1": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string"},
+                        "level2": {
+                            "type": "object",
+                            "properties": {
+                                "value": {"type": "string"}
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let result = json_schema_to_protobuf(&schema, "test", "indent").unwrap();
+
+        // All nested messages should start with exactly 2 spaces (single indent level)
+        for line in result.lines() {
+            if line.contains("message ") && !line.starts_with("message ") {
+                // Nested message definition should start with exactly 2 spaces
+                assert!(
+                    line.starts_with("  message "),
+                    "Nested message should have consistent 2-space indent, got: '{}'",
+                    line
+                );
+            }
+        }
     }
 }

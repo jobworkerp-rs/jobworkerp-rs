@@ -937,20 +937,20 @@ where
                     Ok(event) => {
                         // Handle StreamingJobStarted: emit TEXT_MESSAGE_START
                         if let WorkflowStreamEvent::StreamingJobStarted { job_id, worker_name, position, .. } = &event {
-                            let job_id = *job_id;
+                            let job_id_value = job_id.value;
                             let message_id = MessageId::random();
 
                             tracing::info!(
-                                job_id = job_id,
-                                worker_name = %worker_name,
+                                job_id = job_id_value,
+                                worker_name = ?worker_name,
                                 position = %position,
                                 "StreamingJobStarted: emitting TEXT_MESSAGE_START"
                             );
 
                             // Close previous message if exists for this job_id (prevents dangling UI messages)
-                            if let Some(old_message_id) = active_message_ids.remove(&job_id) {
+                            if let Some(old_message_id) = active_message_ids.remove(&job_id_value) {
                                 tracing::warn!(
-                                    job_id = job_id,
+                                    job_id = job_id_value,
                                     "Received duplicate StreamingJobStarted, closing previous message"
                                 );
                                 let end_event = AgUiEvent::text_message_end(old_message_id);
@@ -960,7 +960,7 @@ where
                             }
 
                             // Store message_id for correlation with StreamingData
-                            active_message_ids.insert(job_id, message_id.clone());
+                            active_message_ids.insert(job_id_value, message_id.clone());
 
                             // Emit TEXT_MESSAGE_START
                             let ag_event = AgUiEvent::text_message_start(
@@ -974,7 +974,8 @@ where
 
                         // Handle StreamingData: emit TEXT_MESSAGE_CONTENT
                         if let WorkflowStreamEvent::StreamingData { job_id, data } = &event {
-                            if let Some(message_id) = active_message_ids.get(job_id) {
+                            let job_id_value = job_id.value;
+                            if let Some(message_id) = active_message_ids.get(&job_id_value) {
                                 // Decode LlmChatResult protobuf and extract text content
                                 if let Some(text) = extract_text_from_llm_chat_result(data) {
                                     let ag_event = AgUiEvent::text_message_content(
@@ -987,7 +988,7 @@ where
                                 }
                             } else {
                                 tracing::warn!(
-                                    job_id = job_id,
+                                    job_id = job_id_value,
                                     "Received StreamingData for unknown job_id"
                                 );
                             }
@@ -997,15 +998,15 @@ where
 
                         // Handle StreamingJobCompleted: emit TEXT_MESSAGE_END and check for LLM tool calls
                         if let WorkflowStreamEvent::StreamingJobCompleted { job_id, context: tc, .. } = &event {
-                            let job_id = *job_id;
-                            let message_id = active_message_ids.remove(&job_id);
+                            let job_id_value = job_id.value;
+                            let message_id = active_message_ids.remove(&job_id_value);
 
                             // Serialize tc.output for tool call extraction
                             let output_bytes = serde_json::to_vec(&tc.output).unwrap_or_default();
 
                             // Debug log the output content for troubleshooting
                             tracing::debug!(
-                                job_id = job_id,
+                                job_id = job_id_value,
                                 output_len = output_bytes.len(),
                                 output_preview = %String::from_utf8_lossy(&output_bytes[..std::cmp::min(500, output_bytes.len())]),
                                 "StreamingJobCompleted: checking for tool calls"
@@ -1018,7 +1019,7 @@ where
                             if let Some(ref tool_calls) = extracted_tool_calls {
                                 if !tool_calls.tool_calls.is_empty() {
                                     tracing::info!(
-                                        job_id = job_id,
+                                        job_id = job_id_value,
                                         tool_count = tool_calls.tool_calls.len(),
                                         requires_execution = tool_calls.requires_execution,
                                         "StreamingJobCompleted: detected LLM tool calls"
@@ -1040,7 +1041,7 @@ where
                             // Emit TEXT_MESSAGE_END for the text portion
                             if let Some(msg_id) = message_id.clone() {
                                 tracing::info!(
-                                    job_id = job_id,
+                                    job_id = job_id_value,
                                     "StreamingJobCompleted: emitting TEXT_MESSAGE_END"
                                 );
 
@@ -1053,7 +1054,7 @@ where
                             // HITL mode: If requires_execution is true, pause for client approval
                             if let Some(ref tool_calls) = extracted_tool_calls {
                                 tracing::info!(
-                                    job_id = job_id,
+                                    job_id = job_id_value,
                                     requires_execution = tool_calls.requires_execution,
                                     tool_count = tool_calls.tool_calls.len(),
                                     "StreamingJobCompleted: HITL check - requires_execution={}, tool_count={}",

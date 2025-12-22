@@ -7,6 +7,7 @@ use crate::workflow::{
 };
 use chrono::{DateTime, FixedOffset};
 pub use infra::workflow::position::WorkflowPosition;
+pub use proto::jobworkerp::data::{JobId, JobResultId};
 use std::{collections::BTreeMap, fmt, ops::Deref, str::FromStr, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
@@ -487,36 +488,44 @@ impl From<jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus
 ///
 /// Pure Rust enum for memory efficiency - no protobuf dependency.
 /// Completed events contain TaskContext for state access (use context.output for output data).
+///
+/// Type conventions:
+/// - `job_id`: Uses proto `JobId` type for type safety
+/// - `job_result_id`: Uses proto `JobResultId` type (Option for cases where result is not stored)
+/// - `worker_name`: Option because Runner-based jobs use temporary workers (not registered)
+/// - `position`: String for logging purposes (JSON Pointer format)
 #[derive(Debug, Clone)]
 pub enum WorkflowStreamEvent {
     // Streaming job events (LLM streaming)
     StreamingJobStarted {
-        job_id: i64,
+        job_id: JobId,
         runner_name: String,
-        worker_name: String,
+        /// None for Runner-based jobs (temporary worker), Some for Worker-based jobs
+        worker_name: Option<String>,
         position: String,
     },
     /// Streaming data chunk for real-time LLM output.
     /// Each chunk is yielded as it arrives from Redis Pub/Sub.
     /// Only emitted when emit_streaming_data flag is true (ag-ui-front).
-    StreamingData { job_id: i64, data: Vec<u8> },
+    StreamingData { job_id: JobId, data: Vec<u8> },
     StreamingJobCompleted {
-        job_id: i64,
-        job_result_id: Option<i64>,
+        job_id: JobId,
+        job_result_id: Option<JobResultId>,
         position: String,
         context: TaskContext,
     },
 
     // Non-streaming job events
     JobStarted {
-        job_id: i64,
+        job_id: JobId,
         runner_name: String,
-        worker_name: String,
+        /// None for Runner-based jobs (temporary worker), Some for Worker-based jobs
+        worker_name: Option<String>,
         position: String,
     },
     JobCompleted {
-        job_id: i64,
-        job_result_id: Option<i64>,
+        job_id: JobId,
+        job_result_id: Option<JobResultId>,
         position: String,
         context: TaskContext,
     },
@@ -613,7 +622,7 @@ impl WorkflowStreamEvent {
     }
 
     /// Get job_id from the event (only for job events)
-    pub fn job_id(&self) -> Option<i64> {
+    pub fn job_id(&self) -> Option<JobId> {
         match self {
             Self::StreamingJobStarted { job_id, .. } => Some(*job_id),
             Self::StreamingData { job_id, .. } => Some(*job_id),
@@ -673,29 +682,35 @@ impl WorkflowStreamEvent {
     }
 
     /// Create StreamingJobStarted event
+    ///
+    /// # Arguments
+    /// * `job_id` - Job ID (proto type)
+    /// * `runner_name` - Runner name
+    /// * `worker_name` - Worker name (None for Runner-based jobs with temporary workers)
+    /// * `position` - Position in workflow
     pub fn streaming_job_started(
-        job_id: i64,
+        job_id: JobId,
         runner_name: &str,
-        worker_name: &str,
+        worker_name: Option<String>,
         position: &str,
     ) -> Self {
         Self::StreamingJobStarted {
             job_id,
             runner_name: runner_name.to_string(),
-            worker_name: worker_name.to_string(),
+            worker_name,
             position: position.to_string(),
         }
     }
 
     /// Create StreamingData event for real-time LLM output chunks
-    pub fn streaming_data(job_id: i64, data: Vec<u8>) -> Self {
+    pub fn streaming_data(job_id: JobId, data: Vec<u8>) -> Self {
         Self::StreamingData { job_id, data }
     }
 
     /// Create StreamingJobCompleted event
     pub fn streaming_job_completed(
-        job_id: i64,
-        job_result_id: Option<i64>,
+        job_id: JobId,
+        job_result_id: Option<JobResultId>,
         position: &str,
         context: TaskContext,
     ) -> Self {
@@ -708,19 +723,30 @@ impl WorkflowStreamEvent {
     }
 
     /// Create JobStarted event (non-streaming)
-    pub fn job_started(job_id: i64, runner_name: &str, worker_name: &str, position: &str) -> Self {
+    ///
+    /// # Arguments
+    /// * `job_id` - Job ID (proto type)
+    /// * `runner_name` - Runner name
+    /// * `worker_name` - Worker name (None for Runner-based jobs with temporary workers)
+    /// * `position` - Position in workflow
+    pub fn job_started(
+        job_id: JobId,
+        runner_name: &str,
+        worker_name: Option<String>,
+        position: &str,
+    ) -> Self {
         Self::JobStarted {
             job_id,
             runner_name: runner_name.to_string(),
-            worker_name: worker_name.to_string(),
+            worker_name,
             position: position.to_string(),
         }
     }
 
     /// Create JobCompleted event (non-streaming)
     pub fn job_completed(
-        job_id: i64,
-        job_result_id: Option<i64>,
+        job_id: JobId,
+        job_result_id: Option<JobResultId>,
         position: &str,
         context: TaskContext,
     ) -> Self {
