@@ -372,7 +372,7 @@ fn generate_nested_message(
 
     // Extract fields for this nested message (fields inside nested message need depth+1 indent)
     let nested_fields =
-        extract_fields_from_schema(schema, &message_name, &new_parent_path, 1, ctx)?;
+        extract_fields_from_schema(schema, &message_name, &new_parent_path, depth + 1, ctx)?;
 
     // Build nested message definition with consistent indentation
     let message_def = format!(
