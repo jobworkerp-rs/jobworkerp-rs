@@ -159,12 +159,18 @@ impl WorkflowExecutor {
     /// transforms the input, executes the tasks, and provides a stream of workflow events
     /// including StreamingJobStarted events for LLM streaming subscription.
     ///
+    /// # Arguments
+    /// * `cx` - OpenTelemetry context for tracing
+    /// * `emit_streaming_data` - If true, emit StreamingData events for real-time LLM output (ag-ui-front).
+    ///   If false, skip StreamingData events for memory efficiency (backend execution).
+    ///
     /// # Returns
     /// A `Stream<Item = Result<WorkflowStreamEvent>>` containing workflow events
     /// including job/task start and completion events.
     pub fn execute_workflow_with_events(
         &self,
         cx: Arc<opentelemetry::Context>,
+        emit_streaming_data: bool,
     ) -> impl Stream<Item = Result<context::WorkflowStreamEvent, Box<workflow::Error>>> + 'static
     {
         let initial_wfc = self.workflow_context.clone();
@@ -175,6 +181,7 @@ impl WorkflowExecutor {
         let execution_id = self.execution_id.clone();
         let default_task_timeout = Duration::from_secs(self.default_task_timeout_sec);
         let checkpoint_repository = self.checkpoint_repository.clone();
+        let emit_streaming_data_flag = emit_streaming_data;
 
         stream! {
             // Set workflow to running status
@@ -423,6 +430,7 @@ impl WorkflowExecutor {
                 ROOT_TASK_NAME,
                 Arc::new(Task::DoTask(workflow.create_do_task(metadata.clone()))),
                 metadata.clone(),
+                emit_streaming_data_flag,
             );
             let mut task_stream = task_executor
                 .execute(ccx, Arc::new(task_context), execution_id.clone())
@@ -615,7 +623,8 @@ impl WorkflowExecutor {
         cx: Arc<opentelemetry::Context>,
     ) -> impl Stream<Item = Result<Arc<WorkflowContext>, Box<workflow::Error>>> + 'static {
         let initial_wfc = self.workflow_context.clone();
-        let event_stream = self.execute_workflow_with_events(cx);
+        // Backend execution doesn't need StreamingData events
+        let event_stream = self.execute_workflow_with_events(cx, false);
 
         stream! {
             let mut event_stream = std::pin::pin!(event_stream);

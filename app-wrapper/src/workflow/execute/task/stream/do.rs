@@ -39,6 +39,8 @@ pub struct DoTaskStreamExecutor {
     #[debug_stub = "Option<Arc<dyn UseCheckPointRepository>>"]
     pub checkpoint_repository: Option<CheckPointRepo>,
     pub execution_id: Option<Arc<ExecutionId>>,
+    /// Whether to emit StreamingData events (for ag-ui-front real-time streaming)
+    pub emit_streaming_data: bool,
 }
 impl UseJqAndTemplateTransformer for DoTaskStreamExecutor {}
 impl UseExpression for DoTaskStreamExecutor {}
@@ -57,6 +59,7 @@ impl DoTaskStreamExecutor {
             Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
         >,
         execution_id: Option<Arc<ExecutionId>>,
+        emit_streaming_data: bool,
     ) -> Self {
         Self {
             workflow_context,
@@ -66,6 +69,7 @@ impl DoTaskStreamExecutor {
             job_executor_wrapper,
             checkpoint_repository,
             execution_id,
+            emit_streaming_data,
         }
     }
     async fn find_checkpoint_task(
@@ -199,6 +203,7 @@ impl DoTaskStreamExecutor {
                     &name,
                     task.clone(),
                     req_meta.clone(),
+                    self.emit_streaming_data,
                 )
                 .execute(
                     ccx.clone(),
@@ -498,6 +503,7 @@ mod tests {
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 None,
                 None,
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             let task_context = TaskContext::new(
@@ -641,6 +647,7 @@ mod tests {
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 None,
                 None,
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             let task_context = TaskContext::new(
@@ -749,6 +756,7 @@ mod tests {
                     Arc::new(JobExecutorWrapper::new(app_module.clone())),
                     None,
                     None,
+                    false, // emit_streaming_data (tests don't need streaming events)
                 );
 
                 let task_context = TaskContext::new(
@@ -827,6 +835,7 @@ mod tests {
                     Arc::new(JobExecutorWrapper::new(app_module.clone())),
                     None,
                     None,
+                    false, // emit_streaming_data (tests don't need streaming events)
                 );
 
                 let task_context = TaskContext::new(
@@ -967,6 +976,7 @@ mod tests {
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 None,
                 None,
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             let task_context = TaskContext::new(
@@ -1131,6 +1141,7 @@ mod tests {
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 Some(checkpoint_repo.clone()),
                 Some(execution_id.clone()),
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             let task_context = TaskContext::new(
@@ -1299,6 +1310,7 @@ mod tests {
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 Some(checkpoint_repo.clone()),
                 Some(execution_id.clone()),
+                false, // emit_streaming_data (tests don't need streaming events)
             );
 
             let task_context = TaskContext::new(
