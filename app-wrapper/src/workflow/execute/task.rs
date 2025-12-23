@@ -868,7 +868,7 @@ impl TaskExecutor {
                         futures::pin_mut!(stream);
                         while let Some(event_result) = stream.next().await {
                             match event_result {
-                                Ok(WorkflowStreamEvent::StreamingJobCompleted { job_id, job_result_id, position, context }) => {
+                                Ok(WorkflowStreamEvent::StreamingJobCompleted { event, context }) => {
                                     // Apply output transformation
                                     let mut expr = match TaskExecutor::expression(
                                         &*workflow_context.read().await,
@@ -892,9 +892,7 @@ impl TaskExecutor {
                                             // Re-emit StreamingJobCompleted with updated context
                                             // Output is accessible via result.output
                                             yield Ok(WorkflowStreamEvent::StreamingJobCompleted {
-                                                job_id,
-                                                job_result_id,
-                                                position,
+                                                event,
                                                 context: result,
                                             });
                                         }
@@ -1324,13 +1322,8 @@ mod tests {
         expected_task_type: &str,
         expected_task_name: &str,
     ) -> bool {
-        if let Ok(WorkflowStreamEvent::TaskCompleted {
-            task_type,
-            task_name,
-            ..
-        }) = event
-        {
-            task_type == expected_task_type && task_name == expected_task_name
+        if let Ok(WorkflowStreamEvent::TaskCompleted { event: ev, .. }) = event {
+            ev.task_type == expected_task_type && ev.task_name == expected_task_name
         } else {
             false
         }
@@ -1341,34 +1334,44 @@ mod tests {
         match event {
             Ok(evt) => {
                 let variant = match evt {
-                    WorkflowStreamEvent::TaskCompleted {
-                        task_type,
-                        task_name,
-                        ..
-                    } => {
-                        format!("TaskCompleted(type={}, name={})", task_type, task_name)
+                    WorkflowStreamEvent::TaskCompleted { event: ev, .. } => {
+                        format!(
+                            "TaskCompleted(type={}, name={})",
+                            ev.task_type, ev.task_name
+                        )
                     }
-                    WorkflowStreamEvent::TaskStarted {
-                        task_type,
-                        task_name,
-                        ..
-                    } => {
-                        format!("TaskStarted(type={}, name={})", task_type, task_name)
+                    WorkflowStreamEvent::TaskStarted { event: ev } => {
+                        format!("TaskStarted(type={}, name={})", ev.task_type, ev.task_name)
                     }
-                    WorkflowStreamEvent::JobStarted { job_id, .. } => {
-                        format!("JobStarted(job_id={})", job_id.value)
+                    WorkflowStreamEvent::JobStarted { event: ev } => {
+                        format!(
+                            "JobStarted(job_id={})",
+                            ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
+                        )
                     }
-                    WorkflowStreamEvent::JobCompleted { job_id, .. } => {
-                        format!("JobCompleted(job_id={})", job_id.value)
+                    WorkflowStreamEvent::JobCompleted { event: ev, .. } => {
+                        format!(
+                            "JobCompleted(job_id={})",
+                            ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
+                        )
                     }
-                    WorkflowStreamEvent::StreamingJobStarted { job_id, .. } => {
-                        format!("StreamingJobStarted(job_id={})", job_id.value)
+                    WorkflowStreamEvent::StreamingJobStarted { event: ev } => {
+                        format!(
+                            "StreamingJobStarted(job_id={})",
+                            ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
+                        )
                     }
-                    WorkflowStreamEvent::StreamingData { job_id, .. } => {
-                        format!("StreamingData(job_id={})", job_id.value)
+                    WorkflowStreamEvent::StreamingData { event: ev } => {
+                        format!(
+                            "StreamingData(job_id={})",
+                            ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
+                        )
                     }
-                    WorkflowStreamEvent::StreamingJobCompleted { job_id, .. } => {
-                        format!("StreamingJobCompleted(job_id={})", job_id.value)
+                    WorkflowStreamEvent::StreamingJobCompleted { event: ev, .. } => {
+                        format!(
+                            "StreamingJobCompleted(job_id={})",
+                            ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
+                        )
                     }
                 };
                 format!("Ok({})", variant)
