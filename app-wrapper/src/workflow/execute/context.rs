@@ -502,7 +502,7 @@ impl From<jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus
 /// - `worker_name` in events: None (empty) for Runner-based jobs, Some for Worker-based jobs
 #[derive(Debug, Clone)]
 pub enum WorkflowStreamEvent {
-    // Streaming job events (LLM streaming)
+    // Job execution tasks (RunTask)
     StreamingJobStarted {
         event: JobStartedEvent,
     },
@@ -512,42 +512,23 @@ pub enum WorkflowStreamEvent {
     StreamingData {
         event: StreamingDataEvent,
     },
-    /// Streaming data chunk for real-time LLM output.
-    /// Each chunk is yielded as it arrives from Redis Pub/Sub.
-    /// Only emitted when emit_streaming_data flag is true (ag-ui-front).
-    StreamingData { job_id: JobId, data: Vec<u8> },
     StreamingJobCompleted {
-        job_id: JobId,
-        job_result_id: Option<JobResultId>,
-        position: String,
+        event: JobCompletedEvent,
         context: TaskContext,
     },
-
-    // Non-streaming job events
     JobStarted {
-        job_id: JobId,
-        runner_name: String,
-        /// None for Runner-based jobs (temporary worker), Some for Worker-based jobs
-        worker_name: Option<String>,
-        position: String,
+        event: JobStartedEvent,
     },
     JobCompleted {
-        job_id: JobId,
-        job_result_id: Option<JobResultId>,
-        position: String,
+        event: JobCompletedEvent,
         context: TaskContext,
     },
-
-    // Generic task events (ForTask, SwitchTask, DoTask, etc.)
+    // Generic tasks (ForTask, SwitchTask, DoTask, etc.)
     TaskStarted {
-        task_type: String,
-        task_name: String,
-        position: String,
+        event: TaskStartedEvent,
     },
     TaskCompleted {
-        task_type: String,
-        task_name: String,
-        position: String,
+        event: TaskCompletedEvent,
         context: TaskContext,
     },
 }
@@ -646,25 +627,13 @@ impl WorkflowStreamEvent {
     /// Returns empty string for StreamingData which has no position
     pub fn position(&self) -> &str {
         match self {
-            Self::StreamingJobStarted { position, .. } => position,
+            Self::StreamingJobStarted { event } => &event.position,
             Self::StreamingData { .. } => "",
-            Self::StreamingJobCompleted { position, .. } => position,
-            Self::JobStarted { position, .. } => position,
-            Self::JobCompleted { position, .. } => position,
-            Self::TaskStarted { position, .. } => position,
-            Self::TaskCompleted { position, .. } => position,
-        }
-    }
-
-    /// Get job_id from the event (only for job events)
-    pub fn job_id(&self) -> Option<JobId> {
-        match self {
-            Self::StreamingJobStarted { job_id, .. } => Some(*job_id),
-            Self::StreamingData { job_id, .. } => Some(*job_id),
-            Self::StreamingJobCompleted { job_id, .. } => Some(*job_id),
-            Self::JobStarted { job_id, .. } => Some(*job_id),
-            Self::JobCompleted { job_id, .. } => Some(*job_id),
-            _ => None,
+            Self::StreamingJobCompleted { event, .. } => &event.position,
+            Self::JobStarted { event } => &event.position,
+            Self::JobCompleted { event, .. } => &event.position,
+            Self::TaskStarted { event } => &event.position,
+            Self::TaskCompleted { event, .. } => &event.position,
         }
     }
 
@@ -683,9 +652,11 @@ impl WorkflowStreamEvent {
     /// Create TaskStarted event from task information
     pub fn task_started(task_type: &str, task_name: &str, position: &str) -> Self {
         Self::TaskStarted {
-            task_type: task_type.to_string(),
-            task_name: task_name.to_string(),
-            position: position.to_string(),
+            event: TaskStartedEvent {
+                task_type: task_type.to_string(),
+                task_name: task_name.to_string(),
+                position: position.to_string(),
+            },
         }
     }
 
