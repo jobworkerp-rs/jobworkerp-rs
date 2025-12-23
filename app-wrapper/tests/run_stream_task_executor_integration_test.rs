@@ -151,14 +151,18 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
 
         while let Some(event_result) = stream.next().await {
             match event_result {
-                Ok(WorkflowStreamEvent::StreamingJobStarted { job_id, .. }) => {
-                    eprintln!("📥 StreamingJobStarted: job_id={}", job_id.value);
+                Ok(WorkflowStreamEvent::StreamingJobStarted { event: ev }) => {
+                    eprintln!(
+                        "📥 StreamingJobStarted: job_id={}",
+                        ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
+                    );
                     started = true;
                 }
-                Ok(WorkflowStreamEvent::StreamingJobCompleted {
-                    job_id, context, ..
-                }) => {
-                    eprintln!("📥 StreamingJobCompleted: job_id={}", job_id.value);
+                Ok(WorkflowStreamEvent::StreamingJobCompleted { event: ev, context }) => {
+                    eprintln!(
+                        "📥 StreamingJobCompleted: job_id={}",
+                        ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
+                    );
                     eprintln!("   Output: {:?}", context.raw_output);
                     completed = true;
                     final_context = Some(context);
@@ -268,14 +272,18 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
 
         while let Some(event_result) = stream.next().await {
             match event_result {
-                Ok(WorkflowStreamEvent::StreamingJobStarted { job_id, .. }) => {
-                    eprintln!("📥 StreamingJobStarted: job_id={}", job_id.value);
+                Ok(WorkflowStreamEvent::StreamingJobStarted { event: ev }) => {
+                    eprintln!(
+                        "📥 StreamingJobStarted: job_id={}",
+                        ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
+                    );
                     started = true;
                 }
-                Ok(WorkflowStreamEvent::StreamingJobCompleted {
-                    job_id, context, ..
-                }) => {
-                    eprintln!("📥 StreamingJobCompleted: job_id={}", job_id.value);
+                Ok(WorkflowStreamEvent::StreamingJobCompleted { event: ev, context }) => {
+                    eprintln!(
+                        "📥 StreamingJobCompleted: job_id={}",
+                        ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
+                    );
                     eprintln!("   Output: {:?}", context.raw_output);
                     completed = true;
                     final_context = Some(context);
@@ -397,14 +405,18 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
 
         while let Some(event_result) = stream.next().await {
             match event_result {
-                Ok(WorkflowStreamEvent::StreamingJobStarted { job_id, .. }) => {
-                    eprintln!("📥 StreamingJobStarted: job_id={}", job_id.value);
+                Ok(WorkflowStreamEvent::StreamingJobStarted { event: ev }) => {
+                    eprintln!(
+                        "📥 StreamingJobStarted: job_id={}",
+                        ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
+                    );
                     started = true;
                 }
-                Ok(WorkflowStreamEvent::StreamingJobCompleted {
-                    job_id, context, ..
-                }) => {
-                    eprintln!("📥 StreamingJobCompleted: job_id={}", job_id.value);
+                Ok(WorkflowStreamEvent::StreamingJobCompleted { event: ev, context }) => {
+                    eprintln!(
+                        "📥 StreamingJobCompleted: job_id={}",
+                        ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
+                    );
                     eprintln!("   Output: {:?}", context.raw_output);
                     completed = true;
                     final_context = Some(context);

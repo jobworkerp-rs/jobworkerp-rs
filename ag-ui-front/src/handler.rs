@@ -936,14 +936,14 @@ where
                 match result {
                     Ok(event) => {
                         // Handle StreamingJobStarted: emit TEXT_MESSAGE_START
-                        if let WorkflowStreamEvent::StreamingJobStarted { job_id, worker_name, position, .. } = &event {
-                            let job_id_value = job_id.value;
+                        if let WorkflowStreamEvent::StreamingJobStarted { event: ev } = &event {
+                            let job_id_value = ev.job_id.as_ref().map(|j| j.value).unwrap_or(0);
                             let message_id = MessageId::random();
 
                             tracing::info!(
                                 job_id = job_id_value,
-                                worker_name = ?worker_name,
-                                position = %position,
+                                worker_name = ?ev.worker_name,
+                                position = %ev.position,
                                 "StreamingJobStarted: emitting TEXT_MESSAGE_START"
                             );
 
@@ -973,11 +973,11 @@ where
                         }
 
                         // Handle StreamingData: emit TEXT_MESSAGE_CONTENT
-                        if let WorkflowStreamEvent::StreamingData { job_id, data } = &event {
-                            let job_id_value = job_id.value;
+                        if let WorkflowStreamEvent::StreamingData { event: ev } = &event {
+                            let job_id_value = ev.job_id.as_ref().map(|j| j.value).unwrap_or(0);
                             if let Some(message_id) = active_message_ids.get(&job_id_value) {
                                 // Decode LlmChatResult protobuf and extract text content
-                                if let Some(text) = extract_text_from_llm_chat_result(data) {
+                                if let Some(text) = extract_text_from_llm_chat_result(&ev.data) {
                                     let ag_event = AgUiEvent::text_message_content(
                                         message_id.clone(),
                                         text,
@@ -997,8 +997,8 @@ where
                         }
 
                         // Handle StreamingJobCompleted: emit TEXT_MESSAGE_END and check for LLM tool calls
-                        if let WorkflowStreamEvent::StreamingJobCompleted { job_id, context: tc, .. } = &event {
-                            let job_id_value = job_id.value;
+                        if let WorkflowStreamEvent::StreamingJobCompleted { event: ev, context: tc } = &event {
+                            let job_id_value = ev.job_id.as_ref().map(|j| j.value).unwrap_or(0);
                             let message_id = active_message_ids.remove(&job_id_value);
 
                             // Serialize tc.output for tool call extraction
