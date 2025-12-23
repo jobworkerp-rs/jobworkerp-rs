@@ -112,7 +112,8 @@ pub struct StreamingJobHandle {
     pub runner_id: RunnerId,
     pub runner_name: String,
     pub runner_data: proto::jobworkerp::data::RunnerData,
-    pub worker_name: String,
+    /// Worker name - None for Runner-based jobs (temporary worker), Some for Worker-based jobs
+    pub worker_name: Option<String>,
     pub runner_spec: Option<Box<dyn jobworkerp_runner::runner::RunnerSpec + Send + Sync>>,
     pub using: Option<String>,
     pub timeout_sec: u32,
@@ -170,7 +171,8 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
                 }
             };
 
-            let job_id = prep.handle.job_id.value;
+            let job_id = prep.handle.job_id;
+            let job_id_value = job_id.value;
             let position = prep.position.clone();
             let mut task_context = prep.task_context;
             // Stream is already subscribed in prepare_streaming_job to avoid race condition
@@ -180,14 +182,14 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
             let _ = event_tx.send(Ok(WorkflowStreamEvent::streaming_job_started(
                 job_id,
                 &prep.handle.runner_name,
-                &prep.handle.worker_name,
+                prep.handle.worker_name.clone(),
                 &position,
             )));
 
             // Process stream and forward events
             let output = process_stream(
                 stream,
-                job_id,
+                job_id_value,
                 &prep.handle,
                 &job_executor_wrapper,
                 &event_tx,
@@ -200,7 +202,7 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
                     task_context.set_raw_output(o);
                 }
                 Err(e) => {
-                    tracing::error!("Failed to process stream for job {}: {:?}", job_id, e);
+                    tracing::error!("Failed to process stream for job {}: {:?}", job_id_value, e);
                     let _ = event_tx.send(Err(workflow::errors::ErrorFactory::new()
                         .service_unavailable(
                             "Failed to process streaming result".to_string(),
@@ -603,7 +605,7 @@ async fn process_stream(
                     Some(Item::Data(data)) => {
                         // Forward to UI for real-time display
                         let _ = event_tx.send(Ok(WorkflowStreamEvent::streaming_data(
-                            job_id,
+                            JobId { value: job_id },
                             data.clone(),
                         )));
                         // Collect all chunks for later aggregation
@@ -818,7 +820,7 @@ async fn start_worker_streaming_job_static(
         runner_id: rid,
         runner_name: rdata.name.clone(),
         runner_data: rdata,
-        worker_name: worker_name.to_string(),
+        worker_name: Some(worker_name.to_string()), // Worker-based job has real worker
         runner_spec,
         using,
         timeout_sec,
@@ -923,7 +925,7 @@ async fn start_runner_streaming_job_static(
         runner_id: rid,
         runner_name: rdata.name.clone(),
         runner_data: rdata,
-        worker_name,
+        worker_name: None, // Runner-based job uses temporary worker
         runner_spec,
         using,
         timeout_sec,

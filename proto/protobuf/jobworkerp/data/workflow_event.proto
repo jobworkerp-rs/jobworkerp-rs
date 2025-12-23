@@ -2,13 +2,16 @@ syntax = "proto3";
 
 package jobworkerp.data;
 
+import "jobworkerp/data/job.proto";
+import "jobworkerp/data/job_result.proto";
+
 // # Job Started Event
 // Event emitted when a job (RunTask) begins execution
 // Used for both streaming and non-streaming jobs
 message JobStartedEvent {
   // # Job ID
   // Unique identifier of the enqueued job
-  int64 job_id = 1;
+  jobworkerp.data.JobId job_id = 1;
 
   // # Runner Name
   // Name of the runner executing the job (e.g., "LLM_CHAT", "COMMAND")
@@ -16,7 +19,8 @@ message JobStartedEvent {
 
   // # Worker Name
   // Name of the worker processing the job
-  string worker_name = 3;
+  // None (empty) for Runner-based jobs (temporary worker), set for Worker-based jobs
+  optional string worker_name = 3;
 
   // # Position
   // Position in the workflow (JSON Pointer format, e.g., "/tasks/0/do/1")
@@ -29,19 +33,15 @@ message JobStartedEvent {
 message JobCompletedEvent {
   // # Job ID
   // Unique identifier of the completed job
-  int64 job_id = 1;
+  jobworkerp.data.JobId job_id = 1;
 
   // # Job Result ID
   // ID of the stored job result (available when store_success=true)
-  optional int64 job_result_id = 2;
+  optional jobworkerp.data.JobResultId job_result_id = 2;
 
   // # Position
   // Position in the workflow (JSON Pointer format)
   string position = 3;
-
-  // # Output
-  // Serialized TaskContext output (JSON bytes)
-  bytes output = 4;
 }
 
 // # Task Started Event
@@ -75,34 +75,19 @@ message TaskCompletedEvent {
   // # Position
   // Position in the workflow (JSON Pointer format)
   string position = 3;
-
-  // # Output
-  // Serialized TaskContext output (JSON bytes)
-  bytes output = 4;
-}
-
-// # Workflow Cancelled Event
-// Event emitted when a workflow is cancelled (reserved for future use)
-message WorkflowCancelledEvent {
-  // # Reason
-  // Description of why the workflow was cancelled
-  string reason = 1;
-
-  // # Position
-  // Position in the workflow where cancellation occurred
-  string position = 2;
 }
 
 // # Streaming Data Event
 // Event emitted for each chunk of streaming data (e.g., LLM token)
 // Used for real-time streaming to clients (e.g., AG-UI TEXT_MESSAGE_CONTENT)
+// Only emitted when emit_streaming_data flag is true (ag-ui-front)
 message StreamingDataEvent {
   // # Job ID
   // Unique identifier of the streaming job
-  int64 job_id = 1;
+  jobworkerp.data.JobId job_id = 1;
 
   // # Data
-  // Raw streaming data chunk (typically UTF-8 encoded text)
+  // Raw streaming data chunk (typically UTF-8 encoded text or protobuf)
   bytes data = 2;
 }
 
@@ -146,10 +131,7 @@ message WorkflowEvent {
     // # Streaming Data
     // Emitted for each chunk of streaming data (e.g., LLM token)
     // Used for real-time streaming to AG-UI clients
+    // Only emitted when emit_streaming_data flag is true
     StreamingDataEvent streaming_data = 7;
-
-    // # Workflow Cancelled (Reserved)
-    // Emitted when workflow is cancelled
-    WorkflowCancelledEvent workflow_cancelled = 10;
   }
 }
