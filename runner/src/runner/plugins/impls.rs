@@ -437,10 +437,24 @@ impl CancelMonitoring for PluginRunnerWrapperImpl {
         }
 
         // 2. Call plugin's cancel() for plugin-specific cleanup
-        let guard = self.variant.read().await;
-        let cancelled = match &*guard {
-            super::PluginRunnerVariant::Legacy(plugin) => plugin.cancel(),
-            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.cancel(),
+        // Legacy plugins use &self, MultiMethod plugins use &mut self
+        let cancelled = match self.variant_type {
+            PluginVariantType::Legacy => {
+                let guard = self.variant.read().await;
+                if let super::PluginRunnerVariant::Legacy(plugin) = &*guard {
+                    plugin.cancel()
+                } else {
+                    false
+                }
+            }
+            PluginVariantType::MultiMethod => {
+                let mut guard = self.variant.write().await;
+                if let super::PluginRunnerVariant::MultiMethod(plugin) = &mut *guard {
+                    plugin.cancel()
+                } else {
+                    false
+                }
+            }
         };
         if cancelled {
             tracing::info!("PluginRunnerWrapperImpl: plugin cancelled successfully");
