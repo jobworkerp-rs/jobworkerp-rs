@@ -90,7 +90,7 @@ impl MultiMethodPluginRunner for TestPlugin {
         // default implementation (return empty)
         Err(anyhow::anyhow!("not implemented"))
     }
-    fn cancel(&mut self) -> bool {
+    fn cancel(&self) -> bool {
         tracing::warn!("Test plugin cancel: not implemented!");
         false
     }
