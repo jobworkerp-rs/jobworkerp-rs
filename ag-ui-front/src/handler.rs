@@ -6,12 +6,14 @@ use crate::config::AgUiServerConfig;
 use crate::error::{AgUiError, Result};
 use crate::events::{
     extract_text_from_llm_chat_result, extract_tool_calls_from_llm_result, shared_adapter,
-    tool_calls_to_ag_ui_events, AgUiEvent, EventEncoder, SharedWorkflowEventAdapter,
+    tool_calls_to_ag_ui_events, AgUiEvent, EventEncoder, InterruptInfo, InterruptPayload,
+    PendingToolCall, SharedWorkflowEventAdapter,
 };
 use crate::session::{
     EventStore, HitlWaitingInfo, PendingToolCallInfo, Session, SessionManager, SessionState,
 };
 use crate::types::ids::MessageId;
+use crate::types::input::ResumePayload;
 use crate::types::{RunAgentInput, RunId, ThreadId, WorkflowState, WorkflowStatus};
 use app::module::AppModule;
 use app_wrapper::modules::AppWrapperModule;
@@ -105,6 +107,17 @@ where
         Session,
         Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
     )> {
+        // Check if this is a resume request (AG-UI Interrupts protocol)
+        if let Some(resume) = input.resume.as_ref() {
+            return self
+                .handle_resume_request(
+                    input.clone(),
+                    resume.interrupt_id.clone(),
+                    resume.payload.clone(),
+                )
+                .await;
+        }
+
         // Use provided run_id or generate a new one
         let run_id = input
             .run_id
@@ -700,6 +713,295 @@ where
         Ok(Box::pin(combined_stream))
     }
 
+    /// Handle AG-UI Interrupts resume request.
+    ///
+    /// This method handles the resume flow for AG-UI Interrupts protocol:
+    /// 1. Look up session by interrupt_id
+    /// 2. Validate session state is Paused
+    /// 3. Handle approve/reject based on ResumePayload
+    /// 4. For approve: execute tool calls and continue workflow
+    async fn handle_resume_request(
+        &self,
+        input: RunAgentInput,
+        interrupt_id: String,
+        payload: ResumePayload,
+    ) -> Result<(
+        Session,
+        Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
+    )> {
+        // 1. Look up session by interrupt_id
+        let session = self
+            .session_manager
+            .get_session_by_interrupt_id(&interrupt_id)
+            .await
+            .ok_or_else(|| AgUiError::InvalidInterruptId {
+                interrupt_id: interrupt_id.clone(),
+                message: "No session found with this interrupt ID".to_string(),
+            })?;
+
+        // 2. Verify session is in Paused state
+        if session.state != SessionState::Paused {
+            return Err(AgUiError::InvalidInterruptId {
+                interrupt_id: interrupt_id.clone(),
+                message: format!("Session state is {:?}, expected Paused", session.state),
+            });
+        }
+
+        // 3. Get HITL info
+        let hitl_info =
+            session
+                .hitl_waiting_info
+                .clone()
+                .ok_or_else(|| AgUiError::InvalidInterruptId {
+                    interrupt_id: interrupt_id.clone(),
+                    message: "No HITL info found in session".to_string(),
+                })?;
+
+        // 4. Verify interrupt_id matches
+        if hitl_info.interrupt_id != interrupt_id {
+            return Err(AgUiError::InvalidInterruptId {
+                interrupt_id: interrupt_id.clone(),
+                message: format!(
+                    "Interrupt ID mismatch: expected {}, got {}",
+                    hitl_info.interrupt_id, interrupt_id
+                ),
+            });
+        }
+
+        // 5. Handle based on payload type
+        match payload {
+            ResumePayload::Approve { tool_results } => {
+                // Check if this is LLM tool call HITL (pending_tool_calls non-empty)
+                if !hitl_info.pending_tool_calls.is_empty() {
+                    // LLM tool call HITL: Re-execute workflow with ToolExecutionRequests
+                    // This triggers OllamaChatService to execute tools and continue LLM conversation
+                    self.handle_llm_tool_approval(input, session, hitl_info, tool_results)
+                        .await
+                } else {
+                    // Traditional HITL (checkpoint-based): Use resume_workflow
+                    let tool_result: serde_json::Value = input
+                        .messages
+                        .first()
+                        .map(|m| match &m.content {
+                            crate::types::message::MessageContent::Text(t) => serde_json::json!(t),
+                            crate::types::message::MessageContent::Parts(_) => {
+                                serde_json::json!("")
+                            }
+                        })
+                        .unwrap_or_else(|| serde_json::json!(""));
+
+                    self.resume_workflow(
+                        session.run_id.as_str(),
+                        &hitl_info.tool_call_id,
+                        tool_result,
+                    )
+                    .await
+                    .map(|stream| (session, stream))
+                }
+            }
+            ResumePayload::Reject { reason } => {
+                // Resume session to Active, then emit RUN_FINISHED with success
+                // (rejection means user chose to skip tool execution)
+                self.session_manager
+                    .resume_from_paused(&session.session_id, SessionState::Completed)
+                    .await;
+
+                let run_id = session.run_id.to_string();
+                let encoder = self.encoder.clone();
+                let event_store = self.event_store.clone();
+
+                let rejection_message =
+                    reason.unwrap_or_else(|| "User rejected tool calls".to_string());
+
+                let stream = stream! {
+                    // Emit RUN_FINISHED with success outcome and rejection message
+                    let run_finished = AgUiEvent::run_finished(
+                        run_id.clone(),
+                        Some(serde_json::json!({
+                            "status": "rejected",
+                            "message": rejection_message
+                        })),
+                    );
+                    let event_id = Self::encode_event_with_logging(&encoder, &run_finished);
+                    event_store.store_event(&run_id, event_id, run_finished.clone()).await;
+                    yield (event_id, run_finished);
+                };
+
+                Ok((session, Box::pin(stream)))
+            }
+        }
+    }
+
+    /// Handle LLM tool call approval by re-executing workflow with ToolExecutionRequests.
+    ///
+    /// This method:
+    /// 1. Builds ToolExecutionRequests from pending_tool_calls
+    /// 2. Updates workflowContext with toolExecutionRequests
+    /// 3. Starts a new workflow execution
+    /// 4. OllamaChatService will execute tools and continue LLM conversation
+    async fn handle_llm_tool_approval(
+        &self,
+        mut input: RunAgentInput,
+        session: Session,
+        hitl_info: HitlWaitingInfo,
+        _tool_results: Option<Vec<crate::types::input::ToolCallResult>>,
+    ) -> Result<(
+        Session,
+        Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
+    )> {
+        tracing::info!(
+            run_id = %session.run_id,
+            interrupt_id = %hitl_info.interrupt_id,
+            pending_tool_calls = hitl_info.pending_tool_calls.len(),
+            "Handling LLM tool approval"
+        );
+
+        // 1. Resume session from Paused state
+        self.session_manager
+            .resume_from_paused(&session.session_id, SessionState::Active)
+            .await;
+
+        // 2. Build ToolExecutionRequests message for LLM
+        // OllamaChatService expects messages with TOOL role containing ToolExecutionRequests
+        let tool_execution_requests: Vec<serde_json::Value> = hitl_info
+            .pending_tool_calls
+            .iter()
+            .map(|tc| {
+                serde_json::json!({
+                    "callId": tc.call_id,
+                    "fnName": tc.fn_name,
+                    "fnArguments": tc.fn_arguments
+                })
+            })
+            .collect();
+
+        // 3. Update workflowContext to include toolExecutionRequests in runnerMessages
+        // The workflow uses ${ $runnerMessages } to pass messages to LLM
+        // We need to add a TOOL message with ToolExecutionRequests format
+        for ctx in &mut input.context {
+            if let crate::types::Context::WorkflowInline {
+                workflow_context, ..
+            } = ctx
+            {
+                // Parse existing workflowContext or create new one
+                let mut ctx_value: serde_json::Value = workflow_context
+                    .as_ref()
+                    .and_then(|v| {
+                        if let serde_json::Value::String(s) = v {
+                            serde_json::from_str(s).ok()
+                        } else {
+                            Some(v.clone())
+                        }
+                    })
+                    .unwrap_or_else(|| serde_json::json!({}));
+
+                // Get existing runnerMessages or create empty array
+                let runner_messages = ctx_value
+                    .get("runnerMessages")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]));
+
+                let mut messages_array = match runner_messages {
+                    serde_json::Value::Array(arr) => arr,
+                    _ => vec![],
+                };
+
+                // Add Assistant's tool call response (required for OllamaChatService)
+                let tool_calls: Vec<serde_json::Value> = hitl_info
+                    .pending_tool_calls
+                    .iter()
+                    .map(|tc| {
+                        serde_json::json!({
+                            "callId": tc.call_id,
+                            "fnName": tc.fn_name,
+                            "fnArguments": tc.fn_arguments
+                        })
+                    })
+                    .collect();
+
+                // Proto3 JSON format: enum values use uppercase names
+                messages_array.push(serde_json::json!({
+                    "role": "ASSISTANT",
+                    "content": {
+                        "toolCalls": {
+                            "calls": tool_calls
+                        }
+                    }
+                }));
+
+                // Add TOOL message with ToolExecutionRequests
+                // Proto3 JSON format: enum values use uppercase names
+                messages_array.push(serde_json::json!({
+                    "role": "TOOL",
+                    "content": {
+                        "toolExecutionRequests": {
+                            "requests": tool_execution_requests.clone()
+                        }
+                    }
+                }));
+
+                // Update context
+                if let serde_json::Value::Object(ref mut map) = ctx_value {
+                    map.insert(
+                        "runnerMessages".to_string(),
+                        serde_json::Value::Array(messages_array),
+                    );
+                }
+
+                // Update the context (as JSON string per proto convention)
+                *workflow_context = Some(serde_json::Value::String(ctx_value.to_string()));
+
+                tracing::debug!(
+                    workflow_context = ?workflow_context,
+                    "Updated workflowContext with toolExecutionRequests in runnerMessages"
+                );
+                break;
+            }
+        }
+
+        // 4. Clear resume info to avoid infinite loop
+        input.resume = None;
+
+        // 5. Parse workflow from input
+        let (workflow, workflow_context) = self.parse_workflow_from_input(&input).await?;
+        let workflow_name = workflow.document.name.to_string();
+
+        // 6. Use existing run_id and thread_id from session
+        let run_id = session.run_id.clone();
+        let thread_id = session.thread_id.clone();
+
+        // 7. Create adapter for event conversion
+        let adapter = shared_adapter(run_id.clone(), thread_id.clone());
+
+        // 8. Initialize workflow executor
+        let executor = self
+            .init_workflow_executor(workflow, input, &run_id, adapter.clone(), workflow_context)
+            .await?;
+
+        // 9. Register executor for cancellation support
+        let executor = Arc::new(executor);
+        {
+            let mut registry = self.executor_registry.write().await;
+            registry.insert(run_id.to_string(), executor.clone());
+        }
+
+        // 10. Create event stream (emit_run_started: false since RUN_STARTED was already emitted)
+        let executor_registry = self.executor_registry.clone();
+        let run_id_for_cleanup = run_id.to_string();
+        let stream = self.create_event_stream(
+            executor,
+            adapter,
+            run_id.to_string(),
+            session.session_id.clone(),
+            executor_registry,
+            run_id_for_cleanup,
+            workflow_name,
+            false, // Don't emit RUN_STARTED again
+        );
+
+        Ok((session, Box::pin(stream)))
+    }
+
     /// Parse workflow schema from input context.
     /// Returns (workflow_schema, workflow_context) tuple.
     async fn parse_workflow_from_input(
@@ -1086,12 +1388,13 @@ where
                                     let primary_tool_call_id = tool_calls.tool_calls[0].call_id.clone();
 
                                     // Update session state to Paused with HITL info for later resume
-                                    let hitl_info = HitlWaitingInfo {
-                                        tool_call_id: primary_tool_call_id.clone(),
-                                        checkpoint_position: current_position,
-                                        workflow_name: workflow_name.clone(),
-                                        pending_tool_calls,
-                                    };
+                                    let hitl_info = HitlWaitingInfo::new(
+                                        primary_tool_call_id.clone(),
+                                        current_position.clone(),
+                                        workflow_name.clone(),
+                                        pending_tool_calls.clone(),
+                                    );
+                                    let interrupt_id = hitl_info.interrupt_id.clone();
                                     if !session_manager.set_paused_with_hitl_info(&session_id, hitl_info).await {
                                         tracing::error!(
                                             session_id = %session_id,
@@ -1125,8 +1428,33 @@ where
                                         );
                                     }
 
-                                    // Exit stream without emitting RUN_FINISHED - client needs to approve tool calls
+                                    // AG-UI Interrupts: Emit RUN_FINISHED with outcome="interrupt"
+                                    let interrupt_payload = InterruptPayload {
+                                        pending_tool_calls: pending_tool_calls.iter()
+                                            .map(|tc| PendingToolCall {
+                                                call_id: tc.call_id.clone(),
+                                                fn_name: tc.fn_name.clone(),
+                                                fn_arguments: tc.fn_arguments.clone(),
+                                            })
+                                            .collect(),
+                                        checkpoint_position: current_position,
+                                        workflow_name: workflow_name.clone(),
+                                    };
+                                    let interrupt_info = InterruptInfo {
+                                        id: interrupt_id.clone(),
+                                        reason: "tool_approval_required".to_string(),
+                                        payload: interrupt_payload,
+                                    };
+                                    let run_finished_event = AgUiEvent::run_finished_with_interrupt(
+                                        run_id.clone(),
+                                        interrupt_info,
+                                    );
+                                    let event_id = Self::encode_event_with_logging(&encoder, &run_finished_event);
+                                    event_store.store_event(&run_id, event_id, run_finished_event.clone()).await;
+                                    yield (event_id, run_finished_event);
+
                                     tracing::info!(
+                                        interrupt_id = %interrupt_id,
                                         "Workflow paused for LLM tool call approval, session {} is now Paused",
                                         session_id
                                     );
@@ -1235,12 +1563,12 @@ where
                                 yield (args_event_id, tool_call_args);
 
                                 // Update session state to Paused with HITL info for later resume
-                                let hitl_info = HitlWaitingInfo {
-                                    tool_call_id: tool_call_id.clone(),
+                                let hitl_info = HitlWaitingInfo::new(
+                                    tool_call_id.clone(),
                                     checkpoint_position,
-                                    workflow_name: workflow_name.clone(),
-                                    pending_tool_calls: vec![], // Traditional HITL (HUMAN_INPUT)
-                                };
+                                    workflow_name.clone(),
+                                    vec![], // Traditional HITL (HUMAN_INPUT)
+                                );
                                 if !session_manager.set_paused_with_hitl_info(&session_id, hitl_info).await {
                                     // Failed to persist HITL state - emit RUN_ERROR and set session to Error
                                     tracing::error!(

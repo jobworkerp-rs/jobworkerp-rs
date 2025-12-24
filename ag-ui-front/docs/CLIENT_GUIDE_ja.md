@@ -10,8 +10,9 @@
 4. [SSE イベント](#sse-イベント)
 5. [Human-in-the-Loop (HITL)](#human-in-the-loop-hitl)
 6. [LLM ツール呼び出し HITL](#llm-ツール呼び出し-hitl)
-7. [エラーハンドリング](#エラーハンドリング)
-8. [実装例](#実装例)
+7. [AG-UI Interrupts (Resume)](#ag-ui-interrupts-resume)
+8. [エラーハンドリング](#エラーハンドリング)
+9. [実装例](#実装例)
 
 ---
 
@@ -122,6 +123,7 @@ Authorization: Bearer <token>
 | `tools` | Tool[] | No | クライアント定義ツール（HITL用） |
 | `context` | Context[] | Yes | コンテキスト（ワークフロー名を含む） |
 | `forwardedProps` | object | No | jobworkerp-rs 固有のプロパティ |
+| `resume` | ResumeInfo | No | 中断された実行を再開するための情報（[AG-UI Interrupts](#ag-ui-interrupts-resume)） |
 
 **Context タイプ:**
 
@@ -279,9 +281,46 @@ id: 1
   "type": "RUN_FINISHED",
   "runId": "run-456",
   "timestamp": 1702345679000,
-  "result": { "output": "completed" }
+  "result": { "output": "completed" },
+  "outcome": "success"
 }
 ```
+
+**RUN_FINISHED（Interrupt 付き、AG-UI Interrupts）:**
+
+ワークフローがユーザー承認を必要とする場合（例：HITL を使用した LLM ツール呼び出し）、`RUN_FINISHED` には interrupt 情報が含まれます：
+
+```json
+{
+  "type": "RUN_FINISHED",
+  "runId": "run-456",
+  "timestamp": 1702345679000,
+  "outcome": "interrupt",
+  "interrupt": {
+    "id": "int_abc123",
+    "reason": "tool_approval_required",
+    "payload": {
+      "pendingToolCalls": [
+        {
+          "callId": "call_xyz",
+          "fnName": "COMMAND___run",
+          "fnArguments": "{\"command\":\"date\"}"
+        }
+      ],
+      "checkpointPosition": "/tasks/ChatTask",
+      "workflowName": "copilot-chat"
+    }
+  }
+}
+```
+
+| フィールド | 型 | 説明 |
+|-----------|------|------|
+| `outcome` | string | `"success"` または `"interrupt"` |
+| `interrupt` | object | `outcome` が `"interrupt"` の場合に存在 |
+| `interrupt.id` | string | 再開用の一意な interrupt ID |
+| `interrupt.reason` | string | 中断理由（例：`"tool_approval_required"`） |
+| `interrupt.payload` | object | コンテキスト固有のペイロード |
 
 **RUN_ERROR:**
 ```json
@@ -423,7 +462,32 @@ LLM_CHAT ランナーで `isAutoCalling: false` を設定すると、LLM がツ�
 LLM ツール呼び出し HITL により、ユーザーは以下のことができます：
 - LLM が要求したツール呼び出しを実行前にレビュー
 - ツール呼び出しの引数を承認、修正、または拒否
-- ツール実行結果を LLM に返送
+- サーバー側でのツール実行と、その結果の LLM への自動連携
+
+### なぜ標準 AG-UI Tools ではなく AG-UI Interrupts を使用するのか？
+
+標準の [AG-UI Tools 仕様](https://docs.ag-ui.com/concepts/tools) は、ツールが**クライアント側**で定義・実行されることを前提としています。しかし、jobworkerp-rs は異なるアーキテクチャを持っています：
+
+| 観点 | 標準 AG-UI Tools | jobworkerp-rs |
+|------|------------------|---------------|
+| ツール定義 | クライアントがツールを定義してサーバーに送信 | サーバーがツールを定義（Runner: COMMAND, HTTP_REQUEST など） |
+| ツール実行 | クライアントがローカルでツールを実行 | サーバーがジョブワーカー経由でツールを実行 |
+| ツール検出 | クライアントが利用可能なツールを把握 | クライアントはサーバーのファンクションセットからツールを検出 |
+| 結果処理 | クライアントが結果をサーバーに送信 | サーバーが内部で結果を処理し LLM を継続 |
+
+**jobworkerp-rs 固有の特性:**
+
+1. **サーバー側ツールレジストリ**: ツールは「Runner」（COMMAND, HTTP_REQUEST, PYTHON_COMMAND など）としてサーバーに登録されるか、プラグインからロードされます
+2. **ファンクションセット**: ツールはサーバー上で設定されたファンクションセット（例：`command-functions`）に整理されています
+3. **ジョブワーカー実行**: ツール実行は jobworkerp の分散ジョブワーカーシステムによって処理されます
+4. **統合実行**: ツール実行と LLM 継続の両方がサーバー側で単一のワークフローとして実行されます
+
+このアーキテクチャのため、標準 AG-UI Tools の代わりに [AG-UI Interrupts](https://docs.ag-ui.com/drafts/interrupts) を使用します：
+
+- **Interrupt**: LLM がツール呼び出しを要求すると、ワークフローは一時停止し、`outcome: "interrupt"` 付きの `RUN_FINISHED` を返します
+- **Resume**: クライアントは `/ag-ui/run` の `resume` フィールドで承認/拒否を行い、サーバーがツールを実行して LLM 会話を継続します
+
+このアプローチにより、ツールが定義されシステムリソースにアクセスできるサーバー側でツール実行を維持しながら、Human-in-the-Loop（HITL）制御を提供します。
 
 ### LLM ツール呼び出し HITL の有効化
 
@@ -433,31 +497,38 @@ LLM ツール呼び出し HITL により、ユーザーは以下のことがで�
 {
   "context": [{
     "type": "workflow_inline",
-    "data": {
-      "workflow": {
-        "do": [{
-          "ChatTask": {
-            "run": {
-              "runner": {
-                "name": "LLM_CHAT",
-                "arguments": {
-                  "functionOptions": {
-                    "useFunctionCalling": true,
-                    "functionSetName": "command-functions",
-                    "isAutoCalling": false
-                  }
+    "workflow": {
+      "document": {
+        "dsl": "1.0.0-jobworkerp",
+        "namespace": "default",
+        "name": "copilot-chat"
+      },
+      "do": [{
+        "ChatTask": {
+          "useStreaming": true,
+          "run": {
+            "runner": {
+              "name": "LLM_CHAT",
+              "arguments": {
+                "messages": "${ $runnerMessages }",
+                "functionOptions": {
+                  "useFunctionCalling": true,
+                  "functionSetName": "command-functions",
+                  "isAutoCalling": false
                 }
               }
             }
           }
-        }]
-      }
+        }
+      }]
     }
   }]
 }
 ```
 
-### LLM ツール呼び出しフロー
+### LLM ツール呼び出しフロー（AG-UI Interrupts）
+
+このフローは [AG-UI Interrupts 仕様](https://docs.ag-ui.com/drafts/interrupts) に従います：
 
 ```text
 クライアント                    AG-UI Server                    LLM
@@ -467,23 +538,18 @@ LLM ツール呼び出し HITL により、ユーザーは以下のことがで�
    |                              |<-- ツール呼び出し要求 -------|
    |<-- TOOL_CALL_START ----------|   (pending_tool_calls)      |
    |<-- TOOL_CALL_ARGS -----------|                             |
-   |   (ストリーム一時停止)        |                             |
+   |<-- RUN_FINISHED -------------|   outcome: "interrupt"      |
+   |   (interrupt 情報付き)       |   interrupt: {...}          |
    |                              |                             |
    |   [ユーザーがツールを承認]    |                             |
    |                              |                             |
-   |-- POST /ag-ui/message ------>|                             |
-   |   (toolCallResults)          |                             |
-   |<-- TOOL_CALL_RESULT ---------|                             |
-   |<-- TOOL_CALL_END ------------|                             |
-   |<-- RUN_FINISHED -------------|                             |
-   |                              |                             |
-   |   [クライアントがツール結果を|                             |
-   |    含めて新規リクエスト送信] |                             |
-   |                              |                             |
    |-- POST /ag-ui/run ---------->|                             |
-   |   (messages に TOOL ロール)  |-- LLM_CHAT 実行 ----------->|
-   |                              |   (ツール結果を含む)        |
+   |   (resume フィールド付き)    |-- ツール実行 -------------->|
+   |                              |<-- ツール結果 --------------|
+   |                              |-- LLM_CHAT 継続 ----------->|
+   |<-- TOOL_CALL_RESULT ---------|                             |
    |<-- TEXT_MESSAGE_* -----------|<-- LLM 応答 ----------------|
+   |<-- RUN_FINISHED -------------|   outcome: "success"        |
 ```
 
 ### ツール呼び出しイベントシーケンス
@@ -511,7 +577,31 @@ LLM ツール呼び出し HITL により、ユーザーは以下のことがで�
 }
 ```
 
-この時点で `requires_tool_execution` が true（HITL モード）の場合、ストリームは一時停止してユーザー承認を待ちます。
+3. **RUN_FINISHED（interrupt 付き）** - ワークフローが承認待ちで一時停止
+
+```json
+{
+  "type": "RUN_FINISHED",
+  "runId": "run-456",
+  "outcome": "interrupt",
+  "interrupt": {
+    "id": "int_xyz789",
+    "reason": "tool_approval_required",
+    "payload": {
+      "pendingToolCalls": [
+        {
+          "callId": "call_abc123",
+          "fnName": "COMMAND___run",
+          "fnArguments": "{\"command\":\"date\"}"
+        }
+      ],
+      "checkpointPosition": "/tasks/ChatTask",
+      "workflowName": "copilot-chat"
+    }
+  },
+  "timestamp": 1702345678002
+}
+```
 
 ### ツール名の形式
 
@@ -527,61 +617,106 @@ LLM ツール呼び出し HITL により、ユーザーは以下のことがで�
 **推奨:** ユーザーへの表示時は、可読性のため `___` を `/` に変換：
 - `COMMAND___run` → `COMMAND/run`
 
-### ツール呼び出し結果の送信
+---
+
+## AG-UI Interrupts (Resume)
+
+AG-UI Interrupts 仕様は、ツール承認を処理する標準化された方法を提供します。`RUN_FINISHED` が `outcome: "interrupt"` を持つ場合、`/ag-ui/run` の `resume` フィールドを使用して続行します。
+
+参照: [AG-UI Interrupts Draft](https://docs.ag-ui.com/drafts/interrupts)
+
+### ツール呼び出しの承認
+
+`resume` フィールドを含む新しい `/ag-ui/run` リクエストを送信します：
 
 ```http
-POST /ag-ui/message
+POST /ag-ui/run
 Content-Type: application/json
 
 {
-  "runId": "run-456",
-  "toolCallResults": [
-    {
-      "toolCallId": "call_abc123",
-      "result": {
-        "command": "date"
-      }
+  "threadId": "thread-123",
+  "messages": [...],
+  "context": [{ "type": "workflow_inline", "workflow": {...} }],
+  "resume": {
+    "interruptId": "int_xyz789",
+    "payload": {
+      "type": "approve"
     }
-  ]
+  }
 }
 ```
 
-**レスポンスイベント:**
+**ResumeInfo フィールド:**
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|------|------|------|
+| `interruptId` | string | Yes | `RUN_FINISHED.interrupt.id` からの interrupt ID |
+| `payload.type` | string | Yes | `"approve"` または `"reject"` |
+| `payload.toolResults` | array | No | オプションのクライアント側ツール結果（approve 時） |
+| `payload.reason` | string | No | オプションの拒否理由（reject 時） |
+
+**レスポンスイベント（承認時）:**
+
+サーバーが保留中のツールを実行し、LLM 会話を継続します：
 
 ```text
 event: TOOL_CALL_RESULT
-data: {"type":"TOOL_CALL_RESULT","toolCallId":"call_abc123","result":{"command":"date"},"timestamp":...}
+data: {"type":"TOOL_CALL_RESULT","toolCallId":"call_abc123","result":{"output":"Wed Dec 25 10:30:00 JST 2024"},"timestamp":...}
 
-event: TOOL_CALL_END
-data: {"type":"TOOL_CALL_END","toolCallId":"call_abc123","timestamp":...}
+event: TEXT_MESSAGE_START
+data: {"type":"TEXT_MESSAGE_START","messageId":"msg-2","role":"assistant","timestamp":...}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"msg-2","delta":"現在の日時は...","timestamp":...}
+
+event: TEXT_MESSAGE_END
+data: {"type":"TEXT_MESSAGE_END","messageId":"msg-2","timestamp":...}
 
 event: RUN_FINISHED
-data: {"type":"RUN_FINISHED","runId":"run-456","timestamp":...}
+data: {"type":"RUN_FINISHED","runId":"run-456","outcome":"success","timestamp":...}
 ```
 
-### 会話の継続
+### ツール呼び出しの拒否
 
-`RUN_FINISHED` を受信後、ツール結果を messages に含めて新しい `/ag-ui/run` リクエストを送信します：
+ツール呼び出しを拒否するには：
 
 ```json
 {
-  "context": [{ "type": "workflow_inline", "data": { ... } }],
-  "messages": [
-    { "role": "user", "content": "date コマンドを実行して" },
-    { "role": "assistant", "content": "" },
-    { "role": "tool", "content": "Tool: COMMAND/run\nArguments: {\"command\":\"date\"}\nResult: {\"command\":\"date\"}" }
-  ]
+  "threadId": "thread-123",
+  "messages": [...],
+  "context": [...],
+  "resume": {
+    "interruptId": "int_xyz789",
+    "payload": {
+      "type": "reject",
+      "reason": "ユーザーがこのコマンドの実行を拒否しました"
+    }
+  }
 }
 ```
 
-LLM はツール結果を処理して会話を続行します。
+LLM は拒否を受け取り、適切に応答します。
 
 ### クライアント実装例
 
 ```typescript
-// 保留中のツール呼び出しを追跡
+interface InterruptInfo {
+  id: string;
+  reason: string;
+  payload: {
+    pendingToolCalls: Array<{
+      callId: string;
+      fnName: string;
+      fnArguments: string;
+    }>;
+    checkpointPosition: string;
+    workflowName: string;
+  };
+}
+
+// 状態
+let pendingInterrupt: InterruptInfo | null = null;
 const toolCallsRef = useRef<Map<string, ToolCall>>(new Map());
-let pendingToolCalls: ToolCall[] = [];
 
 function handleEvent(event: AgUiEvent) {
   switch (event.type) {
@@ -608,34 +743,61 @@ function handleEvent(event: AgUiEvent) {
       break;
 
     case 'RUN_FINISHED':
-      // 承認が必要な保留中のツール呼び出しをチェック
-      pendingToolCalls = Array.from(toolCallsRef.current.values())
-        .filter(tc => tc.status === 'pending');
-
-      if (pendingToolCalls.length > 0) {
-        // 承認 UI を表示
-        showToolApprovalUI(pendingToolCalls);
+      if (event.outcome === 'interrupt' && event.interrupt) {
+        // resume 用に interrupt 情報を保存
+        pendingInterrupt = event.interrupt;
+        // 保留中のツール呼び出しで承認 UI を表示
+        showToolApprovalUI(event.interrupt.payload.pendingToolCalls);
+      } else {
+        // 通常の完了
+        pendingInterrupt = null;
       }
       break;
   }
 }
 
 // ツール呼び出しを承認
-async function approveToolCall(toolCallId: string, result: unknown) {
-  const response = await fetch(`${baseUrl}/ag-ui/message`, {
+async function approveToolCall() {
+  if (!pendingInterrupt) return;
+
+  const response = await fetch(`${baseUrl}/ag-ui/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      runId: currentRunId,
-      toolCallResults: [{ toolCallId, result }]
+      threadId: currentThreadId,
+      messages: conversationMessages,
+      context: [{ type: 'workflow_inline', workflow: CHAT_WORKFLOW }],
+      resume: {
+        interruptId: pendingInterrupt.id,
+        payload: { type: 'approve' }
+      }
     })
   });
 
-  // SSE レスポンスを処理し、フォローアップを送信
-  // ...
+  // SSE レスポンスを処理 - ツールはサーバー側で実行され
+  // LLM が自動的に継続
+  await processSSEStream(response);
+}
 
-  // RUN_FINISHED 後、ツール結果を含めて会話を継続
-  await sendFollowUpWithToolResult(toolCallId, result);
+// ツール呼び出しを拒否
+async function rejectToolCall(reason: string) {
+  if (!pendingInterrupt) return;
+
+  const response = await fetch(`${baseUrl}/ag-ui/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      threadId: currentThreadId,
+      messages: conversationMessages,
+      context: [{ type: 'workflow_inline', workflow: CHAT_WORKFLOW }],
+      resume: {
+        interruptId: pendingInterrupt.id,
+        payload: { type: 'reject', reason }
+      }
+    })
+  });
+
+  await processSSEStream(response);
 }
 
 // 表示用にツール名をフォーマット
@@ -644,26 +806,13 @@ function formatToolName(name: string): string {
 }
 ```
 
-### ツール呼び出しの拒否
+### レガシーアプローチ（非推奨）
 
-ツール呼び出しを拒否するには、拒否を示す結果を送信します：
-
-```json
-{
-  "runId": "run-456",
-  "toolCallResults": [
-    {
-      "toolCallId": "call_abc123",
-      "result": {
-        "rejected": true,
-        "reason": "ユーザーがこのコマンドの実行を拒否しました"
-      }
-    }
-  ]
-}
-```
-
-LLM はこの拒否を受け取り、フォローアップリクエストで適切に応答できます。
+`/ag-ui/message` エンドポイントは後方互換性のために引き続きサポートされますが、LLM ツール呼び出し HITL では非推奨です。`/ag-ui/run` の `resume` を使用する新しい AG-UI Interrupts アプローチが推奨されます：
+- AG-UI 仕様に準拠
+- サーバー側でツールを自動実行
+- 単一のリクエストで LLM 会話を継続
+- クライアント実装を簡素化
 
 ---
 
