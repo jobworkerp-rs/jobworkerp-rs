@@ -433,12 +433,12 @@ async fn test_hitl_session_state_transitions() {
     assert!(session.hitl_waiting_info.is_none());
 
     // 2. Transition to Paused with HITL info (simulating wait directive)
-    let hitl_info = HitlWaitingInfo {
-        tool_call_id: format!("wait_{}", run_id),
-        checkpoint_position: "/do/0".to_string(),
-        workflow_name: "test_workflow".to_string(),
-        pending_tool_calls: vec![],
-    };
+    let hitl_info = HitlWaitingInfo::new(
+        format!("wait_{}", run_id),
+        "/do/0".to_string(),
+        "test_workflow".to_string(),
+        vec![],
+    );
     let updated = session_manager
         .set_paused_with_hitl_info(&session.session_id, hitl_info.clone())
         .await;
@@ -499,12 +499,12 @@ async fn test_hitl_session_lookup_by_run_id() {
         .await;
 
     // Set to paused with HITL info
-    let hitl_info = HitlWaitingInfo {
-        tool_call_id: format!("wait_{}", run_id),
-        checkpoint_position: "/do/1/do/0".to_string(),
-        workflow_name: "nested_workflow".to_string(),
-        pending_tool_calls: vec![],
-    };
+    let hitl_info = HitlWaitingInfo::new(
+        format!("wait_{}", run_id),
+        "/do/1/do/0".to_string(),
+        "nested_workflow".to_string(),
+        vec![],
+    );
     session_manager
         .set_paused_with_hitl_info(&session.session_id, hitl_info)
         .await;
@@ -677,12 +677,12 @@ async fn test_multiple_hitl_waits_in_workflow() {
         .await;
 
     // First HITL wait
-    let hitl_info_1 = HitlWaitingInfo {
-        tool_call_id: format!("wait_1_{}", run_id),
-        checkpoint_position: "/do/0".to_string(),
-        workflow_name: "multi_wait_workflow".to_string(),
-        pending_tool_calls: vec![],
-    };
+    let hitl_info_1 = HitlWaitingInfo::new(
+        format!("wait_1_{}", run_id),
+        "/do/0".to_string(),
+        "multi_wait_workflow".to_string(),
+        vec![],
+    );
     session_manager
         .set_paused_with_hitl_info(&session.session_id, hitl_info_1)
         .await;
@@ -720,12 +720,12 @@ async fn test_multiple_hitl_waits_in_workflow() {
         .await;
 
     // Second HITL wait
-    let hitl_info_2 = HitlWaitingInfo {
-        tool_call_id: format!("wait_2_{}", run_id),
-        checkpoint_position: "/do/1".to_string(),
-        workflow_name: "multi_wait_workflow".to_string(),
-        pending_tool_calls: vec![],
-    };
+    let hitl_info_2 = HitlWaitingInfo::new(
+        format!("wait_2_{}", run_id),
+        "/do/1".to_string(),
+        "multi_wait_workflow".to_string(),
+        vec![],
+    );
     session_manager
         .set_paused_with_hitl_info(&session.session_id, hitl_info_2.clone())
         .await;
@@ -903,12 +903,12 @@ async fn test_hitl_tool_call_id_validation() {
 
     // Set HITL info with specific tool_call_id
     let expected_tool_call_id = format!("wait_{}", run_id);
-    let hitl_info = HitlWaitingInfo {
-        tool_call_id: expected_tool_call_id.clone(),
-        checkpoint_position: "/do/0".to_string(),
-        workflow_name: "test_workflow".to_string(),
-        pending_tool_calls: vec![],
-    };
+    let hitl_info = HitlWaitingInfo::new(
+        expected_tool_call_id.clone(),
+        "/do/0".to_string(),
+        "test_workflow".to_string(),
+        vec![],
+    );
     session_manager
         .set_paused_with_hitl_info(&session.session_id, hitl_info)
         .await;
@@ -1233,12 +1233,12 @@ async fn test_hitl_atomic_resume_from_paused() {
         .await;
 
     // Set to Paused with HITL info
-    let hitl_info = HitlWaitingInfo {
-        tool_call_id: format!("wait_{}", run_id),
-        checkpoint_position: "/do/0".to_string(),
-        workflow_name: "atomic_test_workflow".to_string(),
-        pending_tool_calls: vec![],
-    };
+    let hitl_info = HitlWaitingInfo::new(
+        format!("wait_{}", run_id),
+        "/do/0".to_string(),
+        "atomic_test_workflow".to_string(),
+        vec![],
+    );
     session_manager
         .set_paused_with_hitl_info(&session.session_id, hitl_info)
         .await;

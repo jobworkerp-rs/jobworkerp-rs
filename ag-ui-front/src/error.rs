@@ -74,6 +74,17 @@ pub enum AgUiError {
     #[error("HITL waiting info not found for session: {session_id}")]
     HitlInfoNotFound { session_id: String },
 
+    /// Invalid interrupt ID (AG-UI Interrupts)
+    #[error("Invalid interrupt ID '{interrupt_id}': {message}")]
+    InvalidInterruptId {
+        interrupt_id: String,
+        message: String,
+    },
+
+    /// Interrupt expired (AG-UI Interrupts)
+    #[error("Interrupt expired: {interrupt_id}")]
+    InterruptExpired { interrupt_id: String },
+
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(#[from] anyhow::Error),
@@ -119,6 +130,9 @@ impl AgUiError {
             AgUiError::InvalidToolCallId { .. } => "INVALID_TOOL_CALL_ID",
             AgUiError::CheckpointNotFound { .. } => "CHECKPOINT_NOT_FOUND",
             AgUiError::HitlInfoNotFound { .. } => "HITL_INFO_NOT_FOUND",
+            // AG-UI Interrupts error codes
+            AgUiError::InvalidInterruptId { .. } => "INVALID_INTERRUPT_ID",
+            AgUiError::InterruptExpired { .. } => "INTERRUPT_EXPIRED",
             AgUiError::Internal(_) => "INTERNAL_ERROR",
             AgUiError::Serialization(_) => "SERIALIZATION_ERROR",
         }

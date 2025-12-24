@@ -1,9 +1,56 @@
 //! Input types for AG-UI protocol.
 //!
 //! References AG-UI Rust SDK (ag-ui-core) run_agent_input.rs
+//!
+//! AG-UI Interrupts (Draft) support:
+//! - ResumeInfo for resuming interrupted runs
 
 use crate::types::{context::Context, message::Message, tool::Tool};
 use serde::{Deserialize, Serialize};
+
+// ============================================================================
+// AG-UI Interrupts (Draft) Resume Types
+// ============================================================================
+
+/// Resume information for continuing an interrupted run (AG-UI Interrupts Draft)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeInfo {
+    /// ID of the interrupt to resume from
+    pub interrupt_id: String,
+    /// Payload containing the resume action
+    pub payload: ResumePayload,
+}
+
+/// Resume payload for interrupted runs (AG-UI Interrupts Draft)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResumePayload {
+    /// Approve the pending tool calls and execute them
+    #[serde(rename_all = "camelCase")]
+    Approve {
+        /// Optional tool results (for client-side executed tools)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_results: Option<Vec<ToolCallResult>>,
+    },
+    /// Reject the pending tool calls
+    #[serde(rename_all = "camelCase")]
+    Reject {
+        /// Optional reason for rejection
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+}
+
+/// Result of a tool call (for client-side executed tools)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCallResult {
+    /// Tool call ID
+    pub call_id: String,
+    /// Result value
+    pub result: serde_json::Value,
+}
 
 /// Input for running an agent/workflow.
 /// Based on AG-UI RunAgentInput with jobworkerp-rs extensions.
@@ -36,6 +83,10 @@ where
     /// Forwarded properties (jobworkerp-rs specific)
     #[serde(default)]
     pub forwarded_props: F,
+
+    /// Resume information for continuing an interrupted run (AG-UI Interrupts Draft)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume: Option<ResumeInfo>,
 }
 
 impl<F> Default for RunAgentInput<F>
@@ -50,6 +101,7 @@ where
             tools: Vec::new(),
             context: Vec::new(),
             forwarded_props: F::default(),
+            resume: None,
         }
     }
 }
@@ -114,6 +166,22 @@ where
             } => Some((execution_id.as_str(), position.as_str())),
             _ => None,
         })
+    }
+
+    /// Check if this is a resume request
+    pub fn is_resume(&self) -> bool {
+        self.resume.is_some()
+    }
+
+    /// Get the resume info if present
+    pub fn get_resume(&self) -> Option<&ResumeInfo> {
+        self.resume.as_ref()
+    }
+
+    /// Set resume info for continuing an interrupted run
+    pub fn resume(mut self, resume: ResumeInfo) -> Self {
+        self.resume = Some(resume);
+        self
     }
 }
 
@@ -197,5 +265,63 @@ mod tests {
         let (exec_id, position) = input.get_checkpoint_resume().unwrap();
         assert_eq!(exec_id, "exec-123");
         assert_eq!(position, "/tasks/task1");
+    }
+
+    #[test]
+    fn test_resume_info_approve() {
+        let resume = ResumeInfo {
+            interrupt_id: "int_123".to_string(),
+            payload: ResumePayload::Approve { tool_results: None },
+        };
+
+        let input: RunAgentInput = RunAgentInput::with_workflow("my_workflow").resume(resume);
+
+        assert!(input.is_resume());
+        let resume = input.get_resume().unwrap();
+        assert_eq!(resume.interrupt_id, "int_123");
+        assert!(matches!(resume.payload, ResumePayload::Approve { .. }));
+
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["resume"]["interruptId"], "int_123");
+        assert_eq!(json["resume"]["payload"]["type"], "approve");
+    }
+
+    #[test]
+    fn test_resume_info_reject() {
+        let resume = ResumeInfo {
+            interrupt_id: "int_456".to_string(),
+            payload: ResumePayload::Reject {
+                reason: Some("User cancelled".to_string()),
+            },
+        };
+
+        let json = serde_json::to_value(&resume).unwrap();
+        assert_eq!(json["interruptId"], "int_456");
+        assert_eq!(json["payload"]["type"], "reject");
+        assert_eq!(json["payload"]["reason"], "User cancelled");
+    }
+
+    #[test]
+    fn test_resume_info_deserialization() {
+        let json = r#"{
+            "interruptId": "int_789",
+            "payload": {
+                "type": "approve",
+                "toolResults": [
+                    { "callId": "call_1", "result": {"data": "test"} }
+                ]
+            }
+        }"#;
+
+        let resume: ResumeInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(resume.interrupt_id, "int_789");
+        match resume.payload {
+            ResumePayload::Approve { tool_results } => {
+                let results = tool_results.unwrap();
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].call_id, "call_1");
+            }
+            _ => panic!("Expected Approve payload"),
+        }
     }
 }

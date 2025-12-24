@@ -761,12 +761,12 @@ where
                                 yield (args_event_id, tool_call_args);
 
                                 // Save HITL info
-                                let hitl_info = HitlWaitingInfo {
+                                let hitl_info = HitlWaitingInfo::new(
                                     tool_call_id,
-                                    checkpoint_position: workflow_result.position.clone(),
-                                    workflow_name: workflow_name.clone(),
-                                    pending_tool_calls: vec![], // Traditional HITL (HUMAN_INPUT)
-                                };
+                                    workflow_result.position.clone(),
+                                    workflow_name.clone(),
+                                    vec![], // Traditional HITL (HUMAN_INPUT)
+                                );
                                 if !session_manager
                                     .set_paused_with_hitl_info(&session_id, hitl_info)
                                     .await

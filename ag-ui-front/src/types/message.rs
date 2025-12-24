@@ -105,6 +105,26 @@ pub enum MessageContent {
     Parts(Vec<ContentPart>),
 }
 
+impl MessageContent {
+    /// Extract text content from the message.
+    /// For Text variant, returns the text directly.
+    /// For Parts variant, concatenates all text parts.
+    pub fn extract_text(&self) -> String {
+        match self {
+            Self::Text(t) => t.clone(),
+            Self::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| match part {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    ContentPart::ToolResult { content, .. } => Some(content.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+}
+
 impl From<String> for MessageContent {
     fn from(s: String) -> Self {
         Self::Text(s)

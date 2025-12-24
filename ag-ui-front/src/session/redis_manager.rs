@@ -47,6 +47,7 @@ impl From<RedisPendingToolCallInfo> for PendingToolCallInfo {
 /// Serializable HITL waiting info for Redis storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RedisHitlWaitingInfo {
+    interrupt_id: String,
     tool_call_id: String,
     checkpoint_position: String,
     workflow_name: String,
@@ -57,6 +58,7 @@ struct RedisHitlWaitingInfo {
 impl From<&HitlWaitingInfo> for RedisHitlWaitingInfo {
     fn from(info: &HitlWaitingInfo) -> Self {
         Self {
+            interrupt_id: info.interrupt_id.clone(),
             tool_call_id: info.tool_call_id.clone(),
             checkpoint_position: info.checkpoint_position.clone(),
             workflow_name: info.workflow_name.clone(),
@@ -72,6 +74,7 @@ impl From<&HitlWaitingInfo> for RedisHitlWaitingInfo {
 impl From<RedisHitlWaitingInfo> for HitlWaitingInfo {
     fn from(data: RedisHitlWaitingInfo) -> Self {
         Self {
+            interrupt_id: data.interrupt_id,
             tool_call_id: data.tool_call_id,
             checkpoint_position: data.checkpoint_position,
             workflow_name: data.workflow_name,
@@ -288,6 +291,33 @@ impl SessionManager for RedisSessionManager {
         let session_id = session_id?;
 
         self.get_session(&session_id).await
+    }
+
+    async fn get_session_by_interrupt_id(&self, interrupt_id: &str) -> Option<Session> {
+        // For Redis, we need to scan all sessions to find one with matching interrupt_id.
+        // This is less efficient than in-memory, but interrupt lookups are infrequent.
+        // A production optimization would be to add a separate interrupt_id -> session_id index.
+        let mut conn = self.pool.get().await.ok()?;
+        let pattern = format!("{}*", SESSION_KEY_PREFIX);
+
+        let keys: Vec<String> = deadpool_redis::redis::cmd("KEYS")
+            .arg(&pattern)
+            .query_async(&mut *conn)
+            .await
+            .ok()?;
+
+        for key in keys {
+            if let Ok(json) = conn.get::<_, String>(&key).await {
+                if let Ok(data) = serde_json::from_str::<RedisSessionData>(&json) {
+                    if let Some(hitl_info) = &data.hitl_waiting_info {
+                        if hitl_info.interrupt_id == interrupt_id {
+                            return Some(data.into());
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     async fn update_last_event_id(&self, session_id: &str, event_id: u64) -> bool {
