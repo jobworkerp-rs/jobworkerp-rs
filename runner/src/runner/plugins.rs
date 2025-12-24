@@ -231,7 +231,7 @@ pub trait PluginRunner: Send + Sync {
         // default implementation (return empty)
         Err(anyhow::anyhow!("not implemented"))
     }
-    fn cancel(&mut self) -> bool;
+    fn cancel(&self) -> bool;
     fn is_canceled(&self) -> bool;
     fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
@@ -291,7 +291,7 @@ pub trait MultiMethodPluginRunner: Send + Sync {
         // default implementation (return empty)
         Err(anyhow::anyhow!("not implemented"))
     }
-    fn cancel(&mut self) -> bool;
+    fn cancel(&self) -> bool;
     fn is_canceled(&self) -> bool;
     fn runner_settings_proto(&self) -> String;
 

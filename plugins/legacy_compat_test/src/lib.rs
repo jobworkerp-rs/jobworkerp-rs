@@ -117,7 +117,7 @@ impl PluginRunner for LegacyCompatPlugin {
         ))
     }
 
-    fn cancel(&mut self) -> bool {
+    fn cancel(&self) -> bool {
         tracing::warn!("LegacyCompatPlugin: cancel not implemented");
         false
     }
