@@ -1,7 +1,8 @@
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { runHttpRequest, parseSSEStream } from '@ag-ui/client';
 import { v4 as uuidv4 } from 'uuid';
+import { Subscription } from 'rxjs';
 import {
     ToolCall,
     ToolCallStatus,
@@ -92,6 +93,22 @@ export function useAgUiChat() {
 
     // Ref to track tool calls during streaming (accumulated arguments)
     const toolCallsRef = useRef<Map<string, ToolCall>>(new Map());
+
+    // Refs for subscription cleanup to prevent memory leaks
+    const sendMessageSubscriptionRef = useRef<Subscription | null>(null);
+    const approveSubscriptionRef = useRef<Subscription | null>(null);
+    const rejectSubscriptionRef = useRef<Subscription | null>(null);
+    const abortControllerRef = useRef<AbortController | null>(null);
+
+    // Cleanup subscriptions on unmount
+    useEffect(() => {
+        return () => {
+            sendMessageSubscriptionRef.current?.unsubscribe();
+            approveSubscriptionRef.current?.unsubscribe();
+            rejectSubscriptionRef.current?.unsubscribe();
+            abortControllerRef.current?.abort();
+        };
+    }, []);
 
     // Options for sendMessage
     interface SendMessageOptions {
@@ -198,13 +215,21 @@ export function useAgUiChat() {
                 body: JSON.stringify(input)
             };
 
-            const httpStream$ = runHttpRequest(url, requestInit);
+            // Cleanup previous subscription before creating new one
+            sendMessageSubscriptionRef.current?.unsubscribe();
+            abortControllerRef.current?.abort();
+            abortControllerRef.current = new AbortController();
+
+            const httpStream$ = runHttpRequest(url, {
+                ...requestInit,
+                signal: abortControllerRef.current.signal
+            });
 
             // Parse SSE stream
             // Note: parseSSEStream returns Observable<any> where any is the JSON parsed event
             const eventStream$ = parseSSEStream(httpStream$);
 
-            eventStream$.subscribe({
+            sendMessageSubscriptionRef.current = eventStream$.subscribe({
                 // SSE event type is dynamically typed from server
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 next: (event: any) => {
@@ -305,12 +330,23 @@ export function useAgUiChat() {
 
                             // Convert interrupt payload to ToolCall format
                             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                            const interruptToolCalls: ToolCall[] = (event.interrupt.payload?.pendingToolCalls || []).map((tc: any) => ({
-                                id: tc.callId,
-                                name: tc.fnName,
-                                argumentsRaw: tc.fnArguments,
-                                status: 'pending' as ToolCallStatus,
-                            }));
+                            const interruptToolCalls: ToolCall[] = (event.interrupt.payload?.pendingToolCalls || []).map((tc: any) => {
+                                let parsedArgs: Record<string, unknown> = {};
+                                try {
+                                    if (tc.fnArguments) {
+                                        parsedArgs = JSON.parse(tc.fnArguments);
+                                    }
+                                } catch {
+                                    // fnArguments is not valid JSON, keep empty object
+                                }
+                                return {
+                                    id: tc.callId,
+                                    name: tc.fnName,
+                                    arguments: parsedArgs,
+                                    argumentsRaw: tc.fnArguments || '',
+                                    status: 'pending' as ToolCallStatus,
+                                };
+                            });
 
                             if (interruptToolCalls.length > 0) {
                                 setPendingToolCalls(interruptToolCalls);
@@ -343,9 +379,11 @@ export function useAgUiChat() {
                     setError(errMessage);
                     setIsLoading(false);
                     toolCallsRef.current.clear();
+                    sendMessageSubscriptionRef.current = null;
                 },
                 complete: () => {
                     console.log("Stream completed");
+                    sendMessageSubscriptionRef.current = null;
                     // Fallback: Check for pending tool calls if RUN_FINISHED was not received
                     // This handles cases where workflow pauses for HITL without sending RUN_FINISHED
                     const pendingCalls = Array.from(toolCallsRef.current.values())
@@ -437,6 +475,10 @@ export function useAgUiChat() {
 
             console.log("Sending tool call approval via resume:", requestBody);
 
+            // Cleanup previous subscription before creating new one
+            approveSubscriptionRef.current?.unsubscribe();
+            const approveAbortController = new AbortController();
+
             // Handle the SSE response stream
             const httpStream$ = runHttpRequest(url, {
                 method: 'POST',
@@ -444,13 +486,14 @@ export function useAgUiChat() {
                     'Content-Type': 'application/json',
                     'Accept': 'text/event-stream'
                 },
-                body: JSON.stringify(requestBody)
+                body: JSON.stringify(requestBody),
+                signal: approveAbortController.signal
             });
 
             const eventStream$ = parseSSEStream(httpStream$);
 
             // Process the resumed workflow stream
-            eventStream$.subscribe({
+            approveSubscriptionRef.current = eventStream$.subscribe({
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 next: (event: any) => {
                     console.log("Resume response event:", event);
@@ -500,12 +543,23 @@ export function useAgUiChat() {
                             console.log(`Another interrupt: ${event.interrupt.id}`);
                             setCurrentInterruptId(event.interrupt.id);
                             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                            const interruptToolCalls: ToolCall[] = (event.interrupt.payload?.pendingToolCalls || []).map((tc: any) => ({
-                                id: tc.callId,
-                                name: tc.fnName,
-                                argumentsRaw: tc.fnArguments,
-                                status: 'pending' as ToolCallStatus,
-                            }));
+                            const interruptToolCalls: ToolCall[] = (event.interrupt.payload?.pendingToolCalls || []).map((tc: any) => {
+                                let parsedArgs: Record<string, unknown> = {};
+                                try {
+                                    if (tc.fnArguments) {
+                                        parsedArgs = JSON.parse(tc.fnArguments);
+                                    }
+                                } catch {
+                                    // fnArguments is not valid JSON, keep empty object
+                                }
+                                return {
+                                    id: tc.callId,
+                                    name: tc.fnName,
+                                    arguments: parsedArgs,
+                                    argumentsRaw: tc.fnArguments || '',
+                                    status: 'pending' as ToolCallStatus,
+                                };
+                            });
                             if (interruptToolCalls.length > 0) {
                                 setPendingToolCalls(interruptToolCalls);
                                 setIsWaitingForApproval(true);
@@ -532,9 +586,11 @@ export function useAgUiChat() {
                     const errMessage = err instanceof Error ? err.message : 'Resume failed';
                     setError(errMessage);
                     setIsLoading(false);
+                    approveSubscriptionRef.current = null;
                 },
                 complete: () => {
                     console.log("Resume stream completed");
+                    approveSubscriptionRef.current = null;
                 }
             });
 
@@ -543,6 +599,7 @@ export function useAgUiChat() {
             const errMessage = err instanceof Error ? err.message : 'Failed to approve tool call';
             setError(errMessage);
             setIsLoading(false);
+            approveSubscriptionRef.current = null;
         }
     }, [currentInterruptId, currentRunId, messages]);
 
@@ -597,18 +654,23 @@ export function useAgUiChat() {
 
             console.log("Sending tool call rejection via resume:", requestBody);
 
+            // Cleanup previous subscription before creating new one
+            rejectSubscriptionRef.current?.unsubscribe();
+            const rejectAbortController = new AbortController();
+
             const httpStream$ = runHttpRequest(url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'text/event-stream'
                 },
-                body: JSON.stringify(requestBody)
+                body: JSON.stringify(requestBody),
+                signal: rejectAbortController.signal
             });
 
             const eventStream$ = parseSSEStream(httpStream$);
 
-            eventStream$.subscribe({
+            rejectSubscriptionRef.current = eventStream$.subscribe({
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 next: (event: any) => {
                     console.log("Reject response event:", event);
@@ -660,9 +722,11 @@ export function useAgUiChat() {
                     const errMessage = err instanceof Error ? err.message : 'Rejection failed';
                     setError(errMessage);
                     setIsLoading(false);
+                    rejectSubscriptionRef.current = null;
                 },
                 complete: () => {
                     console.log("Reject stream completed");
+                    rejectSubscriptionRef.current = null;
                 }
             });
 
@@ -671,6 +735,7 @@ export function useAgUiChat() {
             const errMessage = err instanceof Error ? err.message : 'Failed to reject tool call';
             setError(errMessage);
             setIsLoading(false);
+            rejectSubscriptionRef.current = null;
         }
     }, [currentInterruptId, currentRunId]);
 
