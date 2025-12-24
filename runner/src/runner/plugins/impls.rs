@@ -425,7 +425,7 @@ impl CancelMonitoring for PluginRunnerWrapperImpl {
 
     /// Signals cancellation token for PluginRunnerWrapperImpl
     async fn request_cancellation(&mut self) -> Result<()> {
-        // Signal cancellation token
+        // 1. Signal cancellation token
         if let Some(helper) = &self.cancel_helper {
             let token = helper.get_cancellation_token().await;
             if !token.is_cancelled() {
@@ -436,7 +436,30 @@ impl CancelMonitoring for PluginRunnerWrapperImpl {
             tracing::warn!("PluginRunnerWrapperImpl: no cancellation helper available");
         }
 
-        // No additional resource cleanup needed
+        // 2. Call plugin's cancel() for plugin-specific cleanup
+        // Legacy plugins use &self, MultiMethod plugins use &mut self
+        let cancelled = match self.variant_type {
+            PluginVariantType::Legacy => {
+                let guard = self.variant.read().await;
+                if let super::PluginRunnerVariant::Legacy(plugin) = &*guard {
+                    plugin.cancel()
+                } else {
+                    false
+                }
+            }
+            PluginVariantType::MultiMethod => {
+                let mut guard = self.variant.write().await;
+                if let super::PluginRunnerVariant::MultiMethod(plugin) = &mut *guard {
+                    plugin.cancel()
+                } else {
+                    false
+                }
+            }
+        };
+        if cancelled {
+            tracing::info!("PluginRunnerWrapperImpl: plugin cancelled successfully");
+        }
+
         Ok(())
     }
 
