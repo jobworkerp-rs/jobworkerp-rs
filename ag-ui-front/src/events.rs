@@ -15,4 +15,4 @@ pub use llm::{
     tool_calls_to_ag_ui_events, ExtractedToolCall, ExtractedToolCalls, LlmStreamingResult,
 };
 pub use state_diff::{calculate_state_diff, create_state_delta_event, StateTracker};
-pub use types::AgUiEvent;
+pub use types::{AgUiEvent, InterruptInfo, InterruptPayload, PendingToolCall, RunOutcome};

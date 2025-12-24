@@ -37,6 +37,8 @@ pub struct PendingToolCallInfo {
 /// Information about HITL waiting state
 #[derive(Debug, Clone)]
 pub struct HitlWaitingInfo {
+    /// Unique interrupt ID for AG-UI Interrupts protocol
+    pub interrupt_id: String,
     /// Primary tool call ID for the waiting state (format: wait_{run_id} or call_id from LLM)
     pub tool_call_id: String,
     /// Checkpoint position (JSON Pointer format)
@@ -46,6 +48,29 @@ pub struct HitlWaitingInfo {
     /// List of pending tool calls that need client approval
     /// Empty for traditional HITL (HUMAN_INPUT), populated for LLM tool calls
     pub pending_tool_calls: Vec<PendingToolCallInfo>,
+}
+
+impl HitlWaitingInfo {
+    /// Generate a new unique interrupt ID
+    pub fn new_interrupt_id() -> String {
+        format!("int_{}", uuid::Uuid::new_v4())
+    }
+
+    /// Create a new HitlWaitingInfo with auto-generated interrupt_id
+    pub fn new(
+        tool_call_id: String,
+        checkpoint_position: String,
+        workflow_name: String,
+        pending_tool_calls: Vec<PendingToolCallInfo>,
+    ) -> Self {
+        Self {
+            interrupt_id: Self::new_interrupt_id(),
+            tool_call_id,
+            checkpoint_position,
+            workflow_name,
+            pending_tool_calls,
+        }
+    }
 }
 
 /// Session information
@@ -93,6 +118,9 @@ pub trait SessionManager: Send + Sync {
 
     /// Get a session by run ID
     async fn get_session_by_run_id(&self, run_id: &RunId) -> Option<Session>;
+
+    /// Get a session by interrupt ID (for AG-UI Interrupts resume flow)
+    async fn get_session_by_interrupt_id(&self, interrupt_id: &str) -> Option<Session>;
 
     /// Update the last event ID for a session
     async fn update_last_event_id(&self, session_id: &str, event_id: u64) -> bool;
@@ -270,6 +298,18 @@ impl SessionManager for InMemorySessionManager {
         drop(index);
 
         self.get_session(&session_id).await
+    }
+
+    async fn get_session_by_interrupt_id(&self, interrupt_id: &str) -> Option<Session> {
+        let sessions = self.inner.sessions.read().await;
+        for session in sessions.values() {
+            if let Some(hitl_info) = &session.hitl_waiting_info {
+                if hitl_info.interrupt_id == interrupt_id && !self.inner.is_expired(session) {
+                    return Some(session.clone());
+                }
+            }
+        }
+        None
     }
 
     async fn update_last_event_id(&self, session_id: &str, event_id: u64) -> bool {
@@ -484,5 +524,68 @@ mod tests {
             .await;
         let s = manager.get_session(&session.session_id).await.unwrap();
         assert_eq!(s.state, SessionState::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_hitl_waiting_info_with_interrupt_id() {
+        let manager = InMemorySessionManager::new(3600);
+        let session = manager
+            .create_session(RunId::new("run_1"), ThreadId::new("thread_1"))
+            .await;
+
+        let hitl_info = HitlWaitingInfo::new(
+            "call_123".to_string(),
+            "/tasks/llm_chat".to_string(),
+            "test_workflow".to_string(),
+            vec![PendingToolCallInfo {
+                call_id: "call_123".to_string(),
+                fn_name: "COMMAND___run".to_string(),
+                fn_arguments: r#"{"command":"date"}"#.to_string(),
+            }],
+        );
+
+        let interrupt_id = hitl_info.interrupt_id.clone();
+        assert!(interrupt_id.starts_with("int_"));
+
+        // Set paused with HITL info
+        let result = manager
+            .set_paused_with_hitl_info(&session.session_id, hitl_info)
+            .await;
+        assert!(result);
+
+        // Verify session is paused
+        let s = manager.get_session(&session.session_id).await.unwrap();
+        assert_eq!(s.state, SessionState::Paused);
+        assert!(s.hitl_waiting_info.is_some());
+        assert_eq!(
+            s.hitl_waiting_info.as_ref().unwrap().interrupt_id,
+            interrupt_id
+        );
+
+        // Get session by interrupt_id
+        let by_interrupt = manager.get_session_by_interrupt_id(&interrupt_id).await;
+        assert!(by_interrupt.is_some());
+        assert_eq!(by_interrupt.unwrap().session_id, session.session_id);
+
+        // Resume from paused
+        let resumed = manager
+            .resume_from_paused(&session.session_id, SessionState::Active)
+            .await;
+        assert!(resumed);
+
+        let s = manager.get_session(&session.session_id).await.unwrap();
+        assert_eq!(s.state, SessionState::Active);
+        assert!(s.hitl_waiting_info.is_none());
+
+        // Can no longer find by interrupt_id
+        let by_interrupt = manager.get_session_by_interrupt_id(&interrupt_id).await;
+        assert!(by_interrupt.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_session_by_interrupt_id_not_found() {
+        let manager = InMemorySessionManager::new(3600);
+        let session = manager.get_session_by_interrupt_id("int_nonexistent").await;
+        assert!(session.is_none());
     }
 }
