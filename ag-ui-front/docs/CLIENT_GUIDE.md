@@ -10,8 +10,9 @@ This document is a guide for client implementers using the AG-UI Front HTTP API.
 4. [SSE Events](#sse-events)
 5. [Human-in-the-Loop (HITL)](#human-in-the-loop-hitl)
 6. [LLM Tool Calling HITL](#llm-tool-calling-hitl)
-7. [Error Handling](#error-handling)
-8. [Implementation Examples](#implementation-examples)
+7. [AG-UI Interrupts (Resume)](#ag-ui-interrupts-resume)
+8. [Error Handling](#error-handling)
+9. [Implementation Examples](#implementation-examples)
 
 ---
 
@@ -122,6 +123,7 @@ Authorization: Bearer <token>
 | `tools` | Tool[] | No | Client-defined tools (for HITL) |
 | `context` | Context[] | Yes | Context (including workflow name) |
 | `forwardedProps` | object | No | jobworkerp-rs specific properties |
+| `resume` | ResumeInfo | No | Resume info for interrupted runs ([AG-UI Interrupts](#ag-ui-interrupts-resume)) |
 
 **Context Types:**
 
@@ -279,9 +281,46 @@ id: 1
   "type": "RUN_FINISHED",
   "runId": "run-456",
   "timestamp": 1702345679000,
-  "result": { "output": "completed" }
+  "result": { "output": "completed" },
+  "outcome": "success"
 }
 ```
+
+**RUN_FINISHED with Interrupt (AG-UI Interrupts):**
+
+When a workflow requires user approval (e.g., LLM tool calling with HITL), `RUN_FINISHED` includes interrupt information:
+
+```json
+{
+  "type": "RUN_FINISHED",
+  "runId": "run-456",
+  "timestamp": 1702345679000,
+  "outcome": "interrupt",
+  "interrupt": {
+    "id": "int_abc123",
+    "reason": "tool_approval_required",
+    "payload": {
+      "pendingToolCalls": [
+        {
+          "callId": "call_xyz",
+          "fnName": "COMMAND___run",
+          "fnArguments": "{\"command\":\"date\"}"
+        }
+      ],
+      "checkpointPosition": "/tasks/ChatTask",
+      "workflowName": "copilot-chat"
+    }
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `outcome` | string | `"success"` or `"interrupt"` |
+| `interrupt` | object | Present when `outcome` is `"interrupt"` |
+| `interrupt.id` | string | Unique interrupt ID for resuming |
+| `interrupt.reason` | string | Reason for interrupt (e.g., `"tool_approval_required"`) |
+| `interrupt.payload` | object | Context-specific payload |
 
 **RUN_ERROR:**
 ```json
@@ -423,7 +462,32 @@ When using the LLM_CHAT runner with `isAutoCalling: false`, the LLM can request 
 LLM Tool Calling HITL allows users to:
 - Review tool calls requested by the LLM before execution
 - Approve, modify, or reject tool call arguments
-- Provide tool execution results back to the LLM
+- Server-side tool execution with results passed back to LLM automatically
+
+### Why AG-UI Interrupts Instead of Standard AG-UI Tools?
+
+The standard [AG-UI Tools specification](https://docs.ag-ui.com/concepts/tools) assumes that tools are defined and executed on the **client side**. However, jobworkerp-rs has a different architecture:
+
+| Aspect | Standard AG-UI Tools | jobworkerp-rs |
+|--------|---------------------|---------------|
+| Tool Definition | Client defines tools and sends to server | Server defines tools (Runners: COMMAND, HTTP_REQUEST, etc.) |
+| Tool Execution | Client executes tools locally | Server executes tools via job workers |
+| Tool Discovery | Client knows available tools | Client discovers tools from server's function sets |
+| Result Handling | Client sends results back to server | Server handles results internally and continues LLM |
+
+**jobworkerp-rs specific characteristics:**
+
+1. **Server-side Tool Registry**: Tools are registered as "Runners" (COMMAND, HTTP_REQUEST, PYTHON_COMMAND, etc.) or loaded from plugins on the server
+2. **Function Sets**: Tools are organized into function sets (e.g., `command-functions`) configured on the server
+3. **Job Worker Execution**: Tool execution is handled by jobworkerp's distributed job worker system
+4. **Unified Execution**: Both tool execution and LLM continuation happen server-side in a single workflow
+
+Because of this architecture, we use [AG-UI Interrupts](https://docs.ag-ui.com/drafts/interrupts) instead of standard AG-UI Tools:
+
+- **Interrupt**: When LLM requests a tool call, the workflow pauses and returns `RUN_FINISHED` with `outcome: "interrupt"`
+- **Resume**: Client approves/rejects via `resume` field in `/ag-ui/run`, and the server executes tools and continues the LLM conversation
+
+This approach provides Human-in-the-Loop (HITL) control while keeping tool execution on the server where the tools are defined and have access to system resources.
 
 ### Enabling LLM Tool Calling HITL
 
@@ -433,31 +497,38 @@ Set `isAutoCalling: false` in the workflow's `functionOptions`:
 {
   "context": [{
     "type": "workflow_inline",
-    "data": {
-      "workflow": {
-        "do": [{
-          "ChatTask": {
-            "run": {
-              "runner": {
-                "name": "LLM_CHAT",
-                "arguments": {
-                  "functionOptions": {
-                    "useFunctionCalling": true,
-                    "functionSetName": "command-functions",
-                    "isAutoCalling": false
-                  }
+    "workflow": {
+      "document": {
+        "dsl": "1.0.0-jobworkerp",
+        "namespace": "default",
+        "name": "copilot-chat"
+      },
+      "do": [{
+        "ChatTask": {
+          "useStreaming": true,
+          "run": {
+            "runner": {
+              "name": "LLM_CHAT",
+              "arguments": {
+                "messages": "${ $runnerMessages }",
+                "functionOptions": {
+                  "useFunctionCalling": true,
+                  "functionSetName": "command-functions",
+                  "isAutoCalling": false
                 }
               }
             }
           }
-        }]
-      }
+        }
+      }]
     }
   }]
 }
 ```
 
-### LLM Tool Calling Flow
+### LLM Tool Calling Flow (AG-UI Interrupts)
+
+This flow follows the [AG-UI Interrupts specification](https://docs.ag-ui.com/drafts/interrupts):
 
 ```text
 Client                         AG-UI Server                    LLM
@@ -467,24 +538,18 @@ Client                         AG-UI Server                    LLM
    |                              |<-- Tool call request -------|
    |<-- TOOL_CALL_START ----------|   (pending_tool_calls)      |
    |<-- TOOL_CALL_ARGS -----------|                             |
-   |   (Stream paused)            |                             |
+   |<-- RUN_FINISHED -------------|   outcome: "interrupt"      |
+   |   (with interrupt info)      |   interrupt: {...}          |
    |                              |                             |
    |   [User approves tool]       |                             |
    |                              |                             |
-   |-- POST /ag-ui/message ------>|                             |
-   |   (toolCallResults)          |                             |
-   |<-- TOOL_CALL_RESULT ---------|                             |
-   |<-- TOOL_CALL_END ------------|                             |
-   |<-- RUN_FINISHED -------------|                             |
-   |                              |                             |
-   |   [Client sends follow-up    |                             |
-   |    with tool result in       |                             |
-   |    messages]                 |                             |
-   |                              |                             |
    |-- POST /ag-ui/run ---------->|                             |
-   |   (messages with TOOL role)  |-- Execute LLM_CHAT -------->|
-   |                              |   (with tool result)        |
+   |   (with resume field)        |-- Execute tools ----------->|
+   |                              |<-- Tool results ------------|
+   |                              |-- Continue LLM_CHAT ------->|
+   |<-- TOOL_CALL_RESULT ---------|                             |
    |<-- TEXT_MESSAGE_* -----------|<-- LLM response ------------|
+   |<-- RUN_FINISHED -------------|   outcome: "success"        |
 ```
 
 ### Tool Call Event Sequence
@@ -512,7 +577,31 @@ Client                         AG-UI Server                    LLM
 }
 ```
 
-At this point, if `requires_tool_execution` is true (HITL mode), the stream pauses and waits for user approval.
+3. **RUN_FINISHED with interrupt** - Workflow pauses for approval
+
+```json
+{
+  "type": "RUN_FINISHED",
+  "runId": "run-456",
+  "outcome": "interrupt",
+  "interrupt": {
+    "id": "int_xyz789",
+    "reason": "tool_approval_required",
+    "payload": {
+      "pendingToolCalls": [
+        {
+          "callId": "call_abc123",
+          "fnName": "COMMAND___run",
+          "fnArguments": "{\"command\":\"date\"}"
+        }
+      ],
+      "checkpointPosition": "/tasks/ChatTask",
+      "workflowName": "copilot-chat"
+    }
+  },
+  "timestamp": 1702345678002
+}
+```
 
 ### Tool Name Format
 
@@ -528,61 +617,106 @@ Examples:
 **Recommendation:** When displaying to users, convert `___` to `/` for readability:
 - `COMMAND___run` → `COMMAND/run`
 
-### Submitting Tool Call Result
+---
+
+## AG-UI Interrupts (Resume)
+
+The AG-UI Interrupts specification provides a standardized way to handle tool approval. When `RUN_FINISHED` has `outcome: "interrupt"`, use the `resume` field in `/ag-ui/run` to continue.
+
+Reference: [AG-UI Interrupts Draft](https://docs.ag-ui.com/drafts/interrupts)
+
+### Approving Tool Calls
+
+Send a new `/ag-ui/run` request with the `resume` field:
 
 ```http
-POST /ag-ui/message
+POST /ag-ui/run
 Content-Type: application/json
 
 {
-  "runId": "run-456",
-  "toolCallResults": [
-    {
-      "toolCallId": "call_abc123",
-      "result": {
-        "command": "date"
-      }
+  "threadId": "thread-123",
+  "messages": [...],
+  "context": [{ "type": "workflow_inline", "workflow": {...} }],
+  "resume": {
+    "interruptId": "int_xyz789",
+    "payload": {
+      "type": "approve"
     }
-  ]
+  }
 }
 ```
 
-**Response Events:**
+**ResumeInfo Fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `interruptId` | string | Yes | The interrupt ID from `RUN_FINISHED.interrupt.id` |
+| `payload.type` | string | Yes | `"approve"` or `"reject"` |
+| `payload.toolResults` | array | No | Optional client-side tool results (for approve) |
+| `payload.reason` | string | No | Optional rejection reason (for reject) |
+
+**Response Events (on approval):**
+
+The server executes the pending tools and continues the LLM conversation:
 
 ```text
 event: TOOL_CALL_RESULT
-data: {"type":"TOOL_CALL_RESULT","toolCallId":"call_abc123","result":{"command":"date"},"timestamp":...}
+data: {"type":"TOOL_CALL_RESULT","toolCallId":"call_abc123","result":{"output":"Wed Dec 25 10:30:00 JST 2024"},"timestamp":...}
 
-event: TOOL_CALL_END
-data: {"type":"TOOL_CALL_END","toolCallId":"call_abc123","timestamp":...}
+event: TEXT_MESSAGE_START
+data: {"type":"TEXT_MESSAGE_START","messageId":"msg-2","role":"assistant","timestamp":...}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"msg-2","delta":"The current date is...","timestamp":...}
+
+event: TEXT_MESSAGE_END
+data: {"type":"TEXT_MESSAGE_END","messageId":"msg-2","timestamp":...}
 
 event: RUN_FINISHED
-data: {"type":"RUN_FINISHED","runId":"run-456","timestamp":...}
+data: {"type":"RUN_FINISHED","runId":"run-456","outcome":"success","timestamp":...}
 ```
 
-### Continuing the Conversation
+### Rejecting Tool Calls
 
-After receiving `RUN_FINISHED`, send a new `/ag-ui/run` request with the tool result included in the messages:
+To reject a tool call:
 
 ```json
 {
-  "context": [{ "type": "workflow_inline", "data": { ... } }],
-  "messages": [
-    { "role": "user", "content": "Run the date command" },
-    { "role": "assistant", "content": "" },
-    { "role": "tool", "content": "Tool: COMMAND/run\nArguments: {\"command\":\"date\"}\nResult: {\"command\":\"date\"}" }
-  ]
+  "threadId": "thread-123",
+  "messages": [...],
+  "context": [...],
+  "resume": {
+    "interruptId": "int_xyz789",
+    "payload": {
+      "type": "reject",
+      "reason": "User declined to execute this command"
+    }
+  }
 }
 ```
 
-The LLM will process the tool result and continue the conversation.
+The LLM will receive the rejection and respond accordingly.
 
 ### Client Implementation Example
 
 ```typescript
-// Track pending tool calls
+interface InterruptInfo {
+  id: string;
+  reason: string;
+  payload: {
+    pendingToolCalls: Array<{
+      callId: string;
+      fnName: string;
+      fnArguments: string;
+    }>;
+    checkpointPosition: string;
+    workflowName: string;
+  };
+}
+
+// State
+let pendingInterrupt: InterruptInfo | null = null;
 const toolCallsRef = useRef<Map<string, ToolCall>>(new Map());
-let pendingToolCalls: ToolCall[] = [];
 
 function handleEvent(event: AgUiEvent) {
   switch (event.type) {
@@ -609,34 +743,61 @@ function handleEvent(event: AgUiEvent) {
       break;
 
     case 'RUN_FINISHED':
-      // Check for pending tool calls requiring approval
-      pendingToolCalls = Array.from(toolCallsRef.current.values())
-        .filter(tc => tc.status === 'pending');
-
-      if (pendingToolCalls.length > 0) {
-        // Show approval UI
-        showToolApprovalUI(pendingToolCalls);
+      if (event.outcome === 'interrupt' && event.interrupt) {
+        // Store interrupt info for resume
+        pendingInterrupt = event.interrupt;
+        // Show approval UI with pending tool calls
+        showToolApprovalUI(event.interrupt.payload.pendingToolCalls);
+      } else {
+        // Normal completion
+        pendingInterrupt = null;
       }
       break;
   }
 }
 
-// Approve a tool call
-async function approveToolCall(toolCallId: string, result: unknown) {
-  const response = await fetch(`${baseUrl}/ag-ui/message`, {
+// Approve tool calls
+async function approveToolCall() {
+  if (!pendingInterrupt) return;
+
+  const response = await fetch(`${baseUrl}/ag-ui/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      runId: currentRunId,
-      toolCallResults: [{ toolCallId, result }]
+      threadId: currentThreadId,
+      messages: conversationMessages,
+      context: [{ type: 'workflow_inline', workflow: CHAT_WORKFLOW }],
+      resume: {
+        interruptId: pendingInterrupt.id,
+        payload: { type: 'approve' }
+      }
     })
   });
 
-  // Process SSE response, then send follow-up
-  // ...
+  // Process SSE response - tools are executed server-side
+  // and LLM continues automatically
+  await processSSEStream(response);
+}
 
-  // After RUN_FINISHED, continue conversation with tool result
-  await sendFollowUpWithToolResult(toolCallId, result);
+// Reject tool calls
+async function rejectToolCall(reason: string) {
+  if (!pendingInterrupt) return;
+
+  const response = await fetch(`${baseUrl}/ag-ui/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      threadId: currentThreadId,
+      messages: conversationMessages,
+      context: [{ type: 'workflow_inline', workflow: CHAT_WORKFLOW }],
+      resume: {
+        interruptId: pendingInterrupt.id,
+        payload: { type: 'reject', reason }
+      }
+    })
+  });
+
+  await processSSEStream(response);
 }
 
 // Format tool name for display
@@ -645,26 +806,13 @@ function formatToolName(name: string): string {
 }
 ```
 
-### Rejecting a Tool Call
+### Legacy Approach (Deprecated)
 
-To reject a tool call, send a result indicating rejection:
-
-```json
-{
-  "runId": "run-456",
-  "toolCallResults": [
-    {
-      "toolCallId": "call_abc123",
-      "result": {
-        "rejected": true,
-        "reason": "User declined to execute this command"
-      }
-    }
-  ]
-}
-```
-
-The LLM will receive this rejection and can respond accordingly in the follow-up request.
+The `/ag-ui/message` endpoint is still supported for backward compatibility but is deprecated for LLM tool calling HITL. The new AG-UI Interrupts approach using `resume` in `/ag-ui/run` is recommended as it:
+- Follows the AG-UI specification
+- Executes tools server-side automatically
+- Continues LLM conversation in a single request
+- Simplifies client implementation
 
 ---
 

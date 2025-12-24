@@ -58,13 +58,9 @@ impl WorkflowEventAdapter {
         }
     }
 
-    /// Create a RUN_FINISHED event
+    /// Create a RUN_FINISHED event with success outcome
     pub fn workflow_completed(&self, output: Option<serde_json::Value>) -> AgUiEvent {
-        AgUiEvent::RunFinished {
-            run_id: self.run_id.to_string(),
-            timestamp: Some(AgUiEvent::now_timestamp()),
-            result: output,
-        }
+        AgUiEvent::run_finished(self.run_id.to_string(), output)
     }
 
     /// Create a RUN_ERROR event

@@ -133,11 +133,7 @@ mod tests {
     #[test]
     fn test_encode_with_start_id() {
         let encoder = EventEncoder::with_start_id(100);
-        let event = AgUiEvent::RunFinished {
-            run_id: "run_1".to_string(),
-            timestamp: None,
-            result: None,
-        };
+        let event = AgUiEvent::run_finished("run_1", None);
 
         let (id, sse) = encoder.encode(&event).unwrap();
         assert_eq!(id, 100);
@@ -183,11 +179,7 @@ mod tests {
         encoder.set_event_id(50);
         assert_eq!(encoder.current_event_id(), 50);
 
-        let event = AgUiEvent::RunFinished {
-            run_id: "run_1".to_string(),
-            timestamp: None,
-            result: None,
-        };
+        let event = AgUiEvent::run_finished("run_1", None);
         let (id, _) = encoder.encode(&event).unwrap();
         assert_eq!(id, 50);
     }

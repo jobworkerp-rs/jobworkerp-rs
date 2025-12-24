@@ -2,9 +2,62 @@
 //!
 //! References AG-UI Rust SDK (ag-ui-core) event.rs
 //! Phase 1: Basic enum definition only. Builder methods added in Phase 2.
+//!
+//! AG-UI Interrupts (Draft) support:
+//! - RUN_FINISHED with outcome and interrupt fields for HITL workflows
 
 use crate::types::{message::Role, state::WorkflowState};
 use serde::{Deserialize, Serialize};
+
+// ============================================================================
+// AG-UI Interrupts (Draft) Types
+// ============================================================================
+
+/// Run outcome for RUN_FINISHED event (AG-UI Interrupts Draft)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcome {
+    /// Run completed successfully
+    Success,
+    /// Run paused waiting for user input (HITL)
+    Interrupt,
+}
+
+/// Interrupt information for HITL workflows (AG-UI Interrupts Draft)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterruptInfo {
+    /// Unique identifier for this interrupt
+    pub id: String,
+    /// Reason for the interrupt (e.g., "tool_approval_required")
+    pub reason: String,
+    /// Payload containing interrupt-specific data
+    pub payload: InterruptPayload,
+}
+
+/// Interrupt payload containing pending tool calls and context
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterruptPayload {
+    /// Pending tool calls awaiting approval
+    pub pending_tool_calls: Vec<PendingToolCall>,
+    /// Checkpoint position for resuming the workflow
+    pub checkpoint_position: String,
+    /// Name of the workflow that was interrupted
+    pub workflow_name: String,
+}
+
+/// Pending tool call awaiting user approval
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingToolCall {
+    /// Tool call ID
+    pub call_id: String,
+    /// Function name to be called
+    pub fn_name: String,
+    /// Function arguments as JSON string
+    pub fn_arguments: String,
+}
 
 /// AG-UI event types.
 /// Based on AG-UI protocol specification.
@@ -29,7 +82,8 @@ pub enum AgUiEvent {
         metadata: Option<serde_json::Value>,
     },
 
-    /// Run finished successfully
+    /// Run finished (success or interrupt)
+    /// Extended with AG-UI Interrupts (Draft) fields
     #[serde(rename = "RUN_FINISHED")]
     RunFinished {
         #[serde(rename = "runId")]
@@ -38,6 +92,12 @@ pub enum AgUiEvent {
         timestamp: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<serde_json::Value>,
+        /// Run outcome: "success" or "interrupt" (AG-UI Interrupts Draft)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        outcome: Option<RunOutcome>,
+        /// Interrupt information when outcome is "interrupt" (AG-UI Interrupts Draft)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        interrupt: Option<InterruptInfo>,
     },
 
     /// Run error
@@ -229,12 +289,36 @@ impl AgUiEvent {
         }
     }
 
-    /// Create a RUN_FINISHED event
+    /// Create a RUN_FINISHED event with success outcome
     pub fn run_finished(run_id: impl Into<String>, result: Option<serde_json::Value>) -> Self {
         AgUiEvent::RunFinished {
             run_id: run_id.into(),
             timestamp: Some(Self::now_timestamp()),
             result,
+            outcome: Some(RunOutcome::Success),
+            interrupt: None,
+        }
+    }
+
+    /// Create a RUN_FINISHED event with success outcome (explicit)
+    pub fn run_finished_success(
+        run_id: impl Into<String>,
+        result: Option<serde_json::Value>,
+    ) -> Self {
+        Self::run_finished(run_id, result)
+    }
+
+    /// Create a RUN_FINISHED event with interrupt outcome (HITL)
+    pub fn run_finished_with_interrupt(
+        run_id: impl Into<String>,
+        interrupt: InterruptInfo,
+    ) -> Self {
+        AgUiEvent::RunFinished {
+            run_id: run_id.into(),
+            timestamp: Some(Self::now_timestamp()),
+            result: None,
+            outcome: Some(RunOutcome::Interrupt),
+            interrupt: Some(interrupt),
         }
     }
 
@@ -540,13 +624,67 @@ mod tests {
                 run_id,
                 result,
                 timestamp,
+                outcome,
+                interrupt,
             } => {
                 assert_eq!(run_id, "run_1");
                 assert!(result.is_some());
                 assert!(timestamp.is_some());
+                assert_eq!(outcome, Some(RunOutcome::Success));
+                assert!(interrupt.is_none());
             }
             _ => panic!("Expected RunFinished"),
         }
+    }
+
+    #[test]
+    fn test_builder_run_finished_with_interrupt() {
+        let interrupt_info = InterruptInfo {
+            id: "int_123".to_string(),
+            reason: "tool_approval_required".to_string(),
+            payload: InterruptPayload {
+                pending_tool_calls: vec![PendingToolCall {
+                    call_id: "call_1".to_string(),
+                    fn_name: "COMMAND___run".to_string(),
+                    fn_arguments: r#"{"command":"date"}"#.to_string(),
+                }],
+                checkpoint_position: "llm_chat_task".to_string(),
+                workflow_name: "test_workflow".to_string(),
+            },
+        };
+
+        let event = AgUiEvent::run_finished_with_interrupt("run_1", interrupt_info.clone());
+        match &event {
+            AgUiEvent::RunFinished {
+                run_id,
+                result,
+                timestamp,
+                outcome,
+                interrupt,
+            } => {
+                assert_eq!(run_id, "run_1");
+                assert!(result.is_none());
+                assert!(timestamp.is_some());
+                assert_eq!(outcome, &Some(RunOutcome::Interrupt));
+                assert!(interrupt.is_some());
+                let int = interrupt.as_ref().unwrap();
+                assert_eq!(int.id, "int_123");
+                assert_eq!(int.reason, "tool_approval_required");
+                assert_eq!(int.payload.pending_tool_calls.len(), 1);
+            }
+            _ => panic!("Expected RunFinished"),
+        }
+
+        // Test JSON serialization
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "RUN_FINISHED");
+        assert_eq!(json["outcome"], "interrupt");
+        assert_eq!(json["interrupt"]["id"], "int_123");
+        assert_eq!(json["interrupt"]["reason"], "tool_approval_required");
+        assert_eq!(
+            json["interrupt"]["payload"]["pendingToolCalls"][0]["fnName"],
+            "COMMAND___run"
+        );
     }
 
     #[test]
