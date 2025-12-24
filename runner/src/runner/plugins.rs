@@ -291,7 +291,9 @@ pub trait MultiMethodPluginRunner: Send + Sync {
         // default implementation (return empty)
         Err(anyhow::anyhow!("not implemented"))
     }
-    fn cancel(&self) -> bool;
+    /// Cancel the running task.
+    /// Unlike PluginRunner (legacy), this takes &mut self for simpler plugin implementation.
+    fn cancel(&mut self) -> bool;
     fn is_canceled(&self) -> bool;
     fn runner_settings_proto(&self) -> String;
 

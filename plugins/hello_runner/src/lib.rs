@@ -176,7 +176,7 @@ impl MultiMethodPluginRunner for HelloPlugin {
             Ok(res)
         })
     }
-    fn cancel(&self) -> bool {
+    fn cancel(&mut self) -> bool {
         // cancel the running task
         // *self.running.lock().unwrap() = false;
         // kill running task
