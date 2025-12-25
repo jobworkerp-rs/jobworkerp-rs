@@ -278,11 +278,13 @@ impl RdbChanJobAppImpl {
                 Ok(false)
             }
             None => {
-                // Status doesn't exist (already completed or doesn't exist)
+                // Status doesn't exist in Redis (already completed or doesn't exist)
+                // Still cleanup RDB index and other resources (orphaned records)
                 tracing::info!(
-                    "Job {} status not found, may be already completed",
+                    "Job {} status not found in Redis, cleaning up RDB index if exists",
                     id.value
                 );
+                self.cleanup_job(id).await?;
                 Ok(false)
             }
         }
@@ -975,8 +977,6 @@ impl JobApp for RdbChanJobAppImpl {
         &self,
         retention_hours_override: Option<u64>,
     ) -> Result<(u64, i64)> {
-        use jobworkerp_base::JOB_STATUS_CONFIG;
-
         let index_repo = self.job_status_index_repository.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "RDB JobProcessingStatus index repository not available. \
@@ -984,14 +984,10 @@ impl JobApp for RdbChanJobAppImpl {
             )
         })?;
 
-        // Calculate retention hours
-        let retention_hours = retention_hours_override.unwrap_or(JOB_STATUS_CONFIG.retention_hours);
-        let cutoff_time = datetime::now_millis() - (retention_hours * 3600 * 1000) as i64;
-
-        // Execute cleanup
-        let deleted_count = index_repo.cleanup_deleted_records().await?;
-
-        Ok((deleted_count, cutoff_time))
+        // Execute cleanup with override (Infra layer calculates cutoff_time)
+        index_repo
+            .cleanup_deleted_records(retention_hours_override)
+            .await
     }
 
     async fn count(&self) -> Result<i64>
