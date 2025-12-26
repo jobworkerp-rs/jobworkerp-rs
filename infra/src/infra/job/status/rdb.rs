@@ -68,7 +68,34 @@ impl RdbJobProcessingStatusIndexRepository {
 
         match status {
             JobProcessingStatus::Pending => {
-                // CREATE: Don't create if deleted record exists
+                // CREATE: Don't create if record already exists with status >= RUNNING (2)
+                // This prevents async race condition where late PENDING insert overwrites RUNNING
+                #[cfg(feature = "mysql")]
+                let rows_affected = sqlx::query(
+                    "INSERT INTO job_processing_status
+                     (job_id, status, worker_id, channel, priority, enqueue_time,
+                      pending_time, is_streamable, broadcast_results, version, updated_at)
+                     SELECT ?, 1, ?, ?, ?, ?, ?, ?, ?, 1, ? FROM DUAL
+                     WHERE NOT EXISTS (
+                       SELECT 1 FROM job_processing_status
+                       WHERE job_id = ? AND (deleted_at IS NOT NULL OR status >= 2)
+                     )",
+                )
+                .bind(job_id.value)
+                .bind(worker_id.value)
+                .bind(channel)
+                .bind(priority)
+                .bind(enqueue_time)
+                .bind(now)
+                .bind(is_streamable)
+                .bind(broadcast_results)
+                .bind(now)
+                .bind(job_id.value)
+                .execute(&mut *conn)
+                .await?
+                .rows_affected();
+
+                #[cfg(not(feature = "mysql"))]
                 let rows_affected = sqlx::query(
                     "INSERT INTO job_processing_status
                      (job_id, status, worker_id, channel, priority, enqueue_time,
@@ -76,7 +103,7 @@ impl RdbJobProcessingStatusIndexRepository {
                      SELECT ?, 1, ?, ?, ?, ?, ?, ?, ?, 1, ?
                      WHERE NOT EXISTS (
                        SELECT 1 FROM job_processing_status
-                       WHERE job_id = ? AND deleted_at IS NOT NULL
+                       WHERE job_id = ? AND (deleted_at IS NOT NULL OR status >= 2)
                      )",
                 )
                 .bind(job_id.value)
@@ -94,32 +121,94 @@ impl RdbJobProcessingStatusIndexRepository {
                 .rows_affected();
 
                 if rows_affected == 0 {
-                    tracing::warn!(
+                    tracing::debug!(
                         job_id = job_id.value,
-                        "Failed to insert PENDING status: deleted record exists"
+                        "Skipped PENDING insert: record already exists with higher status or deleted"
                     );
                 }
             }
 
             JobProcessingStatus::Running => {
-                // UPDATE: Only allow PENDING→RUNNING transition (optimistic lock)
-                let rows_affected = sqlx::query(
-                    "UPDATE job_processing_status
-                     SET status = 2, start_time = ?, version = version + 1, updated_at = ?
-                     WHERE job_id = ? AND status = 1 AND deleted_at IS NULL",
-                )
-                .bind(now)
-                .bind(now)
-                .bind(job_id.value)
-                .execute(&mut *conn)
-                .await?
-                .rows_affected();
+                // UPSERT: Insert or update to RUNNING status
+                // Handles async race condition where RUNNING update arrives before PENDING insert
+                #[cfg(feature = "mysql")]
+                {
+                    // IMPORTANT: start_time must be updated BEFORE status because MySQL evaluates
+                    // ON DUPLICATE KEY UPDATE assignments left-to-right, and the IF condition
+                    // checks `status < 2`. If status is updated first to 2, the start_time
+                    // condition becomes false.
+                    sqlx::query(
+                        "INSERT INTO job_processing_status
+                         (job_id, status, worker_id, channel, priority, enqueue_time,
+                          start_time, is_streamable, broadcast_results, version, updated_at)
+                         VALUES (?, 2, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                         ON DUPLICATE KEY UPDATE
+                           start_time = IF(status < 2 AND deleted_at IS NULL, COALESCE(start_time, VALUES(start_time)), start_time),
+                           updated_at = IF(status < 2 AND deleted_at IS NULL, VALUES(updated_at), updated_at),
+                           version = IF(status < 2 AND deleted_at IS NULL, version + 1, version),
+                           status = IF(status < 2 AND deleted_at IS NULL, 2, status)",
+                    )
+                    .bind(job_id.value)
+                    .bind(worker_id.value)
+                    .bind(channel)
+                    .bind(priority)
+                    .bind(enqueue_time)
+                    .bind(now)
+                    .bind(is_streamable)
+                    .bind(broadcast_results)
+                    .bind(now)
+                    .execute(&mut *conn)
+                    .await?;
+                }
 
-                if rows_affected == 0 {
-                    tracing::warn!(
-                        job_id = job_id.value,
-                        "Failed to update RUNNING status: not in PENDING state or already deleted"
-                    );
+                #[cfg(not(feature = "mysql"))]
+                {
+                    // SQLite: INSERT OR IGNORE + UPDATE (two queries for conditional upsert)
+                    // First, try to update existing record with status < 2
+                    let rows_affected = sqlx::query(
+                        "UPDATE job_processing_status
+                         SET status = 2, start_time = COALESCE(start_time, ?), version = version + 1, updated_at = ?
+                         WHERE job_id = ? AND status < 2 AND deleted_at IS NULL",
+                    )
+                    .bind(now)
+                    .bind(now)
+                    .bind(job_id.value)
+                    .execute(&mut *conn)
+                    .await?
+                    .rows_affected();
+
+                    if rows_affected == 0 {
+                        // No existing record with status < 2, try INSERT if not exists at all
+                        let insert_result = sqlx::query(
+                            "INSERT INTO job_processing_status
+                             (job_id, status, worker_id, channel, priority, enqueue_time,
+                              start_time, is_streamable, broadcast_results, version, updated_at)
+                             SELECT ?, 2, ?, ?, ?, ?, ?, ?, ?, 1, ?
+                             WHERE NOT EXISTS (
+                               SELECT 1 FROM job_processing_status WHERE job_id = ?
+                             )",
+                        )
+                        .bind(job_id.value)
+                        .bind(worker_id.value)
+                        .bind(channel)
+                        .bind(priority)
+                        .bind(enqueue_time)
+                        .bind(now)
+                        .bind(is_streamable)
+                        .bind(broadcast_results)
+                        .bind(now)
+                        .bind(job_id.value)
+                        .execute(&mut *conn)
+                        .await?
+                        .rows_affected();
+
+                        if insert_result == 0 {
+                            tracing::debug!(
+                                job_id = job_id.value,
+                                "Skipped RUNNING upsert: record already exists with same or higher status"
+                            );
+                        }
+                    }
                 }
             }
 
@@ -333,15 +422,21 @@ impl RdbJobProcessingStatusIndexRepository {
 
     /// Physical deletion of logically deleted records (called from cleanup task)
     ///
+    /// # Arguments
+    /// - `retention_hours_override`: Override default retention hours (None uses config default)
+    ///
     /// # Returns
-    /// - `Ok(u64)`: Number of deleted records
-    pub async fn cleanup_deleted_records(&self) -> Result<u64> {
+    /// - `Ok((deleted_count, cutoff_time))`: Number of deleted records and cutoff timestamp used
+    pub async fn cleanup_deleted_records(
+        &self,
+        retention_hours_override: Option<u64>,
+    ) -> Result<(u64, i64)> {
         if !self.config.rdb_indexing_enabled {
-            return Ok(0);
+            return Ok((0, 0));
         }
 
-        let cutoff_millis =
-            datetime::now_millis() - (self.config.retention_hours * 3600 * 1000) as i64;
+        let retention_hours = retention_hours_override.unwrap_or(self.config.retention_hours);
+        let cutoff_millis = datetime::now_millis() - (retention_hours * 3600 * 1000) as i64;
 
         let mut conn = self.rdb_pool.acquire().await?;
         let result = sqlx::query(
@@ -352,7 +447,7 @@ impl RdbJobProcessingStatusIndexRepository {
         .execute(&mut *conn)
         .await?;
 
-        Ok(result.rows_affected())
+        Ok((result.rows_affected(), cutoff_millis))
     }
 }
 
@@ -592,7 +687,7 @@ mod tests {
             .await?;
 
             // Run cleanup
-            let deleted_count = repo.cleanup_deleted_records().await?;
+            let (deleted_count, _cutoff_time) = repo.cleanup_deleted_records(None).await?;
 
             assert_eq!(deleted_count, 1);
             Ok(())
@@ -600,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn test_index_status_running_requires_pending() -> Result<()> {
+    fn test_index_status_running_without_pending_inserts_directly() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_db().await;
             let config = JobStatusConfig {
@@ -614,7 +709,7 @@ mod tests {
                 Arc::new(config),
             );
 
-            // Try to update to RUNNING without PENDING record (optimistic lock failure)
+            // RUNNING can be inserted directly without PENDING (race condition fix)
             let result = repo
                 .index_status(
                     &JobId { value: 300 },
@@ -628,15 +723,23 @@ mod tests {
                 )
                 .await;
 
-            // Should succeed (no error) but log warning
             assert!(result.is_ok());
 
+            // Record should be created with RUNNING status
             let count: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM job_processing_status WHERE job_id = 300")
                     .fetch_one(pool)
                     .await?;
 
-            assert_eq!(count, 0);
+            assert_eq!(count, 1);
+
+            // Verify status is RUNNING (2)
+            let status: i32 =
+                sqlx::query_scalar("SELECT status FROM job_processing_status WHERE job_id = 300")
+                    .fetch_one(pool)
+                    .await?;
+
+            assert_eq!(status, JobProcessingStatus::Running as i32);
             Ok(())
         })
     }
