@@ -50,8 +50,8 @@ impl JobStatusCleanupTask {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    match self.index_repository.cleanup_deleted_records().await {
-                        Ok(deleted_count) => {
+                    match self.index_repository.cleanup_deleted_records(None).await {
+                        Ok((deleted_count, _cutoff_time)) => {
                             if deleted_count > 0 {
                                 tracing::info!(
                                     deleted_count,
