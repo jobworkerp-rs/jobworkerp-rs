@@ -133,16 +133,20 @@ impl RdbJobProcessingStatusIndexRepository {
                 // Handles async race condition where RUNNING update arrives before PENDING insert
                 #[cfg(feature = "mysql")]
                 {
+                    // IMPORTANT: start_time must be updated BEFORE status because MySQL evaluates
+                    // ON DUPLICATE KEY UPDATE assignments left-to-right, and the IF condition
+                    // checks `status < 2`. If status is updated first to 2, the start_time
+                    // condition becomes false.
                     sqlx::query(
                         "INSERT INTO job_processing_status
                          (job_id, status, worker_id, channel, priority, enqueue_time,
                           start_time, is_streamable, broadcast_results, version, updated_at)
                          VALUES (?, 2, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                          ON DUPLICATE KEY UPDATE
-                           status = IF(status < 2 AND deleted_at IS NULL, 2, status),
                            start_time = IF(status < 2 AND deleted_at IS NULL, COALESCE(start_time, VALUES(start_time)), start_time),
+                           updated_at = IF(status < 2 AND deleted_at IS NULL, VALUES(updated_at), updated_at),
                            version = IF(status < 2 AND deleted_at IS NULL, version + 1, version),
-                           updated_at = IF(status < 2 AND deleted_at IS NULL, VALUES(updated_at), updated_at)",
+                           status = IF(status < 2 AND deleted_at IS NULL, 2, status)",
                     )
                     .bind(job_id.value)
                     .bind(worker_id.value)
