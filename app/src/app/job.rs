@@ -226,13 +226,8 @@ where
     ) {
         // Default: no-op
     }
-
-    async fn enqueue_job_to_redis_with_wait_if_needed(
-        &self,
-        job: &Job,
-        worker: &WorkerData,
-        streaming_type: StreamingType,
-    ) -> Result<(
+    /// TODO move to job/hybrid.rs
+    async fn enqueue_job_to_redis_with_wait_if_needed( &self, job: &Job, worker: &WorkerData, streaming_type: StreamingType,) -> Result<(
         JobId,
         Option<JobResult>,
         Option<BoxStream<'static, ResultOutputItem>>,

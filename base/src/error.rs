@@ -47,6 +47,26 @@ pub enum JobWorkerError {
     #[error("OtherError({0})")]
     OtherError(String),
 }
+
+impl JobWorkerError {
+    /// Returns true if the job status should be deleted when this error occurs.
+    /// Status should be deleted for permanent failures (job cannot be executed).
+    /// Status should NOT be deleted for:
+    /// - AlreadyExists (another process may be executing the same job)
+    /// - All other errors (for error tracking purposes)
+    pub fn should_delete_job_status(&self) -> bool {
+        matches!(
+            self,
+            JobWorkerError::InvalidParameter(_)
+                | JobWorkerError::NotFound(_)
+                | JobWorkerError::WorkerNotFound(_)
+                | JobWorkerError::OtherError(_)
+                | JobWorkerError::CodecError(_)
+                | JobWorkerError::ParseError(_)
+        )
+    }
+}
+
 impl From<tonic::transport::Error> for JobWorkerError {
     fn from(e: tonic::transport::Error) -> Self {
         JobWorkerError::TonicServerError(e)
