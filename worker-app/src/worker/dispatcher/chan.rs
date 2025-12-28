@@ -24,7 +24,7 @@ use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobId, JobProcessingStatus, JobResult, Priority, QueueType, ResponseType, Worker,
+    Job, JobProcessingStatus, JobResult, Priority, QueueType, ResponseType, Worker,
 };
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -148,8 +148,8 @@ pub trait ChanJobDispatcher:
                     Err(e) => {
                         // Check if status should be deleted based on error type
                         if let Some(jid) = job_id {
-                            if Self::should_cleanup_status_on_error(&e) {
-                                self.cleanup_failed_job_status(&jid).await;
+                            if super::should_cleanup_status_on_error(&e) {
+                                self.cleanup_failed_job_status(&jid, "memory").await;
                             }
                         }
                         Err(e)
@@ -161,46 +161,6 @@ pub trait ChanJobDispatcher:
                 Err(JobWorkerError::ChanError(e).into())
             }
         }
-    }
-
-    fn should_cleanup_status_on_error(err: &anyhow::Error) -> bool {
-        if let Some(job_err) = err.downcast_ref::<JobWorkerError>() {
-            job_err.should_delete_job_status()
-        } else {
-            // Unknown error types: don't delete (safer default)
-            false
-        }
-    }
-
-    async fn cleanup_failed_job_status(&self, job_id: &JobId) {
-        // Delete from memory status
-        if let Err(e) = self
-            .job_processing_status_repository()
-            .delete_status(job_id)
-            .await
-        {
-            tracing::warn!(
-                "Failed to cleanup status for job {}: {:?}",
-                job_id.value,
-                e
-            );
-        }
-
-        // Delete from RDB index (if enabled)
-        if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
-            if let Err(e) = index_repo.mark_deleted_by_job_id(job_id).await {
-                tracing::warn!(
-                    "Failed to cleanup RDB index for job {}: {:?}",
-                    job_id.value,
-                    e
-                );
-            }
-        }
-
-        tracing::info!(
-            "Job {} status cleaned up due to permanent error",
-            job_id.value
-        );
     }
 
     #[inline]
