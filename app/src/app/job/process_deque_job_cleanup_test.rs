@@ -21,7 +21,7 @@ mod process_deque_job_cleanup_tests {
     use std::sync::Arc;
 
     /// Test: When job has incomplete data (no id/data), status should be cleaned up
-    /// This simulates OtherError("incomplete data") in process_job
+    /// This simulates InvalidParameter("incomplete data") in process_job
     #[test]
     fn test_incomplete_job_data_triggers_status_cleanup() -> Result<()> {
         TEST_RUNTIME.block_on(async {
@@ -49,11 +49,11 @@ mod process_deque_job_cleanup_tests {
             );
 
             // Simulate what happens when process_deque_job encounters an error
-            // OtherError is classified as permanent error -> status should be deleted
-            let error = JobWorkerError::OtherError("job is incomplete data".to_string());
+            // InvalidParameter is classified as permanent error -> status should be deleted
+            let error = JobWorkerError::InvalidParameter("job is incomplete data".to_string());
             assert!(
                 error.should_delete_job_status(),
-                "OtherError should trigger cleanup"
+                "InvalidParameter should trigger cleanup"
             );
 
             // Cleanup would be called by process_deque_job
@@ -63,7 +63,7 @@ mod process_deque_job_cleanup_tests {
             assert_eq!(
                 status_repo.find_status(&job_id).await?,
                 None,
-                "Status should be deleted after OtherError"
+                "Status should be deleted after InvalidParameter"
             );
 
             tracing::info!("test_incomplete_job_data_triggers_status_cleanup completed");
