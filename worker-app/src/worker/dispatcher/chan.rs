@@ -16,7 +16,7 @@ use infra::infra::job::queue::chan::{
     ChanJobQueueRepository, ChanJobQueueRepositoryImpl, UseChanJobQueueRepository,
 };
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
-use infra::infra::job::rdb::{RdbChanJobRepositoryImpl, RdbJobRepository, UseRdbChanJobRepository};
+use infra::infra::job::rdb::{RdbChanJobRepositoryImpl, UseRdbChanJobRepository};
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job::status::memory::MemoryJobProcessingStatusRepository;
 use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
@@ -141,7 +141,21 @@ pub trait ChanJobDispatcher:
         Self: Sync + Send + 'static,
     {
         match val {
-            Ok(job) => self.process_job(job).await,
+            Ok(job) => {
+                let job_id = job.id;
+                match self.process_job(job).await {
+                    Ok(result) => Ok(result),
+                    Err(e) => {
+                        // Check if status should be deleted based on error type
+                        if let Some(jid) = job_id {
+                            if super::should_cleanup_status_on_error(&e) {
+                                self.cleanup_failed_job_status(&jid, "memory").await;
+                            }
+                        }
+                        Err(e)
+                    }
+                }
+            }
             Err(e) => {
                 tracing::error!("pop job error: {:?}", e);
                 Err(JobWorkerError::ChanError(e).into())
@@ -162,14 +176,10 @@ pub trait ChanJobDispatcher:
         } = job {
            (jid, jdat, metadata)
         } else {
-            // TODO cannot return result in this case. send result as error?
+            // Status cleanup is handled by process_deque_job based on error type
             let mes = format!("job {:?} is incomplete data.", &job);
             tracing::error!("{}", &mes);
-            if let Some(id) = job.id.as_ref() {
-                self.job_processing_status_repository().delete_status(id).await?;
-                self.rdb_job_repository().delete(id).await?;
-            }
-            return Err(JobWorkerError::OtherError(mes).into());
+            return Err(JobWorkerError::InvalidParameter(mes).into());
         };
         let (wid, wdat) = if let Some(Worker {
                 id: Some(wid),
@@ -181,27 +191,23 @@ pub trait ChanJobDispatcher:
         {
             (wid, wdat)
         } else {
-            // TODO cannot return result in this case. send result as error?
+            // Status cleanup is handled by process_deque_job based on error type
             let mes = format!(
                 "worker {:?} is not found.",
                 jdat.worker_id.as_ref().unwrap()
             );
             tracing::error!("{}", &mes);
-            self.job_processing_status_repository().delete_status(&jid).await?;
-            self.rdb_job_repository().delete(&jid).await?;
             return Err(JobWorkerError::NotFound(mes).into());
         };
         let sid = if let Some(id) = wdat.runner_id.as_ref() {
             id
         } else {
-            // TODO: cannot return result in this case. Send result as error?
+            // Status cleanup is handled by process_deque_job based on error type
             let mes = format!(
                 "worker {:?} runner_id is not found.",
                 jdat.worker_id.as_ref().unwrap()
             );
             tracing::error!("{}", &mes);
-            self.job_processing_status_repository().delete_status(&jid).await?;
-            self.rdb_job_repository().delete(&jid).await?;
             return Err(JobWorkerError::NotFound(mes).into());
         };
         let runner_data = if let Some(RunnerWithSchema{id:_, data: runner_data,..}) =
@@ -209,14 +215,12 @@ pub trait ChanJobDispatcher:
         {
                 runner_data.ok_or(JobWorkerError::NotFound(format!("runner data {:?} is not found.", &sid)))
         } else {
-            // TODO: cannot return result in this case. Send result as error?
+            // Status cleanup is handled by process_deque_job based on error type
             let mes = format!(
                 "runner data {:?} is not found.",
                 jdat.worker_id.as_ref().unwrap()
             );
             tracing::error!("{}", &mes);
-            self.job_processing_status_repository().delete_status(&jid).await?;
-            self.rdb_job_repository().delete(&jid).await?;
             Err(JobWorkerError::NotFound(mes))
         }?;
 

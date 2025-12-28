@@ -14,10 +14,12 @@ use chan::{ChanJobDispatcher, ChanJobDispatcherImpl};
 use command_utils::util::shutdown::ShutdownLock;
 use infra::infra::{
     job::rdb::UseRdbChanJobRepository,
+    job::status::rdb::UseRdbJobProcessingStatusIndexRepository,
     job::status::UseJobProcessingStatusRepository,
     module::{rdb::RdbChanRepositoryModule, redis::RedisRepositoryModule},
     IdGeneratorWrapper, UseIdGenerator,
 };
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobId, JobProcessingStatus, JobResult, JobResultData, ResultOutput, ResultStatus, StorageType,
     WorkerData, WorkerId,
@@ -28,10 +30,80 @@ pub mod rdb;
 pub mod redis;
 pub mod redis_run_after;
 
+/// Determine if job status should be cleaned up based on error type
+pub fn should_cleanup_status_on_error(err: &anyhow::Error) -> bool {
+    if let Some(job_err) = err.downcast_ref::<JobWorkerError>() {
+        job_err.should_delete_job_status()
+    } else {
+        // Unknown error types: don't delete (safer default)
+        false
+    }
+}
+
 #[async_trait]
 pub trait JobDispatcher:
-    Send + Sync + 'static + UseJobProcessingStatusRepository + UseIdGenerator + UseResultProcessor
+    Send
+    + Sync
+    + 'static
+    + UseJobProcessingStatusRepository
+    + UseRdbJobProcessingStatusIndexRepository
+    + UseIdGenerator
+    + UseResultProcessor
 {
+    /// Clean up job processing status for permanent errors
+    ///
+    /// Deletes status from both primary storage and RDB indexing (if enabled).
+    /// Logs appropriate messages based on cleanup success/failure.
+    ///
+    /// # Arguments
+    /// * `job_id` - The job ID to clean up
+    /// * `storage_label` - Label for logging (e.g., "redis", "memory")
+    async fn cleanup_failed_job_status(&self, job_id: &JobId, storage_label: &str) {
+        let mut storage_deleted = false;
+        let mut rdb_deleted = false;
+
+        // Delete from primary storage (Redis or Memory)
+        match self
+            .job_processing_status_repository()
+            .delete_status(job_id)
+            .await
+        {
+            Ok(_) => storage_deleted = true,
+            Err(e) => {
+                tracing::warn!("Failed to cleanup status for job {}: {:?}", job_id.value, e);
+            }
+        }
+
+        // Delete from RDB index (if enabled)
+        if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
+            match index_repo.mark_deleted_by_job_id(job_id).await {
+                Ok(_) => rdb_deleted = true,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to cleanup RDB index for job {}: {:?}",
+                        job_id.value,
+                        e
+                    );
+                }
+            }
+        } else {
+            // No RDB index configured, consider it as "not applicable" rather than failed
+            rdb_deleted = true;
+        }
+
+        if storage_deleted || rdb_deleted {
+            tracing::info!(
+                "Job {} status cleaned up due to permanent error ({}: {}, rdb: {})",
+                job_id.value,
+                storage_label,
+                storage_deleted,
+                rdb_deleted
+            );
+        } else {
+            tracing::warn!("Job {} status cleanup failed for all stores", job_id.value);
+        }
+    }
+
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
         Self: Send + Sync + 'static;
@@ -279,6 +351,15 @@ impl UseResultProcessor for HybridJobDispatcherImpl {
     }
 }
 
+impl UseRdbJobProcessingStatusIndexRepository for HybridJobDispatcherImpl {
+    fn rdb_job_processing_status_index_repository(
+        &self,
+    ) -> Option<Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>> {
+        self.redis_job_dispatcher
+            .rdb_job_processing_status_index_repository()
+    }
+}
+
 #[async_trait]
 impl JobDispatcher for HybridJobDispatcherImpl {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
@@ -306,6 +387,15 @@ impl UseIdGenerator for RdbChanJobDispatcherImpl {
 impl UseResultProcessor for RdbChanJobDispatcherImpl {
     fn result_processor(&self) -> &ResultProcessorImpl {
         self.chan_job_dispatcher.result_processor()
+    }
+}
+
+impl UseRdbJobProcessingStatusIndexRepository for RdbChanJobDispatcherImpl {
+    fn rdb_job_processing_status_index_repository(
+        &self,
+    ) -> Option<Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>> {
+        self.chan_job_dispatcher
+            .rdb_job_processing_status_index_repository()
     }
 }
 

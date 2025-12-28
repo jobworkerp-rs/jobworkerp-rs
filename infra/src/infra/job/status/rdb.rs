@@ -137,6 +137,11 @@ impl RdbJobProcessingStatusIndexRepository {
                     // ON DUPLICATE KEY UPDATE assignments left-to-right, and the IF condition
                     // checks `status < 2`. If status is updated first to 2, the start_time
                     // condition becomes false.
+                    //
+                    // TODO: VALUES() is deprecated in MySQL 8.0.20+. Replace with AS alias syntax
+                    // when dropping support for MySQL < 8.0.19. Example:
+                    //   INSERT INTO ... VALUES (...) AS new_row
+                    //   ON DUPLICATE KEY UPDATE col = new_row.col
                     sqlx::query(
                         "INSERT INTO job_processing_status
                          (job_id, status, worker_id, channel, priority, enqueue_time,

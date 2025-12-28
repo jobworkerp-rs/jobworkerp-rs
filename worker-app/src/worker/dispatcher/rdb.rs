@@ -336,6 +336,17 @@ impl infra::infra::job::status::UseJobProcessingStatusRepository for RdbJobDispa
     }
 }
 
+impl infra::infra::job::status::rdb::UseRdbJobProcessingStatusIndexRepository
+    for RdbJobDispatcherImpl
+{
+    fn rdb_job_processing_status_index_repository(
+        &self,
+    ) -> Option<Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>> {
+        // RdbJobDispatcher doesn't use RDB job processing status index
+        None
+    }
+}
+
 impl RdbJobDispatcher for RdbJobDispatcherImpl {}
 
 #[async_trait]
