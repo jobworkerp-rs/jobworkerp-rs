@@ -211,7 +211,7 @@ pub trait RedisJobDispatcher:
             // Status cleanup is handled by process_deque_job based on error type
             let mes = format!("job {:?} is incomplete data.", &job.id);
             tracing::error!("{}", &mes);
-            return Err(JobWorkerError::OtherError(mes).into());
+            return Err(JobWorkerError::InvalidParameter(mes).into());
         };
 
         let (wid, wdat) = if let Some(Worker {

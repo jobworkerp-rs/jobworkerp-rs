@@ -60,7 +60,6 @@ impl JobWorkerError {
             JobWorkerError::InvalidParameter(_)
                 | JobWorkerError::NotFound(_)
                 | JobWorkerError::WorkerNotFound(_)
-                | JobWorkerError::OtherError(_)
                 | JobWorkerError::CodecError(_)
                 | JobWorkerError::ParseError(_)
         )
@@ -113,10 +112,6 @@ mod tests {
             "WorkerNotFound should trigger status deletion"
         );
         assert!(
-            JobWorkerError::OtherError("test".to_string()).should_delete_job_status(),
-            "OtherError should trigger status deletion"
-        );
-        assert!(
             JobWorkerError::CodecError(prost::DecodeError::new("test")).should_delete_job_status(),
             "CodecError should trigger status deletion"
         );
@@ -152,6 +147,10 @@ mod tests {
         assert!(
             !JobWorkerError::GenerateIdError("test".to_string()).should_delete_job_status(),
             "GenerateIdError should NOT trigger status deletion"
+        );
+        assert!(
+            !JobWorkerError::OtherError("test".to_string()).should_delete_job_status(),
+            "OtherError should NOT trigger status deletion"
         );
     }
 }
