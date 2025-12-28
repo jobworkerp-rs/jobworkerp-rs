@@ -212,11 +212,7 @@ pub trait RedisJobDispatcher:
             .delete_status(job_id)
             .await
         {
-            tracing::warn!(
-                "Failed to cleanup status for job {}: {:?}",
-                job_id.value,
-                e
-            );
+            tracing::warn!("Failed to cleanup status for job {}: {:?}", job_id.value, e);
         }
 
         // Delete from RDB index (if enabled)

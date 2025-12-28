@@ -11,6 +11,8 @@ pub mod find_list_with_processing_status_test;
 #[cfg(test)]
 pub mod hybrid_indexing_integration_test;
 #[cfg(test)]
+pub mod process_deque_job_cleanup_test;
+#[cfg(test)]
 pub mod rdb_chan_cancellation_test;
 #[cfg(test)]
 pub mod rdb_chan_indexing_integration_test;
@@ -27,6 +29,7 @@ use infra::infra::{
     },
     UseJobQueueConfig,
 };
+use proto::calculate_direct_response_timeout_ms;
 use proto::jobworkerp::data::{
     Job, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
     ResponseType, ResultOutputItem, StreamingType, WorkerData, WorkerId,
@@ -227,7 +230,12 @@ where
         // Default: no-op
     }
     /// TODO move to job/hybrid.rs
-    async fn enqueue_job_to_redis_with_wait_if_needed( &self, job: &Job, worker: &WorkerData, streaming_type: StreamingType,) -> Result<(
+    async fn enqueue_job_to_redis_with_wait_if_needed(
+        &self,
+        job: &Job,
+        worker: &WorkerData,
+        streaming_type: StreamingType,
+    ) -> Result<(
         JobId,
         Option<JobResult>,
         Option<BoxStream<'static, ResultOutputItem>>,
@@ -297,9 +305,15 @@ where
                     } else {
                         // Non-Internal streaming or no streaming: wait for job completion
                         let request_streaming = streaming_type == StreamingType::Response;
+                        // Calculate total timeout including retries (None means unlimited)
+                        let job_timeout = job.data.as_ref().map(|d| d.timeout).unwrap_or(0);
+                        let total_timeout = calculate_direct_response_timeout_ms(
+                            job_timeout,
+                            worker.retry_policy.as_ref(),
+                        );
                         self._wait_job_for_direct_response(
                             &job_id,
-                            job.data.as_ref().map(|d| d.timeout),
+                            total_timeout,
                             request_streaming,
                         )
                         .await
