@@ -15,9 +15,7 @@ use command_utils::trace::Tracing;
 use command_utils::util::shutdown::ShutdownLock;
 use futures::TryFutureExt;
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
-use infra::infra::job::rdb::{
-    RdbChanJobRepositoryImpl, RdbJobRepository, UseRdbChanJobRepositoryOptional,
-};
+use infra::infra::job::rdb::{RdbChanJobRepositoryImpl, UseRdbChanJobRepositoryOptional};
 use infra::infra::job::redis::RedisJobRepositoryImpl;
 use infra::infra::job::redis::UseRedisJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
@@ -169,7 +167,21 @@ pub trait RedisJobDispatcher:
     {
         match val {
             Ok(value) => match Self::deserialize_job(&value[1]) {
-                Ok(job) => self.process_job(job).await,
+                Ok(job) => {
+                    let job_id = job.id;
+                    match self.process_job(job).await {
+                        Ok(result) => Ok(result),
+                        Err(e) => {
+                            // Check if status should be deleted based on error type
+                            if let Some(jid) = job_id {
+                                if super::should_cleanup_status_on_error(&e) {
+                                    self.cleanup_failed_job_status(&jid, "redis").await;
+                                }
+                            }
+                            Err(e)
+                        }
+                    }
+                }
                 Err(e) => {
                     tracing::error!("job decode error: {:?}", e);
                     Err(e)
@@ -196,19 +208,10 @@ pub trait RedisJobDispatcher:
         {
             (jid, jdat, metadata)
         } else {
-            // TODO cannot return result in this case. send result as error?
+            // Status cleanup is handled by process_deque_job based on error type
             let mes = format!("job {:?} is incomplete data.", &job.id);
             tracing::error!("{}", &mes);
-            if let Some(id) = job.id.as_ref() {
-                self.redis_job_repository()
-                    .job_processing_status_repository()
-                    .delete_status(id)
-                    .await?;
-                if let Some(repo) = self.rdb_job_repository_opt() {
-                    repo.delete(id).await?;
-                }
-            }
-            return Err(JobWorkerError::OtherError(mes).into());
+            return Err(JobWorkerError::InvalidParameter(mes).into());
         };
 
         let (wid, wdat) = if let Some(Worker {
@@ -221,19 +224,12 @@ pub trait RedisJobDispatcher:
         {
             (wid, wdat)
         } else {
-            // TODO cannot return result in this case. send result as error?
+            // Status cleanup is handled by process_deque_job based on error type
             let mes = format!(
                 "worker {:?} is not found.",
                 jdat.worker_id.as_ref().unwrap()
             );
             tracing::error!("{}", &mes);
-            self.redis_job_repository()
-                .job_processing_status_repository()
-                .delete_status(&jid)
-                .await?;
-            if let Some(repo) = self.rdb_job_repository_opt() {
-                repo.delete(&jid).await?;
-            }
             return Err(JobWorkerError::NotFound(mes).into());
         };
         let sid = wdat.runner_id.ok_or(JobWorkerError::InvalidParameter(
