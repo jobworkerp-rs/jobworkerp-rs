@@ -122,5 +122,90 @@ pub trait ProtobufHelper {
     }
 }
 
+/// Extension trait for RetryPolicy to calculate total timeout with retries
+pub trait RetryPolicyExt {
+    /// Calculate total wait timeout including all retries and retry intervals
+    ///
+    /// This calculates the maximum time needed to wait for a job to complete,
+    /// including all retry attempts and the intervals between them.
+    ///
+    /// # Arguments
+    /// * `job_timeout_ms` - Single job execution timeout in milliseconds
+    ///
+    /// # Returns
+    /// Total timeout in milliseconds: (job_timeout × (max_retry + 1)) + sum of retry intervals
+    fn calculate_total_timeout_ms(&self, job_timeout_ms: u64) -> u64;
+}
+
+impl RetryPolicyExt for jobworkerp::data::RetryPolicy {
+    fn calculate_total_timeout_ms(&self, job_timeout_ms: u64) -> u64 {
+        use jobworkerp::data::RetryType;
+
+        let retry_count = self.max_retry as u64;
+        if retry_count == 0 {
+            return job_timeout_ms;
+        }
+
+        // Total execution time: job_timeout × (retry_count + 1)
+        let total_execution_time = job_timeout_ms * (retry_count + 1);
+
+        // Calculate sum of all retry intervals
+        let retry_type = RetryType::try_from(self.r#type).unwrap_or(RetryType::None);
+        let total_interval: u64 = match retry_type {
+            RetryType::None => 0,
+            RetryType::Constant => {
+                // interval × retry_count
+                self.interval as u64 * retry_count
+            }
+            RetryType::Linear => {
+                // interval×1 + interval×2 + ... + interval×n = interval × n(n+1)/2
+                let sum = retry_count * (retry_count + 1) / 2;
+                self.interval as u64 * sum
+            }
+            RetryType::Exponential => {
+                // interval×basis^0 + interval×basis^1 + ... + interval×basis^(n-1)
+                // = interval × (basis^n - 1) / (basis - 1)
+                let mut sum: u64 = 0;
+                for i in 0..retry_count {
+                    let interval =
+                        (self.interval as f32 * self.basis.powf(i as f32)).round() as u64;
+                    // Apply max_interval cap
+                    let capped_interval = interval.min(self.max_interval as u64);
+                    sum += capped_interval;
+                }
+                sum
+            }
+        };
+
+        total_execution_time + total_interval
+    }
+}
+
+/// Calculate total wait timeout for Direct response jobs
+///
+/// Convenience function that handles optional RetryPolicy.
+/// Returns None for unlimited timeout (when job_timeout_ms is 0).
+///
+/// # Arguments
+/// * `job_timeout_ms` - Single job execution timeout in milliseconds (0 means unlimited)
+/// * `retry_policy` - Optional retry policy
+///
+/// # Returns
+/// * `Some(timeout)` - Total timeout in milliseconds including retries
+/// * `None` - Unlimited timeout (when job_timeout_ms is 0)
+pub fn calculate_direct_response_timeout_ms(
+    job_timeout_ms: u64,
+    retry_policy: Option<&jobworkerp::data::RetryPolicy>,
+) -> Option<u64> {
+    if job_timeout_ms == 0 {
+        None
+    } else {
+        match retry_policy {
+            Some(policy) => Some(policy.calculate_total_timeout_ms(job_timeout_ms)),
+            None => Some(job_timeout_ms),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -1188,15 +1188,15 @@ where
                 // wait for result if direct response type
                 if worker.response_type == ResponseType::Direct as i32 {
                     // XXX keep chan connection until response
+                    // Calculate total timeout including retries (None means unlimited)
+                    let job_timeout = job.data.as_ref().map(|d| d.timeout).unwrap_or(0);
+                    let total_timeout = proto::calculate_direct_response_timeout_ms(
+                        job_timeout,
+                        worker.retry_policy.as_ref(),
+                    );
                     self._wait_job_for_direct_response(
                         &job_id,
-                        job.data.as_ref().and_then(|d| {
-                            if d.timeout == 0 {
-                                None
-                            } else {
-                                Some(d.timeout)
-                            }
-                        }),
+                        total_timeout,
                         job.data.as_ref().is_some_and(|j| j.streaming_type != 0),
                     )
                     .await
