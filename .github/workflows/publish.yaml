@@ -125,15 +125,6 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/mcp-http:latest
             ghcr.io/${{ github.repository_owner }}/mcp-http:${{ github.ref_name }}
-      - name: Build and push admin-ui Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: admin-ui
-          file: admin-ui/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/admin-ui:latest
-            ghcr.io/${{ github.repository_owner }}/admin-ui:${{ github.ref_name }}
   build-and-push-all-in-one-image:
     runs-on: ubuntu-latest
     container:
