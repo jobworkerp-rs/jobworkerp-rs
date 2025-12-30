@@ -437,17 +437,10 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
             }
         }
 
-        // Start transaction with timeout
+        // Start transaction
         let mut tx = self
             .db_pool()
             .begin()
-            .await
-            .map_err(JobWorkerError::DBError)?;
-
-        // Set transaction timeout (MySQL only)
-        #[cfg(feature = "mysql")]
-        sqlx::query("SET SESSION max_execution_time = 30000")
-            .execute(&mut *tx)
             .await
             .map_err(JobWorkerError::DBError)?;
 
