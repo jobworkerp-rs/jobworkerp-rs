@@ -456,5 +456,43 @@ mod tests {
             assert_eq!(data.hostname, Some("test".to_string()));
             assert_eq!(data.channels.len(), 2);
         }
+
+        #[tokio::test]
+        async fn test_get_channel_aggregation() {
+            let repo = setup_repo().await;
+            cleanup_repo(&repo).await;
+
+            let now = datetime::now_millis();
+
+            // Add two instances with overlapping channels
+            let id1 = WorkerInstanceId { value: 100040 };
+            let data1 = create_test_data(
+                "192.168.1.40",
+                Some("host-40"),
+                vec![("", 4), ("priority", 2)],
+                now,
+                now,
+            );
+            repo.upsert(&id1, &data1).await.unwrap();
+
+            let id2 = WorkerInstanceId { value: 100041 };
+            let data2 = create_test_data("192.168.1.41", Some("host-41"), vec![("", 8)], now, now);
+            repo.upsert(&id2, &data2).await.unwrap();
+
+            // Get aggregation
+            let agg = repo.get_channel_aggregation(90000).await.unwrap();
+
+            // Check default channel
+            let default_agg = agg.get("").unwrap();
+            assert_eq!(default_agg.total_concurrency, 4 + 8);
+            assert_eq!(default_agg.active_instances, 2);
+
+            // Check priority channel
+            let priority_agg = agg.get("priority").unwrap();
+            assert_eq!(priority_agg.total_concurrency, 2);
+            assert_eq!(priority_agg.active_instances, 1);
+
+            cleanup_repo(&repo).await;
+        }
     }
 }
