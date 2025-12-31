@@ -8,6 +8,7 @@ pub mod job_status;
 pub mod runner;
 pub mod validation;
 pub mod worker;
+pub mod worker_instance;
 
 use std::collections::HashMap;
 

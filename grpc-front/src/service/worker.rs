@@ -1,4 +1,4 @@
-use crate::proto::jobworkerp::data::{Empty, QueueType, ResponseType};
+use crate::proto::jobworkerp::data::{Empty, QueueType, ResponseType, WorkerInstance};
 use crate::proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use crate::proto::jobworkerp::service::worker_service_server::WorkerService;
 use crate::proto::jobworkerp::service::{
@@ -14,14 +14,36 @@ use async_stream::stream;
 use command_utils::trace::Tracing;
 use futures::stream::BoxStream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::worker_instance::UseWorkerInstanceRepository;
+use infra::infra::worker_instance::WorkerInstanceRepository;
 use infra::infra::UseJobQueueConfig;
+use jobworkerp_base::WORKER_INSTANCE_CONFIG;
 use proto::jobworkerp::data::{RetryPolicy, StorageType};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 use tonic::Response;
 
 pub trait WorkerGrpc {
     fn app(&self) -> &Arc<dyn WorkerApp + 'static>;
+    fn worker_instance_repository(&self) -> Arc<dyn WorkerInstanceRepository>;
+}
+
+/// Aggregate worker instance channels into (total_concurrency, instance_count) map
+fn aggregate_instance_channels(instances: &[WorkerInstance]) -> HashMap<String, (u32, usize)> {
+    let mut result: HashMap<String, (u32, usize)> = HashMap::new();
+
+    for instance in instances {
+        if let Some(data) = &instance.data {
+            for channel in &data.channels {
+                let entry = result.entry(channel.name.clone()).or_insert((0, 0));
+                entry.0 += channel.concurrency;
+                entry.1 += 1;
+            }
+        }
+    }
+
+    result
 }
 
 const DEFAULT_CHANNEL_DISPLAY_NAME: &str = "[default]";
@@ -373,6 +395,23 @@ impl<
             }
         };
 
+        // Get instance aggregation for total_concurrency and active_instances
+        let timeout_millis = WORKER_INSTANCE_CONFIG.timeout_millis();
+        let instance_aggregation = match self
+            .worker_instance_repository()
+            .find_all_active(timeout_millis)
+            .await
+        {
+            Ok(instances) => aggregate_instance_channels(&instances),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to get worker instances, using config fallback: {}",
+                    e
+                );
+                std::collections::HashMap::new()
+            }
+        };
+
         let channels = self
             .worker_config()
             .channel_concurrency_pair()
@@ -384,10 +423,17 @@ impl<
                     name.clone()
                 };
                 let worker_count = *worker_counts.get(&name).unwrap_or(&0);
+
+                // Get instance aggregation data (total_concurrency, active_instances)
+                let (total_concurrency, active_instances) =
+                    instance_aggregation.get(&name).copied().unwrap_or((0, 0));
+
                 ChannelInfo {
                     name: display_name,
                     concurrency,
                     worker_count,
+                    total_concurrency: Some(total_concurrency),
+                    active_instances: Some(active_instances as i32),
                 }
             })
             .collect();
@@ -409,6 +455,9 @@ impl WorkerGrpcImpl {
 impl WorkerGrpc for WorkerGrpcImpl {
     fn app(&self) -> &Arc<dyn WorkerApp + 'static> {
         &self.app_module.worker_app
+    }
+    fn worker_instance_repository(&self) -> Arc<dyn WorkerInstanceRepository> {
+        self.app_module.repositories.worker_instance_repository()
     }
 }
 

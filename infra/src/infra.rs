@@ -6,6 +6,7 @@ pub mod module;
 pub mod resource;
 pub mod runner;
 pub mod worker;
+pub mod worker_instance;
 
 use anyhow::Result;
 use command_utils::util::{

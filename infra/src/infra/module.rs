@@ -6,6 +6,9 @@ use super::job::queue::{JobQueueCancellationRepository, UseJobQueueCancellationR
 use super::job::status::memory::MemoryJobProcessingStatusRepository;
 use super::job::status::redis::RedisJobProcessingStatusRepository;
 use super::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
+use super::worker_instance::memory::MemoryWorkerInstanceRepository;
+use super::worker_instance::redis::RedisWorkerInstanceRepository;
+use super::worker_instance::{UseWorkerInstanceRepository, WorkerInstanceRepository};
 use super::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
 use jobworkerp_base::job_status_config::JobStatusConfig;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
@@ -94,6 +97,15 @@ impl UseJobProcessingStatusRepository for HybridRepositoryModule {
     }
 }
 
+impl UseWorkerInstanceRepository for HybridRepositoryModule {
+    fn worker_instance_repository(&self) -> Arc<dyn WorkerInstanceRepository> {
+        // In Hybrid (Scalable) mode, Redis is used for cross-instance coordination
+        Arc::new(RedisWorkerInstanceRepository::new(
+            self.redis_module.redis_pool,
+        ))
+    }
+}
+
 // for app module container
 #[derive(Clone, Debug)]
 pub struct RedisRdbOptionalRepositoryModule {
@@ -140,6 +152,24 @@ impl UseJobProcessingStatusRepository for RedisRdbOptionalRepositoryModule {
             (Some(redis), _) => Arc::new(RedisJobProcessingStatusRepository::new(redis.redis_pool)),
             (None, Some(_rdb)) => Arc::new(MemoryJobProcessingStatusRepository::new()),
             (None, None) => panic!("No repository module available"),
+        }
+    }
+}
+
+impl UseWorkerInstanceRepository for RedisRdbOptionalRepositoryModule {
+    fn worker_instance_repository(&self) -> Arc<dyn WorkerInstanceRepository> {
+        match (&self.redis_module, &self.rdb_module) {
+            // Scalable mode: use Redis for cross-instance coordination
+            (Some(redis), _) => Arc::new(RedisWorkerInstanceRepository::new(redis.redis_pool)),
+            // Standalone mode (RDB only): use Memory (single process, no persistence needed)
+            (None, Some(_rdb)) => Arc::new(MemoryWorkerInstanceRepository::new()),
+            // Fallback: use Memory with warning
+            (None, None) => {
+                tracing::warn!(
+                    "WorkerInstanceRepository: No storage module available, using memory fallback"
+                );
+                Arc::new(MemoryWorkerInstanceRepository::new())
+            }
         }
     }
 }

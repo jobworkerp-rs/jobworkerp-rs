@@ -30,5 +30,6 @@ ag-ui-front = { path = "../ag-ui-front" }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }
 envy = { workspace = true }
+hostname = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
