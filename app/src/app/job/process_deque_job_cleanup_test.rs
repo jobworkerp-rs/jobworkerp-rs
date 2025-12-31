@@ -9,10 +9,10 @@
 mod process_deque_job_cleanup_tests {
     use crate::module::test::create_rdb_chan_test_app;
     use anyhow::Result;
-    use infra::infra::job::rows::UseJobqueueAndCodec;
     use infra::infra::job::status::JobProcessingStatusRepository;
     use infra_utils::infra::rdb::UseRdbPool;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use jobworkerp_base::codec::UseProstCodec;
     use jobworkerp_base::error::JobWorkerError;
     use proto::jobworkerp::data::{
         JobId, JobProcessingStatus, QueueType, ResponseType, RunnerId, StreamingType, WorkerData,
@@ -252,11 +252,11 @@ mod process_deque_job_cleanup_tests {
                 .as_ref();
 
             // Create a valid worker first
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker_cleanup".to_string(),
                 description: "Worker for cleanup test".to_string(),
@@ -275,9 +275,9 @@ mod process_deque_job_cleanup_tests {
 
             let worker_id = app_module.worker_app.create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             // Enqueue job (this sets PENDING status)
             let metadata = Arc::new(HashMap::new());
@@ -361,11 +361,11 @@ mod process_deque_job_cleanup_tests {
                 .expect("RDB indexing should be enabled");
 
             // Create worker and enqueue job
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker_rdb_cleanup".to_string(),
                 description: "Worker for RDB cleanup test".to_string(),
@@ -384,9 +384,9 @@ mod process_deque_job_cleanup_tests {
 
             let worker_id = app_module.worker_app.create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             let metadata = Arc::new(HashMap::new());
             let (job_id, _, _) = app_module

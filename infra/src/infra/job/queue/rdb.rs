@@ -186,13 +186,12 @@ mod test {
     use super::*;
     use crate::infra::job::rdb::RdbChanJobRepositoryImpl;
     use crate::infra::job::rdb::RdbJobRepository;
-    use crate::infra::job::rows::JobqueueAndCodec;
-    use crate::infra::job::rows::UseJobqueueAndCodec;
     use crate::infra::JobQueueConfig;
     use anyhow::Result;
     use command_utils::util::datetime;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use jobworkerp_base::codec::UseProstCodec;
     use proto::jobworkerp::data::Job;
     use proto::jobworkerp::data::JobData;
     use proto::jobworkerp::data::WorkerId;
@@ -205,9 +204,9 @@ mod test {
         let worker_id2 = WorkerId { value: 21 };
 
         let jid = JobId { value: 1 };
-        let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
+        let jargs = RdbChanJobRepositoryImpl::serialize_message(&proto::TestArgs {
             args: vec!["GET".to_string(), "/".to_string()],
-        });
+        })?;
         let instant_job_data = JobData {
             worker_id: Some(worker_id),
             args: jargs.clone(),
@@ -359,9 +358,9 @@ mod test {
             let worker_id = WorkerId { value: 11 };
             let worker_id2 = WorkerId { value: 21 };
             let jid0 = JobId { value: 1 };
-            let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
+            let jargs = RdbChanJobRepositoryImpl::serialize_message(&proto::TestArgs {
                 args: vec!["GET".to_string(), "/".to_string()],
-            });
+            })?;
             let metadata = HashMap::new();
             let now_millis = datetime::now_millis();
 

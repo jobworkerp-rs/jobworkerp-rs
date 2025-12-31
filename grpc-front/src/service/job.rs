@@ -602,12 +602,11 @@ impl JobGrpcImpl {
 // unit test for RequestValidator::validate_create method
 #[cfg(test)]
 mod tests {
-    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
-
     use super::*;
     use crate::proto::jobworkerp::data::{Priority, WorkerId};
     use crate::proto::jobworkerp::service::job_request::Worker;
     use crate::proto::jobworkerp::service::JobRequest;
+    use jobworkerp_base::codec::UseProstCodec;
 
     struct Validator;
     impl RequestValidator for Validator {}
@@ -615,9 +614,11 @@ mod tests {
     #[test]
     fn test_validate_create_ok() {
         let v = Validator {};
-        let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
-            args: vec!["fuga".to_string()],
-        });
+        let jargs =
+            jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                args: vec!["fuga".to_string()],
+            })
+            .unwrap();
         let mut req = JobRequest {
             worker: Some(Worker::WorkerId(WorkerId { value: 1 })),
             args: jargs,
@@ -636,9 +637,11 @@ mod tests {
     #[test]
     fn test_validate_create_ng() {
         let v = Validator {};
-        let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
-            args: vec!["fuga".to_string()],
-        });
+        let jargs =
+            jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                args: vec!["fuga".to_string()],
+            })
+            .unwrap();
         let reqr = JobRequest {
             worker: Some(Worker::WorkerId(WorkerId { value: 1 })),
             args: jargs,

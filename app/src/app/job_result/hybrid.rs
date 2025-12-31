@@ -495,11 +495,12 @@ pub mod tests {
         use crate::app::job_result::JobResultAppHelper;
         use command_utils::util::datetime;
         use infra::infra::job::rows::JobqueueAndCodec;
-        use infra::infra::job::rows::UseJobqueueAndCodec;
+        use jobworkerp_base::codec::UseProstCodec;
 
         let args = JobqueueAndCodec::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
-        });
+        })
+        .unwrap();
         let mut job_result_data = proto::jobworkerp::data::JobResultData {
             job_id: None,
             worker_id: None,
@@ -592,8 +593,8 @@ pub mod tests {
         use super::*;
         use command_utils::util::datetime;
         use infra::infra::job::rows::JobqueueAndCodec;
-        use infra::infra::job::rows::UseJobqueueAndCodec;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use jobworkerp_base::codec::UseProstCodec;
         use jobworkerp_runner::jobworkerp::runner::CommandArgs;
         use proto::jobworkerp::data::{ResponseType, WorkerData};
 
@@ -630,7 +631,7 @@ pub mod tests {
                 command: "echo".to_string(),
                 args: vec!["arg1".to_string()],
                 with_memory_monitoring: false,
-            });
+            })?;
             let mut data = JobResultData {
                 job_id: Some(job_id),
                 worker_id: worker.id,

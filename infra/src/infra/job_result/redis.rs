@@ -30,7 +30,12 @@ where
     async fn create(&self, id: &JobResultId, job_result: &JobResultData) -> Result<()> {
         let job_id = job_result.job_id.as_ref();
         let mut con = self.redis_pool().get().await?;
-        let v = Self::serialize_job_result(*id, job_result.clone());
+        let result = JobResult {
+            id: Some(*id),
+            data: Some(job_result.clone()),
+            ..Default::default()
+        };
+        let v = Self::serialize_message(&result)?;
         let res: Result<bool> = con
             .hset_nx(Self::CACHE_KEY, id.value, &v)
             .await
@@ -69,7 +74,12 @@ where
     async fn upsert(&self, id: &JobResultId, job_result: &JobResultData) -> Result<bool> {
         let job_id = job_result.job_id.as_ref();
         let mut con = self.redis_pool().get().await?;
-        let v = Self::serialize_job_result(*id, job_result.clone());
+        let result = JobResult {
+            id: Some(*id),
+            data: Some(job_result.clone()),
+            ..Default::default()
+        };
+        let v = Self::serialize_message(&result)?;
         let res: Result<bool> = con
             .hset(Self::CACHE_KEY, id.value, &v)
             .await
@@ -99,7 +109,12 @@ where
         job_result: &JobResultData,
     ) -> Result<bool> {
         let job_id = job_result.job_id.as_ref();
-        let v = Self::serialize_job_result(*id, job_result.clone());
+        let result = JobResult {
+            id: Some(*id),
+            data: Some(job_result.clone()),
+            ..Default::default()
+        };
+        let v = Self::serialize_message(&result)?;
         if let Some(jid) = job_id {
             // set cache for job_id
             self.redis_pool()
@@ -128,28 +143,28 @@ where
     }
 
     async fn find(&self, id: &JobResultId) -> Result<Option<JobResult>> {
-        match self
+        let res: std::result::Result<Option<Vec<u8>>, _> = self
             .redis_pool()
             .get()
             .await?
             .hget(Self::CACHE_KEY, id.value)
-            .await
-        {
-            Ok(Some(v)) => Self::deserialize_job_result(&v).map(Some),
+            .await;
+        match res {
+            Ok(Some(v)) => Self::deserialize_message::<JobResult>(&v).map(Some),
             Ok(None) => Ok(None),
             Err(e) => Err(JobWorkerError::RedisError(e).into()),
         }
     }
 
     async fn find_by_job_id(&self, job_id: &JobId) -> Result<Option<JobResult>> {
-        match self
+        let res: std::result::Result<Option<Vec<u8>>, _> = self
             .redis_pool()
             .get()
             .await?
             .get(Self::job_id_cache_key(job_id))
-            .await
-        {
-            Ok(Some(v)) => Self::deserialize_job_result(&v).map(Some),
+            .await;
+        match res {
+            Ok(Some(v)) => Self::deserialize_message::<JobResult>(&v).map(Some),
             Ok(None) => Ok(None),
             Err(e) => Err(JobWorkerError::RedisError(e).into()),
         }
@@ -165,7 +180,7 @@ where
             .map_err(|e| JobWorkerError::RedisError(e).into());
         res.map(|tree| {
             tree.iter()
-                .flat_map(|(_id, v)| Self::deserialize_job_result(v))
+                .flat_map(|(_id, v)| Self::deserialize_message::<JobResult>(v))
                 .collect()
         })
     }

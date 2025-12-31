@@ -109,7 +109,7 @@ where
                 .await?
                 .set::<String, Vec<u8>, bool>(
                     Self::run_after_job_key(job_id),
-                    Self::serialize_job(&job),
+                    Self::serialize_message(&job)?,
                 )
                 .await
                 .map_err(|e| JobWorkerError::RedisError(e).into())
@@ -176,7 +176,7 @@ where
                 if job.is_empty() {
                     continue;
                 }
-                let job = Self::deserialize_job(&job)?;
+                let job = Self::deserialize_message::<Job>(&job)?;
                 // id: unwrapped by caller
                 if job.id.is_some() {
                     jobs.push_front(job); // order by score(run_after_time) asc
@@ -260,6 +260,7 @@ mod tests {
             self.redis_pool
         }
     }
+    impl jobworkerp_base::codec::UseProstCodec for RedisJobScheduleRepositoryImpl {}
     impl UseJobqueueAndCodec for RedisJobScheduleRepositoryImpl {}
     impl UseRedisLock for RedisJobScheduleRepositoryImpl {}
     impl RedisJobScheduleRepository for RedisJobScheduleRepositoryImpl {}

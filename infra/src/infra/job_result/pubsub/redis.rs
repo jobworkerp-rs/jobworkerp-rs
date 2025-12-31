@@ -51,7 +51,12 @@ impl JobResultPublisher for RedisJobResultPubSubRepositoryImpl {
         } else {
             vec![Self::job_result_by_worker_pubsub_channel_name(wid)]
         };
-        let result_data = Self::serialize_job_result(*id, data.clone());
+        let job_result = JobResult {
+            id: Some(*id),
+            data: Some(data.clone()),
+            ..Default::default()
+        };
+        let result_data = Self::serialize_message(&job_result)?;
         self.publish_multi_if_listen(chs.as_slice(), &result_data)
             .await
     }
@@ -116,7 +121,7 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                         let payload: Vec<u8> = msg
                             .get_payload()
                             .inspect_err(|e| tracing::error!("get_payload:{:?}", e))?;
-                        let result = Self::deserialize_job_result(&payload)
+                        let result = Self::deserialize_message::<JobResult>(&payload)
                             .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
                         tracing::debug!("subscribe_result_received: result={:?}", &result.id);
                         Ok(result)
@@ -248,7 +253,7 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                 let payload: Vec<u8> = msg
                     .get_payload()
                     .inspect_err(|e| tracing::error!("get_payload:{:?}", e))?;
-                Self::deserialize_job_result(&payload)
+                Self::deserialize_message::<JobResult>(&payload)
                     .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))
             })
         });

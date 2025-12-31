@@ -142,6 +142,7 @@ impl ResultProcessorImpl {
     }
 }
 
+impl jobworkerp_base::codec::UseProstCodec for ResultProcessorImpl {}
 impl UseJobqueueAndCodec for ResultProcessorImpl {}
 impl UseJobResultApp for ResultProcessorImpl {
     fn job_result_app(&self) -> &Arc<dyn JobResultApp + 'static> {
