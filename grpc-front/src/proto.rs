@@ -49,6 +49,11 @@ pub mod jobworkerp {
         pub type ResultStatus = data::ResultStatus;
         pub type JobProcessingStatus = data::JobProcessingStatus;
         pub type Empty = data::Empty;
+        // Worker Instance types
+        pub type ChannelConfig = data::ChannelConfig;
+        pub type WorkerInstanceId = data::WorkerInstanceId;
+        pub type WorkerInstanceData = data::WorkerInstanceData;
+        pub type WorkerInstance = data::WorkerInstance;
     }
     pub mod service {
         tonic::include_proto!("jobworkerp.service");
