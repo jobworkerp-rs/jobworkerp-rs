@@ -39,7 +39,7 @@ pub trait ChanJobQueueRepository:
             .chan_buf()
             .send_to_chan(
                 &qn,
-                Self::serialize_job(job),
+                Self::serialize_message(job)?,
                 job.data.as_ref().and_then(|d| d.uniq_key.clone()),
                 None,
                 false,
@@ -72,7 +72,7 @@ pub trait ChanJobQueueRepository:
             tracing::debug!("receive_job_from_channels: channel: {:?}", qn);
             match self.chan_buf().try_receive_from_chan(qn, None).await {
                 Ok(v) => {
-                    let r = Self::deserialize_job(&v)?;
+                    let r = Self::deserialize_message::<Job>(&v)?;
                     if let Some(v) = self.queue_list_buffer().lock().await.get_mut(qn) {
                         // remove job from shared buffer
                         v.retain(|x| x.id != r.id)
@@ -94,7 +94,7 @@ pub trait ChanJobQueueRepository:
         .await;
         match res.map_err(|e| JobWorkerError::ChanError(e).into()) {
             Ok(v) => {
-                let r = Self::deserialize_job(&v)?;
+                let r = Self::deserialize_message::<Job>(&v)?;
                 if let Some(j) = self
                     .queue_list_buffer()
                     .lock()
@@ -398,7 +398,7 @@ impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
             cancelled_jobs.insert(job_id.value);
         }
 
-        let job_id_bytes = <Self as UseJobqueueAndCodec>::serialize_message(job_id);
+        let job_id_bytes = Self::serialize_message(job_id)?;
 
         match self.broadcast_cancel_chan().send(job_id_bytes) {
             Ok(sent) => {
@@ -495,7 +495,7 @@ impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
                 match msg_opt {
                     Some(Some(Ok(data))) => {
                         if let Ok(job_id) =
-                            <ChanJobQueueRepositoryImpl as UseJobqueueAndCodec>::deserialize_message::<
+                            <ChanJobQueueRepositoryImpl as UseProstCodec>::deserialize_message::<
                                 JobId,
                             >(&data)
                         {

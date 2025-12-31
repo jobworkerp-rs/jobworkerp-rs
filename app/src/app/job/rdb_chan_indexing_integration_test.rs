@@ -8,10 +8,10 @@ mod rdb_chan_indexing_integration_tests {
     use crate::module::test::create_rdb_chan_test_app;
 
     use anyhow::Result;
-    use infra::infra::job::rows::UseJobqueueAndCodec;
     use infra::infra::job::status::JobProcessingStatusRepository;
     use infra_utils::infra::rdb::UseRdbPool;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use jobworkerp_base::codec::UseProstCodec;
     use proto::jobworkerp::data::{
         JobProcessingStatus, QueueType, ResponseType, RunnerId, StreamingType, WorkerData,
     };
@@ -45,11 +45,11 @@ mod rdb_chan_indexing_integration_tests {
                 .expect("RDB indexing should be enabled");
             let _pool = repositories.job_repository.db_pool();
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker".to_string(),
                 description: "desc1".to_string(),
@@ -68,9 +68,9 @@ mod rdb_chan_indexing_integration_tests {
 
             let worker_id = app_module.worker_app.create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             // Step 1: Enqueue job (PENDING status)
             tracing::info!("Step 1: Enqueue job (PENDING)");
@@ -181,11 +181,11 @@ mod rdb_chan_indexing_integration_tests {
             let app_module = create_rdb_chan_test_app(false, true).await?;
             let app = &app_module.job_app;
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker2".to_string(),
                 description: "desc2".to_string(),
@@ -204,9 +204,9 @@ mod rdb_chan_indexing_integration_tests {
 
             let worker_id = app_module.worker_app.create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             // Enqueue multiple jobs
             tracing::info!("Enqueueing 3 test jobs");
@@ -312,11 +312,11 @@ mod rdb_chan_indexing_integration_tests {
                 .memory_job_processing_status_repository
                 .as_ref();
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "sleep".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker_cancel".to_string(),
                 description: "Worker for cancellation test".to_string(),
@@ -335,9 +335,9 @@ mod rdb_chan_indexing_integration_tests {
 
             let worker_id = app_module.worker_app.create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["10".to_string()], // Long sleep
-                });
+                })?;
 
             // Enqueue job (PENDING status)
             tracing::info!("Enqueueing job for cancellation test");
@@ -434,11 +434,11 @@ mod rdb_chan_indexing_integration_tests {
                 .memory_job_processing_status_repository
                 .as_ref();
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker_starttime".to_string(),
                 description: "Worker for start_time test".to_string(),
@@ -457,9 +457,9 @@ mod rdb_chan_indexing_integration_tests {
 
             let worker_id = app_module.worker_app.create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             // Enqueue job (PENDING status)
             tracing::info!("Enqueueing job for start_time test");

@@ -1111,6 +1111,7 @@ impl UseChanJobQueueRepository for RdbChanJobAppImpl {
     }
 }
 impl RdbChanJobAppHelper for RdbChanJobAppImpl {}
+impl jobworkerp_base::codec::UseProstCodec for RdbChanJobAppImpl {}
 impl UseJobqueueAndCodec for RdbChanJobAppImpl {}
 impl UseJobProcessingStatusRepository for RdbChanJobAppImpl {
     fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
@@ -1255,6 +1256,7 @@ mod tests {
     use anyhow::Result;
     use command_utils::util::datetime;
     use infra::infra::job::rows::JobqueueAndCodec;
+    use jobworkerp_base::codec::UseProstCodec;
     // use command_utils::util::tracing::tracing_init_test;
     use infra::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
     use infra::infra::job_result::pubsub::JobResultSubscriber;
@@ -1356,9 +1358,10 @@ mod tests {
         // enqueue, find, complete, find, delete, find
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
-            let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
-                name: "ls".to_string(),
-            });
+            let runner_settings =
+                JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                })?;
             let wd = WorkerData {
                 name: "testworker".to_string(),
                 description: "desc1".to_string(),
@@ -1377,7 +1380,7 @@ mod tests {
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["ls".to_string(), "/".to_string()],
-            });
+            })?;
             // move
             let worker_id1 = worker_id;
             let jargs1 = jargs.clone();
@@ -1513,9 +1516,10 @@ mod tests {
         // enqueue, find, complete, find, delete, find
         TEST_RUNTIME.block_on(async {
             let (app, subscriber) = create_test_app(true).await?;
-            let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
-                name: "ls".to_string(),
-            });
+            let runner_settings =
+                JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                })?;
             let wd = WorkerData {
                 name: "testworker".to_string(),
                 description: "desc1".to_string(),
@@ -1534,7 +1538,7 @@ mod tests {
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
-            });
+            })?;
             let metadata = Arc::new(HashMap::new());
 
             // wait for direct response
@@ -1645,7 +1649,7 @@ mod tests {
         // enqueue, find, complete, find, delete, find
         let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
             name: "ls".to_string(),
-        });
+        })?;
         let wd = WorkerData {
             name: "testworker".to_string(),
             description: "desc1".to_string(),
@@ -1666,7 +1670,7 @@ mod tests {
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
-            });
+            })?;
             let metadata = Arc::new(HashMap::new());
 
             // wait for direct response
@@ -1763,9 +1767,10 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(false).await?;
             // create command worker with backup queue
-            let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
-                name: "ls".to_string(),
-            });
+            let runner_settings =
+                JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                })?;
             let wd = WorkerData {
                 name: "testworker".to_string(),
                 description: "desc1".to_string(),
@@ -1786,7 +1791,7 @@ mod tests {
             // enqueue job
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
-            });
+            })?;
             assert_eq!(
                 app.chan_job_queue_repository()
                     .count_queue(channel, priority)

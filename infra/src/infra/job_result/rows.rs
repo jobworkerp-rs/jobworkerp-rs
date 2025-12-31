@@ -66,10 +66,10 @@ impl JobResultRow {
         }
     }
 
-    pub fn serialize_result_output(list: &ResultOutput) -> Vec<u8> {
+    pub fn serialize_result_output(list: &ResultOutput) -> Result<Vec<u8>> {
         let mut buf = Vec::with_capacity(list.encoded_len());
-        list.encode(&mut buf).unwrap();
-        buf
+        list.encode(&mut buf)?;
+        Ok(buf)
     }
 
     pub fn deserialize_result_output(buf: &Vec<u8>) -> Result<ResultOutput> {
@@ -91,7 +91,7 @@ mod tests {
             let output = ResultOutput {
                 items: b"test output".to_vec(),
             };
-            let serialized_output = JobResultRow::serialize_result_output(&output);
+            let serialized_output = JobResultRow::serialize_result_output(&output).unwrap();
 
             let row = JobResultRow {
                 id: 1,
@@ -128,7 +128,7 @@ mod tests {
             items: b"test output data".to_vec(),
         };
 
-        let serialized = JobResultRow::serialize_result_output(&output);
+        let serialized = JobResultRow::serialize_result_output(&output).unwrap();
         let deserialized = JobResultRow::deserialize_result_output(&serialized).unwrap();
 
         assert_eq!(output.items, deserialized.items);

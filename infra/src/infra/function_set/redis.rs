@@ -24,7 +24,7 @@ where
             .hset_nx(
                 Self::CACHE_KEY,
                 id.value,
-                Self::serialize_function_set(function_set),
+                Self::serialize_function_set(function_set)?,
             )
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into());
@@ -45,7 +45,7 @@ where
     }
 
     async fn upsert(&self, id: &FunctionSetId, function_set: &FunctionSetData) -> Result<bool> {
-        let m = Self::serialize_function_set(function_set);
+        let m = Self::serialize_function_set(function_set)?;
 
         let res: Result<bool> = self
             .redis_pool()
@@ -116,10 +116,10 @@ where
             .map_err(|e| JobWorkerError::RedisError(e).into())
     }
 
-    fn serialize_function_set(w: &FunctionSetData) -> Vec<u8> {
+    fn serialize_function_set(w: &FunctionSetData) -> Result<Vec<u8>> {
         let mut buf = Vec::with_capacity(w.encoded_len());
-        w.encode(&mut buf).unwrap();
-        buf
+        w.encode(&mut buf)?;
+        Ok(buf)
     }
 
     fn deserialize_to_function_set(buf: &Vec<u8>) -> Result<FunctionSetData> {

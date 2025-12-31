@@ -302,7 +302,7 @@ pub trait RunnerResultHandler {
 mod tests {
     use super::*;
     use anyhow::Result;
-    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+    use jobworkerp_base::codec::UseProstCodec;
     use jobworkerp_runner::jobworkerp::runner::CommandArgs;
     use proto::jobworkerp::data::{
         Job, JobData, JobId, ResponseType, RetryType, WorkerData, WorkerId,
@@ -348,11 +348,11 @@ mod tests {
             store_failure: false,
             ..Default::default()
         };
-        let args = JobqueueAndCodec::serialize_message(&CommandArgs {
+        let args = jobworkerp_base::codec::ProstMessageCodec::serialize_message(&CommandArgs {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
             with_memory_monitoring: false,
-        });
+        })?;
         let job = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {

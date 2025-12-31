@@ -30,10 +30,12 @@ impl RedisWorkerInstanceRepository {
         Self { redis_pool }
     }
 
-    fn serialize(instance: &WorkerInstance) -> Vec<u8> {
+    fn serialize(instance: &WorkerInstance) -> Result<Vec<u8>> {
         let mut buf = Vec::with_capacity(instance.encoded_len());
-        instance.encode(&mut buf).expect("encode should not fail");
-        buf
+        instance
+            .encode(&mut buf)
+            .map_err(|e| anyhow::anyhow!("encode error: {}", e))?;
+        Ok(buf)
     }
 
     fn deserialize(buf: &[u8]) -> Result<WorkerInstance> {
@@ -54,7 +56,7 @@ impl WorkerInstanceRepository for RedisWorkerInstanceRepository {
             .redis_pool
             .get()
             .await?
-            .hset(Self::HASH_KEY, id.value, Self::serialize(&instance))
+            .hset(Self::HASH_KEY, id.value, Self::serialize(&instance)?)
             .await
             .map_err(JobWorkerError::RedisError)?;
 
@@ -82,7 +84,7 @@ impl WorkerInstanceRepository for RedisWorkerInstanceRepository {
                 }
 
                 let _: bool = conn
-                    .hset(Self::HASH_KEY, id.value, Self::serialize(&instance))
+                    .hset(Self::HASH_KEY, id.value, Self::serialize(&instance)?)
                     .await
                     .map_err(JobWorkerError::RedisError)?;
 
@@ -447,7 +449,7 @@ mod tests {
                 )),
             };
 
-            let buf = RedisWorkerInstanceRepository::serialize(&instance);
+            let buf = RedisWorkerInstanceRepository::serialize(&instance).unwrap();
             let decoded = RedisWorkerInstanceRepository::deserialize(&buf).unwrap();
 
             assert_eq!(decoded.id.unwrap().value, 12345);

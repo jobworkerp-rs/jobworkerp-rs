@@ -634,6 +634,7 @@ pub(crate) mod tests {
             }
         }
     }
+    impl jobworkerp_base::codec::UseProstCodec for MockJobRunner {}
     impl UseJobqueueAndCodec for MockJobRunner {}
     impl UseRunnerFactory for MockJobRunner {
         fn runner_factory(&self) -> &RunnerFactory {

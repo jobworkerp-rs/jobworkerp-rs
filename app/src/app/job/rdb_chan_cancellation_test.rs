@@ -6,9 +6,9 @@
 mod rdb_chan_cancellation_tests {
     use crate::module::test::create_rdb_chan_test_app;
     use anyhow::Result;
-    use infra::infra::job::rows::UseJobqueueAndCodec;
     use infra::infra::job::status::JobProcessingStatusRepository;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use jobworkerp_base::codec::UseProstCodec;
     use proto::jobworkerp::data::{
         JobId, JobProcessingStatus, QueueType, ResponseType, RunnerId, StreamingType, WorkerData,
     };
@@ -30,11 +30,11 @@ mod rdb_chan_cancellation_tests {
                 .memory_job_processing_status_repository
                 .as_ref();
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker".to_string(),
                 description: "desc1".to_string(),
@@ -53,9 +53,9 @@ mod rdb_chan_cancellation_tests {
 
             let worker_id = app_module.worker_app.create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             // Enqueue job
             let metadata = Arc::new(HashMap::new());
@@ -261,11 +261,11 @@ mod rdb_chan_cancellation_tests {
                 .memory_job_processing_status_repository
                 .as_ref();
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker_pending".to_string(),
                 description: "test pending deletion".to_string(),
@@ -284,9 +284,9 @@ mod rdb_chan_cancellation_tests {
 
             let worker_id = app_module.worker_app.create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             // Enqueue job (will be in PENDING state)
             let metadata = Arc::new(HashMap::new());

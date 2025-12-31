@@ -506,6 +506,7 @@ impl UseRedisRepositoryModule for HybridWorkerAppImpl {
         &self.repositories.redis_module
     }
 }
+impl jobworkerp_base::codec::UseProstCodec for HybridWorkerAppImpl {}
 impl UseJobqueueAndCodec for HybridWorkerAppImpl {}
 
 impl UseRunnerApp for HybridWorkerAppImpl {
@@ -539,12 +540,13 @@ mod tests {
     use crate::app::StorageConfig;
     use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
-    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+    use infra::infra::job::rows::JobqueueAndCodec;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use jobworkerp_base::codec::UseProstCodec;
     use memory_utils::cache::moka::MokaCacheImpl;
     use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
     use proto::TestRunnerSettings;
@@ -600,7 +602,7 @@ mod tests {
             let app = create_test_app(false).await?;
             let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                 name: "testRunner1".to_string(),
-            });
+            })?;
             let w1 = WorkerData {
                 name: "test1".to_string(),
                 runner_settings: runner_settings.clone(),
@@ -672,7 +674,7 @@ mod tests {
             let app = create_test_app(false).await?;
             let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                 name: "testTempRunner".to_string(),
-            });
+            })?;
             let temp_worker = WorkerData {
                 name: "temp_worker".to_string(),
                 runner_settings: runner_settings.clone(),

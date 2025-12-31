@@ -518,8 +518,8 @@ impl RdbWorkerRepository for RdbWorkerRepositoryImpl {}
 
 #[cfg(test)]
 mod test {
-    use crate::infra::job::rows::JobqueueAndCodec;
-    use crate::infra::job::rows::UseJobqueueAndCodec;
+    use crate::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+    use jobworkerp_base::codec::UseProstCodec;
 
     use super::RdbWorkerRepository;
     use super::RdbWorkerRepositoryImpl;
@@ -545,7 +545,7 @@ mod test {
             runner_id: Some(RunnerId { value: 323 }),
             runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                 name: "hoge".to_string(),
-            }),
+            })?,
             retry_policy: Some(RetryPolicy {
                 r#type: 5,
                 interval: 6,
@@ -584,9 +584,9 @@ mod test {
             name: "fuga1".to_string(),
             description: "fuga2".to_string(),
             runner_id: Some(RunnerId { value: 324 }),
-            runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+            runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                 name: "fuga".to_string(),
-            }),
+            })?,
             retry_policy: Some(RetryPolicy {
                 r#type: 6,
                 interval: 7,
@@ -634,7 +634,7 @@ mod test {
                 runner_id: Some(RunnerId { value: 2 }),
                 runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "test1".to_string(),
-                }),
+                })?,
                 retry_policy: None,
                 periodic_interval: 0,
                 channel: Some("channel1".to_string()),
@@ -651,7 +651,7 @@ mod test {
                 runner_id: Some(RunnerId { value: 1 }),
                 runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "test2".to_string(),
-                }),
+                })?,
                 retry_policy: None,
                 periodic_interval: 0,
                 channel: Some("channel2".to_string()),
@@ -668,7 +668,7 @@ mod test {
                 runner_id: Some(RunnerId { value: 2 }),
                 runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "test3".to_string(),
-                }),
+                })?,
                 retry_policy: None,
                 periodic_interval: 0,
                 channel: Some("channel1".to_string()),
@@ -939,7 +939,7 @@ mod test {
             runner_id: Some(RunnerId { value: 1 }),
             runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                 name: "test_periodic".to_string(),
-            }),
+            })?,
             retry_policy: None,
             periodic_interval: 60000, // 60 seconds
             channel: Some("channel1".to_string()),
@@ -1179,9 +1179,9 @@ mod test {
                 name: "testprefix_alpha".to_string(),
                 description: "Test 1".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings1".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1202,9 +1202,9 @@ mod test {
                 name: "testprefix_beta".to_string(),
                 description: "Test 2".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings2".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1225,9 +1225,9 @@ mod test {
                 name: "other_worker".to_string(),
                 description: "Other".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings3".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1308,9 +1308,9 @@ mod test {
                 name: "periodic_worker_1".to_string(),
                 description: "Periodic 1".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings1".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1331,9 +1331,9 @@ mod test {
                 name: "periodic_worker_2".to_string(),
                 description: "Periodic 2".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings2".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1354,9 +1354,9 @@ mod test {
                 name: "non_periodic_worker".to_string(),
                 description: "Non-periodic".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings3".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1457,9 +1457,9 @@ mod test {
                 name: "worker_runner_1".to_string(),
                 description: "Runner 1".to_string(),
                 runner_id: Some(RunnerId { value: 100 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings1".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1480,9 +1480,9 @@ mod test {
                 name: "worker_runner_2".to_string(),
                 description: "Runner 2".to_string(),
                 runner_id: Some(RunnerId { value: 200 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings2".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1503,9 +1503,9 @@ mod test {
                 name: "worker_runner_3".to_string(),
                 description: "Runner 3".to_string(),
                 runner_id: Some(RunnerId { value: 300 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings3".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1602,9 +1602,9 @@ mod test {
                 name: "charlie".to_string(),
                 description: "Third".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings1".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1625,9 +1625,9 @@ mod test {
                 name: "alpha".to_string(),
                 description: "First".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings2".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1648,9 +1648,9 @@ mod test {
                 name: "bravo".to_string(),
                 description: "Second".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings3".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1778,9 +1778,9 @@ mod test {
                 name: "testprefix_periodic_100".to_string(),
                 description: "Test 1".to_string(),
                 runner_id: Some(RunnerId { value: 100 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings1".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1801,9 +1801,9 @@ mod test {
                 name: "testprefix_periodic_200".to_string(),
                 description: "Test 2".to_string(),
                 runner_id: Some(RunnerId { value: 200 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings2".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1824,9 +1824,9 @@ mod test {
                 name: "testprefix_non_periodic_100".to_string(),
                 description: "Other".to_string(),
                 runner_id: Some(RunnerId { value: 100 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings3".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1951,9 +1951,9 @@ mod test {
                 name: "worker_channel1_a".to_string(),
                 description: "Channel 1 Worker A".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings1".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1974,9 +1974,9 @@ mod test {
                 name: "worker_channel1_b".to_string(),
                 description: "Channel 1 Worker B".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings2".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -1997,9 +1997,9 @@ mod test {
                 name: "worker_channel2".to_string(),
                 description: "Channel 2 Worker".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings3".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,
@@ -2020,9 +2020,9 @@ mod test {
                 name: "worker_default".to_string(),
                 description: "Default Channel Worker".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
-                runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                     name: "settings4".to_string(),
-                }),
+                })?,
                 retry_policy: Some(RetryPolicy {
                     r#type: 1,
                     interval: 100,

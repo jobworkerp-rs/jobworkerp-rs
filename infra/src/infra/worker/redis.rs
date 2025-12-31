@@ -56,7 +56,7 @@ where
         if let Some(n) = worker.data.as_ref().map(|d| &d.name) {
             let mut p = self.redis_pool().get().await?;
             let res = p
-                .hset(Self::NAME_CACHE_KEY, n, Self::serialize_worker(worker))
+                .hset(Self::NAME_CACHE_KEY, n, Self::serialize_message(worker)?)
                 .await
                 .map_err(JobWorkerError::RedisError)?;
             if res {
@@ -83,7 +83,7 @@ where
             id: Some(*id),
             data: Some(worker.clone()),
         };
-        let m = Self::serialize_worker(&w);
+        let m = Self::serialize_message(&w)?;
         let mut p = self.redis_pool().get().await?;
         let res: Result<bool> = p
             .hset(Self::CACHE_KEY, id.value, m)
@@ -140,14 +140,14 @@ where
     }
 
     async fn find(&self, id: &WorkerId) -> Result<Option<Worker>> {
-        match self
+        let res: std::result::Result<Option<Vec<u8>>, _> = self
             .redis_pool()
             .get()
             .await?
             .hget(Self::CACHE_KEY, id.value)
-            .await
-        {
-            Ok(Some(v)) => Self::deserialize_worker(&v).map(Some),
+            .await;
+        match res {
+            Ok(Some(v)) => Self::deserialize_message::<Worker>(&v).map(Some),
             Ok(None) => Ok(None),
             Err(e) => Err(JobWorkerError::RedisError(e).into()),
         }
@@ -155,14 +155,14 @@ where
 
     //XXX different key for id
     async fn find_by_name(&self, name: &str) -> Result<Option<Worker>> {
-        match self
+        let res: std::result::Result<Option<Vec<u8>>, _> = self
             .redis_pool()
             .get()
             .await?
             .hget(Self::NAME_CACHE_KEY, name)
-            .await
-        {
-            Ok(Some(v)) => Self::deserialize_worker(&v).map(Some),
+            .await;
+        match res {
+            Ok(Some(v)) => Self::deserialize_message::<Worker>(&v).map(Some),
             Ok(None) => Ok(None),
             Err(e) => Err(JobWorkerError::RedisError(e).into()),
         }
@@ -178,7 +178,7 @@ where
             .map_err(|e| JobWorkerError::RedisError(e).into());
         res.map(|tree| {
             tree.iter()
-                .flat_map(|(_id, v)| Self::deserialize_worker(v))
+                .flat_map(|(_id, v)| Self::deserialize_message::<Worker>(v))
                 .collect()
         })
     }

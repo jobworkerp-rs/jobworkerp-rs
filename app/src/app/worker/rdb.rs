@@ -317,10 +317,11 @@ mod tests {
     use crate::app::StorageConfig;
     use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
-    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+    use infra::infra::job::rows::JobqueueAndCodec;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use jobworkerp_base::codec::UseProstCodec;
     use memory_utils::cache::moka::MokaCacheImpl;
     use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
     use proto::TestRunnerSettings;
@@ -377,7 +378,7 @@ mod tests {
             let app = create_test_app(false).await?;
             let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                 name: "testRunner1".to_string(),
-            });
+            })?;
 
             let w1 = WorkerData {
                 name: "test_rdb_1".to_string(),
@@ -455,7 +456,7 @@ mod tests {
             let app = create_test_app(false).await?;
             let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                 name: "testRdbTempRunner".to_string(),
-            });
+            })?;
 
             let temp_worker = WorkerData {
                 name: "temp_rdb_worker".to_string(),

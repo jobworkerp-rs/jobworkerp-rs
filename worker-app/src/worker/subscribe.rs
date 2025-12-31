@@ -3,6 +3,7 @@ use app::app::worker::UseWorkerApp;
 use async_trait::async_trait;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra_utils::infra::redis::UseRedisClient;
+use proto::jobworkerp::data::Worker;
 use tokio_stream::StreamExt;
 
 use super::runner::map::UseRunnerPoolMap;
@@ -43,7 +44,7 @@ pub trait UseSubscribeWorker:
                         let payload: Vec<u8> = msg
                             .get_payload()
                             .inspect_err(|e| tracing::error!("get_payload:{:?}", e))?;
-                        let worker = Self::deserialize_worker(&payload)
+                        let worker = Self::deserialize_message::<Worker>(&payload)
                             .inspect_err(|e| tracing::error!("deserialize_worker:{:?}", e))?;
                         tracing::info!("subscribe_worker_changed: worker changed: {:?}", worker);
                         if let Some(wid) = worker.id.as_ref() {
@@ -94,6 +95,7 @@ mod test {
             &self.worker_app
         }
     }
+    impl jobworkerp_base::codec::UseProstCodec for UseWorkerMapAndSubscribeImpl {}
     impl UseJobqueueAndCodec for UseWorkerMapAndSubscribeImpl {}
 
     impl UseRedisClient for UseWorkerMapAndSubscribeImpl {

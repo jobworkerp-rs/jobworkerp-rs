@@ -446,6 +446,7 @@ impl WorkerGrpc for WorkerGrpcImpl {
 
 // use tracing
 impl Tracing for WorkerGrpcImpl {}
+impl jobworkerp_base::codec::UseProstCodec for WorkerGrpcImpl {}
 impl UseJobqueueAndCodec for WorkerGrpcImpl {}
 impl UseJobQueueConfig for WorkerGrpcImpl {
     fn job_queue_config(&self) -> &infra::infra::JobQueueConfig {
@@ -582,11 +583,12 @@ mod tests {
             },
         };
         let runner_settings =
-            <JobqueueAndCodec as infra::infra::job::rows::UseJobqueueAndCodec>::serialize_message(
+            <JobqueueAndCodec as jobworkerp_base::codec::UseProstCodec>::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )
+            .unwrap();
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             runner_settings,
@@ -638,11 +640,12 @@ mod tests {
             },
         };
         let runner_settings =
-            <JobqueueAndCodec as infra::infra::job::rows::UseJobqueueAndCodec>::serialize_message(
+            <JobqueueAndCodec as jobworkerp_base::codec::UseProstCodec>::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )
+            .unwrap();
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             runner_settings,
@@ -748,11 +751,12 @@ mod tests {
         };
 
         let runner_settings =
-            <JobqueueAndCodec as infra::infra::job::rows::UseJobqueueAndCodec>::serialize_message(
+            <JobqueueAndCodec as jobworkerp_base::codec::UseProstCodec>::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )
+            .unwrap();
 
         // Test with valid channel
         let w_valid = WorkerData {
