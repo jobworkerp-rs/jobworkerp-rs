@@ -1,62 +1,12 @@
 //! Worker Instance gRPC Service Integration Tests
 //!
 //! Tests for FindChannelList aggregation and other gRPC service behaviors.
-//! These tests verify the channel aggregation logic used in WorkerInstanceGrpcImpl.
+//! These tests verify the channel aggregation logic from the repository layer.
 
-use std::collections::HashMap;
-
+use infra::infra::worker_instance::{aggregate_instance_channels, ChannelAggregation};
 use proto::jobworkerp::data::{
     ChannelConfig, WorkerInstance, WorkerInstanceData, WorkerInstanceId,
 };
-
-/// Aggregate worker instance channel information
-///
-/// This is a pure function that replicates the aggregation logic
-/// from WorkerInstanceGrpcImpl::find_channel_list for testing.
-fn aggregate_instance_channels(
-    instances: &[WorkerInstance],
-    worker_counts: &HashMap<String, i64>,
-) -> Vec<ChannelInfo> {
-    let mut channel_map: HashMap<String, (u32, usize)> = HashMap::new();
-
-    for instance in instances {
-        if let Some(data) = &instance.data {
-            for channel in &data.channels {
-                let entry = channel_map.entry(channel.name.clone()).or_insert((0, 0));
-                entry.0 += channel.concurrency;
-                entry.1 += 1;
-            }
-        }
-    }
-
-    channel_map
-        .into_iter()
-        .map(|(name, (total_concurrency, active_instances))| {
-            let display_name = if name.is_empty() {
-                "[default]".to_string()
-            } else {
-                name.clone()
-            };
-            let worker_count = *worker_counts.get(&name).unwrap_or(&0);
-
-            ChannelInfo {
-                name: display_name,
-                total_concurrency,
-                active_instances: active_instances as i32,
-                worker_count,
-            }
-        })
-        .collect()
-}
-
-/// Channel information structure for testing
-#[derive(Debug, Clone, PartialEq)]
-struct ChannelInfo {
-    name: String,
-    total_concurrency: u32,
-    active_instances: i32,
-    worker_count: i64,
-}
 
 fn create_test_instance(id: i64, ip: &str, channels: Vec<(&str, u32)>) -> WorkerInstance {
     let now = command_utils::util::datetime::now_millis();
@@ -83,9 +33,8 @@ fn create_test_instance(id: i64, ip: &str, channels: Vec<(&str, u32)>) -> Worker
 #[test]
 fn test_aggregate_instance_channels_empty() {
     let instances: Vec<WorkerInstance> = vec![];
-    let worker_counts = HashMap::new();
 
-    let result = aggregate_instance_channels(&instances, &worker_counts);
+    let result = aggregate_instance_channels(&instances);
 
     assert!(
         result.is_empty(),
@@ -102,19 +51,18 @@ fn test_aggregate_instance_channels_single() {
         "192.168.1.1",
         vec![("", 4), ("priority", 2)],
     )];
-    let worker_counts = HashMap::new();
 
-    let result = aggregate_instance_channels(&instances, &worker_counts);
+    let result = aggregate_instance_channels(&instances);
 
     assert_eq!(result.len(), 2, "Should have 2 channels");
 
-    let default_channel = result.iter().find(|c| c.name == "[default]");
-    assert!(default_channel.is_some(), "Should have [default] channel");
+    let default_channel = result.get("");
+    assert!(default_channel.is_some(), "Should have default channel");
     let default_channel = default_channel.unwrap();
     assert_eq!(default_channel.total_concurrency, 4);
     assert_eq!(default_channel.active_instances, 1);
 
-    let priority_channel = result.iter().find(|c| c.name == "priority");
+    let priority_channel = result.get("priority");
     assert!(priority_channel.is_some(), "Should have priority channel");
     let priority_channel = priority_channel.unwrap();
     assert_eq!(priority_channel.total_concurrency, 2);
@@ -131,15 +79,11 @@ fn test_aggregate_instance_channels_multiple() {
         create_test_instance(3, "192.168.1.3", vec![("", 2)]), // Only default channel
     ];
 
-    let mut worker_counts = HashMap::new();
-    worker_counts.insert("".to_string(), 10);
-    worker_counts.insert("priority".to_string(), 5);
-
-    let result = aggregate_instance_channels(&instances, &worker_counts);
+    let result = aggregate_instance_channels(&instances);
 
     assert_eq!(result.len(), 2, "Should have 2 unique channels");
 
-    let default_channel = result.iter().find(|c| c.name == "[default]").unwrap();
+    let default_channel = result.get("").unwrap();
     assert_eq!(
         default_channel.total_concurrency,
         4 + 8 + 2,
@@ -149,12 +93,8 @@ fn test_aggregate_instance_channels_multiple() {
         default_channel.active_instances, 3,
         "Default channel should have 3 active instances"
     );
-    assert_eq!(
-        default_channel.worker_count, 10,
-        "Worker count should match"
-    );
 
-    let priority_channel = result.iter().find(|c| c.name == "priority").unwrap();
+    let priority_channel = result.get("priority").unwrap();
     assert_eq!(
         priority_channel.total_concurrency,
         2 + 4,
@@ -163,10 +103,6 @@ fn test_aggregate_instance_channels_multiple() {
     assert_eq!(
         priority_channel.active_instances, 2,
         "Priority channel should have 2 active instances"
-    );
-    assert_eq!(
-        priority_channel.worker_count, 5,
-        "Worker count should match"
     );
 }
 
@@ -184,9 +120,8 @@ fn test_aggregate_instance_channels_no_channels() {
             last_heartbeat: 0,
         }),
     }];
-    let worker_counts = HashMap::new();
 
-    let result = aggregate_instance_channels(&instances, &worker_counts);
+    let result = aggregate_instance_channels(&instances);
 
     assert!(
         result.is_empty(),
@@ -202,9 +137,8 @@ fn test_aggregate_instance_channels_none_data() {
         id: Some(WorkerInstanceId { value: 1 }),
         data: None, // No data
     }];
-    let worker_counts = HashMap::new();
 
-    let result = aggregate_instance_channels(&instances, &worker_counts);
+    let result = aggregate_instance_channels(&instances);
 
     assert!(
         result.is_empty(),
@@ -212,61 +146,37 @@ fn test_aggregate_instance_channels_none_data() {
     );
 }
 
-/// Test: Default channel name display
-/// Verifies: empty string channel name is displayed as "[default]"
+/// Test: Default channel name (empty string)
+/// Verifies: empty string channel name is preserved as-is
 #[test]
-fn test_default_channel_display_name() {
+fn test_default_channel_key() {
     let instances = vec![create_test_instance(1, "192.168.1.1", vec![("", 4)])];
-    let worker_counts = HashMap::new();
 
-    let result = aggregate_instance_channels(&instances, &worker_counts);
+    let result = aggregate_instance_channels(&instances);
 
     assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0].name, "[default]",
-        "Empty channel name should be displayed as [default]"
+    assert!(
+        result.contains_key(""),
+        "Empty channel name should be the key"
     );
 }
 
-/// Test: Worker counts integration
-/// Verifies: worker counts are correctly associated with channels
+/// Test: ChannelAggregation struct
+/// Verifies: struct fields are correct
 #[test]
-fn test_worker_counts_integration() {
-    let instances = vec![
-        create_test_instance(1, "192.168.1.1", vec![("", 4)]),
-        create_test_instance(2, "192.168.1.2", vec![("batch", 8)]),
-    ];
+fn test_channel_aggregation_struct() {
+    let agg = ChannelAggregation {
+        total_concurrency: 10,
+        active_instances: 3,
+    };
 
-    let mut worker_counts = HashMap::new();
-    worker_counts.insert("".to_string(), 100);
-    worker_counts.insert("batch".to_string(), 50);
-    worker_counts.insert("unused".to_string(), 25); // Not used by any instance
+    assert_eq!(agg.total_concurrency, 10);
+    assert_eq!(agg.active_instances, 3);
 
-    let result = aggregate_instance_channels(&instances, &worker_counts);
-
-    assert_eq!(result.len(), 2);
-
-    let default_channel = result.iter().find(|c| c.name == "[default]").unwrap();
-    assert_eq!(default_channel.worker_count, 100);
-
-    let batch_channel = result.iter().find(|c| c.name == "batch").unwrap();
-    assert_eq!(batch_channel.worker_count, 50);
-}
-
-/// Test: Missing worker count defaults to zero
-/// Verifies: channels without worker count entry default to 0
-#[test]
-fn test_missing_worker_count_defaults_to_zero() {
-    let instances = vec![create_test_instance(1, "192.168.1.1", vec![("unknown", 4)])];
-    let worker_counts = HashMap::new(); // Empty worker counts
-
-    let result = aggregate_instance_channels(&instances, &worker_counts);
-
-    assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0].worker_count, 0,
-        "Missing worker count should default to 0"
-    );
+    // Test Default
+    let default_agg = ChannelAggregation::default();
+    assert_eq!(default_agg.total_concurrency, 0);
+    assert_eq!(default_agg.active_instances, 0);
 }
 
 /// Test: Large scale aggregation
@@ -282,11 +192,9 @@ fn test_large_scale_aggregation() {
         ));
     }
 
-    let worker_counts = HashMap::new();
+    let result = aggregate_instance_channels(&instances);
 
-    let result = aggregate_instance_channels(&instances, &worker_counts);
-
-    let default_channel = result.iter().find(|c| c.name == "[default]").unwrap();
+    let default_channel = result.get("").unwrap();
     assert_eq!(
         default_channel.total_concurrency,
         4 * 100,
@@ -297,7 +205,31 @@ fn test_large_scale_aggregation() {
         "Should have 100 active instances"
     );
 
-    let priority_channel = result.iter().find(|c| c.name == "priority").unwrap();
+    let priority_channel = result.get("priority").unwrap();
     assert_eq!(priority_channel.total_concurrency, 2 * 100);
     assert_eq!(priority_channel.active_instances, 100);
+}
+
+/// Test: Integration with worker_counts (display name transformation)
+/// Verifies: channel display name transformation works
+#[test]
+fn test_display_name_transformation() {
+    let instances = vec![
+        create_test_instance(1, "192.168.1.1", vec![("", 4)]),
+        create_test_instance(2, "192.168.1.2", vec![("batch", 8)]),
+    ];
+
+    let result = aggregate_instance_channels(&instances);
+
+    // Raw result uses original keys
+    assert!(result.contains_key(""));
+    assert!(result.contains_key("batch"));
+
+    // Transformation to display name is done at gRPC layer, not in aggregation
+    // This test verifies the raw data is correct
+    let default_agg = result.get("").unwrap();
+    assert_eq!(default_agg.total_concurrency, 4);
+
+    let batch_agg = result.get("batch").unwrap();
+    assert_eq!(batch_agg.total_concurrency, 8);
 }

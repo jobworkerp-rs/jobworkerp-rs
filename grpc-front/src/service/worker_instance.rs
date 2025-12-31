@@ -9,8 +9,7 @@ use async_stream::stream;
 use command_utils::trace::Tracing;
 use debug_stub_derive::DebugStub;
 use futures::stream::BoxStream;
-use infra::infra::worker_instance::UseWorkerInstanceRepository;
-use infra::infra::worker_instance::WorkerInstanceRepository;
+use infra::infra::worker_instance::{UseWorkerInstanceRepository, WorkerInstanceRepository};
 use jobworkerp_base::WORKER_INSTANCE_CONFIG;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -158,36 +157,23 @@ impl WorkerInstanceService for WorkerInstanceGrpcImpl {
 
         let timeout_millis = WORKER_INSTANCE_CONFIG.timeout_millis();
 
-        // Get active instances
-        let instances = self
+        // Get channel aggregation from repository
+        let channel_aggregation = self
             .worker_instance_repository()
-            .find_all_active(timeout_millis)
+            .get_channel_aggregation(timeout_millis)
             .await
             .map_err(|e| {
-                tracing::error!("Failed to get worker instances: {}", e);
-                tonic::Status::internal("Failed to get worker instances")
+                tracing::error!("Failed to get channel aggregation: {}", e);
+                tonic::Status::internal("Failed to get channel aggregation")
             })?;
 
         // Get worker definition counts
         let worker_counts = self.get_worker_counts_by_channel().await;
 
-        // Aggregate by channel
-        let mut channel_map: HashMap<String, (u32, usize)> = HashMap::new();
-
-        for instance in &instances {
-            if let Some(data) = &instance.data {
-                for channel in &data.channels {
-                    let entry = channel_map.entry(channel.name.clone()).or_insert((0, 0));
-                    entry.0 += channel.concurrency;
-                    entry.1 += 1;
-                }
-            }
-        }
-
         // Build response
-        let channels = channel_map
+        let channels = channel_aggregation
             .into_iter()
-            .map(|(name, (total_concurrency, active_instances))| {
+            .map(|(name, agg)| {
                 let display_name = if name.is_empty() {
                     "[default]".to_string()
                 } else {
@@ -197,8 +183,8 @@ impl WorkerInstanceService for WorkerInstanceGrpcImpl {
 
                 InstanceChannelInfo {
                     name: display_name,
-                    total_concurrency,
-                    active_instances: active_instances as i32,
+                    total_concurrency: agg.total_concurrency,
+                    active_instances: agg.active_instances as i32,
                     worker_count,
                 }
             })

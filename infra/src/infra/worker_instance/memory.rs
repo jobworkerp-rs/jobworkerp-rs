@@ -239,4 +239,41 @@ mod tests {
         let found = repo.find(&id).await.unwrap();
         assert!(found.is_some());
     }
+
+    #[tokio::test]
+    async fn test_get_channel_aggregation() {
+        let repo = MemoryWorkerInstanceRepository::new();
+
+        // Add first instance with default and priority channels
+        let id1 = WorkerInstanceId { value: 1 };
+        let data1 = create_test_data(); // has "" (4) and "priority" (2)
+        repo.upsert(&id1, &data1).await.unwrap();
+
+        // Add second instance with default only (different concurrency)
+        let id2 = WorkerInstanceId { value: 2 };
+        let data2 = WorkerInstanceData {
+            ip_address: "192.168.1.101".to_string(),
+            hostname: Some("test-worker-2".to_string()),
+            channels: vec![ChannelConfig {
+                name: "".to_string(),
+                concurrency: 8,
+            }],
+            registered_at: datetime::now_millis(),
+            last_heartbeat: datetime::now_millis(),
+        };
+        repo.upsert(&id2, &data2).await.unwrap();
+
+        // Get aggregation
+        let agg = repo.get_channel_aggregation(90000).await.unwrap();
+
+        // Check default channel aggregation
+        let default_agg = agg.get("").unwrap();
+        assert_eq!(default_agg.total_concurrency, 4 + 8);
+        assert_eq!(default_agg.active_instances, 2);
+
+        // Check priority channel aggregation
+        let priority_agg = agg.get("priority").unwrap();
+        assert_eq!(priority_agg.total_concurrency, 2);
+        assert_eq!(priority_agg.active_instances, 1);
+    }
 }
