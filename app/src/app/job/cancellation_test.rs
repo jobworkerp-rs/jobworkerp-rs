@@ -10,10 +10,10 @@ mod tests {
     use super::super::JobApp;
     use crate::app::worker::UseWorkerApp;
     use anyhow::Result;
-    use infra::infra::job::rows::UseJobqueueAndCodec;
     use infra::infra::job::status::UseJobProcessingStatusRepository;
     use infra::infra::UseIdGenerator;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use jobworkerp_base::codec::UseProstCodec;
     use proto::jobworkerp::data::{
         JobId, JobProcessingStatus, QueueType, ResponseType, RunnerId, StreamingType, WorkerData,
     };
@@ -44,11 +44,11 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker".to_string(),
                 description: "desc1".to_string(),
@@ -67,9 +67,9 @@ mod tests {
 
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             // Enqueue job for testing cancellation broadcast
             let metadata = Arc::new(HashMap::new());
@@ -113,11 +113,11 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker".to_string(),
                 description: "desc1".to_string(),
@@ -136,9 +136,9 @@ mod tests {
 
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             // Enqueue job with WithBackup queue type
             let metadata = Arc::new(HashMap::new());
@@ -262,11 +262,11 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker_pending".to_string(),
                 description: "Test pending job deletion".to_string(),
@@ -285,9 +285,9 @@ mod tests {
 
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             // Enqueue PENDING job
             let metadata = Arc::new(HashMap::new());
@@ -352,11 +352,11 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "sleep".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker_running".to_string(),
                 description: "Test running job cancellation".to_string(),
@@ -375,9 +375,9 @@ mod tests {
 
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["5".to_string()], // Sleep 5 seconds
-                });
+                })?;
 
             // Enqueue job
             let metadata = Arc::new(HashMap::new());

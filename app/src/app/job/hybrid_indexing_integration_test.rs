@@ -8,10 +8,10 @@ mod hybrid_indexing_integration_tests {
     use crate::module::test::create_hybrid_test_app_with_indexing;
 
     use anyhow::Result;
-    use infra::infra::job::rows::UseJobqueueAndCodec;
     use infra::infra::job::status::JobProcessingStatusRepository;
     use infra_utils::infra::rdb::UseRdbPool;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use jobworkerp_base::codec::UseProstCodec;
     use proto::jobworkerp::data::{
         JobProcessingStatus, QueueType, ResponseType, RunnerId, StreamingType, WorkerData,
     };
@@ -51,11 +51,11 @@ mod hybrid_indexing_integration_tests {
                 .redis_job_processing_status_repository
                 .as_ref();
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker_hybrid".to_string(),
                 description: "Hybrid indexing test".to_string(),
@@ -74,9 +74,9 @@ mod hybrid_indexing_integration_tests {
 
             let worker_id = app_module.worker_app.create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             // Step 1: Enqueue job (PENDING status)
             tracing::info!("Step 1: Enqueue job (PENDING)");
@@ -209,11 +209,11 @@ mod hybrid_indexing_integration_tests {
                 .redis_job_processing_status_repository
                 .as_ref();
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "sleep".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker_running_hybrid".to_string(),
                 description: "Test RUNNING cancellation".to_string(),
@@ -232,9 +232,9 @@ mod hybrid_indexing_integration_tests {
 
             let worker_id = app_module.worker_app.create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["5".to_string()], // Sleep 5 seconds
-                });
+                })?;
 
             // Enqueue job
             let metadata = Arc::new(HashMap::new());
@@ -346,11 +346,11 @@ mod hybrid_indexing_integration_tests {
             let app_module = create_hybrid_test_app_with_indexing(true).await?;
             let app = &app_module.job_app;
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker_find_hybrid".to_string(),
                 description: "Test find_by_condition".to_string(),
@@ -369,9 +369,9 @@ mod hybrid_indexing_integration_tests {
 
             let worker_id = app_module.worker_app.create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             // Enqueue multiple jobs
             tracing::info!("Enqueueing 3 test jobs");
@@ -453,11 +453,11 @@ mod hybrid_indexing_integration_tests {
                 "RDB indexing should be disabled when enable_rdb_indexing=false"
             );
 
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )?;
             let wd = WorkerData {
                 name: "testworker_default".to_string(),
                 description: "Test default RDB indexing config".to_string(),
@@ -476,9 +476,9 @@ mod hybrid_indexing_integration_tests {
 
             let worker_id = app_module.worker_app.create(&wd).await?;
             let jargs =
-                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
                     args: vec!["/".to_string()],
-                });
+                })?;
 
             // Enqueue job (should use default RDB indexing config from repositories)
             let metadata = Arc::new(HashMap::new());

@@ -11,6 +11,7 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use infra_utils::infra::redis::UseRedisClient;
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
+use jobworkerp_base::codec::UseProstCodec;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobId, JobResult, JobResultData, JobResultId, Priority, ResultOutputItem,
@@ -44,8 +45,8 @@ where
             .await?
             .rpush(
                 Self::queue_channel_name(cn, job.data.as_ref().map(|d| &d.priority)),
-                Self::serialize_job(job),
-            ) // expect for multiple value
+                Self::serialize_message(job)?,
+            )
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into())
     }
@@ -54,7 +55,12 @@ where
     #[inline]
     async fn enqueue_result_direct(&self, id: &JobResultId, res: &JobResultData) -> Result<bool> {
         let mut con = self.redis_pool().clone().get().await?;
-        let v = Self::serialize_job_result(*id, res.clone());
+        let job_result = JobResult {
+            id: Some(*id),
+            data: Some(res.clone()),
+            ..Default::default()
+        };
+        let v = Self::serialize_message(&job_result)?;
         if let Some(jid) = res.job_id.as_ref() {
             tracing::debug!("send_result_direct: job_id: {:?}", jid);
             let cn = Self::result_queue_name(jid);
@@ -116,7 +122,7 @@ where
                             if v.is_empty() {
                                 Err(JobWorkerError::RuntimeError("timeout".to_string()).into())
                             } else {
-                                Self::deserialize_job_result(&v[1])
+                                Self::deserialize_message::<JobResult>(&v[1])
                             }
                         });
                     r
@@ -212,7 +218,7 @@ where
                 .map_err(JobWorkerError::RedisError)?;
             i += limit;
             while let Some(j) = r.pop() {
-                let j = Self::deserialize_job(&j)?;
+                let j = Self::deserialize_message::<Job>(&j)?;
                 if j.id.as_ref().unwrap().value == id.value {
                     job = Some(j);
                     break;
@@ -248,7 +254,7 @@ where
                 .map_err(JobWorkerError::RedisError)?;
             i += limit;
             while let Some(j) = r.pop() {
-                let j = Self::deserialize_job(&j)?;
+                let j = Self::deserialize_message::<Job>(&j)?;
                 if ids.is_none_or(|ids| ids.contains(&j.id.as_ref().unwrap().value)) {
                     jobs.push(j);
                 }
@@ -269,7 +275,7 @@ where
         );
         let mut redis = self.redis_pool().get().await.unwrap();
         redis
-            .lrem::<'_, String, Vec<u8>, i32>(c, 0, Self::serialize_job(job))
+            .lrem::<'_, String, Vec<u8>, i32>(c, 0, Self::serialize_message(job)?)
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into())
     }
@@ -323,6 +329,7 @@ impl UseRedisPool for RedisJobQueueRepositoryImpl {
     }
 }
 
+impl jobworkerp_base::codec::UseProstCodec for RedisJobQueueRepositoryImpl {}
 impl UseJobqueueAndCodec for RedisJobQueueRepositoryImpl {}
 
 impl UseRedisJobResultPubSubRepository for RedisJobQueueRepositoryImpl {
@@ -339,7 +346,7 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
     async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
         const JOB_CANCELLATION_CHANNEL: &str = "job_cancellation_channel";
 
-        let message = <Self as UseJobqueueAndCodec>::serialize_message(job_id);
+        let message = Self::serialize_message(job_id)?;
         let _: i32 = self
             .redis_pool()
             .get()
@@ -414,7 +421,7 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
                         Ok(Some(message)) => {
                             match message.get_payload::<Vec<u8>>() {
                                 Ok(payload_bytes) => {
-                                    match <Self as UseJobqueueAndCodec>::deserialize_message::<JobId>(&payload_bytes) {
+                                    match Self::deserialize_message::<JobId>(&payload_bytes) {
                                         Ok(job_id) => {
                                             tracing::debug!("Received cancellation message for job {}", job_id.value);
                                             if let Err(e) = callback(job_id).await {
@@ -498,6 +505,7 @@ mod test {
             self.redis_pool
         }
     }
+    impl jobworkerp_base::codec::UseProstCodec for RedisJobQueueRepositoryImpl {}
     impl UseJobqueueAndCodec for RedisJobQueueRepositoryImpl {}
 
     impl UseRedisJobResultPubSubRepository for RedisJobQueueRepositoryImpl {
@@ -533,7 +541,7 @@ mod test {
         };
         let args = JobqueueAndCodec::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
-        });
+        })?;
         let job = Job {
             id: None,
             data: Some(JobData {

@@ -1,3 +1,5 @@
+mod instance;
+
 use anyhow::Result;
 use app::module::{AppConfigModule, AppModule};
 use app_wrapper::modules::AppWrapperModule;
@@ -5,6 +7,7 @@ use app_wrapper::runner::RunnerFactory;
 use command_utils::util::shutdown;
 use command_utils::util::shutdown::ShutdownLock;
 use infra::infra::IdGeneratorWrapper;
+use instance::WorkerInstanceManager;
 use jobworkerp_runner::runner::mcp::config::McpConfig;
 use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
 use jobworkerp_runner::runner::{factory::RunnerSpecFactory, plugins::Plugins};
@@ -88,6 +91,10 @@ pub async fn boot_all_in_one() -> Result<()> {
     ));
 
     app_module.on_start_all_in_one().await?;
+
+    // Initialize Worker Instance Registry (registers instance and starts heartbeat)
+    let instance_manager =
+        WorkerInstanceManager::initialize(&app_module, shutdown_recv.clone()).await?;
 
     let runner_factory = Arc::new(RunnerFactory::new(
         app_module.clone(),
@@ -187,6 +194,11 @@ pub async fn boot_all_in_one() -> Result<()> {
     // Send shutdown signal (in case not already sent)
     let _ = shutdown_send.send(true);
 
+    // Unregister worker instance
+    if let Err(e) = instance_manager.shutdown().await {
+        tracing::warn!("Failed to shutdown instance manager: {}", e);
+    }
+
     // Wait for all locks to be released with timeout
     tracing::info!("waiting shutdown signal (with timeout)");
     tokio::select! {
@@ -242,6 +254,10 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
     ));
 
     app_module.on_start_all_in_one().await?;
+
+    // Initialize Worker Instance Registry (registers instance and starts heartbeat)
+    let instance_manager =
+        WorkerInstanceManager::initialize(&app_module, shutdown_recv.clone()).await?;
 
     let runner_factory = Arc::new(RunnerFactory::new(
         app_module.clone(),
@@ -376,6 +392,11 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
 
     // Send shutdown signal (in case not already sent)
     let _ = shutdown_send.send(true);
+
+    // Unregister worker instance
+    if let Err(e) = instance_manager.shutdown().await {
+        tracing::warn!("Failed to shutdown instance manager: {}", e);
+    }
 
     // Wait for all locks to be released with timeout
     tracing::info!("waiting shutdown signal (with timeout)");
