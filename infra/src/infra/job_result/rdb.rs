@@ -43,6 +43,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
                 .output
                 .as_ref()
                 .map(JobResultRow::serialize_result_output)
+                .transpose()?
                 .unwrap_or_default(),
         )
         .bind(job_result.retried as i64)
@@ -96,6 +97,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
                 .output
                 .as_ref()
                 .map(JobResultRow::serialize_result_output)
+                .transpose()?
                 .unwrap_or_default(),
         )
         .bind(job_result.retried as i64)
@@ -514,6 +516,7 @@ impl UseRdbPool for RdbJobResultRepositoryImpl {
     }
 }
 
+impl jobworkerp_base::codec::UseProstCodec for RdbJobResultRepositoryImpl {}
 impl UseJobqueueAndCodec for RdbJobResultRepositoryImpl {}
 
 #[async_trait]
@@ -524,11 +527,11 @@ mod test {
 
     use super::RdbJobResultRepository;
     use super::RdbJobResultRepositoryImpl;
-    use crate::infra::job::rows::UseJobqueueAndCodec;
     use anyhow::Context;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
+    use jobworkerp_base::codec::UseProstCodec;
     use proto::jobworkerp::data::JobId;
     use proto::jobworkerp::data::JobResult;
     use proto::jobworkerp::data::JobResultData;
@@ -549,7 +552,7 @@ mod test {
             job_id: Some(JobId { value: 1 }),
             worker_id: Some(WorkerId { value: 2 }),
             worker_name: "".to_string(),
-            args: RdbJobResultRepositoryImpl::serialize_message(&args),
+            args: RdbJobResultRepositoryImpl::serialize_message(&args).unwrap(),
             uniq_key: Some("hoge4".to_string()),
             status: ResultStatus::ErrorAndRetry as i32,
             output: Some(ResultOutput {
@@ -594,7 +597,7 @@ mod test {
             job_id: Some(JobId { value: 2 }),
             worker_id: Some(WorkerId { value: 3 }),
             worker_name: "".to_string(), // fixed
-            args: RdbJobResultRepositoryImpl::serialize_message(&args),
+            args: RdbJobResultRepositoryImpl::serialize_message(&args).unwrap(),
             uniq_key: Some("fuga4".to_string()),
             status: ResultStatus::FatalError as i32,
             output: Some(ResultOutput {
@@ -678,7 +681,7 @@ mod test {
             job_id: Some(JobId { value: job_id }),
             worker_id: Some(WorkerId { value: worker_id }),
             worker_name: String::new(),
-            args: RdbJobResultRepositoryImpl::serialize_message(&args),
+            args: RdbJobResultRepositoryImpl::serialize_message(&args).unwrap(),
             uniq_key,
             status: status as i32,
             output: Some(ResultOutput {
@@ -1988,7 +1991,7 @@ mod test {
                 }),
                 worker_id: Some(WorkerId { value: 1 }),
                 worker_name: String::new(),
-                args: RdbJobResultRepositoryImpl::serialize_message(&args),
+                args: RdbJobResultRepositoryImpl::serialize_message(&args).unwrap(),
                 uniq_key: Some(format!("streaming_test_{}", type_name)),
                 status: ResultStatus::Success as i32,
                 output: Some(ResultOutput {

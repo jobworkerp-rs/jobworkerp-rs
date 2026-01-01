@@ -12,9 +12,9 @@ pub trait UsePublishChanged<ID: Message, DATA: Message>:
     // event pubsub channel name (for cache clear)
     fn channel_name(&self) -> &'static str;
 
-    // publish worker changed event using redis<
+    // publish worker changed event using redis
     async fn publish_worker_changed(&self, id: &ID) -> Result<u32> {
-        let id_data = Self::serialize_message(id);
+        let id_data = Self::serialize_message(id)?;
         self.publish(self.channel_name(), &id_data).await
     }
 }

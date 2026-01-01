@@ -5,6 +5,7 @@ use crate::proto::jobworkerp::service::job_restore_service_server::JobRestoreSer
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultServiceServer;
 use crate::proto::jobworkerp::service::job_service_server::JobServiceServer;
 use crate::proto::jobworkerp::service::runner_service_server::RunnerServiceServer;
+use crate::proto::jobworkerp::service::worker_instance_service_server::WorkerInstanceServiceServer;
 use crate::proto::jobworkerp::service::worker_service_server::WorkerServiceServer;
 use crate::proto::FILE_DESCRIPTOR_SET;
 use crate::service::function::FunctionGrpcImpl;
@@ -15,6 +16,7 @@ use crate::service::job_result::JobResultGrpcImpl;
 use crate::service::job_status::JobProcessingStatusGrpcImpl;
 use crate::service::runner::RunnerGrpcImpl;
 use crate::service::worker::WorkerGrpcImpl;
+use crate::service::worker_instance::WorkerInstanceGrpcImpl;
 use anyhow::anyhow;
 use anyhow::Result;
 use app::module::AppModule;
@@ -94,7 +96,10 @@ pub async fn start_server_with_shutdown(
                 FunctionSetGrpcImpl::new(app_module.clone()),
             )))
             .add_service(enable_grpc_web(FunctionServiceServer::new(
-                FunctionGrpcImpl::new(app_module),
+                FunctionGrpcImpl::new(app_module.clone()),
+            )))
+            .add_service(enable_grpc_web(WorkerInstanceServiceServer::new(
+                WorkerInstanceGrpcImpl::new(app_module),
             )))
             .add_service(reflection)
             .add_service(health_service)
@@ -126,8 +131,11 @@ pub async fn start_server_with_shutdown(
                 app_module.clone(),
             )))
             .add_service(FunctionServiceServer::new(FunctionGrpcImpl::new(
-                app_module,
+                app_module.clone(),
             )))
+            .add_service(WorkerInstanceServiceServer::new(
+                WorkerInstanceGrpcImpl::new(app_module),
+            ))
             .add_service(reflection)
             .add_service(health_service)
             .serve_with_shutdown(addr, async {

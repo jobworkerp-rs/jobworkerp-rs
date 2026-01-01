@@ -47,7 +47,12 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 "worker_id not found: job_id={}",
                 &jid.value
             )))?;
-        let result_data = Self::serialize_job_result(*id, data.clone());
+        let job_result = JobResult {
+            id: Some(*id),
+            data: Some(data.clone()),
+            ..Default::default()
+        };
+        let result_data = Self::serialize_message(&job_result)?;
         // TODO not publish if worker.broadcast_result is false
         // (Currently we're preventing subscription by closing the receiving end(listen, listen_by_worker),
         //  but it's no sense to publish when not needed)
@@ -129,7 +134,7 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
             )
             .await
             .inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?;
-        let res = Self::deserialize_job_result(&message)
+        let res = Self::deserialize_message::<JobResult>(&message)
             .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
         tracing::debug!("subscribe_result_received: result={:?}", &res.id);
         Ok(res)
@@ -220,7 +225,7 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
                 .await
                 .inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?
                 .then(|r| async move {
-                    Self::deserialize_job_result(&r)
+                    Self::deserialize_message::<JobResult>(&r)
                         .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))
                 }),
         );

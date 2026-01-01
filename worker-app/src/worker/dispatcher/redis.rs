@@ -166,7 +166,7 @@ pub trait RedisJobDispatcher:
         Self: Sync + Send + 'static,
     {
         match val {
-            Ok(value) => match Self::deserialize_job(&value[1]) {
+            Ok(value) => match Self::deserialize_message::<Job>(&value[1]) {
                 Ok(job) => {
                     let job_id = job.id;
                     match self.process_job(job).await {
@@ -507,6 +507,7 @@ impl UseRedisJobRepository for RedisJobDispatcherImpl {
     }
 }
 
+impl jobworkerp_base::codec::UseProstCodec for RedisJobDispatcherImpl {}
 impl UseJobqueueAndCodec for RedisJobDispatcherImpl {}
 
 impl UseWorkerApp for RedisJobDispatcherImpl {

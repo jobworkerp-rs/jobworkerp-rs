@@ -14,7 +14,10 @@ use async_stream::stream;
 use command_utils::trace::Tracing;
 use futures::stream::BoxStream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::worker_instance::UseWorkerInstanceRepository;
+use infra::infra::worker_instance::WorkerInstanceRepository;
 use infra::infra::UseJobQueueConfig;
+use jobworkerp_base::WORKER_INSTANCE_CONFIG;
 use proto::jobworkerp::data::{RetryPolicy, StorageType};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -22,6 +25,7 @@ use tonic::Response;
 
 pub trait WorkerGrpc {
     fn app(&self) -> &Arc<dyn WorkerApp + 'static>;
+    fn worker_instance_repository(&self) -> Arc<dyn WorkerInstanceRepository>;
 }
 
 const DEFAULT_CHANNEL_DISPLAY_NAME: &str = "[default]";
@@ -373,6 +377,23 @@ impl<
             }
         };
 
+        // Get instance aggregation for total_concurrency and active_instances
+        let timeout_millis = WORKER_INSTANCE_CONFIG.timeout_millis();
+        let instance_aggregation = match self
+            .worker_instance_repository()
+            .get_channel_aggregation(timeout_millis)
+            .await
+        {
+            Ok(agg) => agg,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to get channel aggregation, using empty fallback: {}",
+                    e
+                );
+                std::collections::HashMap::new()
+            }
+        };
+
         let channels = self
             .worker_config()
             .channel_concurrency_pair()
@@ -384,10 +405,18 @@ impl<
                     name.clone()
                 };
                 let worker_count = *worker_counts.get(&name).unwrap_or(&0);
+
+                // Get instance aggregation data
+                let agg = instance_aggregation.get(&name);
+                let total_concurrency = agg.map(|a| a.total_concurrency).unwrap_or(0);
+                let active_instances = agg.map(|a| a.active_instances as i32).unwrap_or(0);
+
                 ChannelInfo {
                     name: display_name,
                     concurrency,
                     worker_count,
+                    total_concurrency: Some(total_concurrency),
+                    active_instances: Some(active_instances),
                 }
             })
             .collect();
@@ -410,10 +439,14 @@ impl WorkerGrpc for WorkerGrpcImpl {
     fn app(&self) -> &Arc<dyn WorkerApp + 'static> {
         &self.app_module.worker_app
     }
+    fn worker_instance_repository(&self) -> Arc<dyn WorkerInstanceRepository> {
+        self.app_module.repositories.worker_instance_repository()
+    }
 }
 
 // use tracing
 impl Tracing for WorkerGrpcImpl {}
+impl jobworkerp_base::codec::UseProstCodec for WorkerGrpcImpl {}
 impl UseJobqueueAndCodec for WorkerGrpcImpl {}
 impl UseJobQueueConfig for WorkerGrpcImpl {
     fn job_queue_config(&self) -> &infra::infra::JobQueueConfig {
@@ -550,11 +583,12 @@ mod tests {
             },
         };
         let runner_settings =
-            <JobqueueAndCodec as infra::infra::job::rows::UseJobqueueAndCodec>::serialize_message(
+            <JobqueueAndCodec as jobworkerp_base::codec::UseProstCodec>::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )
+            .unwrap();
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             runner_settings,
@@ -606,11 +640,12 @@ mod tests {
             },
         };
         let runner_settings =
-            <JobqueueAndCodec as infra::infra::job::rows::UseJobqueueAndCodec>::serialize_message(
+            <JobqueueAndCodec as jobworkerp_base::codec::UseProstCodec>::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )
+            .unwrap();
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             runner_settings,
@@ -716,11 +751,12 @@ mod tests {
         };
 
         let runner_settings =
-            <JobqueueAndCodec as infra::infra::job::rows::UseJobqueueAndCodec>::serialize_message(
+            <JobqueueAndCodec as jobworkerp_base::codec::UseProstCodec>::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
                 },
-            );
+            )
+            .unwrap();
 
         // Test with valid channel
         let w_valid = WorkerData {

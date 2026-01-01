@@ -429,6 +429,7 @@ impl UseJobProcessingStatusRepository for ChanJobDispatcherImpl {
     }
 }
 
+impl jobworkerp_base::codec::UseProstCodec for ChanJobDispatcherImpl {}
 impl UseJobqueueAndCodec for ChanJobDispatcherImpl {}
 
 impl UseWorkerApp for ChanJobDispatcherImpl {

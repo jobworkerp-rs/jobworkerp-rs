@@ -545,5 +545,6 @@ impl UseChanJobResultPubSubRepository for RdbJobResultAppImpl {
     }
 }
 
+impl jobworkerp_base::codec::UseProstCodec for RdbJobResultAppImpl {}
 impl UseJobqueueAndCodec for RdbJobResultAppImpl {}
 impl JobResultAppHelper for RdbJobResultAppImpl {}

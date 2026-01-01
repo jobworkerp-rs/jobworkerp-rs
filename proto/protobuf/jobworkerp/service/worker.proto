@@ -40,6 +40,15 @@ message ChannelInfo {
   string name = 1;
   uint32 concurrency = 2;
   int64 worker_count = 3;  // Number of workers in this channel
+
+  // # Total Concurrency (new)
+  // Sum of concurrency from all active worker instances for this channel
+  // If not set, clients should use 'concurrency' field value
+  optional uint32 total_concurrency = 4;
+
+  // # Active Instances (new)
+  // Number of active worker instances processing this channel
+  optional int32 active_instances = 5;
 }
 
 message FindChannelListResponse {

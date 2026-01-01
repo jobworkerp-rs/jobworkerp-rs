@@ -60,6 +60,7 @@ impl RealE2EJobRunner {
     }
 }
 
+impl jobworkerp_base::codec::UseProstCodec for RealE2EJobRunner {}
 impl UseJobqueueAndCodec for RealE2EJobRunner {}
 impl UseRunnerFactory for RealE2EJobRunner {
     fn runner_factory(&self) -> &RunnerFactory {

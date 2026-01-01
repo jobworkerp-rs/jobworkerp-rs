@@ -39,5 +39,12 @@ tonic-web = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }
 
+[features]
+test-utils = []
+
+[dev-dependencies]
+tokio = { workspace = true }
+infra = { path = "../infra", features = ["test-utils"] }
+
 [build-dependencies]
 tonic-prost-build = { workspace = true }

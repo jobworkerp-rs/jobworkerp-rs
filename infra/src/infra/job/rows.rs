@@ -1,10 +1,5 @@
-use anyhow::Result;
-use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
-use prost::Message;
-use proto::jobworkerp::data::{
-    Job, JobData, JobId, JobResult, JobResultData, JobResultId, Worker, WorkerId,
-};
-use std::io::Cursor;
+use jobworkerp_base::codec::UseProstCodec;
+use proto::jobworkerp::data::{Job, JobData, JobId, WorkerId};
 
 // db row definitions
 #[derive(sqlx::FromRow)]
@@ -52,14 +47,12 @@ impl JobRow {
 }
 
 // use job queue (store and the data)
-pub trait UseJobqueueAndCodec {
+pub trait UseJobqueueAndCodec: UseProstCodec {
     // TODO specify arbitrary job channel name
     const DEFAULT_CHANNEL_NAME: &'static str = "__default_job_channel__";
 
     // worker pubsub channel name (for cache clear)
     const WORKER_PUBSUB_CHANNEL_NAME: &'static str = "__worker_pubsub_channel__";
-    // // runner_settings pubsub channel name (for cache clear)
-    // const RUNNER_SETTINGS_PUBSUB_CHANNEL_NAME: &'static str = "__runner_settings_pubsub_channel__";
 
     // job queue channel name with channel name
     fn queue_channel_name(channel_name: impl Into<String>, p: Option<&i32>) -> String {
@@ -91,61 +84,6 @@ pub trait UseJobqueueAndCodec {
     fn job_result_by_worker_pubsub_channel_name(worker_id: &WorkerId) -> String {
         format!("job_result_changed:worker:{}", worker_id.value)
     }
-
-    // fn serialize_runner_args(args: &RunnerArg) -> Vec<u8> {
-    //     let mut buf = Vec::with_capacity(args.encoded_len());
-    //     args.encode(&mut buf).unwrap();
-    //     buf
-    // }
-
-    // fn deserialize_runner_args(buf: &Vec<u8>) -> Result<RunnerArg> {
-    //     RunnerArg::decode(&mut Cursor::new(buf)).map_err(|e| JobWorkerError::CodecError(e).into())
-    // }
-
-    fn serialize_job(job: &Job) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(job.encoded_len());
-        job.encode(&mut buf).unwrap();
-        buf
-    }
-
-    fn deserialize_job(buf: &Vec<u8>) -> Result<Job> {
-        Job::decode(&mut Cursor::new(buf)).map_err(|e| JobWorkerError::CodecError(e).into())
-    }
-
-    fn serialize_job_result(id: JobResultId, res: JobResultData) -> Vec<u8> {
-        let j = JobResult {
-            id: Some(id),
-            data: Some(res),
-            ..Default::default()
-        };
-        let mut buf = Vec::with_capacity(j.encoded_len());
-        j.encode(&mut buf).unwrap();
-        buf
-    }
-
-    fn deserialize_job_result(buf: &Vec<u8>) -> Result<JobResult> {
-        JobResult::decode(&mut Cursor::new(buf)).map_err(|e| JobWorkerError::CodecError(e).into())
-    }
-
-    fn serialize_worker(worker: &Worker) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(worker.encoded_len());
-        worker.encode(&mut buf).unwrap();
-        buf
-    }
-
-    fn deserialize_worker(buf: &Vec<u8>) -> Result<Worker> {
-        Worker::decode(&mut Cursor::new(buf)).map_err(|e| JobWorkerError::CodecError(e).into())
-    }
-
-    fn serialize_message<T: Message>(args: &T) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(args.encoded_len());
-        args.encode(&mut buf).unwrap();
-        buf
-    }
-
-    fn deserialize_message<T: Message + Default>(buf: &[u8]) -> Result<T> {
-        T::decode(&mut Cursor::new(buf)).map_err(|e| JobWorkerError::CodecError(e).into())
-    }
 }
 
 // for reference
@@ -161,7 +99,9 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use jobworkerp_base::codec::ProstMessageCodec;
-    use proto::jobworkerp::data::{ResponseType, ResultOutput};
+    use proto::jobworkerp::data::{
+        JobResult, JobResultData, JobResultId, ResponseType, ResultOutput,
+    };
     use proto::TestArgs;
 
     #[test]
@@ -192,8 +132,8 @@ mod tests {
         impl UseProstCodec for JobQueueImpl {}
         impl UseJobqueueAndCodec for JobQueueImpl {}
 
-        let serialized = JobQueueImpl::serialize_job(&job);
-        let deserialized = JobQueueImpl::deserialize_job(&serialized).unwrap();
+        let serialized = JobQueueImpl::serialize_message(&job).unwrap();
+        let deserialized = JobQueueImpl::deserialize_message::<Job>(&serialized).unwrap();
         assert_eq!(job, deserialized);
     }
 
@@ -232,8 +172,13 @@ mod tests {
         impl UseJobqueueAndCodec for JobQueueImpl {}
 
         let id = JobResultId { value: 1234 };
-        let serialized = JobQueueImpl::serialize_job_result(id, job_result_data.clone());
-        let deserialized = JobQueueImpl::deserialize_job_result(&serialized).unwrap();
+        let job_result = JobResult {
+            id: Some(id),
+            data: Some(job_result_data.clone()),
+            ..Default::default()
+        };
+        let serialized = JobQueueImpl::serialize_message(&job_result).unwrap();
+        let deserialized = JobQueueImpl::deserialize_message::<JobResult>(&serialized).unwrap();
         assert_eq!(id, deserialized.id.unwrap());
         assert_eq!(job_result_data, deserialized.data.unwrap());
     }

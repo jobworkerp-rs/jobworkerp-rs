@@ -437,11 +437,11 @@ impl UseChanQueueBuffer for RdbChanJobRepositoryImpl {
 mod test {
     use super::RdbChanJobRepositoryImpl;
     use super::RdbJobRepository;
-    use crate::infra::job::rows::UseJobqueueAndCodec;
     use crate::infra::JobQueueConfig;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
+    use jobworkerp_base::codec::UseProstCodec;
     use proto::jobworkerp::data::Job;
     use proto::jobworkerp::data::JobData;
     use proto::jobworkerp::data::JobId;
@@ -455,7 +455,7 @@ mod test {
         let id = JobId { value: 1 };
         let args = RdbChanJobRepositoryImpl::serialize_message(&TestArgs {
             args: vec!["hoge".to_string()],
-        });
+        })?;
         let data = Some(JobData {
             worker_id: Some(WorkerId { value: 2 }),
             args,
@@ -486,7 +486,7 @@ mod test {
         assert_eq!(Some(&expect), found.as_ref());
         let args2 = RdbChanJobRepositoryImpl::serialize_message(&TestArgs {
             args: vec!["fuga3".to_string()],
-        });
+        })?;
 
         // update
         let update = JobData {
@@ -520,7 +520,7 @@ mod test {
         let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
         let args = RdbChanJobRepositoryImpl::serialize_message(&TestArgs {
             args: vec!["hoge1".to_string()],
-        });
+        })?;
         let data = Some(JobData {
             worker_id: Some(WorkerId { value: 2 }),
             args,
@@ -543,7 +543,7 @@ mod test {
         // future job
         let args2 = RdbChanJobRepositoryImpl::serialize_message(&TestArgs {
             args: vec!["hoge2".to_string()],
-        });
+        })?;
 
         let data = Some(JobData {
             worker_id: Some(WorkerId { value: 2 }),
@@ -567,7 +567,7 @@ mod test {
         // grabbed job
         let args3 = RdbChanJobRepositoryImpl::serialize_message(&TestArgs {
             args: vec!["hoge3".to_string()],
-        });
+        })?;
         let data = Some(JobData {
             worker_id: Some(WorkerId { value: 2 }),
             args: args3,
@@ -611,7 +611,7 @@ mod test {
             };
             let args = RdbChanJobRepositoryImpl::serialize_message(&TestArgs {
                 args: vec![format!("streaming_type_{}", type_name)],
-            });
+            })?;
 
             let job_data = JobData {
                 worker_id: Some(WorkerId { value: 1 }),

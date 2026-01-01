@@ -49,6 +49,7 @@ envy = "0.4"
 dotenvy = "0.15"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 futures-util = "0.3"
+hostname = "0.4"
 http = "1.4"
 itertools = "0.14"
 lazy_static = "1.4"

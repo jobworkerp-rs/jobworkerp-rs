@@ -1295,6 +1295,8 @@ pub mod tests {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
+    #[allow(unused_imports)]
+    use jobworkerp_base::codec::UseProstCodec;
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
     use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
@@ -1402,7 +1404,6 @@ pub mod tests {
 
     #[test]
     fn test_create_direct_job_complete() -> Result<()> {
-        use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
         // enqueue, find, complete, find, delete, find
         // tracing_subscriber::fmt()
         //     .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -1412,9 +1413,11 @@ pub mod tests {
 
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
-            let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
-                name: "ls".to_string(),
-            });
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            )?;
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
                 description: "desc1".to_string(),
@@ -1431,9 +1434,10 @@ pub mod tests {
                 broadcast_results: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
-                args: vec!["/".to_string()],
-            });
+            let jarg =
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                })?;
             let metadata = Arc::new(HashMap::new());
             // move
             let worker_id1 = worker_id;
@@ -1546,14 +1550,14 @@ pub mod tests {
 
     #[test]
     fn test_create_job_not_streaming_error() -> Result<()> {
-        use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
-
         // enqueue, find, complete, find, delete, find
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let (app, _subscriber) = create_test_app(true).await?;
-            let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
-                name: "ls".to_string(),
-            });
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            )?;
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
                 description: "desc1".to_string(),
@@ -1570,9 +1574,10 @@ pub mod tests {
                 broadcast_results: true,
             };
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
-                args: vec!["/".to_string()],
-            });
+            let jarg =
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                })?;
             let metadata = Arc::new(HashMap::new());
 
             // wait for direct response
@@ -1597,15 +1602,16 @@ pub mod tests {
     }
     #[test]
     fn test_create_listen_after_job_complete() -> Result<()> {
-        use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
         use infra::infra::job_result::pubsub::JobResultSubscriber;
 
         // enqueue, find, complete, find, delete, find
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let (app, subscriber) = create_test_app(true).await?;
-            let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
-                name: "ls".to_string(),
-            });
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            )?;
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
                 description: "desc1".to_string(),
@@ -1622,9 +1628,10 @@ pub mod tests {
                 broadcast_results: true, // need for listen after
             };
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
-                args: vec!["/".to_string()],
-            });
+            let jarg =
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                })?;
             let metadata = Arc::new(HashMap::new());
 
             // wait for direct response
@@ -1731,11 +1738,12 @@ pub mod tests {
     }
     #[test]
     fn test_create_normal_job_complete() -> Result<()> {
-        use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
         // enqueue, find, complete, find, delete, find
-        let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
-            name: "ls".to_string(),
-        });
+        let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
+            &proto::TestRunnerSettings {
+                name: "ls".to_string(),
+            },
+        )?;
         let wd = proto::jobworkerp::data::WorkerData {
             name: "testworker".to_string(),
             description: "desc1".to_string(),
@@ -1754,9 +1762,10 @@ pub mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
-                args: vec!["/".to_string()],
-            });
+            let jarg =
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                })?;
             let metadata = Arc::new(HashMap::new());
 
             // wait for direct response
@@ -1845,17 +1854,17 @@ pub mod tests {
 
     #[test]
     fn test_restore_jobs_from_rdb() -> Result<()> {
-        use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
-
         let priority = Priority::Medium;
         let channel: Option<&String> = None;
 
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(false).await?;
             // create command worker with hybrid queue
-            let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
-                name: "ls".to_string(),
-            });
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            )?;
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
                 description: "desc1".to_string(),
@@ -1874,9 +1883,10 @@ pub mod tests {
             let worker_id = app.worker_app().create(&wd).await?;
 
             // enqueue job
-            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
-                args: vec!["/".to_string()],
-            });
+            let jarg =
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                })?;
             assert_eq!(
                 app.redis_job_repository()
                     .count_queue(channel, priority)

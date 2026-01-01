@@ -13,7 +13,7 @@ pub trait UseWorkerPublish: UseJobqueueAndCodec + UseRedisClient + Send + Sync {
             id: Some(*id),
             data: Some(data.clone()),
         };
-        let worker_data = Self::serialize_worker(&worker);
+        let worker_data = Self::serialize_message(&worker)?;
         self.publish(Self::WORKER_PUBSUB_CHANNEL_NAME, &worker_data)
             .await
             .map(|r| r > 0)
@@ -24,7 +24,7 @@ pub trait UseWorkerPublish: UseJobqueueAndCodec + UseRedisClient + Send + Sync {
             id: Some(*worker_id),
             data: None,
         };
-        let worker_data = Self::serialize_worker(&worker);
+        let worker_data = Self::serialize_message(&worker)?;
         self.publish(Self::WORKER_PUBSUB_CHANNEL_NAME, &worker_data)
             .await
             .map(|r| r > 0)
@@ -35,7 +35,7 @@ pub trait UseWorkerPublish: UseJobqueueAndCodec + UseRedisClient + Send + Sync {
             id: None,
             data: None,
         };
-        let worker_data = Self::serialize_worker(&worker);
+        let worker_data = Self::serialize_message(&worker)?;
         self.publish(Self::WORKER_PUBSUB_CHANNEL_NAME, &worker_data)
             .await
             .map(|r| r > 0)

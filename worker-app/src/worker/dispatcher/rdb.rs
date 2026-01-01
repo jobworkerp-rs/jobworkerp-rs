@@ -287,6 +287,7 @@ impl UseRunnerApp for RdbJobDispatcherImpl {
     }
 }
 
+impl jobworkerp_base::codec::UseProstCodec for RdbJobDispatcherImpl {}
 impl UseJobqueueAndCodec for RdbJobDispatcherImpl {}
 impl UseRunnerFactory for RdbJobDispatcherImpl {
     fn runner_factory(&self) -> &RunnerFactory {
