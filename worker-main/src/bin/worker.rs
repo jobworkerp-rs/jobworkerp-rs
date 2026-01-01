@@ -4,6 +4,7 @@ use app_wrapper::runner::RunnerFactory;
 use command_utils::util::{self, tracing::LoggingConfig};
 use dotenvy::dotenv;
 use jobworkerp_base::APP_WORKER_NAME;
+use jobworkerp_main::instance::{WorkerInstanceManager, WorkerInstanceManagerConfig};
 use jobworkerp_runner::runner::{
     factory::RunnerSpecFactory,
     mcp::{config::McpConfig, proxy::McpServerFactory},
@@ -23,6 +24,9 @@ pub async fn main() -> Result<()> {
         ..conf
     })
     .await?;
+
+    // Create shutdown signal for coordinated shutdown
+    let (shutdown_send, shutdown_recv) = tokio::sync::watch::channel(false);
 
     // load mcp config
     let mcp_clients = match McpConfig::load(&jobworkerp_base::MCP_CONFIG_PATH.clone()).await {
@@ -56,20 +60,49 @@ pub async fn main() -> Result<()> {
     // reload jobs from rdb (if necessary) on start worker
     app_module.on_start_worker().await?;
 
+    // Initialize Worker Instance Registry (worker-only: registration + heartbeat)
+    let instance_manager = WorkerInstanceManager::initialize_with_config(
+        &app_module,
+        shutdown_recv.clone(),
+        WorkerInstanceManagerConfig::worker_only(),
+    )
+    .await?;
+
     let runner_factory = Arc::new(RunnerFactory::new(
         app_module.clone(),
         app_wrapper_module,
         mcp_clients,
     ));
+
+    // Spawn ctrl_c handler that broadcasts shutdown signal
+    let ctrl_c_shutdown_send = shutdown_send.clone();
+    tokio::spawn(async move {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                tracing::info!("received ctrl_c, sending shutdown signal");
+                let _ = ctrl_c_shutdown_send.send(true);
+            }
+            Err(e) => tracing::error!("failed to listen for ctrl_c: {:?}", e),
+        }
+    });
+
     let jh = tokio::spawn(jobworkerp_main::start_worker(
         app_module,
         runner_factory,
         lock,
     ));
-    // tokio::time::sleep(Duration::from_secs(10)).await;
 
     tracing::info!("wait for processing ...");
     wait.wait().await;
+
+    // Send shutdown signal (in case not already sent)
+    let _ = shutdown_send.send(true);
+
+    // Unregister worker instance
+    if let Err(e) = instance_manager.shutdown().await {
+        tracing::warn!("Failed to shutdown instance manager: {}", e);
+    }
+
     tracing::info!("shutdown");
     command_utils::util::tracing::shutdown_tracer_provider();
     jh.await??;
