@@ -1,12 +1,11 @@
 use anyhow::Result;
+use app::app::worker_instance::InstanceCleanupTask;
 use app::module::AppModule;
 use infra::infra::worker_instance::UseWorkerInstanceRepository;
 use infra::infra::worker_instance::WorkerInstanceRepository;
 use jobworkerp_base::WORKER_INSTANCE_CONFIG;
-use proto::jobworkerp::data::StorageType;
 use std::sync::Arc;
 use tokio::sync::watch;
-use tokio::time::{interval, Duration};
 use worker_app::worker::instance_registrar::WorkerInstanceRegistrar;
 
 /// Generate a unique instance ID from IP address and process ID
@@ -52,72 +51,37 @@ fn get_hostname() -> Option<String> {
     hostname::get().ok().and_then(|h| h.into_string().ok())
 }
 
-/// Cleanup task for expired worker instances
-///
-/// Only runs in Scalable configuration. In Standalone mode, this is a no-op.
-struct InstanceCleanupTask {
-    repository: Arc<dyn WorkerInstanceRepository>,
-    storage_type: StorageType,
+/// Configuration for WorkerInstanceManager initialization
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WorkerInstanceManagerConfig {
+    /// Enable instance registration and heartbeat (for worker processes)
+    pub enable_registration: bool,
+    /// Enable cleanup task for expired instances (for grpc-front processes)
+    pub enable_cleanup: bool,
 }
 
-impl InstanceCleanupTask {
-    fn new(repository: Arc<dyn WorkerInstanceRepository>, storage_type: StorageType) -> Self {
+impl WorkerInstanceManagerConfig {
+    /// Configuration for worker-only mode (distributed worker process)
+    pub fn worker_only() -> Self {
         Self {
-            repository,
-            storage_type,
+            enable_registration: true,
+            enable_cleanup: false,
         }
     }
 
-    /// Start the cleanup loop
-    ///
-    /// For Scalable configuration, periodically deletes expired instances.
-    /// For Standalone configuration, returns immediately.
-    async fn start_cleanup_loop(self, mut shutdown_rx: watch::Receiver<bool>) {
-        // Standalone mode does not need cleanup
-        if self.storage_type == StorageType::Standalone {
-            tracing::debug!("Standalone mode: skipping instance cleanup task");
-            return;
+    /// Configuration for cleanup-only mode (distributed grpc-front process)
+    pub fn cleanup_only() -> Self {
+        Self {
+            enable_registration: false,
+            enable_cleanup: true,
         }
+    }
 
-        let config = &*WORKER_INSTANCE_CONFIG;
-        if !config.enabled {
-            tracing::info!("Worker instance registry disabled: skipping cleanup task");
-            return;
-        }
-
-        let cleanup_interval = Duration::from_secs(config.cleanup_interval_sec);
-        let timeout_millis = config.timeout_millis();
-
-        tracing::info!(
-            "Starting instance cleanup task: interval={}s, timeout={}s",
-            config.cleanup_interval_sec,
-            config.timeout_sec
-        );
-
-        let mut cleanup_interval = interval(cleanup_interval);
-
-        loop {
-            tokio::select! {
-                _ = cleanup_interval.tick() => {
-                    match self.repository.delete_expired(timeout_millis).await {
-                        Ok(deleted) if deleted > 0 => {
-                            tracing::info!("Cleaned up {} expired worker instances", deleted);
-                        }
-                        Ok(_) => {
-                            tracing::debug!("No expired worker instances to clean up");
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to clean up expired instances: {}", e);
-                        }
-                    }
-                }
-                _ = shutdown_rx.changed() => {
-                    if *shutdown_rx.borrow() {
-                        tracing::info!("Instance cleanup task shutting down");
-                        break;
-                    }
-                }
-            }
+    /// Configuration for all-in-one mode (both worker and grpc-front in same process)
+    pub fn all_in_one() -> Self {
+        Self {
+            enable_registration: true,
+            enable_cleanup: true,
         }
     }
 }
@@ -125,12 +89,17 @@ impl InstanceCleanupTask {
 /// Manager for worker instance registration lifecycle
 ///
 /// Handles:
-/// - Instance registration on startup
-/// - Heartbeat loop execution
-/// - Cleanup task for expired instances (Scalable only)
-/// - Instance unregistration on shutdown
+/// - Instance registration on startup (worker mode)
+/// - Heartbeat loop execution (worker mode)
+/// - Cleanup task for expired instances (grpc-front mode, Scalable only)
+/// - Instance unregistration on shutdown (worker mode)
+///
+/// # Distributed Environment
+/// - **worker binary**: Use `WorkerInstanceManagerConfig::worker_only()`
+/// - **grpc-front binary**: Use `WorkerInstanceManagerConfig::cleanup_only()`
+/// - **all-in-one binary**: Use `WorkerInstanceManagerConfig::all_in_one()`
 pub struct WorkerInstanceManager {
-    registrar: Arc<WorkerInstanceRegistrar>,
+    registrar: Option<Arc<WorkerInstanceRegistrar>>,
     heartbeat_handle: Option<tokio::task::JoinHandle<Result<()>>>,
     cleanup_handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -139,76 +108,91 @@ impl WorkerInstanceManager {
     /// Initialize and register the worker instance
     ///
     /// This should be called early in the boot process, after AppModule is created.
+    /// For all-in-one mode, use `WorkerInstanceManagerConfig::all_in_one()`.
     pub async fn initialize(
         app_module: &Arc<AppModule>,
         shutdown_rx: watch::Receiver<bool>,
+    ) -> Result<Self> {
+        Self::initialize_with_config(
+            app_module,
+            shutdown_rx,
+            WorkerInstanceManagerConfig::all_in_one(),
+        )
+        .await
+    }
+
+    /// Initialize with specific configuration for distributed environment
+    ///
+    /// # Arguments
+    /// * `app_module` - Application module
+    /// * `shutdown_rx` - Shutdown signal receiver
+    /// * `manager_config` - Configuration specifying which features to enable
+    pub async fn initialize_with_config(
+        app_module: &Arc<AppModule>,
+        shutdown_rx: watch::Receiver<bool>,
+        manager_config: WorkerInstanceManagerConfig,
     ) -> Result<Self> {
         let config = WORKER_INSTANCE_CONFIG.clone();
 
         if !config.enabled {
             tracing::info!("Worker instance registration is disabled");
             return Ok(Self {
-                registrar: Arc::new(WorkerInstanceRegistrar::new(
-                    0,
-                    String::new(),
-                    None,
-                    vec![],
-                    app_module.repositories.worker_instance_repository(),
-                    config,
-                    StorageType::Standalone,
-                )),
+                registrar: None,
                 heartbeat_handle: None,
                 cleanup_handle: None,
             });
         }
 
         let storage_type = app_module.config_module.storage_type();
-
-        // Get repository from app module
         let repository: Arc<dyn WorkerInstanceRepository> =
             app_module.repositories.worker_instance_repository();
 
-        // Generate instance ID (IP + PID)
-        let instance_id = generate_instance_id();
+        let mut registrar = None;
+        let mut heartbeat_handle = None;
+        let mut cleanup_handle = None;
 
-        // Get IP/hostname
-        let ip_address = get_ip_address();
-        let hostname = get_hostname();
+        // Registration and heartbeat (for worker processes)
+        if manager_config.enable_registration {
+            let instance_id = generate_instance_id();
+            let ip_address = get_ip_address();
+            let hostname = get_hostname();
+            let channels = app_module
+                .config_module
+                .worker_config
+                .channel_concurrency_pair();
 
-        // Get channel configuration
-        let channels = app_module
-            .config_module
-            .worker_config
-            .channel_concurrency_pair();
+            let reg = Arc::new(WorkerInstanceRegistrar::new(
+                instance_id,
+                ip_address,
+                hostname,
+                channels,
+                repository.clone(),
+                config,
+                storage_type,
+            ));
 
-        // Create registrar
-        let registrar = Arc::new(WorkerInstanceRegistrar::new(
-            instance_id,
-            ip_address,
-            hostname,
-            channels,
-            repository.clone(),
-            config,
-            storage_type,
-        ));
+            // Register on startup
+            reg.register().await?;
 
-        // Register on startup
-        registrar.register().await?;
+            // Start heartbeat loop
+            let registrar_clone = reg.clone();
+            let heartbeat_shutdown_rx = shutdown_rx.clone();
+            heartbeat_handle = Some(tokio::spawn(async move {
+                registrar_clone
+                    .start_heartbeat_loop(heartbeat_shutdown_rx)
+                    .await
+            }));
 
-        // Start heartbeat loop (runs in both Standalone and Scalable)
-        let registrar_clone = registrar.clone();
-        let heartbeat_shutdown_rx = shutdown_rx.clone();
-        let heartbeat_handle = Some(tokio::spawn(async move {
-            registrar_clone
-                .start_heartbeat_loop(heartbeat_shutdown_rx)
-                .await
-        }));
+            registrar = Some(reg);
+        }
 
-        // Start cleanup task (only runs in Scalable mode)
-        let cleanup_task = InstanceCleanupTask::new(repository, storage_type);
-        let cleanup_handle = Some(tokio::spawn(async move {
-            cleanup_task.start_cleanup_loop(shutdown_rx).await
-        }));
+        // Cleanup task (for grpc-front processes, only runs in Scalable mode)
+        if manager_config.enable_cleanup {
+            let cleanup_task = InstanceCleanupTask::new(repository, storage_type);
+            cleanup_handle = Some(tokio::spawn(async move {
+                cleanup_task.start_cleanup_loop(shutdown_rx).await
+            }));
+        }
 
         Ok(Self {
             registrar,
@@ -231,16 +215,18 @@ impl WorkerInstanceManager {
             let _ = handle.await;
         }
 
-        // Unregister instance
-        self.registrar.unregister().await?;
+        // Unregister instance (only if registration was enabled)
+        if let Some(registrar) = &self.registrar {
+            registrar.unregister().await?;
+        }
 
         Ok(())
     }
 
-    /// Get reference to the registrar
+    /// Get reference to the registrar (if registration is enabled)
     #[allow(dead_code)]
-    pub fn registrar(&self) -> &Arc<WorkerInstanceRegistrar> {
-        &self.registrar
+    pub fn registrar(&self) -> Option<&Arc<WorkerInstanceRegistrar>> {
+        self.registrar.as_ref()
     }
 }
 

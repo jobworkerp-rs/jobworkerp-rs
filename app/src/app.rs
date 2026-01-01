@@ -5,6 +5,7 @@ pub mod job;
 pub mod job_result;
 pub mod runner;
 pub mod worker;
+pub mod worker_instance;
 
 use std::collections::HashMap;
 
