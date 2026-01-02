@@ -1,4 +1,4 @@
-mod instance;
+pub mod instance;
 
 use anyhow::Result;
 use app::module::{AppConfigModule, AppModule};
