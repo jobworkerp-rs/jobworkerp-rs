@@ -111,8 +111,8 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
         let res = {
             let mut message = sub.on_message();
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::debug!("got sigint signal....");
+                _ = command_utils::util::shutdown::shutdown_signal() => {
+                    tracing::debug!("got shutdown signal....");
                     Err(JobWorkerError::RuntimeError("interrupted".to_string()).into())
                 },
                 val = tokio_stream::StreamExt::next(&mut message) => {

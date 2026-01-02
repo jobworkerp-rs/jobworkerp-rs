@@ -142,17 +142,8 @@ pub async fn boot_all_in_one() -> Result<()> {
         result
     };
 
-    // Spawn ctrl_c handler that broadcasts shutdown to all servers
-    let ctrl_c_shutdown_send = shutdown_send.clone();
-    tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                tracing::info!("received ctrl_c, sending shutdown signal");
-                let _ = ctrl_c_shutdown_send.send(true);
-            }
-            Err(e) => tracing::error!("failed to listen for ctrl_c: {:?}", e),
-        }
-    });
+    // Spawn shutdown signal handler (SIGINT + SIGTERM on Unix)
+    shutdown::spawn_shutdown_handler(shutdown_send.clone());
 
     // Run futures concurrently based on configuration
     if ag_ui_enabled {
@@ -336,17 +327,8 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
         .await
     };
 
-    // Spawn ctrl_c handler that broadcasts shutdown to all servers
-    let ctrl_c_shutdown_send = shutdown_send.clone();
-    tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                tracing::info!("received ctrl_c, sending shutdown signal");
-                let _ = ctrl_c_shutdown_send.send(true);
-            }
-            Err(e) => tracing::error!("failed to listen for ctrl_c: {:?}", e),
-        }
-    });
+    // Spawn shutdown signal handler (SIGINT + SIGTERM on Unix)
+    shutdown::spawn_shutdown_handler(shutdown_send.clone());
 
     // Run futures concurrently based on configuration
     if ag_ui_enabled {

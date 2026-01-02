@@ -251,7 +251,7 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
-                        _ = tokio::signal::ctrl_c() => {
+                        _ = command_utils::util::shutdown::shutdown_signal() => {
                             break;
                         }
                         item = stream.next() => {

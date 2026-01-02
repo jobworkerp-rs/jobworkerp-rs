@@ -106,13 +106,9 @@ where
         None => {
             let (tx, rx) = tokio::sync::oneshot::channel::<()>();
             tokio::spawn(async move {
-                match tokio::signal::ctrl_c().await {
-                    Ok(()) => {
-                        tracing::info!("Shutting down AG-UI server...");
-                        let _ = tx.send(());
-                    }
-                    Err(e) => tracing::error!("Failed to listen for ctrl_c: {:?}", e),
-                }
+                command_utils::util::shutdown::shutdown_signal().await;
+                tracing::info!("Shutting down AG-UI server...");
+                let _ = tx.send(());
             });
             Box::pin(async move {
                 rx.await.ok();
