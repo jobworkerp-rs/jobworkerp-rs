@@ -162,18 +162,14 @@ where
     let shutdown_future: Pin<Box<dyn Future<Output = ()> + Send>> = match shutdown_signal {
         Some(signal) => signal,
         None => {
-            // Standalone mode: setup internal ctrl_c handler
+            // Standalone mode: setup internal shutdown signal handler (SIGINT/SIGTERM)
             let (tx, rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
-                match tokio::signal::ctrl_c().await {
-                    Ok(()) => {
-                        tracing::info!("Shutting down MCP server...");
-                        let _ = tx.send(()).inspect_err(|e| {
-                            tracing::error!("failed to send shutdown signal: {:?}", e);
-                        });
-                    }
-                    Err(e) => tracing::error!("failed to listen for ctrl_c: {:?}", e),
-                }
+                command_utils::util::shutdown::shutdown_signal().await;
+                tracing::info!("Shutting down MCP server...");
+                let _ = tx.send(()).inspect_err(|e| {
+                    tracing::error!("failed to send shutdown signal: {:?}", e);
+                });
             });
             Box::pin(async move {
                 rx.await.ok();

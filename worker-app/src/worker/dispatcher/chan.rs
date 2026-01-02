@@ -61,14 +61,11 @@ pub trait ChanJobDispatcher:
         // );
         // for shutdown notification (spmc broadcast)
         let (send, recv) = tokio::sync::watch::channel(false);
-        // send msg in ctrl_c signal with send for shutdown notification in parallel
+        // send msg on shutdown signal (SIGINT/SIGTERM) for shutdown notification in parallel
         tokio::spawn(async move {
-            tokio::signal::ctrl_c().await.map(|_| {
-                tracing::debug!("got sigint signal....");
-                send.send(true)
-                    .inspect_err(|e| tracing::error!("mpmc send error: {:?}", e))
-                    .unwrap();
-            })
+            command_utils::util::shutdown::shutdown_signal().await;
+            tracing::debug!("got shutdown signal....");
+            let _ = send.send(true);
         });
 
         for (ch, conc) in self.worker_config().channel_concurrency_pair() {
