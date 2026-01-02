@@ -25,7 +25,9 @@ pub trait UseSubscribeWorker:
         tokio::spawn(async move {
             command_utils::util::shutdown::shutdown_signal().await;
             tracing::debug!("got shutdown signal....");
-            let _ = send.send(true);
+            if let Err(e) = send.send(true) {
+                tracing::debug!("failed to send shutdown notification: {:?}", e);
+            }
         });
 
         'outer: loop {
