@@ -65,7 +65,9 @@ pub trait ChanJobDispatcher:
         tokio::spawn(async move {
             command_utils::util::shutdown::shutdown_signal().await;
             tracing::debug!("got shutdown signal....");
-            let _ = send.send(true);
+            if let Err(e) = send.send(true) {
+                tracing::debug!("failed to send shutdown notification: {:?}", e);
+            }
         });
 
         for (ch, conc) in self.worker_config().channel_concurrency_pair() {
