@@ -21,14 +21,13 @@ pub trait UseSubscribeWorker:
 
         // for shutdown notification (spmc broadcast)
         let (send, mut recv) = tokio::sync::watch::channel(false);
-        // send msg in ctrl_c signal with send for shutdown notification in parallel
+        // send msg on shutdown signal (SIGINT/SIGTERM) for shutdown notification in parallel
         tokio::spawn(async move {
-            tokio::signal::ctrl_c().await.map(|_| {
-                tracing::debug!("got sigint signal....");
-                send.send(true)
-                    .inspect_err(|e| tracing::error!("mpmc send error: {:?}", e))
-                    .unwrap();
-            })
+            command_utils::util::shutdown::shutdown_signal().await;
+            tracing::debug!("got shutdown signal....");
+            if let Err(e) = send.send(true) {
+                tracing::debug!("failed to send shutdown notification: {:?}", e);
+            }
         });
 
         'outer: loop {
