@@ -52,17 +52,8 @@ async fn main() -> Result<()> {
 
     let (lock, mut wait) = shutdown::create_lock_and_wait();
 
-    // Spawn ctrl_c handler that broadcasts shutdown signal
-    let ctrl_c_shutdown_send = shutdown_send.clone();
-    tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                tracing::info!("received ctrl_c, sending shutdown signal");
-                let _ = ctrl_c_shutdown_send.send(true);
-            }
-            Err(e) => tracing::error!("failed to listen for ctrl_c: {:?}", e),
-        }
-    });
+    // Spawn shutdown signal handler (SIGINT + SIGTERM on Unix)
+    shutdown::spawn_shutdown_handler(shutdown_send.clone());
 
     // trace::tracing_init_jaeger(&jeager_addr);
     let ret = grpc_front::start_front_server(app_module, lock).await;
