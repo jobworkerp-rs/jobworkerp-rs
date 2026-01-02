@@ -68,7 +68,7 @@ pub trait RdbJobDispatcher:
                 self.job_queue_config().fetch_interval as u64,
             ));
             loop {
-                // using tokio::select and tokio::signal::ctrl_c, break loop by ctrl-c
+                // using tokio::select and shutdown_signal, break loop on SIGINT/SIGTERM
                 tokio::select! {
                     _ = interval.tick() => {
                         tracing::trace!("execute pop and enqueue run_after job");
@@ -77,7 +77,7 @@ pub trait RdbJobDispatcher:
                             e
                         });
                     }
-                    _ = tokio::signal::ctrl_c() => {
+                    _ = command_utils::util::shutdown::shutdown_signal() => {
                         tracing::debug!("break execute pop and enqueue run_after job");
                         lock.unlock();
                         break;
