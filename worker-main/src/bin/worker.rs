@@ -74,17 +74,8 @@ pub async fn main() -> Result<()> {
         mcp_clients,
     ));
 
-    // Spawn ctrl_c handler that broadcasts shutdown signal
-    let ctrl_c_shutdown_send = shutdown_send.clone();
-    tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                tracing::info!("received ctrl_c, sending shutdown signal");
-                let _ = ctrl_c_shutdown_send.send(true);
-            }
-            Err(e) => tracing::error!("failed to listen for ctrl_c: {:?}", e),
-        }
-    });
+    // Spawn shutdown signal handler (SIGINT + SIGTERM on Unix)
+    util::shutdown::spawn_shutdown_handler(shutdown_send.clone());
 
     let jh = tokio::spawn(jobworkerp_main::start_worker(
         app_module,
