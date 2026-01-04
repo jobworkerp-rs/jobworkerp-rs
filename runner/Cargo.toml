@@ -25,7 +25,7 @@ base64 = { workspace = true }
 bollard = { workspace = true }
 chrono = { workspace = true }
 dashmap = { workspace = true }
-deadpool-redis = { workspace = true }
+bb8 = { workspace = true }
 debug_stub_derive = { workspace = true }
 dotenvy = { workspace = true }
 envy = { workspace = true }

@@ -6,8 +6,8 @@
 use super::store::EventStore;
 use crate::events::AgUiEvent;
 use async_trait::async_trait;
-use deadpool_redis::redis::{AsyncCommands, Script};
-use deadpool_redis::Pool;
+use infra_utils::infra::redis::RedisPool;
+use redis::{AsyncCommands, Script};
 use serde::{Deserialize, Serialize};
 
 /// Redis key prefix for event lists
@@ -53,7 +53,7 @@ struct RedisEventData {
 /// Uses sorted sets for efficient range queries by event ID.
 #[derive(Clone)]
 pub struct RedisEventStore {
-    pool: Pool,
+    pool: &'static RedisPool,
     max_events_per_run: usize,
     ttl_sec: u64,
 }
@@ -65,7 +65,7 @@ impl RedisEventStore {
     /// * `pool` - Redis connection pool
     /// * `max_events_per_run` - Maximum events to store per run
     /// * `ttl_sec` - Event TTL in seconds
-    pub fn new(pool: Pool, max_events_per_run: usize, ttl_sec: u64) -> Self {
+    pub fn new(pool: &'static RedisPool, max_events_per_run: usize, ttl_sec: u64) -> Self {
         Self {
             pool,
             max_events_per_run,
@@ -206,7 +206,7 @@ impl EventStore for RedisEventStore {
         let events_key = Self::events_key(run_id);
 
         // Get all events sorted by event_id
-        let results: Vec<String> = match conn.zrangebyscore(&events_key, "-inf", "+inf").await {
+        let results: Vec<String> = match (*conn).zrangebyscore(&events_key, "-inf", "+inf").await {
             Ok(r) => r,
             Err(e) => {
                 tracing::debug!(
@@ -251,7 +251,7 @@ impl EventStore for RedisEventStore {
 
         let events_key = Self::events_key(run_id);
 
-        if let Err(e) = conn.del::<_, ()>(&events_key).await {
+        if let Err(e) = (*conn).del::<_, ()>(&events_key).await {
             tracing::debug!(
                 run_id = %run_id,
                 error = %e,
@@ -608,11 +608,7 @@ mod tests {
         }
     }
 
-    async fn create_test_pool() -> Pool {
-        let config = deadpool_redis::Config::from_url("redis://127.0.0.1:6379");
-        config
-            .builder()
-            .map(|b| b.max_size(16).build().unwrap())
-            .expect("Failed to create Redis pool")
+    async fn create_test_pool() -> &'static RedisPool {
+        infra_utils::infra::test::setup_test_redis_pool().await
     }
 }
