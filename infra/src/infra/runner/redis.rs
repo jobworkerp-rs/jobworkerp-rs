@@ -143,14 +143,14 @@ impl<T: UseRedisPool + UseIdGenerator + UseRunnerSpecFactory + Send + Sync + 'st
 #[derive(Clone, Debug)]
 pub struct RedisRunnerRepositoryImpl {
     pub redis_pool: &'static RedisPool,
-    pub redis_client: deadpool_redis::redis::Client,
+    pub redis_client: redis::Client,
     id_generator: Arc<IdGeneratorWrapper>,
     runner_spec_factory: Arc<RunnerSpecFactory>,
 }
 impl RedisRunnerRepositoryImpl {
     pub fn new(
         redis_pool: &'static RedisPool,
-        client: deadpool_redis::redis::Client,
+        client: redis::Client,
         id_generator: Arc<IdGeneratorWrapper>,
         runner_factory: Arc<RunnerSpecFactory>,
     ) -> Self {

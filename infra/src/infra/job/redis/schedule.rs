@@ -248,15 +248,14 @@ mod tests {
     use std::{cmp::Ordering, collections::HashMap};
 
     use super::*;
-    use deadpool_redis::Pool;
-    use infra_utils::infra::redis::UseRedisPool;
+    use infra_utils::infra::redis::{RedisPool, UseRedisPool};
     use proto::jobworkerp::data::{Job, JobData, JobId};
 
     struct RedisJobScheduleRepositoryImpl {
-        redis_pool: &'static Pool,
+        redis_pool: &'static RedisPool,
     }
     impl UseRedisPool for RedisJobScheduleRepositoryImpl {
-        fn redis_pool(&self) -> &Pool {
+        fn redis_pool(&self) -> &RedisPool {
             self.redis_pool
         }
     }

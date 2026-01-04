@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use infra_utils::infra::redis::UseRedisClient;
-use infra_utils::infra::redis::{RedisPool, UseRedisPool};
+use infra_utils::infra::redis::{RedisPool, UseRedisBlockingPool, UseRedisPool};
 use jobworkerp_base::codec::UseProstCodec;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
@@ -25,6 +25,7 @@ use std::sync::Arc;
 #[async_trait]
 pub trait RedisJobQueueRepository:
     UseRedisPool
+    + UseRedisBlockingPool
     + UseRedisJobResultPubSubRepository
     + UseJobqueueAndCodec
     + UseJobQueueConfig
@@ -54,7 +55,7 @@ where
     // send job result from worker to front directly
     #[inline]
     async fn enqueue_result_direct(&self, id: &JobResultId, res: &JobResultData) -> Result<bool> {
-        let mut con = self.redis_pool().clone().get().await?;
+        let mut con = self.redis_pool().get().await?;
         let job_result = JobResult {
             id: Some(*id),
             data: Some(res.clone()),
@@ -104,7 +105,8 @@ where
         let signal: Signals = Signals::new([SIGINT]).expect("cannot get signals");
         let handle = signal.handle();
         let c = Self::result_queue_name(job_id);
-        let mut th_p = self.redis_pool().get().await?;
+        // Use blocking pool for BLPOP (no response timeout)
+        let mut th_p = self.redis_blocking_pool().get().await?;
         let pop_future = async {
             tokio::select! {
                 _ = tokio::spawn(async {
@@ -297,6 +299,9 @@ where
 pub struct RedisJobQueueRepositoryImpl {
     pub job_queue_config: Arc<JobQueueConfig>,
     pub redis_pool: &'static RedisPool,
+    /// Redis pool for blocking operations like BLPOP.
+    /// This pool has response_timeout disabled to allow indefinite waiting.
+    pub redis_blocking_pool: &'static RedisPool,
     pub job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl,
 }
 
@@ -304,6 +309,7 @@ impl RedisJobQueueRepositoryImpl {
     pub fn new(
         job_queue_config: Arc<JobQueueConfig>,
         redis_pool: &'static RedisPool,
+        redis_blocking_pool: &'static RedisPool,
         redis_client: redis::Client,
     ) -> Self {
         let job_result_pubsub_repository =
@@ -312,6 +318,7 @@ impl RedisJobQueueRepositoryImpl {
         Self {
             job_queue_config,
             redis_pool,
+            redis_blocking_pool,
             job_result_pubsub_repository,
         }
     }
@@ -326,6 +333,12 @@ impl UseJobQueueConfig for RedisJobQueueRepositoryImpl {
 impl UseRedisPool for RedisJobQueueRepositoryImpl {
     fn redis_pool(&self) -> &'static RedisPool {
         self.redis_pool
+    }
+}
+
+impl UseRedisBlockingPool for RedisJobQueueRepositoryImpl {
+    fn redis_blocking_pool(&self) -> &RedisPool {
+        self.redis_blocking_pool
     }
 }
 
@@ -482,9 +495,10 @@ mod test {
     use super::*;
     use command_utils::util::datetime;
     use infra_utils::infra::redis::RedisPool;
+    use infra_utils::infra::redis::UseRedisBlockingPool;
     use infra_utils::infra::redis::UseRedisPool;
     use infra_utils::infra::test::setup_test_redis_client;
-    use infra_utils::infra::test::setup_test_redis_pool;
+    use infra_utils::infra::test::{setup_test_redis_blocking_pool, setup_test_redis_pool};
     use proto::jobworkerp::data::JobResultData;
     use proto::jobworkerp::data::ResultOutput;
     use proto::jobworkerp::data::{Job, JobData, JobId, ResultStatus, WorkerId};
@@ -493,6 +507,7 @@ mod test {
     struct RedisJobQueueRepositoryImpl {
         job_queue_config: Arc<JobQueueConfig>,
         pub redis_pool: &'static RedisPool,
+        pub redis_blocking_pool: &'static RedisPool,
         job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl,
     }
     impl UseJobQueueConfig for RedisJobQueueRepositoryImpl {
@@ -503,6 +518,11 @@ mod test {
     impl UseRedisPool for RedisJobQueueRepositoryImpl {
         fn redis_pool(&self) -> &'static RedisPool {
             self.redis_pool
+        }
+    }
+    impl UseRedisBlockingPool for RedisJobQueueRepositoryImpl {
+        fn redis_blocking_pool(&self) -> &RedisPool {
+            self.redis_blocking_pool
         }
     }
     impl jobworkerp_base::codec::UseProstCodec for RedisJobQueueRepositoryImpl {}
@@ -518,6 +538,7 @@ mod test {
     #[tokio::test]
     async fn send_job_test() -> Result<()> {
         let redis_pool = setup_test_redis_pool().await;
+        let redis_blocking_pool = setup_test_redis_blocking_pool().await;
         let redis_client = setup_test_redis_client()?;
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
@@ -537,6 +558,7 @@ mod test {
         let repo = RedisJobQueueRepositoryImpl {
             job_queue_config,
             redis_pool,
+            redis_blocking_pool,
             job_result_pubsub_repository,
         };
         let args = JobqueueAndCodec::serialize_message(&proto::TestArgs {
@@ -580,6 +602,7 @@ mod test {
     #[tokio::test]
     async fn send_result_test() -> Result<()> {
         let redis_pool = setup_test_redis_pool().await;
+        let redis_blocking_pool = setup_test_redis_blocking_pool().await;
         let redis_client = setup_test_redis_client()?;
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
@@ -590,6 +613,7 @@ mod test {
         let repo = RedisJobQueueRepositoryImpl {
             job_queue_config,
             redis_pool,
+            redis_blocking_pool,
             job_result_pubsub_repository,
         };
         let job_result_id = JobResultId { value: 111 };
@@ -630,6 +654,7 @@ mod test {
         use tokio::sync::Mutex;
 
         let redis_pool = setup_test_redis_pool().await;
+        let redis_blocking_pool = setup_test_redis_blocking_pool().await;
         let redis_client = setup_test_redis_client()?;
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
@@ -640,6 +665,7 @@ mod test {
         let repo = Arc::new(super::RedisJobQueueRepositoryImpl {
             job_queue_config,
             redis_pool,
+            redis_blocking_pool,
             job_result_pubsub_repository,
         });
 

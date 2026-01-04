@@ -1,10 +1,10 @@
 use crate::workflow::execute::checkpoint::{repository::CheckPointRepository, CheckPointContext};
 use anyhow::Result;
 use async_trait::async_trait;
-use deadpool_redis::redis::AsyncCommands;
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use jobworkerp_base::codec::UseProstCodec;
+use redis::AsyncCommands;
 
 pub trait RedisCheckPointRepository:
     CheckPointRepository + UseRedisPool + UseProstCodec + Sync + 'static

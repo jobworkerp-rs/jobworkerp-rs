@@ -23,6 +23,7 @@ app = { path = "../app" }
 app-wrapper = { path = "../app-wrapper" }
 proto = { path = "../proto" }
 infra = { path = "../infra" }
+infra-utils = { path = "../modules/infra-utils" }
 command-utils = { path = "../modules/command-utils" }
 jobworkerp-base = { path = "../base" }
 jobworkerp-runner = { path = "../runner" }
@@ -45,7 +46,8 @@ serde_json = { workspace = true }
 json-patch = "3"
 
 # Redis (for scalable deployment)
-deadpool-redis = { workspace = true }
+bb8 = { workspace = true }
+redis = { workspace = true }
 
 # Utilities
 anyhow = { workspace = true }

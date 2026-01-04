@@ -54,8 +54,12 @@ impl UseJobQueueCancellationRepository for RedisRepositoryModule {
 // redis and rdb module for DI
 #[derive(Clone, DebugStub)]
 pub struct RedisRepositoryModule {
-    #[debug_stub = "&`static deadpool_redis::Pool"]
-    pub redis_pool: &'static deadpool_redis::Pool,
+    #[debug_stub = "&`static RedisPool"]
+    pub redis_pool: &'static infra_utils::infra::redis::RedisPool,
+    /// Redis pool for blocking operations like BLPOP.
+    /// This pool has response_timeout disabled to allow indefinite waiting.
+    #[debug_stub = "&`static RedisPool"]
+    pub redis_blocking_pool: &'static infra_utils::infra::redis::RedisPool,
     pub redis_client: RedisClient,
     pub redis_runner_repository: RedisRunnerRepositoryImpl,
     pub redis_worker_repository: RedisWorkerRepositoryImpl,
@@ -72,10 +76,12 @@ impl RedisRepositoryModule {
         runner_spec_factory: Arc<RunnerSpecFactory>,
     ) -> Self {
         let redis_pool = super::super::resource::setup_redis_pool_by_env().await;
+        let redis_blocking_pool = super::super::resource::setup_redis_blocking_pool_by_env().await;
         let redis_client = super::super::resource::setup_redis_client_by_env().await;
         let job_queue_config = Arc::new(load_job_queue_config_from_env().unwrap());
         RedisRepositoryModule {
             redis_pool,
+            redis_blocking_pool,
             redis_client: redis_client.clone(),
             redis_runner_repository: RedisRunnerRepositoryImpl::new(
                 redis_pool,
@@ -91,6 +97,7 @@ impl RedisRepositoryModule {
             redis_job_repository: RedisJobRepositoryImpl::new(
                 job_queue_config.clone(),
                 redis_pool,
+                redis_blocking_pool,
                 redis_client.clone(),
             ),
             redis_job_result_repository: RedisJobResultRepositoryImpl::new(
@@ -104,6 +111,7 @@ impl RedisRepositoryModule {
             redis_job_queue_repository: RedisJobQueueRepositoryImpl::new(
                 job_queue_config,
                 redis_pool,
+                redis_blocking_pool,
                 redis_client.clone(),
             ),
         }
@@ -116,9 +124,12 @@ impl RedisRepositoryModule {
     ) -> Self {
         let conf = config_module.redis_config.clone().unwrap();
         let redis_pool = super::super::resource::setup_redis_pool(conf.clone()).await;
+        let redis_blocking_pool =
+            super::super::resource::setup_redis_blocking_pool(conf.clone()).await;
         let redis_client = super::super::resource::setup_redis_client(conf).await;
         RedisRepositoryModule {
             redis_pool,
+            redis_blocking_pool,
             redis_client: redis_client.clone(),
             redis_runner_repository: RedisRunnerRepositoryImpl::new(
                 redis_pool,
@@ -134,6 +145,7 @@ impl RedisRepositoryModule {
             redis_job_repository: RedisJobRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
                 redis_pool,
+                redis_blocking_pool,
                 redis_client.clone(),
             ),
             redis_job_result_repository: RedisJobResultRepositoryImpl::new(
@@ -147,6 +159,7 @@ impl RedisRepositoryModule {
             redis_job_queue_repository: RedisJobQueueRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
                 redis_pool,
+                redis_blocking_pool,
                 redis_client,
             ),
         }
@@ -172,7 +185,9 @@ pub mod test {
         IdGeneratorWrapper,
     };
     use anyhow::Context;
-    use infra_utils::infra::test::{setup_test_redis_client, setup_test_redis_pool};
+    use infra_utils::infra::test::{
+        setup_test_redis_blocking_pool, setup_test_redis_client, setup_test_redis_pool,
+    };
     use jobworkerp_runner::runner::{
         factory::RunnerSpecFactory, mcp::proxy::McpServerFactory, plugins::Plugins,
     };
@@ -183,6 +198,7 @@ pub mod test {
         // use normal redis
         let job_queue_config = Arc::new(crate::infra::JobQueueConfig::default());
         let redis_pool = setup_test_redis_pool().await;
+        let redis_blocking_pool = setup_test_redis_blocking_pool().await;
         let redis_client = setup_test_redis_client().unwrap();
 
         // flush all
@@ -195,7 +211,7 @@ pub mod test {
             ))
             .unwrap();
         redis::cmd("FLUSHALL")
-            .query_async::<()>(&mut rcon)
+            .query_async::<()>(&mut *rcon)
             .await
             .unwrap();
 
@@ -206,6 +222,7 @@ pub mod test {
         p.load_plugins_from(TEST_PLUGIN_DIR).await;
         RedisRepositoryModule {
             redis_pool,
+            redis_blocking_pool,
             redis_client: redis_client.clone(),
             redis_runner_repository: RedisRunnerRepositoryImpl::new(
                 redis_pool,
@@ -221,6 +238,7 @@ pub mod test {
             redis_job_repository: RedisJobRepositoryImpl::new(
                 job_queue_config.clone(),
                 redis_pool,
+                redis_blocking_pool,
                 redis_client.clone(),
             ),
             redis_job_result_repository: RedisJobResultRepositoryImpl::new(
@@ -234,6 +252,7 @@ pub mod test {
             redis_job_queue_repository: RedisJobQueueRepositoryImpl::new(
                 job_queue_config,
                 redis_pool,
+                redis_blocking_pool,
                 redis_client.clone(),
             ),
         }
