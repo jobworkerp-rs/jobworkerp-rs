@@ -68,7 +68,7 @@ fn benchmark_actual_workflow_validation() {
             println!(
                 "     {}. Path: {}, Error: {}",
                 i + 1,
-                error.instance_path,
+                error.instance_path(),
                 error
             );
             if i >= 10 {

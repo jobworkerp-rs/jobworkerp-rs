@@ -315,6 +315,7 @@ impl JobDispatcherFactory {
                         config_module,
                         redis_repositories.redis_client.clone(),
                         Arc::new(redis_repositories.redis_job_repository.clone()),
+                        redis_repositories.redis_blocking_pool,
                         Some(Arc::new(rdb_chan_repositories.rdb_job_repository().clone())),
                         app_module,
                         runner_factory,

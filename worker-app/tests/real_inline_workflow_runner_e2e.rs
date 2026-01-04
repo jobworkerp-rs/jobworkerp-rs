@@ -462,6 +462,7 @@ do:
     assert_eq!(data.status, ResultStatus::MaxRetry as i32);
 
     // Should timeout around 3 seconds, not wait full 10 seconds
+    println!("elapsed_time: {}s", elapsed_time.as_secs_f64());
     assert!(elapsed_time >= Duration::from_secs(3));
     assert!(elapsed_time < Duration::from_secs(6));
 

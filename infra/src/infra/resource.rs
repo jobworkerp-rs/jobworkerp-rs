@@ -59,10 +59,11 @@ pub fn load_db_config_from_env() -> Result<RdbConfig> {
         })
 }
 
-// TODO
 static _REDIS: tokio::sync::OnceCell<RedisPool> = tokio::sync::OnceCell::const_new();
-pub async fn setup_redis_client(config: RedisConfig) -> deadpool_redis::redis::Client {
-    deadpool_redis::redis::Client::open(config.url.clone())
+static _REDIS_BLOCKING: tokio::sync::OnceCell<RedisPool> = tokio::sync::OnceCell::const_new();
+
+pub async fn setup_redis_client(config: RedisConfig) -> redis::Client {
+    redis::Client::open(config.url.clone())
         .unwrap_or_else(|_| panic!("cannot open redis client: config={:?}", &config))
 }
 
@@ -100,10 +101,33 @@ pub async fn setup_redis_pool(config: RedisConfig) -> &'static RedisPool {
         .get_or_init(|| async {
             infra_utils::infra::redis::new_redis_pool(config)
                 .await
-                .expect("msg")
+                .expect("failed to initialize redis pool")
         })
         .await
 }
+
+/// Setup a Redis pool for blocking operations like BLPOP.
+/// This pool has response_timeout disabled to allow indefinite waiting.
+pub async fn setup_redis_blocking_pool_by_env() -> &'static RedisPool {
+    let mut conf = load_redis_config_from_env().unwrap();
+    conf.blocking = true;
+    setup_redis_blocking_pool(conf).await
+}
+
+/// Setup a Redis pool for blocking operations like BLPOP.
+/// This pool has response_timeout disabled to allow indefinite waiting.
+pub async fn setup_redis_blocking_pool(config: RedisConfig) -> &'static RedisPool {
+    _REDIS_BLOCKING
+        .get_or_init(|| async {
+            let mut blocking_config = config;
+            blocking_config.blocking = true;
+            infra_utils::infra::redis::new_redis_pool(blocking_config)
+                .await
+                .expect("failed to initialize redis blocking pool")
+        })
+        .await
+}
+
 pub fn load_redis_config_from_env() -> Result<RedisConfig> {
     envy::prefixed("REDIS_")
         .from_env::<RedisConfig>()
