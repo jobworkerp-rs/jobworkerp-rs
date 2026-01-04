@@ -33,7 +33,7 @@ base64 = "0.22"
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive"] }
 # dashmap = { workspace = true }
-deadpool-redis = { workspace = true }
+bb8 = { workspace = true }
 debug_stub_derive = { workspace = true }
 dotenvy = { workspace = true }
 envy = { workspace = true }
@@ -43,7 +43,8 @@ genai = "0.4.0-alpha.15"
 #genai = { git = "https://github.com/jeremychone/rust-genai", branch = "main" }
 indexmap = "2"
 itertools = { workspace = true }
-jsonschema = "0.33"
+#jsonschema = "0.33"
+jsonschema = "0.38"
 #kube-client = "0.86"
 libloading = { workspace = true }
 liquid = "0.26"
@@ -52,7 +53,7 @@ ollama-rs = { version = "0.3", features = ["stream"] }
 once_cell = { workspace = true }
 opentelemetry = { workspace = true }
 prost = { workspace = true }
-# redis = { workspace = true }
+redis = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
 regress = "0.10"

@@ -23,7 +23,7 @@ use infra::infra::job::status::UseJobProcessingStatusRepository;
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
-use infra_utils::infra::redis::{RedisPool, UseRedisPool};
+use infra_utils::infra::redis::{RedisPool, UseRedisBlockingPool, UseRedisPool};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobProcessingStatus, JobResult, JobResultId, Priority, QueueType, ResponseType, Worker,
@@ -47,6 +47,7 @@ pub trait RedisJobDispatcher:
     + infra::infra::job::status::rdb::UseRdbJobProcessingStatusIndexRepository
     + UseSubscribeWorker
     + UseRedisPool
+    + UseRedisBlockingPool
     + JobRunner
     + UseRedisJobRepository
     + UseRunnerPoolMap
@@ -115,10 +116,8 @@ pub trait RedisJobDispatcher:
             let c = vec![ch, cm, cl]; // priority
             tracing::debug!("redis pop_and_execute: start job loop for channel {}", &cn);
             'outer: loop {
-                let th_p = self
-                    .redis_pool() // XXX use raw pool
-                    .get()
-                    .await;
+                // Use blocking pool for BLPOP (no response timeout)
+                let th_p = self.redis_blocking_pool().get().await;
                 if let Ok(mut th) = th_p {
                     tracing::debug!("start loop of spawned job queue {}", &cn);
                     tokio::select! {
@@ -445,6 +444,9 @@ pub trait RedisJobDispatcher:
 pub struct RedisJobDispatcherImpl {
     pub id_generator: Arc<IdGeneratorWrapper>,
     pub pool: &'static RedisPool,
+    /// Redis pool for blocking operations like BLPOP.
+    /// This pool has response_timeout disabled to allow indefinite waiting.
+    pub blocking_pool: &'static RedisPool,
     redis_client: redis::Client,
     pub redis_job_repository: Arc<RedisJobRepositoryImpl>,
     pub rdb_job_repository_opt: Option<Arc<RdbChanJobRepositoryImpl>>,
@@ -462,6 +464,7 @@ impl RedisJobDispatcherImpl {
         _config_module: Arc<AppConfigModule>,
         redis_client: redis::Client,
         redis_job_repository: Arc<RedisJobRepositoryImpl>,
+        redis_blocking_pool: &'static RedisPool,
         rdb_job_repository_opt: Option<Arc<RdbChanJobRepositoryImpl>>,
         app_module: Arc<AppModule>,
         runner_factory: Arc<RunnerFactory>,
@@ -482,6 +485,7 @@ impl RedisJobDispatcherImpl {
         Self {
             id_generator,
             pool: redis_job_repository.redis_pool,
+            blocking_pool: redis_blocking_pool,
             redis_client,
             redis_job_repository,
             rdb_job_repository_opt,
@@ -497,6 +501,12 @@ impl RedisJobDispatcherImpl {
 impl UseRedisPool for RedisJobDispatcherImpl {
     fn redis_pool(&self) -> &RedisPool {
         self.pool
+    }
+}
+
+impl UseRedisBlockingPool for RedisJobDispatcherImpl {
+    fn redis_blocking_pool(&self) -> &RedisPool {
+        self.blocking_pool
     }
 }
 

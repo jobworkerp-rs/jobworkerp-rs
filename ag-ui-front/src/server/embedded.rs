@@ -98,11 +98,11 @@ pub async fn boot_embedded_server(
                 .redis_pool;
 
             let session_manager = Arc::new(RedisSessionManager::new(
-                redis_pool.clone(),
+                redis_pool,
                 ag_ui_config.session_ttl_sec,
             ));
             let event_store = Arc::new(RedisEventStore::new(
-                redis_pool.clone(),
+                redis_pool,
                 ag_ui_config.max_events_per_run,
                 ag_ui_config.session_ttl_sec,
             ));

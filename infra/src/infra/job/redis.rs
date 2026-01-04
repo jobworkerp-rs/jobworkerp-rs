@@ -12,7 +12,9 @@ use crate::infra::{JobQueueConfig, UseJobQueueConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
-use infra_utils::infra::redis::{RedisClient, RedisPool, UseRedisLock, UseRedisPool};
+use infra_utils::infra::redis::{
+    RedisClient, RedisPool, UseRedisBlockingPool, UseRedisLock, UseRedisPool,
+};
 use jobworkerp_base::codec::UseProstCodec;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
@@ -144,6 +146,10 @@ pub struct RedisJobRepositoryImpl {
     job_queue_config: Arc<JobQueueConfig>,
     #[debug_stub = "RedisPool"]
     pub redis_pool: &'static RedisPool,
+    /// Redis pool for blocking operations like BLPOP.
+    /// This pool has response_timeout disabled to allow indefinite waiting.
+    #[debug_stub = "RedisPool"]
+    pub redis_blocking_pool: &'static RedisPool,
     pub redis_job_processing_status_repository: Arc<RedisJobProcessingStatusRepository>,
     pub job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl,
 }
@@ -152,11 +158,13 @@ impl RedisJobRepositoryImpl {
     pub fn new(
         job_queue_config: Arc<JobQueueConfig>,
         redis_pool: &'static RedisPool,
+        redis_blocking_pool: &'static RedisPool,
         redis_client: RedisClient,
     ) -> Self {
         Self {
             job_queue_config: job_queue_config.clone(),
             redis_pool,
+            redis_blocking_pool,
             redis_job_processing_status_repository: Arc::new(
                 RedisJobProcessingStatusRepository::new(redis_pool),
             ),
@@ -171,6 +179,12 @@ impl RedisJobRepositoryImpl {
 impl UseRedisPool for RedisJobRepositoryImpl {
     fn redis_pool(&self) -> &'static RedisPool {
         self.redis_pool
+    }
+}
+
+impl UseRedisBlockingPool for RedisJobRepositoryImpl {
+    fn redis_blocking_pool(&self) -> &RedisPool {
+        self.redis_blocking_pool
     }
 }
 
@@ -211,6 +225,7 @@ async fn redis_test() -> Result<()> {
     use proto::jobworkerp::data::WorkerId;
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
+    let blocking_pool = infra_utils::infra::test::setup_test_redis_blocking_pool().await;
     let redis_client = infra_utils::infra::test::setup_test_redis_client()?;
     let job_queue_config = Arc::new(JobQueueConfig {
         expire_job_result_seconds: 60,
@@ -220,6 +235,7 @@ async fn redis_test() -> Result<()> {
     let repo = RedisJobRepositoryImpl {
         job_queue_config: job_queue_config.clone(),
         redis_pool: pool,
+        redis_blocking_pool: blocking_pool,
         redis_job_processing_status_repository: Arc::new(RedisJobProcessingStatusRepository::new(
             pool,
         )),
@@ -287,6 +303,7 @@ async fn redis_individual_ttl_test() -> Result<()> {
     use std::time::Duration;
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
+    let blocking_pool = infra_utils::infra::test::setup_test_redis_blocking_pool().await;
     let redis_client = infra_utils::infra::test::setup_test_redis_client()?;
     let job_queue_config = Arc::new(JobQueueConfig {
         expire_job_result_seconds: 60,
@@ -296,6 +313,7 @@ async fn redis_individual_ttl_test() -> Result<()> {
     let repo = RedisJobRepositoryImpl {
         job_queue_config: job_queue_config.clone(),
         redis_pool: pool,
+        redis_blocking_pool: blocking_pool,
         redis_job_processing_status_repository: Arc::new(RedisJobProcessingStatusRepository::new(
             pool,
         )),

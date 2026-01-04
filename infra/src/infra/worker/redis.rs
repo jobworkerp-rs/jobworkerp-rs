@@ -3,12 +3,12 @@ use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::result::Exists;
-use deadpool_redis::redis::AsyncCommands;
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::redis::{RedisPool, UseRedisClient, UseRedisPool};
 use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
 use prost::Message;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
+use redis::AsyncCommands;
 use std::{collections::BTreeMap, io::Cursor};
 
 // TODO use if you need (not using in default)
@@ -201,14 +201,14 @@ where
 pub struct RedisWorkerRepositoryImpl {
     #[debug_stub = "&`static RedisPool"]
     pub redis_pool: &'static RedisPool,
-    pub redis_client: deadpool_redis::redis::Client, // for pubsub
+    pub redis_client: redis::Client, // for pubsub
     pub timeout_sec: Option<usize>,
 }
 
 impl RedisWorkerRepositoryImpl {
     pub fn new(
         redis_pool: &'static RedisPool,
-        redis_client: deadpool_redis::redis::Client,
+        redis_client: redis::Client,
         timeout_sec: Option<usize>,
     ) -> Self {
         Self {
@@ -225,7 +225,7 @@ impl UseRedisPool for RedisWorkerRepositoryImpl {
     }
 }
 impl UseRedisClient for RedisWorkerRepositoryImpl {
-    fn redis_client(&self) -> &deadpool_redis::redis::Client {
+    fn redis_client(&self) -> &redis::Client {
         &self.redis_client
     }
 }

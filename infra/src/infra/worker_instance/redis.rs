@@ -1,11 +1,11 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
-use deadpool_redis::redis::AsyncCommands;
 use infra_utils::infra::redis::RedisPool;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{WorkerInstance, WorkerInstanceData, WorkerInstanceId};
+use redis::AsyncCommands;
 use std::collections::BTreeMap;
 use std::io::Cursor;
 

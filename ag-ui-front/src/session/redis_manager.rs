@@ -7,8 +7,8 @@ use super::manager::{HitlWaitingInfo, PendingToolCallInfo, Session, SessionManag
 use crate::types::ids::{RunId, ThreadId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use deadpool_redis::redis::AsyncCommands;
-use deadpool_redis::Pool;
+use infra_utils::infra::redis::RedisPool;
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 
 /// Redis key prefix for sessions
@@ -150,7 +150,7 @@ impl From<RedisSessionData> for Session {
 /// Supports multiple AG-UI server instances sharing session state.
 #[derive(Clone)]
 pub struct RedisSessionManager {
-    pool: Pool,
+    pool: &'static RedisPool,
     ttl_sec: u64,
 }
 
@@ -160,7 +160,7 @@ impl RedisSessionManager {
     /// # Arguments
     /// * `pool` - Redis connection pool
     /// * `ttl_sec` - Session TTL in seconds
-    pub fn new(pool: Pool, ttl_sec: u64) -> Self {
+    pub fn new(pool: &'static RedisPool, ttl_sec: u64) -> Self {
         Self { pool, ttl_sec }
     }
 
@@ -254,7 +254,7 @@ impl SessionManager for RedisSessionManager {
         };
         let session_key = Self::session_key(session_id);
 
-        let json: Option<String> = match conn.get(&session_key).await {
+        let json: Option<String> = match (*conn).get(&session_key).await {
             Ok(j) => j,
             Err(e) => {
                 tracing::debug!(
@@ -287,7 +287,7 @@ impl SessionManager for RedisSessionManager {
         let mut conn = self.pool.get().await.ok()?;
         let run_id_key = Self::run_id_key(run_id.as_str());
 
-        let session_id: Option<String> = conn.get(&run_id_key).await.ok()?;
+        let session_id: Option<String> = (*conn).get(&run_id_key).await.ok()?;
         let session_id = session_id?;
 
         self.get_session(&session_id).await
@@ -300,14 +300,14 @@ impl SessionManager for RedisSessionManager {
         let mut conn = self.pool.get().await.ok()?;
         let pattern = format!("{}*", SESSION_KEY_PREFIX);
 
-        let keys: Vec<String> = deadpool_redis::redis::cmd("KEYS")
+        let keys: Vec<String> = redis::cmd("KEYS")
             .arg(&pattern)
             .query_async(&mut *conn)
             .await
             .ok()?;
 
         for key in keys {
-            if let Ok(json) = conn.get::<_, String>(&key).await {
+            if let Ok(json) = (*conn).get::<_, String>(&key).await {
                 if let Ok(data) = serde_json::from_str::<RedisSessionData>(&json) {
                     if let Some(hitl_info) = &data.hitl_waiting_info {
                         if hitl_info.interrupt_id == interrupt_id {
@@ -552,16 +552,16 @@ impl SessionManager for RedisSessionManager {
         if let Ok(mut conn) = self.pool.get().await {
             // Get session to find run_id for index cleanup
             let session_key = Self::session_key(session_id);
-            let json: Option<String> = conn.get(&session_key).await.ok().flatten();
+            let json: Option<String> = (*conn).get(&session_key).await.ok().flatten();
 
             if let Some(json) = json {
                 if let Ok(data) = serde_json::from_str::<RedisSessionData>(&json) {
                     let run_id_key = Self::run_id_key(&data.run_id);
-                    let _: Result<(), _> = conn.del(&run_id_key).await;
+                    let _: Result<(), _> = (*conn).del(&run_id_key).await;
                 }
             }
 
-            let result: Result<i32, _> = conn.del(&session_key).await;
+            let result: Result<i32, _> = (*conn).del(&session_key).await;
             return result.map(|n| n > 0).unwrap_or(false);
         }
         false
@@ -694,11 +694,7 @@ mod tests {
         assert!(by_run.is_none());
     }
 
-    async fn create_test_pool() -> Pool {
-        let config = deadpool_redis::Config::from_url("redis://127.0.0.1:6379");
-        config
-            .builder()
-            .map(|b| b.max_size(4).build().unwrap())
-            .expect("Failed to create Redis pool")
+    async fn create_test_pool() -> &'static RedisPool {
+        infra_utils::infra::test::setup_test_redis_pool().await
     }
 }

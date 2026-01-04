@@ -42,8 +42,8 @@ clap = "4.5"
 #console-subscriber = { version = "0.3", features = ["parking_lot"] }
 chrono = "0.4"
 dashmap = "6"
+bb8 = "0.9"
 deadpool = { version = "0.12", features = ["rt_tokio_1"] }
-deadpool-redis = { version = "0.22", features = ["rt_tokio_1", "cluster"] }
 debug_stub_derive = "0.3"
 envy = "0.4"
 dotenvy = "0.15"
@@ -68,7 +68,11 @@ prost-types = "0.14"
 prost-reflect = { version = "0.16", features = ["serde"] }
 rand = "0.9"
 regex = "1.12"
-redis = { version = "0.32", features = [
+# NOTE: We don't use the "bb8" feature because redis-rs 1.0.2's built-in bb8 implementation
+# uses get_multiplexed_async_connection() with default response timeout, which causes
+# blocking operations like BLPOP to timeout immediately. Instead, we implement our own
+# ManageConnection to use get_multiplexed_async_connection_with_config() with response_timeout: None.
+redis = { version = "1.0.2", features = [
     "tokio-rustls-comp",
     "ahash",
     "cluster-async",
@@ -83,15 +87,15 @@ rustls = { version = "0.23", default-features = false, features = [
     "std",
     "tls12",
 ] }
-schemars = { version = "1.1", features = ["chrono04"] }
+schemars = { version = "1.2", features = ["chrono04"] }
 #schemars = { version = "0.8", features = ["chrono"] }
 serde = "1.0"
 serde_json = "1.0"
 serde_derive = "1.0"
 serde_with = "3"
 serde_yaml = "0.9"
-signal-hook = "0.3"
-signal-hook-tokio = "0.3"
+signal-hook = "0.4"
+signal-hook-tokio = "0.4"
 sqlx = { version = "0.8", features = [
     "runtime-tokio",
     "tls-rustls",
