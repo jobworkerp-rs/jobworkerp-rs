@@ -488,7 +488,13 @@ impl RunnerTrait for GrpcUnaryRunner {
                     }
                 }
 
-                let method = http::uri::PathAndQuery::try_from(req.method.clone())
+                // Ensure method path starts with '/' for valid gRPC path
+                let method_path = if req.method.starts_with('/') {
+                    req.method.clone()
+                } else {
+                    format!("/{}", req.method)
+                };
+                let method = http::uri::PathAndQuery::try_from(method_path)
                     .map_err(|e| anyhow!("Invalid URI path: {}", e))?;
 
                 tracing::debug!(

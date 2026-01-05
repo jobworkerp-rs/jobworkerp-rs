@@ -750,4 +750,152 @@ mod test {
             assert!((0..=11).contains(&month_num), "Month should be 0-11");
         }
     }
+
+    /// Test for workflow.input nested reference in Liquid template
+    /// This reproduces the issue where workflow.input.limit returns schema default
+    /// instead of the actual input value
+    #[test]
+    fn test_workflow_input_nested_reference() {
+        // Simulate the workflow descriptor structure
+        let workflow_descriptor = json!({
+            "id": "test-workflow-id",
+            "input": {
+                "grpcHost": "rss-crawler-admin-grpc-service.news-aggregator.svc.cluster.local",
+                "grpcPort": 9000,
+                "limit": 200,
+                "offset": 0,
+                "isAsc": false,
+                "maxPages": 1,
+                "webdriver_url": "http://selenium-hub.selenium.svc.cluster.local:4444"
+            },
+            "started_at": "2024-01-01T00:00:00Z"
+        });
+
+        // Build context as expression.rs does
+        let context: BTreeMap<String, Arc<serde_json::Value>> = BTreeMap::from_iter(vec![(
+            "workflow".to_string(),
+            Arc::new(workflow_descriptor),
+        )]);
+
+        // Task input - this would be the workflow input at task execution time
+        let task_input = Arc::new(json!({
+            "grpcHost": "rss-crawler-admin-grpc-service.news-aggregator.svc.cluster.local",
+            "grpcPort": 9000,
+            "limit": 200,
+            "offset": 0,
+            "isAsc": false
+        }));
+
+        // This is the actual template from listing-page-checker.yaml
+        let template = r#"$${{"limit": {{workflow.input.limit}}, "offset": {{workflow.input.offset}}, "is_asc": {{workflow.input.isAsc}}}}"#;
+
+        let result =
+            DefaultTransformer::execute_liquid_template(task_input.clone(), template, &context);
+
+        println!("Template result: {:?}", result);
+
+        match result {
+            Ok(output) => {
+                println!("Output: {}", output);
+                // Parse the result as JSON to verify values
+                let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+                assert_eq!(
+                    parsed["limit"],
+                    json!(200),
+                    "limit should be 200, not schema default 100"
+                );
+                assert_eq!(parsed["offset"], json!(0), "offset should be 0");
+                assert_eq!(
+                    parsed["is_asc"],
+                    json!(false),
+                    "is_asc should be false, not schema default true"
+                );
+            }
+            Err(e) => {
+                panic!("Template execution failed: {:?}", e);
+            }
+        }
+    }
+
+    /// Test for simpler workflow.input reference
+    #[test]
+    fn test_workflow_input_simple_reference() {
+        let workflow_descriptor = json!({
+            "id": "test-id",
+            "input": {
+                "limit": 200,
+                "isAsc": false
+            },
+            "started_at": "2024-01-01T00:00:00Z"
+        });
+
+        let context: BTreeMap<String, Arc<serde_json::Value>> = BTreeMap::from_iter(vec![(
+            "workflow".to_string(),
+            Arc::new(workflow_descriptor),
+        )]);
+
+        let task_input = Arc::new(json!({}));
+
+        // Test simple reference
+        let template = "$${{{ workflow.input.limit }}}";
+        let result =
+            DefaultTransformer::execute_liquid_template(task_input.clone(), template, &context)
+                .unwrap();
+        println!("Simple reference result: {}", result);
+        assert_eq!(result, "200");
+
+        // Test boolean reference
+        let template = "$${{{ workflow.input.isAsc }}}";
+        let result =
+            DefaultTransformer::execute_liquid_template(task_input.clone(), template, &context)
+                .unwrap();
+        println!("Boolean reference result: {}", result);
+        assert_eq!(result, "false");
+    }
+
+    /// Test for jq filter with $workflow variable
+    #[test]
+    fn test_jq_workflow_input_reference() {
+        let workflow_descriptor = json!({
+            "id": "test-id",
+            "input": {
+                "grpcHost": "rss-crawler-admin-grpc-service.news-aggregator.svc.cluster.local",
+                "grpcPort": 9000,
+                "limit": 200,
+                "isAsc": false
+            },
+            "started_at": "2024-01-01T00:00:00Z"
+        });
+
+        let context: BTreeMap<String, Arc<serde_json::Value>> = BTreeMap::from_iter(vec![(
+            "workflow".to_string(),
+            Arc::new(workflow_descriptor),
+        )]);
+
+        let task_input = Arc::new(json!({}));
+
+        // Test jq reference to $workflow.input.grpcHost
+        let filter = "${$workflow.input.grpcHost}";
+        let result =
+            DefaultTransformer::execute_jq_filter(task_input.clone(), filter, &context).unwrap();
+        println!("jq $workflow.input.grpcHost result: {:?}", result);
+        assert_eq!(
+            result,
+            json!("rss-crawler-admin-grpc-service.news-aggregator.svc.cluster.local")
+        );
+
+        // Test jq reference to $workflow.input.grpcPort
+        let filter = "${$workflow.input.grpcPort}";
+        let result =
+            DefaultTransformer::execute_jq_filter(task_input.clone(), filter, &context).unwrap();
+        println!("jq $workflow.input.grpcPort result: {:?}", result);
+        assert_eq!(result, json!(9000));
+
+        // Test jq reference to $workflow.input.limit
+        let filter = "${$workflow.input.limit}";
+        let result =
+            DefaultTransformer::execute_jq_filter(task_input.clone(), filter, &context).unwrap();
+        println!("jq $workflow.input.limit result: {:?}", result);
+        assert_eq!(result, json!(200));
+    }
 }
