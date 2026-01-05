@@ -214,6 +214,18 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             }
         };
 
+        // Log workflow.input for debugging input value propagation
+        if let Some(workflow_val) = expression.get("workflow") {
+            if let Some(input_val) = workflow_val.get("input") {
+                tracing::info!(
+                    "[DEBUG] task={} workflow.input in expression: {}",
+                    task_name,
+                    serde_json::to_string(input_val)
+                        .unwrap_or_else(|_| "serialize error".to_string())
+                );
+            }
+        }
+
         // TODO: add other task types
         // currently support only RunTaskConfiguration
         match run {
