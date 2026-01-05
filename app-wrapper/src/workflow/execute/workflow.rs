@@ -2575,4 +2575,130 @@ mod tests {
             );
         });
     }
+
+    /// Test for apply_schema_defaults - reproduces the issue where input values
+    /// are incorrectly overwritten by schema defaults
+    #[test]
+    fn test_apply_schema_defaults_preserves_input_values() {
+        // Schema matching listing-page-checker.yaml
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "grpcHost": {
+                    "type": "string",
+                    "description": "RSS crawlerのgRPCホスト"
+                },
+                "grpcPort": {
+                    "type": "integer",
+                    "description": "RSS crawlerのgRPCポート",
+                    "default": 9010
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "取得するリスティングページソースの最大数",
+                    "default": 100
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "取得開始位置のオフセット",
+                    "default": 0
+                },
+                "isAsc": {
+                    "type": "boolean",
+                    "description": "昇順ソートするかどうか",
+                    "default": true
+                }
+            },
+            "required": []
+        });
+
+        // Input from ui-event-handler (these should NOT be overwritten)
+        let input = serde_json::json!({
+            "grpcHost": "rss-crawler-admin-grpc-service.news-aggregator.svc.cluster.local",
+            "grpcPort": 9000,
+            "limit": 200,
+            "offset": 0,
+            "isAsc": false,
+            "maxPages": 1,
+            "webdriver_url": "http://selenium-hub.selenium.svc.cluster.local:4444"
+        });
+
+        let result = WorkflowExecutor::apply_schema_defaults(input, &schema).unwrap();
+
+        println!("Result: {}", serde_json::to_string_pretty(&result).unwrap());
+
+        // These values should be preserved from input, NOT replaced by defaults
+        assert_eq!(
+            result["grpcPort"],
+            serde_json::json!(9000),
+            "grpcPort should be 9000, not schema default 9010"
+        );
+        assert_eq!(
+            result["limit"],
+            serde_json::json!(200),
+            "limit should be 200, not schema default 100"
+        );
+        assert_eq!(
+            result["isAsc"],
+            serde_json::json!(false),
+            "isAsc should be false, not schema default true"
+        );
+        assert_eq!(result["offset"], serde_json::json!(0), "offset should be 0");
+
+        // These values should be preserved as-is (not in schema)
+        assert_eq!(
+            result["grpcHost"],
+            serde_json::json!("rss-crawler-admin-grpc-service.news-aggregator.svc.cluster.local")
+        );
+        assert_eq!(result["maxPages"], serde_json::json!(1));
+        assert_eq!(
+            result["webdriver_url"],
+            serde_json::json!("http://selenium-hub.selenium.svc.cluster.local:4444")
+        );
+    }
+
+    /// Test for apply_schema_defaults with missing values - defaults should be applied
+    #[test]
+    fn test_apply_schema_defaults_applies_missing_defaults() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "default": 100
+                },
+                "isAsc": {
+                    "type": "boolean",
+                    "default": true
+                }
+            }
+        });
+
+        // Input without limit and isAsc - defaults should be applied
+        let input = serde_json::json!({
+            "grpcHost": "localhost"
+        });
+
+        let result = WorkflowExecutor::apply_schema_defaults(input, &schema).unwrap();
+
+        println!(
+            "Result with defaults: {}",
+            serde_json::to_string_pretty(&result).unwrap()
+        );
+
+        // Defaults should be applied for missing keys
+        assert_eq!(
+            result["limit"],
+            serde_json::json!(100),
+            "limit should be default 100"
+        );
+        assert_eq!(
+            result["isAsc"],
+            serde_json::json!(true),
+            "isAsc should be default true"
+        );
+
+        // Existing value should be preserved
+        assert_eq!(result["grpcHost"], serde_json::json!("localhost"));
+    }
 }
