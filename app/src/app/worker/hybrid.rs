@@ -272,9 +272,23 @@ impl WorkerApp for HybridWorkerAppImpl {
         res
     }
 
-    // Delete a temp worker from Redis only (not from RDB or memory cache)
+    // Delete a temp worker from Redis and clear in-memory cache (not from RDB)
     async fn delete_temp(&self, id: &WorkerId) -> Result<bool> {
-        self.redis_worker_repository().delete(id).await
+        // Find the worker first to get its name for cache clearing
+        let worker_name = self.find(id).await?.and_then(|w| w.data.map(|d| d.name));
+
+        // Delete from Redis
+        let result = self.redis_worker_repository().delete(id).await?;
+
+        if result {
+            // Clear in-memory caches (id cache and name cache)
+            self.clear_cache(id).await;
+            if let Some(name) = worker_name {
+                self.clear_cache_by_name(&name).await;
+            }
+        }
+
+        Ok(result)
     }
 
     async fn delete_all(&self) -> Result<bool> {
