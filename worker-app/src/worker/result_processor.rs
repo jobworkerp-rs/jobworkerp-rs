@@ -112,6 +112,7 @@ impl ResultProcessorImpl {
                 .complete_job(id, dat, stream)
                 .await
                 .map(|_| ());
+
             // the job finished
             // if finished periodic job, enqueue next periodic job
             if let Some(pj) = Self::build_next_periodic_job(dat, worker) {
@@ -137,6 +138,18 @@ impl ResultProcessorImpl {
                     &pj.worker_id
                 );
             };
+
+            // Delete temp worker if use_static is false (after all processing is done)
+            if !worker.use_static {
+                if let Some(wid) = dat.worker_id.as_ref() {
+                    if let Err(e) = self.worker_app().delete_temp(wid).await {
+                        tracing::info!("failed to delete temp worker {:?}: {:?}", wid, e);
+                    } else {
+                        tracing::debug!("deleted temp worker: {:?}", wid);
+                    }
+                }
+            }
+
             res
         }
     }
