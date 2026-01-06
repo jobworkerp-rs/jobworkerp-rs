@@ -280,12 +280,10 @@ impl WorkerApp for HybridWorkerAppImpl {
         // Delete from Redis
         let result = self.redis_worker_repository().delete(id).await?;
 
-        if result {
-            // Clear in-memory caches (id cache and name cache)
-            self.clear_cache(id).await;
-            if let Some(name) = worker_name {
-                self.clear_cache_by_name(&name).await;
-            }
+        // Clear in-memory caches unconditionally (id cache and name cache)
+        self.clear_cache(id).await;
+        if let Some(name) = worker_name {
+            self.clear_cache_by_name(&name).await;
         }
 
         Ok(result)
@@ -716,7 +714,7 @@ mod tests {
                 .name
                 .starts_with("temp_worker"));
 
-            let deleted = app.delete(&id).await?;
+            let deleted = app.delete_temp(&id).await?;
             assert!(deleted);
 
             let not_found = app.find(&id).await?;
