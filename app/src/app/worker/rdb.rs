@@ -140,6 +140,15 @@ impl WorkerApp for RdbWorkerAppImpl {
         }
     }
 
+    // Delete a temp worker from memory only (not from RDB)
+    // NOTE: Currently create_temp() stores temp workers in Moka cache with fixed 60s TTL.
+    // Ideally, temp workers should be stored in a dedicated memory storage with explicit
+    // delete capability, which would allow retries for jobs longer than 60 seconds.
+    async fn delete_temp(&self, _id: &WorkerId) -> Result<bool> {
+        // No-op: Moka cache entries expire automatically via TTL
+        Ok(false)
+    }
+
     async fn delete_all(&self) -> Result<bool> {
         let res = self.rdb_worker_repository().delete_all().await?;
         self.clear_cache_all().await;

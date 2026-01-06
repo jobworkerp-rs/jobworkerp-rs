@@ -434,3 +434,140 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for InlineWorkflo
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jobworkerp_runner::jobworkerp::runner::inline_workflow_args::WorkflowSource;
+
+    /// Test Protobuf encode/decode roundtrip for InlineWorkflowArgs
+    /// This verifies that the input field is correctly preserved through serialization
+    #[test]
+    fn test_inline_workflow_args_protobuf_roundtrip() {
+        let input_json = r#"{
+    "grpcHost": "rss-crawler-admin-grpc-service.news-aggregator.svc.cluster.local",
+    "grpcPort": 9000,
+    "limit": 200,
+    "offset": 0,
+    "isAsc": false,
+    "maxPages": 1,
+    "webdriver_url": "http://selenium-hub.selenium.svc.cluster.local:4444"
+}"#;
+
+        let original_args = InlineWorkflowArgs {
+            workflow_source: Some(WorkflowSource::WorkflowUrl(
+                "https://example.com/workflow.yaml".to_string(),
+            )),
+            input: input_json.to_string(),
+            workflow_context: None,
+            execution_id: None,
+            from_checkpoint: None,
+        };
+
+        // Encode to bytes
+        let encoded = original_args.encode_to_vec();
+        println!("Encoded bytes length: {}", encoded.len());
+
+        // Decode back
+        let decoded = InlineWorkflowArgs::decode(encoded.as_slice()).unwrap();
+
+        // Verify input field is preserved
+        println!("Original input: {}", original_args.input);
+        println!("Decoded input: {}", decoded.input);
+
+        assert_eq!(
+            original_args.input, decoded.input,
+            "Input field should be preserved through encode/decode"
+        );
+
+        // Parse and verify JSON values
+        let original_json: serde_json::Value = serde_json::from_str(&original_args.input).unwrap();
+        let decoded_json: serde_json::Value = serde_json::from_str(&decoded.input).unwrap();
+
+        assert_eq!(
+            original_json["limit"], decoded_json["limit"],
+            "limit should be 200"
+        );
+        assert_eq!(original_json["limit"], serde_json::json!(200));
+
+        assert_eq!(
+            original_json["isAsc"], decoded_json["isAsc"],
+            "isAsc should be false"
+        );
+        assert_eq!(original_json["isAsc"], serde_json::json!(false));
+
+        assert_eq!(
+            original_json["grpcPort"], decoded_json["grpcPort"],
+            "grpcPort should be 9000"
+        );
+        assert_eq!(original_json["grpcPort"], serde_json::json!(9000));
+
+        assert_eq!(
+            original_json["grpcHost"], decoded_json["grpcHost"],
+            "grpcHost should be preserved"
+        );
+    }
+
+    /// Test that simulates what json_value_to_message does on the client side
+    /// and verifies the server-side decode
+    #[test]
+    fn test_inline_workflow_args_json_to_protobuf_roundtrip() {
+        // This is what the client constructs
+        let job_args = serde_json::json!({
+            "workflow_url": "https://gitea.sutr.app/jobworkerp-rs/workflow-files/raw/branch/main/crawl/listing-page-checker.yaml",
+            "input": "  {\n    \"grpcHost\": \"rss-crawler-admin-grpc-service.news-aggregator.svc.cluster.local\",\n    \"grpcPort\": 9000,\n    \"limit\": 200,\n    \"offset\": 0,\n    \"isAsc\": false,\n    \"maxPages\": 1,\n    \"webdriver_url\": \"http://selenium-hub.selenium.svc.cluster.local:4444\"\n  }\n"
+        });
+
+        println!(
+            "Client job_args: {}",
+            serde_json::to_string_pretty(&job_args).unwrap()
+        );
+
+        // Simulate what prost_reflect does: deserialize JSON to protobuf struct
+        // Since we don't have prost_reflect here, we manually construct the struct
+        let workflow_url = job_args["workflow_url"].as_str().unwrap();
+        let input = job_args["input"].as_str().unwrap();
+
+        let args = InlineWorkflowArgs {
+            workflow_source: Some(WorkflowSource::WorkflowUrl(workflow_url.to_string())),
+            input: input.to_string(),
+            workflow_context: None,
+            execution_id: None,
+            from_checkpoint: None,
+        };
+
+        // Encode
+        let encoded = args.encode_to_vec();
+
+        // Decode (this is what the server does)
+        let decoded = InlineWorkflowArgs::decode(encoded.as_slice()).unwrap();
+
+        println!("Decoded input: {}", decoded.input);
+
+        // Parse the input JSON
+        let input_json: serde_json::Value = serde_json::from_str(&decoded.input).unwrap();
+
+        println!(
+            "Parsed input JSON: {}",
+            serde_json::to_string_pretty(&input_json).unwrap()
+        );
+
+        // Verify values
+        assert_eq!(
+            input_json["limit"],
+            serde_json::json!(200),
+            "limit should be 200, not default 100"
+        );
+        assert_eq!(
+            input_json["isAsc"],
+            serde_json::json!(false),
+            "isAsc should be false, not default true"
+        );
+        assert_eq!(
+            input_json["grpcPort"],
+            serde_json::json!(9000),
+            "grpcPort should be 9000, not default 9010"
+        );
+        assert!(input_json["grpcHost"].is_string(), "grpcHost should exist");
+    }
+}

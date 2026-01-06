@@ -81,6 +81,8 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
     // if worker is None, clear cache only
     async fn update(&self, id: &WorkerId, worker: &Option<WorkerData>) -> Result<bool>;
     async fn delete(&self, id: &WorkerId) -> Result<bool>;
+    // Delete a temp worker (only from redis/memory, not from RDB)
+    async fn delete_temp(&self, id: &WorkerId) -> Result<bool>;
     async fn delete_all(&self) -> Result<bool>;
 
     async fn find_data_by_name(&self, name: &str) -> Result<Option<WorkerData>>
