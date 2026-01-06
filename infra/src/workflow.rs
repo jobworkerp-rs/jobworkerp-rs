@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 
 use anyhow::{anyhow, Result};
-use jobworkerp_runner::jobworkerp::runner::inline_workflow_args::WorkflowSource;
+use jobworkerp_runner::jobworkerp::runner::workflow_run_args::WorkflowSource;
 use net_utils::net::reqwest::{self, ReqwestClient};
 use serde::de::DeserializeOwned;
 use url::Url;
