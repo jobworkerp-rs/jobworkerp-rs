@@ -89,30 +89,32 @@ impl WorkflowUnifiedRunnerImpl {
         })
     }
 
-    /// Parse workflow from JSON or YAML string
-    fn parse_workflow(data: &str) -> Result<WorkflowSchema> {
-        serde_json::from_str(data).or_else(|_| {
-            serde_yaml::from_str(data)
-                .map_err(|e| anyhow!("Failed to parse workflow as JSON or YAML: {}", e))
-        })
+    /// Convert SettingsWorkflowSource to ArgsWorkflowSource for unified handling
+    fn convert_settings_source(source: &SettingsWorkflowSource) -> ArgsWorkflowSource {
+        match source {
+            SettingsWorkflowSource::WorkflowUrl(url) => {
+                ArgsWorkflowSource::WorkflowUrl(url.clone())
+            }
+            SettingsWorkflowSource::WorkflowData(data) => {
+                ArgsWorkflowSource::WorkflowData(data.clone())
+            }
+        }
     }
 
     /// Resolve workflow: args workflow_source takes precedence over settings
-    fn resolve_workflow(
+    /// Uses WorkflowLoader for proper URL/file loading
+    async fn resolve_workflow(
         &self,
         args_source: Option<&ArgsWorkflowSource>,
     ) -> Result<Arc<WorkflowSchema>> {
         // Args workflow_source takes precedence
         if let Some(source) = args_source {
-            let data = match source {
-                ArgsWorkflowSource::WorkflowUrl(url) => {
-                    // TODO: Fetch from URL - for now just read as file path
-                    std::fs::read_to_string(url)
-                        .map_err(|e| anyhow!("Failed to read workflow from {}: {}", url, e))?
-                }
-                ArgsWorkflowSource::WorkflowData(data) => data.clone(),
-            };
-            return Ok(Arc::new(Self::parse_workflow(&data)?));
+            let workflow = self
+                .app_module
+                .workflow_loader
+                .load_workflow_source(source)
+                .await?;
+            return Ok(Arc::new(workflow));
         }
 
         // Fall back to settings workflow
@@ -144,7 +146,7 @@ impl WorkflowUnifiedRunnerImpl {
         }
 
         // Resolve workflow (args takes precedence over settings)
-        let workflow = self.resolve_workflow(args.workflow_source.as_ref())?;
+        let workflow = self.resolve_workflow(args.workflow_source.as_ref()).await?;
         tracing::debug!("Workflow resolved: {:#?}", &workflow);
 
         let input_json = serde_json::from_str(&args.input)
@@ -232,7 +234,7 @@ impl WorkflowUnifiedRunnerImpl {
         }
 
         // Resolve workflow (args takes precedence over settings)
-        let workflow = self.resolve_workflow(args.workflow_source.as_ref())?;
+        let workflow = self.resolve_workflow(args.workflow_source.as_ref()).await?;
 
         let input_json = serde_json::from_str(&args.input)
             .unwrap_or_else(|_| serde_json::Value::String(args.input.clone()));
@@ -367,15 +369,12 @@ impl RunnerTrait for WorkflowUnifiedRunnerImpl {
                 ProstMessageCodec::deserialize_message::<WorkflowRunnerSettings>(&settings)?;
             // If workflow_source is specified in settings, parse and store it
             if let Some(source) = parsed_settings.workflow_source {
-                let data = match source {
-                    SettingsWorkflowSource::WorkflowUrl(url) => {
-                        // TODO: Fetch from URL - for now just read as file path
-                        std::fs::read_to_string(&url)
-                            .map_err(|e| anyhow!("Failed to read workflow from {}: {}", url, e))?
-                    }
-                    SettingsWorkflowSource::WorkflowData(data) => data,
-                };
-                let workflow = Self::parse_workflow(&data)?;
+                let args_source = Self::convert_settings_source(&source);
+                let workflow = self
+                    .app_module
+                    .workflow_loader
+                    .load_workflow_source(&args_source)
+                    .await?;
                 tracing::debug!("Workflow loaded from settings: {:#?}", &workflow);
                 self.settings_workflow = Some(Arc::new(workflow));
             }

@@ -9,7 +9,9 @@ use futures::stream::BoxStream;
 use futures::{pin_mut, StreamExt};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_base::APP_NAME;
+use jobworkerp_runner::jobworkerp::runner::inline_workflow_args::WorkflowSource as InlineWorkflowSource;
 use jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus;
+use jobworkerp_runner::jobworkerp::runner::workflow_run_args::WorkflowSource;
 use jobworkerp_runner::jobworkerp::runner::{InlineWorkflowArgs, WorkflowResult};
 use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
@@ -21,6 +23,14 @@ use prost::Message;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Convert InlineWorkflowSource to WorkflowSource (unified type for WorkflowLoader)
+fn convert_workflow_source(source: &InlineWorkflowSource) -> WorkflowSource {
+    match source {
+        InlineWorkflowSource::WorkflowUrl(url) => WorkflowSource::WorkflowUrl(url.clone()),
+        InlineWorkflowSource::WorkflowData(data) => WorkflowSource::WorkflowData(data.clone()),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct InlineWorkflowRunner {
@@ -147,7 +157,7 @@ impl RunnerTrait for InlineWorkflowRunner {
             let workflow = self
                 .app_module
                 .workflow_loader
-                .load_workflow_source(source)
+                .load_workflow_source(&convert_workflow_source(source))
                 .await
                 .inspect_err(|e| tracing::error!("Failed to load workflow: {:#?}", e))?;
             tracing::debug!("workflow: {:#?}", workflow);
@@ -274,7 +284,7 @@ impl RunnerTrait for InlineWorkflowRunner {
 
         let workflow = app_module
             .workflow_loader
-            .load_workflow_source(source)
+            .load_workflow_source(&convert_workflow_source(source))
             .await
             .inspect_err(|e| tracing::error!("Failed to load workflow: {:#?}", e))?;
         tracing::debug!("workflow: {:#?}", workflow);
