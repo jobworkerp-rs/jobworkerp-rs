@@ -607,7 +607,17 @@ impl McpServerRunnerImpl {
 
         let stream = stream! {
             // Call MCP tool with cancellation support via proxy
-            let args_value: serde_json::Value = serde_json::from_str(&arg_json).unwrap_or_default();
+            let args_value: serde_json::Value = match serde_json::from_str(&arg_json) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("Failed to parse arguments: {}", e);
+                    yield ResultOutputItem {
+                        item: Some(Item::End((*trailer).clone())),
+                    };
+                    return;
+                }
+            };
+            // let args_value: serde_json::Value = serde_json::from_str(&arg_json).unwrap_or_default();
             let call_result = mcp_server
                 .call_tool_with_cancellation(&tool_name_owned, args_value, cancellation_token.clone())
                 .await;
