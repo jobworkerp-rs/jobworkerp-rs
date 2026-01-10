@@ -605,7 +605,8 @@ impl McpServerRunnerImpl {
 
         let arg_json = String::from_utf8(arg.to_vec())?;
 
-        let mcp_transport = self.mcp_server.transport.clone();
+        // Clone Arc to keep RunningService alive during stream execution
+        let mcp_transport = Arc::clone(&self.mcp_server.transport);
         let tool_name_owned = tool_name.to_string();
 
         use async_stream::stream;
