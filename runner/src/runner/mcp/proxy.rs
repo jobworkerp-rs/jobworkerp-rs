@@ -17,7 +17,7 @@ use tokio::sync::RwLock;
 pub struct McpServerProxy {
     pub name: String,
     pub description: Option<String>,
-    pub transport: RunningService<RoleClient, ()>,
+    pub transport: Arc<RunningService<RoleClient, ()>>,
     #[debug_stub = "MokaCache<Arc<String>, Vec<String>>"]
     async_cache: MokaCacheImpl<Arc<String>, Vec<Tool>>,
 }
@@ -53,7 +53,7 @@ impl McpServerProxy {
         Ok(Self {
             name: config.name.clone(),
             description: config.description.clone(),
-            transport,
+            transport: Arc::new(transport),
             async_cache: MokaCacheImpl::new(&Self::MEMORY_CACHE_CONFIG),
         })
     }
@@ -152,7 +152,7 @@ impl McpServerProxy {
             serde_json::Value::Object(map) => Some(map),
             _ => None,
         };
-
+        tracing::debug!("calling tool: {tool_name}, args: {arguments:?}");
         let call_result = self
             .transport
             .call_tool(CallToolRequestParam {
@@ -160,15 +160,24 @@ impl McpServerProxy {
                 arguments,
             })
             .await?;
+        tracing::debug!("called tool: {tool_name}, result: {call_result:?}");
         Ok(call_result)
     }
     pub async fn cancel(self) -> Result<bool> {
-        match self.transport.cancel().await? {
-            QuitReason::Cancelled => Ok(true),
-            QuitReason::Closed => Ok(false),
-            QuitReason::JoinError(join_error) => {
-                tracing::error!("tokio thread Join error: {:?}", join_error);
-                Err(JobWorkerError::RuntimeError(format!("Join error: {join_error}")).into())
+        // Try to unwrap Arc to get ownership for cancel
+        match Arc::try_unwrap(self.transport) {
+            Ok(transport) => match transport.cancel().await? {
+                QuitReason::Cancelled => Ok(true),
+                QuitReason::Closed => Ok(false),
+                QuitReason::JoinError(join_error) => {
+                    tracing::error!("tokio thread Join error: {:?}", join_error);
+                    Err(JobWorkerError::RuntimeError(format!("Join error: {join_error}")).into())
+                }
+            },
+            Err(_arc) => {
+                // Other references exist, transport will be cancelled when all refs are dropped
+                tracing::warn!("Cannot cancel MCP transport: other references exist");
+                Ok(false)
             }
         }
     }
