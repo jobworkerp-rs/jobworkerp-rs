@@ -1,6 +1,6 @@
 use super::config::{McpConfig, McpServerConfig, McpServerTransportConfig};
 use crate::runner::timeout_config::RunnerTimeoutConfig;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use debug_stub_derive::DebugStub;
 use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
@@ -12,12 +12,13 @@ use rmcp::{
 };
 use std::{borrow::Cow, collections::HashMap, process::Stdio, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 #[derive(DebugStub)]
 pub struct McpServerProxy {
     pub name: String,
     pub description: Option<String>,
-    pub transport: Arc<RunningService<RoleClient, ()>>,
+    transport: Arc<RunningService<RoleClient, ()>>,
     #[debug_stub = "MokaCache<Arc<String>, Vec<String>>"]
     async_cache: MokaCacheImpl<Arc<String>, Vec<Tool>>,
 }
@@ -163,6 +164,42 @@ impl McpServerProxy {
         tracing::debug!("called tool: {tool_name}, result: {call_result:?}");
         Ok(call_result)
     }
+
+    /// Call tool with cancellation support
+    pub async fn call_tool_with_cancellation(
+        &self,
+        tool_name: &str,
+        args: serde_json::Value,
+        cancellation_token: CancellationToken,
+    ) -> Result<CallToolResult> {
+        let arguments = match args {
+            serde_json::Value::Object(map) => Some(map),
+            _ => None,
+        };
+
+        tracing::debug!("calling tool with cancellation: {tool_name}, args: {arguments:?}");
+
+        tokio::select! {
+            result = self.transport.call_tool(CallToolRequestParam {
+                name: Cow::Owned(tool_name.to_string()),
+                arguments,
+            }) => {
+                let call_result = result.map_err(|e| {
+                    tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name, e);
+                    anyhow!("MCP tool '{}' failed: {}", tool_name, e)
+                })?;
+                tracing::debug!("called tool: {tool_name}, result: {call_result:?}");
+                Ok(call_result)
+            }
+            _ = cancellation_token.cancelled() => {
+                tracing::info!("MCP tool call was cancelled for tool '{}'", tool_name);
+                Err(JobWorkerError::CancelledError(
+                    format!("MCP tool '{}' call was cancelled", tool_name)
+                ).into())
+            }
+        }
+    }
+
     pub async fn cancel(self) -> Result<bool> {
         // Try to unwrap Arc to get ownership for cancel
         match Arc::try_unwrap(self.transport) {
