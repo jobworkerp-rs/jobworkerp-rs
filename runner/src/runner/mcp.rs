@@ -21,7 +21,6 @@ use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 use proxy::McpServerProxy;
-use rmcp::model::CallToolRequestParam;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -121,7 +120,7 @@ pub struct ToolInfo {
  */
 #[derive(Debug)]
 pub struct McpServerRunnerImpl {
-    mcp_server: McpServerProxy,
+    mcp_server: Arc<McpServerProxy>,
     // Helper for dependency injection integration (optional for backward compatibility)
     cancel_helper: Option<CancelMonitoringHelper>,
     /// Available tools with their schemas
@@ -203,7 +202,7 @@ impl McpServerRunnerImpl {
         );
 
         Ok(Self {
-            mcp_server: server,
+            mcp_server: Arc::new(server),
             cancel_helper,
             available_tools,
         })
@@ -417,7 +416,10 @@ impl McpServerRunnerImpl {
 
         let result = async {
             if cancellation_token.is_cancelled() {
-                return Err(JobWorkerError::CancelledError("MCP tool call was cancelled before execution".to_string()).into());
+                return Err(JobWorkerError::CancelledError(
+                    "MCP tool call was cancelled before execution".to_string(),
+                )
+                .into());
             }
 
             let span = Self::otel_span_from_metadata(
@@ -444,27 +446,14 @@ impl McpServerRunnerImpl {
 
             tracing::debug!("Calling MCP tool '{}' with args: {}", tool_name, arg_json);
 
-            // Call MCP tool with cancellation support
+            // Call MCP tool with cancellation support via proxy
             // Timeout is managed at the job level
-            let res = tokio::select! {
-                call_result = self.mcp_server.transport.call_tool(CallToolRequestParam {
-                    name: std::borrow::Cow::Owned(tool_name.to_string()),
-                    arguments: serde_json::from_str(arg_json.as_str())
-                        .inspect_err(|e| {
-                            tracing::error!("Failed to parse arguments: {}", e);
-                        })
-                        .ok(),
-                }) => {
-                    call_result.map_err(|e| {
-                        tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name, e);
-                        anyhow!("MCP tool '{}' failed: {}", tool_name, e)
-                    })?
-                },
-                _ = cancellation_token.cancelled() => {
-                    tracing::info!("MCP tool call was cancelled for tool '{}'", tool_name);
-                    return Err(JobWorkerError::CancelledError("MCP tool call was cancelled".to_string()).into());
-                }
-            };
+            let args_value: serde_json::Value = serde_json::from_str(&arg_json)
+                .inspect_err(|e| tracing::error!("Failed to parse arguments: {}", e))?;
+            let res = self
+                .mcp_server
+                .call_tool_with_cancellation(tool_name, args_value, cancellation_token.clone())
+                .await?;
 
             tracing::debug!("MCP tool '{}' call completed", tool_name);
 
@@ -605,7 +594,8 @@ impl McpServerRunnerImpl {
 
         let arg_json = String::from_utf8(arg.to_vec())?;
 
-        let mcp_transport = self.mcp_server.transport.clone();
+        // Clone Arc<McpServerProxy> to keep MCP connection alive during stream execution
+        let mcp_server = Arc::clone(&self.mcp_server);
         let tool_name_owned = tool_name.to_string();
 
         use async_stream::stream;
@@ -616,32 +606,21 @@ impl McpServerRunnerImpl {
         });
 
         let stream = stream! {
-            // Call MCP tool with cancellation support
-            let call_result = tokio::select! {
-                result = mcp_transport.call_tool(CallToolRequestParam {
-                    name: std::borrow::Cow::Owned(tool_name_owned.clone()),
-                    arguments: serde_json::from_str(arg_json.as_str())
-                        .inspect_err(|e| {
-                            tracing::error!("Failed to parse arguments: {}", e);
-                        })
-                        .ok(),
-                }) => {
-                    match result {
-                        Ok(res) => Ok(res),
-                        Err(e) => {
-                            tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name_owned, e);
-                            Err(anyhow!("MCP tool '{}' failed: {}", tool_name_owned, e))
-                        }
-                    }
-                },
-                _ = cancellation_token.cancelled() => {
-                    tracing::info!("MCP stream request was cancelled");
+            // Call MCP tool with cancellation support via proxy
+            let args_value: serde_json::Value = match serde_json::from_str(&arg_json) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("Failed to parse arguments: {}", e);
                     yield ResultOutputItem {
                         item: Some(Item::End((*trailer).clone())),
                     };
                     return;
                 }
             };
+            // let args_value: serde_json::Value = serde_json::from_str(&arg_json).unwrap_or_default();
+            let call_result = mcp_server
+                .call_tool_with_cancellation(&tool_name_owned, args_value, cancellation_token.clone())
+                .await;
 
             match call_result {
                 Ok(res) => {
@@ -732,6 +711,16 @@ impl McpServerRunnerImpl {
                     }
                 }
                 Err(e) => {
+                    // Check if it's a cancellation error
+                    if e.downcast_ref::<JobWorkerError>()
+                        .is_some_and(|je| matches!(je, JobWorkerError::CancelledError(_)))
+                    {
+                        tracing::info!("MCP stream request was cancelled");
+                        yield ResultOutputItem {
+                            item: Some(Item::End((*trailer).clone())),
+                        };
+                        return;
+                    }
                     tracing::error!("MCP tool call failed: {}", e);
                 }
             }

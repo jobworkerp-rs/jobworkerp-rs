@@ -19,3 +19,46 @@
 #args = ["mcp-server-fetch"]
 ##envs = { TEST_ENV = "test_value" }
 
+[[server]]
+name = "github"
+description = "github server mcp"
+transport = "stdio"
+command = "docker"
+args = [
+  "run",
+  "-i",
+  "--rm",
+  "-e",
+  "GITHUB_PERSONAL_ACCESS_TOKEN",
+  "ghcr.io/github/github-mcp-server"
+]
+envs = { GITHUB_PERSONAL_ACCESS_TOKEN = "github_pat_xxxxx" }
+
+[[server]]
+name = "gitea-sse"
+description = "gitea server mcp"
+transport = "sse"
+url = "http://gitea-mcp.gitea-helm.svc.cluster.local:8080/sse"
+
+[server.headers]
+Authorization = "Bearer xxxxx"
+#X-Custom-Header = "custom-value"
+
+[[server]]
+name = "gitea"
+description = "gitea mcp server"
+transport = "stdio"
+command = "docker"
+args = [
+  "run",
+  "-i",
+  "--rm",
+  "-e",
+  "GITEA_ACCESS_TOKEN",
+  "docker.gitea.com/gitea-mcp-server"
+]
+envs = { GITEA_ACCESS_TOKEN = "xxx" }
+
+#[server.headers]
+#Authorization = "Bearer xxxxx"
+##X-Custom-Header = "custom-value"

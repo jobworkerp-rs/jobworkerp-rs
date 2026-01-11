@@ -1,6 +1,6 @@
 use super::config::{McpConfig, McpServerConfig, McpServerTransportConfig};
 use crate::runner::timeout_config::RunnerTimeoutConfig;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use debug_stub_derive::DebugStub;
 use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
@@ -12,12 +12,13 @@ use rmcp::{
 };
 use std::{borrow::Cow, collections::HashMap, process::Stdio, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 #[derive(DebugStub)]
 pub struct McpServerProxy {
     pub name: String,
     pub description: Option<String>,
-    pub transport: RunningService<RoleClient, ()>,
+    transport: Arc<RunningService<RoleClient, ()>>,
     #[debug_stub = "MokaCache<Arc<String>, Vec<String>>"]
     async_cache: MokaCacheImpl<Arc<String>, Vec<Tool>>,
 }
@@ -53,7 +54,7 @@ impl McpServerProxy {
         Ok(Self {
             name: config.name.clone(),
             description: config.description.clone(),
-            transport,
+            transport: Arc::new(transport),
             async_cache: MokaCacheImpl::new(&Self::MEMORY_CACHE_CONFIG),
         })
     }
@@ -152,7 +153,7 @@ impl McpServerProxy {
             serde_json::Value::Object(map) => Some(map),
             _ => None,
         };
-
+        tracing::debug!("calling tool: {tool_name}, args: {arguments:?}");
         let call_result = self
             .transport
             .call_tool(CallToolRequestParam {
@@ -160,15 +161,60 @@ impl McpServerProxy {
                 arguments,
             })
             .await?;
+        tracing::debug!("called tool: {tool_name}, result: {call_result:?}");
         Ok(call_result)
     }
+
+    /// Call tool with cancellation support
+    pub async fn call_tool_with_cancellation(
+        &self,
+        tool_name: &str,
+        args: serde_json::Value,
+        cancellation_token: CancellationToken,
+    ) -> Result<CallToolResult> {
+        let arguments = match args {
+            serde_json::Value::Object(map) => Some(map),
+            _ => None,
+        };
+
+        tracing::debug!("calling tool with cancellation: {tool_name}, args: {arguments:?}");
+
+        tokio::select! {
+            result = self.transport.call_tool(CallToolRequestParam {
+                name: Cow::Owned(tool_name.to_string()),
+                arguments,
+            }) => {
+                let call_result = result.map_err(|e| {
+                    tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name, e);
+                    anyhow!("MCP tool '{}' failed: {}", tool_name, e)
+                })?;
+                tracing::debug!("called tool: {tool_name}, result: {call_result:?}");
+                Ok(call_result)
+            }
+            _ = cancellation_token.cancelled() => {
+                tracing::info!("MCP tool call was cancelled for tool '{}'", tool_name);
+                Err(JobWorkerError::CancelledError(
+                    format!("MCP tool '{}' call was cancelled", tool_name)
+                ).into())
+            }
+        }
+    }
+
     pub async fn cancel(self) -> Result<bool> {
-        match self.transport.cancel().await? {
-            QuitReason::Cancelled => Ok(true),
-            QuitReason::Closed => Ok(false),
-            QuitReason::JoinError(join_error) => {
-                tracing::error!("tokio thread Join error: {:?}", join_error);
-                Err(JobWorkerError::RuntimeError(format!("Join error: {join_error}")).into())
+        // Try to unwrap Arc to get ownership for cancel
+        match Arc::try_unwrap(self.transport) {
+            Ok(transport) => match transport.cancel().await? {
+                QuitReason::Cancelled => Ok(true),
+                QuitReason::Closed => Ok(false),
+                QuitReason::JoinError(join_error) => {
+                    tracing::error!("tokio thread Join error: {:?}", join_error);
+                    Err(JobWorkerError::RuntimeError(format!("Join error: {join_error}")).into())
+                }
+            },
+            Err(_arc) => {
+                // Other references exist, transport will be cancelled when all refs are dropped
+                tracing::warn!("Cannot cancel MCP transport: other references exist");
+                Ok(false)
             }
         }
     }
