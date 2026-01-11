@@ -241,6 +241,82 @@ impl WorkflowLoader {
     }
 }
 
+/// Maximum size for workflow files loaded via HTTP (10MB)
+const MAX_WORKFLOW_HTTP_SIZE: usize = 10 * 1024 * 1024;
+
+/// Check if a string looks like a Windows drive path (e.g., "C:\path" or "D:/path")
+fn is_windows_path(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+/// Check if a URL points to a potentially unsafe destination (SSRF protection)
+fn is_unsafe_url(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return true;
+    };
+
+    // Block localhost hostname
+    if host == "localhost" {
+        return true;
+    }
+
+    // Block cloud metadata services
+    if host == "169.254.169.254" || host == "metadata.google.internal" {
+        return true;
+    }
+
+    // Block common internal hostnames
+    if host.ends_with(".local") || host.ends_with(".internal") {
+        return true;
+    }
+
+    // Check for unsafe IPv4 addresses
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        if ip.is_unspecified()
+            || ip.is_loopback()
+            || ip.is_private()
+            || ip.is_link_local()
+            || ip.is_broadcast()
+        {
+            return true;
+        }
+        // Block 169.254.x.x (link-local, redundant with is_link_local but explicit)
+        if ip.octets()[0] == 169 && ip.octets()[1] == 254 {
+            return true;
+        }
+        return false;
+    }
+
+    // Check for unsafe IPv6 addresses
+    // Strip brackets if present (e.g., "[::1]" -> "::1")
+    let ipv6_host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = ipv6_host.parse::<std::net::Ipv6Addr>() {
+        if ip.is_unspecified() || ip.is_loopback() {
+            return true;
+        }
+        // Check for link-local (fe80::/10) and unique local (fc00::/7, includes fd00::/8)
+        // These cover AWS fd00:ec2::254 and similar private IPv6 addresses
+        let segments = ip.segments();
+        // Link-local: fe80::/10 (first 10 bits are 1111111010)
+        if (segments[0] & 0xffc0) == 0xfe80 {
+            return true;
+        }
+        // Unique local: fc00::/7 (first 7 bits are 1111110)
+        if (segments[0] & 0xfe00) == 0xfc00 {
+            return true;
+        }
+    }
+
+    false
+}
+
 pub trait UseLoadUrlOrPath {
     fn http_client(&self) -> Option<&reqwest::ReqwestClient>;
     fn load_url_or_path<T: DeserializeOwned + Clone>(
@@ -249,7 +325,10 @@ pub trait UseLoadUrlOrPath {
     ) -> impl std::future::Future<Output = Result<T>> + Send {
         let http_client = self.http_client().cloned();
         async move {
-            let body = if let Ok(url) = url_or_path.parse::<Url>() {
+            // Check for Windows paths before URL parsing to avoid misclassification
+            let body = if is_windows_path(url_or_path) {
+                std::fs::read_to_string(url_or_path)?
+            } else if let Ok(url) = url_or_path.parse::<Url>() {
                 match url.scheme() {
                     "file" => {
                         // file:// URL -> load from local filesystem
@@ -260,6 +339,14 @@ pub trait UseLoadUrlOrPath {
                             .map_err(|e| anyhow!("Failed to read file from URL {}: {}", url, e))?
                     }
                     "http" | "https" => {
+                        // SSRF protection: block requests to internal/private addresses
+                        if is_unsafe_url(&url) {
+                            return Err(anyhow!(
+                                "URL points to a restricted address (localhost, private IP, or metadata service): {}",
+                                url
+                            ));
+                        }
+
                         // HTTP(S) URL -> fetch via HTTP client
                         let client = http_client.ok_or_else(|| {
                             anyhow!(
@@ -269,7 +356,38 @@ pub trait UseLoadUrlOrPath {
                         })?;
                         let res = client.client().get(url.clone()).send().await?;
                         if res.status().is_success() {
-                            res.text().await?
+                            // Check Content-Length header if available for early rejection
+                            if let Some(content_length) = res.content_length() {
+                                if content_length as usize > MAX_WORKFLOW_HTTP_SIZE {
+                                    return Err(anyhow!(
+                                        "Workflow file too large: {} bytes (max: {} bytes)",
+                                        content_length,
+                                        MAX_WORKFLOW_HTTP_SIZE
+                                    ));
+                                }
+                            }
+
+                            // Stream response with size limit to prevent OOM
+                            use futures_util::StreamExt;
+                            let mut stream = res.bytes_stream();
+                            let mut total_size: usize = 0;
+                            let mut collected_bytes: Vec<u8> = Vec::new();
+
+                            while let Some(chunk_result) = stream.next().await {
+                                let chunk = chunk_result?;
+                                total_size += chunk.len();
+                                if total_size > MAX_WORKFLOW_HTTP_SIZE {
+                                    return Err(anyhow!(
+                                        "Workflow file too large: {} bytes (max: {} bytes)",
+                                        total_size,
+                                        MAX_WORKFLOW_HTTP_SIZE
+                                    ));
+                                }
+                                collected_bytes.extend_from_slice(&chunk);
+                            }
+
+                            String::from_utf8(collected_bytes)
+                                .map_err(|e| anyhow!("Invalid UTF-8 in workflow file: {}", e))?
                         } else {
                             return Err(anyhow!(
                                 "Failed to load yaml: {}, status: {}",
@@ -436,5 +554,81 @@ mod test {
         // println!("====FOR: {:#?}", _for_task);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_is_windows_path() {
+        use super::is_windows_path;
+
+        // Valid Windows paths
+        assert!(is_windows_path("C:\\Users\\test"));
+        assert!(is_windows_path("D:/path/to/file"));
+        assert!(is_windows_path("c:\\lowercase"));
+        assert!(is_windows_path("Z:/last-drive"));
+
+        // Not Windows paths
+        assert!(!is_windows_path("/unix/path"));
+        assert!(!is_windows_path("relative/path"));
+        assert!(!is_windows_path("http://example.com"));
+        assert!(!is_windows_path("file:///path"));
+        assert!(!is_windows_path("C:")); // Too short
+        assert!(!is_windows_path("C")); // Too short
+        assert!(!is_windows_path("")); // Empty
+        assert!(!is_windows_path("1:\\invalid")); // Starts with number
+    }
+
+    #[test]
+    fn test_is_unsafe_url() {
+        use super::is_unsafe_url;
+        use url::Url;
+
+        // Unsafe IPv4 addresses
+        assert!(is_unsafe_url(&Url::parse("http://localhost/").unwrap()));
+        assert!(is_unsafe_url(&Url::parse("http://127.0.0.1/").unwrap()));
+        assert!(is_unsafe_url(&Url::parse("http://0.0.0.0/").unwrap())); // Unspecified
+        assert!(is_unsafe_url(
+            &Url::parse("http://169.254.169.254/latest/meta-data/").unwrap()
+        ));
+        assert!(is_unsafe_url(
+            &Url::parse("http://192.168.1.1/admin").unwrap()
+        ));
+        assert!(is_unsafe_url(&Url::parse("http://10.0.0.1/").unwrap()));
+        assert!(is_unsafe_url(
+            &Url::parse("http://172.16.0.1/internal").unwrap()
+        ));
+
+        // Unsafe IPv6 addresses
+        assert!(is_unsafe_url(&Url::parse("http://[::1]/").unwrap())); // Loopback
+        assert!(is_unsafe_url(&Url::parse("http://[::]/").unwrap())); // Unspecified
+        assert!(is_unsafe_url(&Url::parse("http://[fe80::1]/").unwrap())); // Link-local
+        assert!(is_unsafe_url(
+            &Url::parse("http://[fd00:ec2::254]/").unwrap()
+        )); // AWS unique local
+        assert!(is_unsafe_url(&Url::parse("http://[fc00::1]/").unwrap())); // Unique local
+
+        // Unsafe hostnames
+        assert!(is_unsafe_url(
+            &Url::parse("http://metadata.google.internal/").unwrap()
+        ));
+        assert!(is_unsafe_url(
+            &Url::parse("http://service.local/api").unwrap()
+        ));
+        assert!(is_unsafe_url(
+            &Url::parse("http://db.internal/query").unwrap()
+        ));
+
+        // Safe URLs (should return false)
+        assert!(!is_unsafe_url(
+            &Url::parse("https://example.com/workflow.yaml").unwrap()
+        ));
+        assert!(!is_unsafe_url(
+            &Url::parse("https://github.com/repo/file.yaml").unwrap()
+        ));
+        assert!(!is_unsafe_url(
+            &Url::parse("http://203.0.113.50/public").unwrap()
+        ));
+        assert!(!is_unsafe_url(
+            &Url::parse("http://[2001:db8::1]/").unwrap()
+        )); // Documentation prefix (safe for testing)
     }
 }

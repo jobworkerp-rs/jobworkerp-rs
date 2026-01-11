@@ -445,8 +445,10 @@ pub fn extract_text_from_llm_chat_result(bytes: &[u8]) -> Option<String> {
 ///
 /// # Example
 /// ```ignore
+/// use crate::pubsub::DEFAULT_METHOD_NAME;
+///
 /// let (job_result, stream_opt) = job_result_app
-///     .listen_result(&job_id, None, Some(&worker_name), timeout, true)
+///     .listen_result(&job_id, None, Some(&worker_name), timeout, true, DEFAULT_METHOD_NAME)
 ///     .await?;
 ///
 /// if let Some(stream) = stream_opt {
