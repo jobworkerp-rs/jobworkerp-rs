@@ -96,6 +96,20 @@ impl RunTaskExecutor {
             None
         }
     }
+
+    /// Transform a string field that may contain jq expression or Liquid template
+    fn transform_string_field(
+        input: Arc<serde_json::Value>,
+        field: &str,
+        expression: &std::collections::BTreeMap<String, Arc<serde_json::Value>>,
+    ) -> Result<String, Box<workflow::Error>> {
+        let transformed = Self::execute_transform(input, field, expression)?;
+        match transformed {
+            serde_json::Value::String(s) => Ok(s),
+            other => Ok(other.to_string()),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn execute_by_jobworkerp(
         &self,
@@ -301,6 +315,43 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             }) => {
                 task_context.add_position_name("runner".to_string()).await;
 
+                // Transform runner_name (may contain jq expression or Liquid template)
+                let transformed_runner_name = match Self::transform_string_field(
+                    task_context.input.clone(),
+                    runner_name,
+                    &expression,
+                ) {
+                    Ok(name) => name,
+                    Err(mut e) => {
+                        let pos = task_context.position.clone();
+                        let mut pos = pos.write().await;
+                        pos.push("name".to_string());
+                        e.position(&pos);
+                        return Err(e);
+                    }
+                };
+                tracing::debug!("transformed runner_name: {}", transformed_runner_name);
+
+                // Transform using (may contain jq expression or Liquid template)
+                let transformed_using = match using.as_ref() {
+                    Some(u) => match Self::transform_string_field(
+                        task_context.input.clone(),
+                        u,
+                        &expression,
+                    ) {
+                        Ok(name) => Some(name),
+                        Err(mut e) => {
+                            let pos = task_context.position.clone();
+                            let mut pos = pos.write().await;
+                            pos.push("using".to_string());
+                            e.position(&pos);
+                            return Err(e);
+                        }
+                    },
+                    None => None,
+                };
+                tracing::debug!("transformed using: {:?}", transformed_using);
+
                 tracing::debug!("raw arguments: {:#?}", arguments);
                 let args = match Self::transform_map(
                     task_context.input.clone(),
@@ -338,12 +389,12 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                 let output = match self
                     .execute_by_jobworkerp(
                         cx.clone(),
-                        runner_name,
+                        &transformed_runner_name,
                         Some(transformed_settings),
                         options.clone(),
                         args,
                         task_name,
-                        using.clone(),
+                        transformed_using,
                     )
                     .await
                 {
@@ -376,6 +427,43 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             }) => {
                 task_context.add_position_name("function".to_string()).await;
 
+                // Transform worker_name (may contain jq expression or Liquid template)
+                let transformed_worker_name = match Self::transform_string_field(
+                    task_context.input.clone(),
+                    worker_name,
+                    &expression,
+                ) {
+                    Ok(name) => name,
+                    Err(mut e) => {
+                        let pos = task_context.position.clone();
+                        let mut pos = pos.write().await;
+                        pos.push("worker_name".to_string());
+                        e.position(&pos);
+                        return Err(e);
+                    }
+                };
+                tracing::debug!("transformed worker_name: {}", transformed_worker_name);
+
+                // Transform using (may contain jq expression or Liquid template)
+                let transformed_using = match using.as_ref() {
+                    Some(u) => match Self::transform_string_field(
+                        task_context.input.clone(),
+                        u,
+                        &expression,
+                    ) {
+                        Ok(name) => Some(name),
+                        Err(mut e) => {
+                            let pos = task_context.position.clone();
+                            let mut pos = pos.write().await;
+                            pos.push("using".to_string());
+                            e.position(&pos);
+                            return Err(e);
+                        }
+                    },
+                    None => None,
+                };
+                tracing::debug!("transformed using: {:?}", transformed_using);
+
                 tracing::debug!("raw arguments: {:#?}", arguments);
                 let args = match Self::transform_map(
                     task_context.input.clone(),
@@ -398,12 +486,12 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     .job_executor_wrapper
                     .enqueue_with_worker_name_and_output_json(
                         metadata,
-                        worker_name,
+                        &transformed_worker_name,
                         &args,
                         None,
                         timeout_sec,
                         StreamingType::None,
-                        using.clone(),
+                        transformed_using,
                     )
                     .await
                 {
@@ -437,6 +525,43 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     },
             }) => {
                 task_context.add_position_name("function".to_string()).await;
+
+                // Transform runner_name (may contain jq expression or Liquid template)
+                let transformed_runner_name = match Self::transform_string_field(
+                    task_context.input.clone(),
+                    runner_name,
+                    &expression,
+                ) {
+                    Ok(name) => name,
+                    Err(mut e) => {
+                        let pos = task_context.position.clone();
+                        let mut pos = pos.write().await;
+                        pos.push("runner_name".to_string());
+                        e.position(&pos);
+                        return Err(e);
+                    }
+                };
+                tracing::debug!("transformed runner_name: {}", transformed_runner_name);
+
+                // Transform using (may contain jq expression or Liquid template)
+                let transformed_using = match using.as_ref() {
+                    Some(u) => match Self::transform_string_field(
+                        task_context.input.clone(),
+                        u,
+                        &expression,
+                    ) {
+                        Ok(name) => Some(name),
+                        Err(mut e) => {
+                            let pos = task_context.position.clone();
+                            let mut pos = pos.write().await;
+                            pos.push("using".to_string());
+                            e.position(&pos);
+                            return Err(e);
+                        }
+                    },
+                    None => None,
+                };
+                tracing::debug!("transformed using: {:?}", transformed_using);
 
                 tracing::debug!("raw arguments: {:#?}", arguments);
                 let args = match Self::transform_map(
@@ -476,12 +601,12 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                 let output = match self
                     .execute_by_jobworkerp(
                         cx.clone(),
-                        runner_name,
+                        &transformed_runner_name,
                         Some(transformed_settings),
                         options.clone(),
                         args,
                         task_name,
-                        using.clone(),
+                        transformed_using,
                     )
                     .await
                 {
