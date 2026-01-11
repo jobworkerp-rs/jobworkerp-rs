@@ -197,6 +197,7 @@ impl JobResultApp for HybridJobResultAppImpl {
         worker_name: Option<&String>,
         timeout: Option<u64>,
         request_streaming: bool,
+        using: &str,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
     where
         Self: Send + 'static,
@@ -219,7 +220,7 @@ impl JobResultApp for HybridJobResultAppImpl {
             }
             // check request streaming
             self.worker_app()
-                .check_worker_streaming(&wid, request_streaming)
+                .check_worker_streaming(&wid, request_streaming, Some(using))
                 .await?;
             // check job result (already finished or not)
             let res = self.find_job_result_by_job_id(job_id).await?;
@@ -784,6 +785,7 @@ pub mod tests {
                     Some(&worker_data.name),
                     None,
                     false,
+                    proto::DEFAULT_METHOD_NAME,
                 )
                 .await;
             assert!(res.is_err());

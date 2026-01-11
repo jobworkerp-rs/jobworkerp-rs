@@ -23,6 +23,7 @@ use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{JobResult, JobResultId};
+use proto::DEFAULT_METHOD_NAME;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
@@ -128,15 +129,16 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
     ) -> Result<tonic::Response<JobResult>, tonic::Status> {
         let _s = Self::trace_request("job_result", "listen", &request);
         let req = request.get_ref();
+        let using = req.using.as_deref().unwrap_or(DEFAULT_METHOD_NAME);
         let res = match (req.job_id.as_ref(), req.worker.as_ref()) {
             (Some(job_id), Some(Worker::WorkerId(worker_id))) => {
                 self.app()
-                    .listen_result(job_id, Some(worker_id), None, req.timeout, false)
+                    .listen_result(job_id, Some(worker_id), None, req.timeout, false, using)
                     .await
             }
             (Some(job_id), Some(Worker::WorkerName(name))) => {
                 self.app()
-                    .listen_result(job_id, None, Some(name), req.timeout, false)
+                    .listen_result(job_id, None, Some(name), req.timeout, false, using)
                     .await
             }
             _ => Err(JobWorkerError::InvalidParameter(
@@ -171,15 +173,16 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         use tokio_stream::StreamExt;
         let _s = Self::trace_request("job_result", "listen_stream", &request);
         let req = request.into_inner();
+        let using = req.using.as_deref().unwrap_or(DEFAULT_METHOD_NAME);
         let res = match (req.job_id, req.worker) {
             (Some(job_id), Some(Worker::WorkerId(worker_id))) => {
                 self.app()
-                    .listen_result(&job_id, Some(&worker_id), None, None, true)
+                    .listen_result(&job_id, Some(&worker_id), None, None, true, using)
                     .await
             }
             (Some(job_id), Some(Worker::WorkerName(name))) => {
                 self.app()
-                    .listen_result(&job_id, None, Some(&name), None, true)
+                    .listen_result(&job_id, None, Some(&name), None, true, using)
                     .await
             }
             _ => Err(JobWorkerError::InvalidParameter(

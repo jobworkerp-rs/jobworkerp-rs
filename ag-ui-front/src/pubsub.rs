@@ -17,6 +17,7 @@ use crate::types::ids::MessageId;
 use app::app::job_result::JobResultApp;
 use futures::stream::BoxStream;
 use proto::jobworkerp::data::{JobId, ResultOutputItem};
+use proto::DEFAULT_METHOD_NAME;
 use std::sync::Arc;
 
 /// Subscribe to LLM streaming results and convert to AG-UI events.
@@ -44,7 +45,7 @@ pub async fn subscribe_llm_stream(
     Option<BoxStream<'static, AgUiEvent>>,
 )> {
     let (job_result, stream_opt) = job_result_app
-        .listen_result(job_id, None, worker_name, timeout, true)
+        .listen_result(job_id, None, worker_name, timeout, true, DEFAULT_METHOD_NAME)
         .await?;
 
     let event_stream = stream_opt.map(|stream| {
@@ -78,7 +79,7 @@ pub async fn subscribe_job_result_as_tool_call(
     adapter: SharedWorkflowEventAdapter,
 ) -> anyhow::Result<Vec<AgUiEvent>> {
     let (job_result, _stream) = job_result_app
-        .listen_result(job_id, None, worker_name, timeout, false)
+        .listen_result(job_id, None, worker_name, timeout, false, DEFAULT_METHOD_NAME)
         .await?;
 
     let mut events = Vec::new();

@@ -17,6 +17,7 @@ use infra_utils::infra::test::TEST_RUNTIME;
 use proto::jobworkerp::data::{
     JobId, QueueType, ResponseType, RunnerId, StreamingType, WorkerData,
 };
+use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -91,6 +92,7 @@ fn test_listen_stream_rejects_non_broadcast_worker() -> Result<()> {
                 None,
                 Some(1000), // 1 second timeout
                 true,       // request_streaming
+                DEFAULT_METHOD_NAME,
             )
             .await;
 
@@ -191,6 +193,7 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
                         None,
                         Some(30000), // 30 second timeout
                         false,       // request_streaming (non-streaming listen)
+                        DEFAULT_METHOD_NAME,
                     )
                     .await;
 
@@ -302,6 +305,7 @@ fn test_listen_stream_streaming_results() -> Result<()> {
                 None,
                 Some(30000),
                 true, // request_streaming=true for streaming listen
+                DEFAULT_METHOD_NAME,
             )
             .await;
 
@@ -382,6 +386,7 @@ fn test_listen_stream_allows_broadcast_worker() -> Result<()> {
                 None,
                 Some(500), // 500ms timeout
                 true,
+                DEFAULT_METHOD_NAME,
             )
             .await;
 
