@@ -223,6 +223,7 @@ impl JobResultApp for RdbJobResultAppImpl {
         worker_name: Option<&String>,
         timeout: Option<u64>,
         request_streaming: bool,
+        _using: &str,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
     where
         Self: Send + 'static,

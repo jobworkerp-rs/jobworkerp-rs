@@ -385,7 +385,7 @@ impl RdbChanJobAppImpl {
             // check if worker supports streaming mode
             let request_streaming = streaming_type != StreamingType::None;
             self.worker_app()
-                .check_worker_streaming(wid, request_streaming)
+                .check_worker_streaming(wid, request_streaming, using.as_deref())
                 .await?;
 
             let job_data = JobData {

@@ -19,6 +19,7 @@ message ListenRequest {
     string worker_name = 3;
   }
   optional uint64 timeout = 4;
+  optional string using = 5; // method name for multi-method runners (default: "run")
 }
 
 message ListenByWorkerRequest {

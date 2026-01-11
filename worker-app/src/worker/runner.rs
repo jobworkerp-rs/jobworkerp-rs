@@ -671,6 +671,8 @@ pub(crate) mod tests {
                 command: "sleep".to_string(),
                 args: vec!["1".to_string()],
                 with_memory_monitoring: true,
+                treat_nonzero_as_error: false,
+                success_exit_codes: vec![],
             })
             .unwrap();
             let job = Job {
@@ -731,6 +733,8 @@ pub(crate) mod tests {
                 command: "sleep".to_string(),
                 args: vec!["2".to_string()],
                 with_memory_monitoring: true,
+                treat_nonzero_as_error: false,
+                success_exit_codes: vec![],
             })
             .unwrap();
 
@@ -781,6 +785,8 @@ pub(crate) mod tests {
                 command: "echo".to_string(),
                 args: vec!["streaming_response_test".to_string()],
                 with_memory_monitoring: false,
+                treat_nonzero_as_error: false,
+                success_exit_codes: vec![],
             })
             .unwrap();
 
@@ -857,6 +863,8 @@ pub(crate) mod tests {
                 command: "echo".to_string(),
                 args: vec!["internal_streaming_test".to_string()],
                 with_memory_monitoring: false,
+                treat_nonzero_as_error: false,
+                success_exit_codes: vec![],
             })
             .unwrap();
 
@@ -964,6 +972,8 @@ pub(crate) mod tests {
                 command: "echo".to_string(),
                 args: vec!["non_streaming_test".to_string()],
                 with_memory_monitoring: false,
+                treat_nonzero_as_error: false,
+                success_exit_codes: vec![],
             })
             .unwrap();
 

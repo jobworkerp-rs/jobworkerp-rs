@@ -59,6 +59,8 @@ mod streaming_pool_guard_tests {
                 command: "sleep".to_string(),
                 args: vec!["0.1".to_string()], // 100ms sleep
                 with_memory_monitoring: false,
+                treat_nonzero_as_error: false,
+                success_exit_codes: vec![],
             };
 
             let stream_result = runner
@@ -103,6 +105,8 @@ mod streaming_pool_guard_tests {
                     command: "echo".to_string(),
                     args: vec![format!("test_{}", i)],
                     with_memory_monitoring: false,
+                    treat_nonzero_as_error: false,
+                    success_exit_codes: vec![],
                 };
 
                 let stream_result = runner
@@ -196,6 +200,8 @@ mod streaming_pool_guard_tests {
                 command: "echo".to_string(),
                 args: vec!["streaming_test".to_string()],
                 with_memory_monitoring: false,
+                treat_nonzero_as_error: false,
+                success_exit_codes: vec![],
             };
 
             let stream_result = runner
@@ -318,6 +324,8 @@ mod streaming_pool_guard_tests {
                 command: "sleep".to_string(),
                 args: vec!["1.0".to_string()], // 1 second sleep to test early drop behavior
                 with_memory_monitoring: false,
+                treat_nonzero_as_error: false,
+                success_exit_codes: vec![],
             };
 
             let stream_result = runner

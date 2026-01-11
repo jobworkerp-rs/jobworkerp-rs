@@ -227,7 +227,12 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
     // for pubsub
     async fn clear_cache_by(&self, id: Option<&WorkerId>, name: Option<&String>) -> Result<()>;
 
-    async fn check_worker_streaming(&self, id: &WorkerId, request_streaming: bool) -> Result<()> {
+    async fn check_worker_streaming(
+        &self,
+        id: &WorkerId,
+        request_streaming: bool,
+        using: Option<&str>,
+    ) -> Result<()> {
         let runner_id = if let Some(Worker {
             id: _,
             data: Some(wd),
@@ -251,11 +256,21 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
         }) = self.runner_app().find_runner(&runner_id).await?
         {
             let output_type = if let Some(ref method_proto_map) = runner_data.method_proto_map {
-                method_proto_map
-                    .schemas
-                    .values()
-                    .next()
-                    .map(|schema| schema.output_type)
+                let method_name = using.unwrap_or(proto::DEFAULT_METHOD_NAME);
+                let schema = method_proto_map.schemas.get(method_name).or_else(|| {
+                    // Fallback to DEFAULT_METHOD_NAME for deterministic behavior
+                    if method_name != proto::DEFAULT_METHOD_NAME {
+                        tracing::debug!(
+                            "Schema not found for method '{}', falling back to default",
+                            method_name
+                        );
+                        method_proto_map.schemas.get(proto::DEFAULT_METHOD_NAME)
+                    } else {
+                        None
+                    }
+                });
+                schema
+                    .map(|s| s.output_type)
                     .unwrap_or(proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32)
             } else {
                 proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32
@@ -267,7 +282,7 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
                         Ok(())
                     } else {
                         Err(JobWorkerError::InvalidParameter(
-                            "runner does not support streaming".to_string(),
+                            "runner does not support non-streaming".to_string(),
                         )
                         .into())
                     }

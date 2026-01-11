@@ -93,6 +93,8 @@ fn create_command_job(command: &str, args: Vec<String>, timeout_ms: u64) -> Job 
         command: command.to_string(),
         args,
         with_memory_monitoring: true,
+        treat_nonzero_as_error: false,
+        success_exit_codes: vec![],
     };
     let args_bytes = ProstMessageCodec::serialize_message(&command_args).unwrap();
 

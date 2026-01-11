@@ -9,6 +9,7 @@ use crate::runner::RunnerTrait;
 use crate::schema_to_json_string_option;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use command_utils::protobuf::ProtobufDescriptor;
 use command_utils::trace::Tracing;
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::ProstMessageCodec;
@@ -261,6 +262,40 @@ impl McpServerRunnerImpl {
             }
         }
     }
+
+    /// Decode Protobuf binary args to JSON Value using tool's schema
+    ///
+    /// MCP runner receives Protobuf-encoded arguments from workflow execution.
+    /// This function decodes them using the tool's dynamically generated schema.
+    ///
+    /// Note: Uses proto field names (snake_case) instead of JSON field names (camelCase)
+    /// because MCP tools expect the original JSON Schema field names.
+    fn decode_args_to_json(&self, tool_name: &str, args: &[u8]) -> Result<serde_json::Value> {
+        let tool_info = self
+            .get_tool_info(tool_name)
+            .ok_or_else(|| anyhow!("Tool '{}' not found", tool_name))?;
+
+        if !tool_info.args_proto_schema.is_empty() {
+            let descriptor = ProtobufDescriptor::new(&tool_info.args_proto_schema)?;
+            let message_desc = descriptor
+                .get_messages()
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "No message descriptor found in args_proto_schema for tool '{}'",
+                        tool_name
+                    )
+                })?;
+            let dynamic_msg = ProtobufDescriptor::get_message_from_bytes(message_desc, args)?;
+            // Use proto field names (snake_case) to preserve original MCP JSON Schema field names
+            ProtobufDescriptor::message_to_json_value_with_proto_names(&dynamic_msg)
+        } else {
+            // Fallback: try to interpret as JSON string (backward compatibility)
+            let arg_json = String::from_utf8(args.to_vec())?;
+            Ok(serde_json::from_str(&arg_json)?)
+        }
+    }
 }
 
 impl RunnerSpec for McpServerRunnerImpl {
@@ -433,7 +468,11 @@ impl McpServerRunnerImpl {
             // ref
             let span = cx.span();
 
-            let arg_json = String::from_utf8(args.to_vec())?;
+            // Decode Protobuf binary args to JSON using tool's schema
+            let args_value = self
+                .decode_args_to_json(tool_name, args)
+                .inspect_err(|e| tracing::error!("Failed to decode arguments: {}", e))?;
+            let arg_json = serde_json::to_string(&args_value).unwrap_or_default();
 
             span.set_attribute(opentelemetry::KeyValue::new(
                 "input.tool_name",
@@ -445,11 +484,6 @@ impl McpServerRunnerImpl {
             ));
 
             tracing::debug!("Calling MCP tool '{}' with args: {}", tool_name, arg_json);
-
-            // Call MCP tool with cancellation support via proxy
-            // Timeout is managed at the job level
-            let args_value: serde_json::Value = serde_json::from_str(&arg_json)
-                .inspect_err(|e| tracing::error!("Failed to parse arguments: {}", e))?;
             let res = self
                 .mcp_server
                 .call_tool_with_cancellation(tool_name, args_value, cancellation_token.clone())
@@ -592,7 +626,16 @@ impl McpServerRunnerImpl {
             .into());
         }
 
-        let arg_json = String::from_utf8(arg.to_vec())?;
+        // Decode Protobuf binary args to JSON using tool's schema (before entering stream)
+        let args_value = self
+            .decode_args_to_json(tool_name, arg)
+            .inspect_err(|e| tracing::error!("Failed to decode arguments: {}", e))?;
+
+        tracing::debug!(
+            "Calling MCP tool '{}' (streaming) with args: {}",
+            tool_name,
+            serde_json::to_string(&args_value).unwrap_or_default()
+        );
 
         // Clone Arc<McpServerProxy> to keep MCP connection alive during stream execution
         let mcp_server = Arc::clone(&self.mcp_server);
@@ -607,17 +650,6 @@ impl McpServerRunnerImpl {
 
         let stream = stream! {
             // Call MCP tool with cancellation support via proxy
-            let args_value: serde_json::Value = match serde_json::from_str(&arg_json) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("Failed to parse arguments: {}", e);
-                    yield ResultOutputItem {
-                        item: Some(Item::End((*trailer).clone())),
-                    };
-                    return;
-                }
-            };
-            // let args_value: serde_json::Value = serde_json::from_str(&arg_json).unwrap_or_default();
             let call_result = mcp_server
                 .call_tool_with_cancellation(&tool_name_owned, args_value, cancellation_token.clone())
                 .await;

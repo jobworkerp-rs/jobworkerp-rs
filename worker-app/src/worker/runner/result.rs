@@ -352,6 +352,8 @@ mod tests {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
             with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
         })?;
         let job = Job {
             id: Some(JobId { value: 1 }),
