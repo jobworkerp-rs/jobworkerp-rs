@@ -1,0 +1,15 @@
+
+Please resolve the following issue by implementing the necessary code changes.
+
+## Issue #147: workflow checkpoint APIの作成
+
+texttextmissing required parameter: method
+
+
+
+
+## Instructions
+- Create or modify files as needed to resolve the issue
+- Run tests to verify the changes work correctly
+- Write clear, descriptive commit messages
+- Follow the existing code style and conventions
