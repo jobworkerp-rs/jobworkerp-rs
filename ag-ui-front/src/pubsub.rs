@@ -45,7 +45,14 @@ pub async fn subscribe_llm_stream(
     Option<BoxStream<'static, AgUiEvent>>,
 )> {
     let (job_result, stream_opt) = job_result_app
-        .listen_result(job_id, None, worker_name, timeout, true, DEFAULT_METHOD_NAME)
+        .listen_result(
+            job_id,
+            None,
+            worker_name,
+            timeout,
+            true,
+            DEFAULT_METHOD_NAME,
+        )
         .await?;
 
     let event_stream = stream_opt.map(|stream| {
@@ -79,7 +86,14 @@ pub async fn subscribe_job_result_as_tool_call(
     adapter: SharedWorkflowEventAdapter,
 ) -> anyhow::Result<Vec<AgUiEvent>> {
     let (job_result, _stream) = job_result_app
-        .listen_result(job_id, None, worker_name, timeout, false, DEFAULT_METHOD_NAME)
+        .listen_result(
+            job_id,
+            None,
+            worker_name,
+            timeout,
+            false,
+            DEFAULT_METHOD_NAME,
+        )
         .await?;
 
     let mut events = Vec::new();
