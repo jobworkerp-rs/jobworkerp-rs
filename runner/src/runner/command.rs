@@ -377,7 +377,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                     );
                                     if let Some(process) = sys.process(pids[0]) {
                                         let memory = process.memory(); // in Byte
-                                        tracing::info!(
+                                        tracing::debug!(
                                             "Memory usage: {:.3}KB",
                                             memory as f64 / 1024.0
                                         );
