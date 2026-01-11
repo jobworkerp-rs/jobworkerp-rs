@@ -187,6 +187,13 @@ pub fn json_schema_to_protobuf(
         fields.join("\n")
     );
 
+    // Debug log for troubleshooting proto compilation errors
+    // tracing::debug!(
+    //     "Generated protobuf schema for tool '{}': \n{}",
+    //     tool_name,
+    //     proto_schema
+    // );
+
     Ok(proto_schema)
 }
 
@@ -239,7 +246,11 @@ fn extract_fields_from_schema(
     for (i, (field_name, field_schema)) in properties.iter().enumerate() {
         let field_type =
             json_type_to_proto_type(field_schema, field_name, parent_path, depth, ctx)?;
-        let optional_prefix = if required.contains(field_name.as_str()) {
+
+        // Don't add "optional" prefix for repeated fields - they are inherently optional in proto3
+        // Also skip "optional" for required fields
+        let is_repeated = field_type.starts_with("repeated ");
+        let optional_prefix = if required.contains(field_name.as_str()) || is_repeated {
             ""
         } else {
             "optional "
@@ -552,7 +563,9 @@ mod tests {
         assert!(result.contains("optional int64 count"));
         assert!(result.contains("optional double value"));
         assert!(result.contains("optional bool enabled"));
-        assert!(result.contains("optional repeated string tags"));
+        // repeated fields don't need "optional" prefix in proto3
+        assert!(result.contains("repeated string tags"));
+        assert!(!result.contains("optional repeated")); // verify no "optional repeated"
         assert!(result.contains("optional string metadata")); // object → string
     }
 
@@ -882,6 +895,234 @@ mod tests {
         assert!(result.contains("country"));
         assert!(result.contains("street"));
         assert!(result.contains("building"));
+    }
+
+    #[test]
+    fn test_array_without_items() {
+        // Test array without items property (common edge case)
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array"
+                    // Missing "items" property
+                }
+            }
+        });
+
+        let result = json_schema_to_protobuf(&schema, "test", "array_no_items");
+        // This should fail with a clear error message
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_properties_with_description_only() {
+        // Test property with only description (no type)
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "config": {
+                    "description": "Configuration object"
+                    // Missing "type" property
+                }
+            }
+        });
+
+        let result = json_schema_to_protobuf(&schema, "test", "desc_only");
+        // This should default to string type
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("optional string config = 1;"));
+    }
+
+    #[test]
+    fn test_repeated_field_no_optional_prefix() {
+        // Verify that repeated fields do not get "optional" prefix (proto3 requirement)
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "name": {"type": "string"}
+            }
+        });
+
+        let result = json_schema_to_protobuf(&schema, "test", "repeated_test").unwrap();
+        // Verify no "optional repeated" pattern exists
+        assert!(
+            !result.contains("optional repeated"),
+            "repeated fields should not have optional prefix"
+        );
+        assert!(result.contains("repeated string tags"));
+    }
+
+    #[test]
+    fn test_github_schema_protoc_compilation() {
+        // Test that generated protobuf can actually be compiled by protoc
+        // This is a regression test for the "optional repeated" bug
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string"},
+                "repo": {"type": "string"},
+                "pullNumber": {"type": "number"},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "state": {
+                    "type": "string",
+                    "enum": ["open", "closed"]
+                },
+                "draft": {"type": "boolean"},
+                "base": {"type": "string"},
+                "maintainer_can_modify": {"type": "boolean"},
+                "reviewers": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                }
+            },
+            "required": ["owner", "repo", "pullNumber"]
+        });
+
+        let proto = json_schema_to_protobuf(&schema, "github", "update_pull_request").unwrap();
+
+        // Verify no "optional repeated" pattern
+        assert!(
+            !proto.contains("optional repeated"),
+            "proto should not contain 'optional repeated'"
+        );
+
+        // Try to compile it with protoc
+        use command_utils::protobuf::ProtobufDescriptor;
+        let result = ProtobufDescriptor::new(&proto);
+        assert!(result.is_ok(), "Protobuf should compile successfully");
+    }
+
+    #[test]
+    fn test_github_issue_write_schema_protoc_compilation() {
+        // Test issue_write schema with multiple array fields
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "method": {"type": "string"},
+                "owner": {"type": "string"},
+                "repo": {"type": "string"},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "issue_number": {"type": "number"},
+                "assignees": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "labels": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "milestone": {"type": "number"},
+                "type": {"type": "string"},
+                "state": {
+                    "type": "string",
+                    "enum": ["open", "closed"]
+                },
+                "state_reason": {
+                    "type": "string",
+                    "enum": ["completed", "not_planned", "duplicate"]
+                },
+                "duplicate_of": {"type": "number"}
+            },
+            "required": ["method", "owner", "repo"]
+        });
+
+        let proto = json_schema_to_protobuf(&schema, "github", "issue_write").unwrap();
+        println!("Generated protobuf:\n{}", proto);
+
+        // Verify no "optional repeated" pattern
+        assert!(
+            !proto.contains("optional repeated"),
+            "proto should not contain 'optional repeated'"
+        );
+
+        // Try to compile it with protoc
+        use command_utils::protobuf::ProtobufDescriptor;
+        let result = ProtobufDescriptor::new(&proto);
+        if let Err(e) = &result {
+            println!("Protoc compilation error: {:?}", e);
+        }
+        assert!(result.is_ok(), "Protobuf should compile successfully");
+    }
+
+    #[test]
+    fn test_array_of_nested_objects() {
+        // Test array of objects (common pattern in MCP tools)
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "value": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        });
+
+        let proto = json_schema_to_protobuf(&schema, "test", "nested_array").unwrap();
+        println!("Nested array protobuf:\n{}", proto);
+
+        // Verify no "optional repeated" pattern
+        assert!(
+            !proto.contains("optional repeated"),
+            "proto should not contain 'optional repeated'"
+        );
+
+        // Try to compile it with protoc
+        use command_utils::protobuf::ProtobufDescriptor;
+        let result = ProtobufDescriptor::new(&proto);
+        if let Err(e) = &result {
+            println!("Protoc compilation error: {:?}", e);
+        }
+        assert!(result.is_ok(), "Protobuf should compile successfully");
+    }
+
+    #[test]
+    fn test_nested_object_with_array_field() {
+        // Test nested object that contains an array field
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "user": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        });
+
+        let proto = json_schema_to_protobuf(&schema, "test", "nested_with_array").unwrap();
+        println!("Nested with array protobuf:\n{}", proto);
+
+        // Verify no "optional repeated" pattern
+        assert!(
+            !proto.contains("optional repeated"),
+            "proto should not contain 'optional repeated'"
+        );
+
+        // Try to compile it with protoc
+        use command_utils::protobuf::ProtobufDescriptor;
+        let result = ProtobufDescriptor::new(&proto);
+        if let Err(e) = &result {
+            println!("Protoc compilation error: {:?}", e);
+        }
+        assert!(result.is_ok(), "Protobuf should compile successfully");
     }
 
     #[test]
