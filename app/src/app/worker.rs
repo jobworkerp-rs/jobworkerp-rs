@@ -257,10 +257,18 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
         {
             let output_type = if let Some(ref method_proto_map) = runner_data.method_proto_map {
                 let method_name = using.unwrap_or(proto::DEFAULT_METHOD_NAME);
-                let schema = method_proto_map
-                    .schemas
-                    .get(method_name)
-                    .or_else(|| method_proto_map.schemas.values().next());
+                let schema = method_proto_map.schemas.get(method_name).or_else(|| {
+                    // Fallback to DEFAULT_METHOD_NAME for deterministic behavior
+                    if method_name != proto::DEFAULT_METHOD_NAME {
+                        tracing::debug!(
+                            "Schema not found for method '{}', falling back to default",
+                            method_name
+                        );
+                        method_proto_map.schemas.get(proto::DEFAULT_METHOD_NAME)
+                    } else {
+                        None
+                    }
+                });
                 schema
                     .map(|s| s.output_type)
                     .unwrap_or(proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32)
