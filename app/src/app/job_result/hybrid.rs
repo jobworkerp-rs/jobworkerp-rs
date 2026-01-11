@@ -632,6 +632,8 @@ pub mod tests {
                 command: "echo".to_string(),
                 args: vec!["arg1".to_string()],
                 with_memory_monitoring: false,
+                treat_nonzero_as_error: false,
+                success_exit_codes: vec![],
             })?;
             let mut data = JobResultData {
                 job_id: Some(job_id),

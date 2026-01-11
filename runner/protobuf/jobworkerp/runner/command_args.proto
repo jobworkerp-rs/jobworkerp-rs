@@ -10,5 +10,10 @@ message CommandArgs {
   repeated string args = 2;
   // # whether to monitor memory usage
   bool with_memory_monitoring = 3;
+  // # if true, non-zero exit code will be treated as an error (default: false for backward compatibility)
+  bool treat_nonzero_as_error = 4;
+  // # exit codes to treat as success (default: [0] when treat_nonzero_as_error is true)
+  // # useful for commands like grep that return 1 when no match found
+  repeated int32 success_exit_codes = 5;
 }
 

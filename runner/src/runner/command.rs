@@ -250,6 +250,15 @@ impl RunnerSpec for CommandRunnerImpl {
                 }
             }
 
+            // Check for exit code error from run_stream
+            if let Some(error_msg) = metadata.remove("__command_exit_error") {
+                return Err(JobWorkerError::RuntimeError(format!(
+                    "{}. stderr: {}",
+                    error_msg, stderr
+                ))
+                .into());
+            }
+
             let result = CommandResult {
                 stdout: if stdout.is_empty() {
                     None
@@ -519,8 +528,9 @@ impl RunnerTrait for CommandRunnerImpl {
                     &stderr_messages,
                 );
 
+                let exit_code_value = exit_code.code();
                 let result = CommandResult {
-                    exit_code: exit_code.code(),
+                    exit_code: exit_code_value,
                     stdout: Some(stdout_messages.join("\n")),
                     stderr: Some(stderr_messages.join("\n")),
                     execution_time_ms: Some(execution_time_ms),
@@ -531,6 +541,29 @@ impl RunnerTrait for CommandRunnerImpl {
                         None
                     },
                 };
+
+                // Check if non-zero exit code should be treated as error
+                if data.treat_nonzero_as_error {
+                    let is_success = match exit_code_value {
+                        Some(code) => {
+                            if data.success_exit_codes.is_empty() {
+                                code == 0
+                            } else {
+                                data.success_exit_codes.contains(&code)
+                            }
+                        }
+                        None => false, // signal terminated = error
+                    };
+
+                    if !is_success {
+                        return Err(JobWorkerError::RuntimeError(format!(
+                            "Command '{}' exited with code {:?}. stderr: {}",
+                            &data.command,
+                            exit_code_value,
+                            result.stderr.as_deref().unwrap_or("")
+                        )).into());
+                    }
+                }
 
                 // Serialize the result
                 let serialized_result = ProstMessageCodec::serialize_message(&result)?;
@@ -570,6 +603,8 @@ impl RunnerTrait for CommandRunnerImpl {
         let command_str = data.command.clone();
         let args_vec = data.args.clone(); // Clone the args to own them
         let should_monitor_memory = data.with_memory_monitoring;
+        let treat_nonzero_as_error = data.treat_nonzero_as_error;
+        let success_exit_codes = data.success_exit_codes.clone();
 
         // Clone stream_process_pid for use within the stream
         let stream_pid_ref = self.stream_process_pid.clone();
@@ -946,6 +981,31 @@ impl RunnerTrait for CommandRunnerImpl {
                         max_memory_usage_kb: if should_monitor_memory {Some(max_memory_usage/1024)} else {None},
                     };
 
+                    // Check if non-zero exit code should be treated as error
+                    let exit_code_error = if treat_nonzero_as_error {
+                        let is_success = match exit_code {
+                            Some(code) => {
+                                if success_exit_codes.is_empty() {
+                                    code == 0
+                                } else {
+                                    success_exit_codes.contains(&code)
+                                }
+                            }
+                            None => false, // signal terminated = error
+                        };
+                        if !is_success {
+                            Some(format!(
+                                "Command '{}' exited with code {:?}",
+                                &command_str,
+                                exit_code
+                            ))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     // Serialize the final CommandResult
                     match ProstMessageCodec::serialize_message(&final_result) {
                         Ok(serialized) => {
@@ -967,9 +1027,20 @@ impl RunnerTrait for CommandRunnerImpl {
                     // Stream completed - cancellation monitoring cleanup is handled by process lifecycle
                     tracing::debug!("Stream completed for job, keeping cancellation monitoring active for process lifetime");
 
+                    // Create trailer with error info if needed
+                    let final_trailer = if let Some(error_msg) = exit_code_error {
+                        let mut metadata_with_error = trailer.metadata.clone();
+                        metadata_with_error.insert("__command_exit_error".to_string(), error_msg);
+                        proto::jobworkerp::data::Trailer {
+                            metadata: metadata_with_error,
+                        }
+                    } else {
+                        (*trailer).clone()
+                    };
+
                     // Send the end of stream marker
                     yield ResultOutputItem {
-                        item: Some(Item::End((*trailer).clone())),
+                        item: Some(Item::End(final_trailer)),
                     };
                 },
                 Err(e) => {
@@ -1166,6 +1237,8 @@ mod tests {
             command: "/bin/echo".to_string(),
             args: vec!["Hello, World!".to_string()],
             with_memory_monitoring: true,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
         };
 
         let res = runner
@@ -1201,6 +1274,8 @@ mod tests {
             command: "/bin/echo".to_string(),
             args: vec!["No memory monitoring".to_string()],
             with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
         };
 
         let res = runner
@@ -1227,6 +1302,8 @@ mod tests {
             command: "/bin/non_existent_command".to_string(),
             args: vec![],
             with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
         };
 
         let res = runner
@@ -1248,6 +1325,8 @@ mod tests {
             command: "/bin/echo".to_string(),
             args: vec!["Stream test".to_string()],
             with_memory_monitoring: true,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
         };
 
         let stream_result = runner
@@ -1326,6 +1405,8 @@ mod tests {
                 "echo 'Line 1'; sleep 0.5; echo 'Line 2'; sleep 0.5; echo 'Line 3'".to_string(),
             ],
             with_memory_monitoring: true,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
         };
 
         eprintln!("\n=== Starting stream test with multiple lines ===");
@@ -1460,6 +1541,8 @@ mod tests {
             command: "/bin/sleep".to_string(),
             args: vec!["2".to_string()], // Sleep for 2 seconds
             with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
         };
 
         let arg_bytes = ProstMessageCodec::serialize_message(&arg).unwrap();
@@ -1649,6 +1732,207 @@ mod tests {
         assert_eq!(result.stdout, None);
         assert_eq!(result.stderr, None);
         assert_eq!(result.exit_code, None);
+    }
+
+    #[tokio::test]
+    async fn test_run_with_nonzero_exit_code_default_behavior() {
+        // Default: treat_nonzero_as_error = false, so non-zero exit code is NOT an error
+        let mut runner = CommandRunnerImpl::new();
+        let arg = CommandArgs {
+            command: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "exit 1".to_string()],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
+        };
+
+        let res = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+                None,
+            )
+            .await;
+
+        // Should succeed (backward compatible behavior)
+        assert!(
+            res.0.is_ok(),
+            "Default behavior should not treat non-zero exit code as error"
+        );
+        let result_bytes = res.0.unwrap();
+        let result =
+            ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
+        assert_eq!(result.exit_code, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_run_with_nonzero_exit_code_as_error() {
+        // treat_nonzero_as_error = true, so non-zero exit code IS an error
+        let mut runner = CommandRunnerImpl::new();
+        let arg = CommandArgs {
+            command: "/bin/bash".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "echo 'error message' >&2; exit 1".to_string(),
+            ],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: true,
+            success_exit_codes: vec![],
+        };
+
+        let res = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+                None,
+            )
+            .await;
+
+        // Should fail
+        assert!(
+            res.0.is_err(),
+            "Should return error when treat_nonzero_as_error is true and exit code is non-zero"
+        );
+        let err = res.0.unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("exit"),
+            "Error message should contain exit code info"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_with_zero_exit_code_and_treat_as_error() {
+        // treat_nonzero_as_error = true, but exit code is 0 -> success
+        let mut runner = CommandRunnerImpl::new();
+        let arg = CommandArgs {
+            command: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "exit 0".to_string()],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: true,
+            success_exit_codes: vec![],
+        };
+
+        let res = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+                None,
+            )
+            .await;
+
+        // Should succeed
+        assert!(
+            res.0.is_ok(),
+            "Zero exit code should succeed even with treat_nonzero_as_error=true"
+        );
+        let result_bytes = res.0.unwrap();
+        let result =
+            ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
+        assert_eq!(result.exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_run_with_custom_success_exit_codes() {
+        // success_exit_codes = [0, 1], so exit code 1 should be success
+        let mut runner = CommandRunnerImpl::new();
+        let arg = CommandArgs {
+            command: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "exit 1".to_string()],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: true,
+            success_exit_codes: vec![0, 1],
+        };
+
+        let res = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+                None,
+            )
+            .await;
+
+        // Should succeed because exit code 1 is in success_exit_codes
+        assert!(
+            res.0.is_ok(),
+            "Exit code 1 should be treated as success when in success_exit_codes"
+        );
+        let result_bytes = res.0.unwrap();
+        let result =
+            ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
+        assert_eq!(result.exit_code, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_run_with_custom_success_exit_codes_failure() {
+        // success_exit_codes = [0, 1], so exit code 2 should be error
+        let mut runner = CommandRunnerImpl::new();
+        let arg = CommandArgs {
+            command: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "exit 2".to_string()],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: true,
+            success_exit_codes: vec![0, 1],
+        };
+
+        let res = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+                None,
+            )
+            .await;
+
+        // Should fail because exit code 2 is NOT in success_exit_codes
+        assert!(
+            res.0.is_err(),
+            "Exit code 2 should be treated as error when not in success_exit_codes"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_with_exit_code_error() {
+        let runner = CommandRunnerImpl::new();
+        let chunks: Vec<CommandResult> = vec![
+            CommandResult {
+                stdout: Some("output".to_string()),
+                stderr: Some("error output".to_string()),
+                exit_code: None,
+                execution_time_ms: None,
+                started_at: None,
+                max_memory_usage_kb: None,
+            },
+            CommandResult {
+                stdout: None,
+                stderr: None,
+                exit_code: Some(1),
+                execution_time_ms: Some(100),
+                started_at: Some(200),
+                max_memory_usage_kb: None,
+            },
+        ];
+
+        // Include error marker in metadata
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "__command_exit_error".to_string(),
+            "Command 'test' exited with code Some(1)".to_string(),
+        );
+
+        let stream = create_mock_command_stream(chunks, metadata);
+        let result = runner.collect_stream(stream, None).await;
+
+        // Should return error
+        assert!(
+            result.is_err(),
+            "collect_stream should return error when __command_exit_error is in metadata"
+        );
+        let err = result.unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("exit"),
+            "Error message should contain exit info"
+        );
     }
 }
 
