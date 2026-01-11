@@ -250,29 +250,46 @@ pub trait UseLoadUrlOrPath {
         let http_client = self.http_client().cloned();
         async move {
             let body = if let Ok(url) = url_or_path.parse::<Url>() {
-                // HTTP client is required for URL loading
-                let client = http_client.ok_or_else(|| {
-                    anyhow!(
-                        "HTTP client not available. Cannot load from URL: {}. Use WorkflowLoader::new() instead of new_local_only()",
-                        url
-                    )
-                })?;
-                let res = client.client().get(url.clone()).send().await?;
-                if res.status().is_success() {
-                    let body = res.text().await?;
-                    Ok(body)
-                } else {
-                    Err(anyhow!(
-                        "Failed to load yaml: {}, status: {}",
-                        &url,
-                        res.status()
-                    ))
+                match url.scheme() {
+                    "file" => {
+                        // file:// URL -> load from local filesystem
+                        let path = url
+                            .to_file_path()
+                            .map_err(|_| anyhow!("Invalid file URL path: {}", url))?;
+                        std::fs::read_to_string(&path)
+                            .map_err(|e| anyhow!("Failed to read file from URL {}: {}", url, e))?
+                    }
+                    "http" | "https" => {
+                        // HTTP(S) URL -> fetch via HTTP client
+                        let client = http_client.ok_or_else(|| {
+                            anyhow!(
+                                "HTTP client not available. Cannot load from URL: {}. Use WorkflowLoader::new() instead of new_local_only()",
+                                url
+                            )
+                        })?;
+                        let res = client.client().get(url.clone()).send().await?;
+                        if res.status().is_success() {
+                            res.text().await?
+                        } else {
+                            return Err(anyhow!(
+                                "Failed to load yaml: {}, status: {}",
+                                &url,
+                                res.status()
+                            ));
+                        }
+                    }
+                    scheme => {
+                        return Err(anyhow!(
+                            "Unsupported URL scheme '{}' in: {}. Supported schemes: file, http, https",
+                            scheme,
+                            url
+                        ));
+                    }
                 }
             } else {
-                // TODO name reference (inner yaml, public catalog)
-                let body = std::fs::read_to_string(url_or_path)?;
-                Ok(body)
-            }?;
+                // Relative or absolute path -> load from local filesystem
+                std::fs::read_to_string(url_or_path)?
+            };
             let yaml: T = serde_json::from_str(&body).or_else(|e1| {
                 serde_yaml::from_str(&body).map_err(|e2| {
                     anyhow!(
