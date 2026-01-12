@@ -61,10 +61,7 @@ pub trait JobResultAppHelper: UseWorkerApp {
                     data: Some(res),
                     metadata: result.metadata,
                 }),
-                Err(e) => {
-                    tracing::warn!("fill_worker_data error: {:?}", e);
-                    Err(e)
-                } // remove on error
+                Err(e) => Err(e), // remove on error
             }
         } else {
             tracing::warn!(
