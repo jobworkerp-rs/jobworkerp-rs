@@ -100,18 +100,29 @@ impl RdbJobResultAppImpl {
         timeout: Option<&u64>,
         request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
-        let res = self
-            .job_result_pubsub_repository()
-            .subscribe_result(job_id, timeout.copied())
-            .await?;
         if request_streaming {
-            let stream = self
+            // IMPORTANT: For streaming, subscribe to stream BEFORE waiting for result.
+            // If we wait for result first (subscribe_result blocks until job completes),
+            // the stream data may have already been published and missed.
+            // Use tokio::join! to subscribe to both in parallel.
+            let result_future = self
                 .job_result_pubsub_repository()
-                .subscribe_result_stream(job_id, timeout.copied())
-                .await?;
-            Ok((res, Some(stream)))
+                .subscribe_result(job_id, timeout.copied());
+            let stream_future = self
+                .job_result_pubsub_repository()
+                .subscribe_result_stream(job_id, timeout.copied());
+
+            let (result_res, stream_res) = tokio::join!(result_future, stream_future);
+            let res = result_res?;
+            let stream = stream_res.ok();
+
+            Ok((res, stream))
         } else {
             // wait for result data (long polling with grpc (keep connection)))
+            let res = self
+                .job_result_pubsub_repository()
+                .subscribe_result(job_id, timeout.copied())
+                .await?;
             Ok((res, None))
         }
     }
