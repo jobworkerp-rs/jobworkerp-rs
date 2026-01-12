@@ -510,12 +510,17 @@ mod test {
         Ok(())
     }
 
-    /// Test to verify the race condition hypothesis:
-    /// When publish_result is called BEFORE subscribe_result subscribes,
-    /// the message is lost because tokio::sync::broadcast only delivers
-    /// messages to subscribers who are already subscribed at the time of send.
+    /// Test to verify that publish_result polling prevents race condition:
+    /// Even when publish_result is called slightly before subscribe_result,
+    /// the polling mechanism (max_wait_attempts / wait_interval in publish_result)
+    /// allows the subscriber to connect and receive the message.
+    ///
+    /// Background: tokio::sync::broadcast only delivers messages to subscribers
+    /// who are already subscribed at the time of send. To mitigate this race condition,
+    /// publish_result polls for up to ~100ms (10 attempts * 10ms interval) waiting
+    /// for subscribers before sending.
     #[tokio::test]
-    async fn test_race_condition_publish_before_subscribe_loses_message() -> Result<()> {
+    async fn test_publish_polling_prevents_race_condition() -> Result<()> {
         let app = ChanJobResultPubSubRepositoryImpl {
             broadcast_chan_buf: ChanBuffer::new(None, 10000),
             job_queue_config: Arc::new(JobQueueConfig {
@@ -534,41 +539,68 @@ mod test {
             }),
             ..JobResultData::default()
         };
+        let expected_result = JobResult {
+            id: Some(job_result_id),
+            data: Some(data.clone()),
+            metadata: HashMap::new(),
+        };
 
-        // CRITICAL: Publish BEFORE any subscriber exists
-        eprintln!("[Race Test] Publishing result BEFORE any subscriber...");
-        app.publish_result(&job_result_id, &data, true).await?;
-        eprintln!("[Race Test] Published. Now starting subscriber...");
-
-        // Small delay to ensure publish is complete
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        // Now try to subscribe - should timeout because message was already sent
+        // Start publisher FIRST - it will poll for up to ~100ms waiting for subscribers
         let app_clone = app.clone();
-        let subscribe_result = tokio::time::timeout(
-            Duration::from_secs(2),
-            app_clone.subscribe_result(&job_id, Some(2000)),
-        )
-        .await;
+        let data_clone = data.clone();
+        let publish_handle = tokio::spawn(async move {
+            eprintln!("[Polling Test] Publisher started, polling for subscribers...");
+            let result = app_clone
+                .publish_result(&job_result_id, &data_clone, true)
+                .await;
+            eprintln!("[Polling Test] Publisher completed");
+            result
+        });
 
-        match subscribe_result {
-            Ok(Ok(_)) => {
-                panic!("UNEXPECTED: Subscriber received message that was published before subscription!");
-            }
-            Ok(Err(e)) => {
-                eprintln!("[Race Test] Subscribe returned error (expected): {:?}", e);
-                // This is expected - timeout or no message
-            }
-            Err(_) => {
-                eprintln!("[Race Test] TIMEOUT as expected - message was lost because it was published before subscription");
-                // This confirms our hypothesis!
-            }
-        }
+        // Start subscriber shortly after (within the ~100ms polling window)
+        // This simulates a realistic race condition scenario where subscriber
+        // starts slightly after publisher
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        eprintln!("[Polling Test] Starting subscriber within polling window...");
+
+        let app_clone2 = app.clone();
+        let subscribe_handle =
+            tokio::spawn(async move { app_clone2.subscribe_result(&job_id, Some(3000)).await });
+
+        // Wait for both to complete
+        let (publish_result, subscribe_result) = tokio::join!(publish_handle, subscribe_handle);
+
+        // Verify publisher succeeded
+        let publish_ok = publish_result
+            .expect("publish task panicked")
+            .expect("publish_result failed");
+        assert!(
+            publish_ok,
+            "publish_result should return true when message was sent"
+        );
+
+        // Verify subscriber received the message (polling prevented loss)
+        let received = subscribe_result
+            .expect("subscribe task panicked")
+            .expect("subscribe_result failed - polling did not prevent race condition");
+
+        eprintln!(
+            "[Polling Test] SUCCESS: Subscriber received message despite starting after publisher"
+        );
+        assert_eq!(received.id, expected_result.id);
+        assert_eq!(received.data, expected_result.data);
 
         Ok(())
     }
 
-    /// Test to verify that subscribe_result_stream also exhibits the race condition
+    /// Test to verify that publish_result_stream_data exhibits the race condition.
+    ///
+    /// Unlike publish_result which has polling to wait for subscribers,
+    /// publish_result_stream_data does NOT have such polling mechanism.
+    /// Therefore, if stream data is published before any subscriber exists,
+    /// the messages will be lost.
+    ///
+    /// This test documents this known limitation of the stream publishing API.
     #[tokio::test]
     async fn test_race_condition_stream_publish_before_subscribe() -> Result<()> {
         let app = ChanJobResultPubSubRepositoryImpl {
