@@ -635,7 +635,8 @@ impl WorkflowExecutor {
                 match result {
                     Ok(event) => {
                         // Only yield completed events as WorkflowContext
-                        if event.context().is_some() {
+                        let has_context = event.context().is_some();
+                        if has_context {
                             let wf = initial_wfc.read().await;
                             let status = wf.status.clone();
                             let res = Arc::new((*wf).clone());

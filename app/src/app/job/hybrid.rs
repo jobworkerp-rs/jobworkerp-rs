@@ -850,24 +850,37 @@ impl JobApp for HybridJobAppImpl {
         if let Some(jid) = data.job_id.as_ref() {
             let res = match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
-                    // IMPORTANT: Publish stream data BEFORE enqueue_result_direct.
-                    // enqueue_result_direct triggers BLPOP completion on client side (wait_for_result_queue_for_response).
-                    // If stream data is published after, the client may have already returned from
-                    // wait_for_result_queue_for_response and miss the stream data.
+                    // Start stream publishing as background task (non-blocking).
+                    // PR #126 ensures client subscribes before job execution via tokio::join!,
+                    // so stream data won't be missed even if published after enqueue_result_direct.
+                    // This enables realtime streaming instead of batch delivery.
                     if let Some(stream) = stream {
                         let pubsub_repo = self.job_result_pubsub_repository().clone();
+                        let job_id_for_stream = *jid;
                         tracing::debug!(
-                            "complete_job(direct): publish stream data BEFORE result: {}",
+                            "complete_job(direct): starting stream publish task: {}",
                             &jid.value
                         );
-                        pubsub_repo.publish_result_stream_data(*jid, stream).await?;
-                        tracing::debug!(
-                            "complete_job(direct): stream data published: {}",
-                            &jid.value
-                        );
+                        tokio::spawn(async move {
+                            if let Err(e) = pubsub_repo
+                                .publish_result_stream_data(job_id_for_stream, stream)
+                                .await
+                            {
+                                tracing::error!(
+                                    "complete_job(direct): stream publish error for job {}: {:?}",
+                                    job_id_for_stream.value,
+                                    e
+                                );
+                            } else {
+                                tracing::debug!(
+                                    "complete_job(direct): stream data published: {}",
+                                    job_id_for_stream.value
+                                );
+                            }
+                        });
                     }
 
-                    // send result for direct or listen after response
+                    // send result immediately (don't wait for stream to complete)
                     let res = self
                         .redis_job_repository()
                         .enqueue_result_direct(id, data)
@@ -884,21 +897,45 @@ impl JobApp for HybridJobAppImpl {
                     res
                 }
                 Ok(ResponseType::NoResult) => {
-                    // publish for listening result client
+                    // Publish result first so subscribe_result completes immediately.
+                    // Client uses tokio::join! for subscribe_result and subscribe_result_stream,
+                    // so both subscriptions start in parallel. Publishing result first allows
+                    // the client to receive the stream response without waiting for stream completion.
                     let r = self
                         .job_result_pubsub_repository()
                         .publish_result(id, data, true) // XXX to_listen must be set worker.broadcast_results
                         .await;
-                    // stream data
-                    if let Some(stream) = stream {
-                        let pubsub_repo = self.job_result_pubsub_repository().clone();
-                        pubsub_repo.publish_result_stream_data(*jid, stream).await?;
-                        tracing::debug!("complete_job: stream data published: {}", &jid.value);
-                    }
                     tracing::debug!(
-                        "complete_job: status deleted after streaming job completion: {}",
+                        "complete_job(no_result): result published, starting stream: {}",
                         &jid.value
                     );
+                    // Start stream publishing as background task (non-blocking)
+                    // This enables realtime streaming instead of batch delivery
+                    if let Some(stream) = stream {
+                        let pubsub_repo = self.job_result_pubsub_repository().clone();
+                        let job_id_for_stream = *jid;
+                        tracing::debug!(
+                            "complete_job(no_result): starting stream publish task: {}",
+                            &jid.value
+                        );
+                        tokio::spawn(async move {
+                            if let Err(e) = pubsub_repo
+                                .publish_result_stream_data(job_id_for_stream, stream)
+                                .await
+                            {
+                                tracing::error!(
+                                    "complete_job(no_result): stream publish error for job {}: {:?}",
+                                    job_id_for_stream.value,
+                                    e
+                                );
+                            } else {
+                                tracing::debug!(
+                                    "complete_job(no_result): stream data published: {}",
+                                    job_id_for_stream.value
+                                );
+                            }
+                        });
+                    }
                     r
                 }
                 _ => {

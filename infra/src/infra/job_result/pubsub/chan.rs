@@ -2,7 +2,7 @@ use super::{JobResultPublisher, JobResultSubscriber};
 use crate::infra::{job::rows::UseJobqueueAndCodec, JobQueueConfig, UseJobQueueConfig};
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::{future, stream::BoxStream, Stream, StreamExt};
+use futures::{stream::BoxStream, Stream, StreamExt};
 use jobworkerp_base::{
     codec::{ProstMessageCodec, UseProstCodec},
     error::JobWorkerError,
@@ -26,8 +26,6 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
         data: &JobResultData,
         to_listen: bool,
     ) -> Result<bool> {
-        // TODO send to worker id channel if listening clients exist
-        // chan.receiver_count()
         let jid = data
             .job_id
             .as_ref()
@@ -57,14 +55,34 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
         // (Currently we're preventing subscription by closing the receiving end(listen, listen_by_worker),
         //  but it's no sense to publish when not needed)
         let res = if to_listen {
+            let channel_name = Self::job_result_pubsub_channel_name(jid);
+            let ttl = Some(Duration::from_secs(
+                self.job_queue_config().expire_job_result_seconds as u64,
+            ));
+
+            // Wait for subscriber if no receivers exist (race condition mitigation)
+            // BroadcastChan only delivers to subscribers who subscribed BEFORE publish
+            let max_wait_attempts = 10;
+            let wait_interval = Duration::from_millis(10);
+            for attempt in 0..max_wait_attempts {
+                let receiver_count = self
+                    .broadcast_chan_buf()
+                    .receiver_count(channel_name.as_str())
+                    .await;
+                if receiver_count > 0 {
+                    break;
+                }
+                if attempt < max_wait_attempts - 1 {
+                    tokio::time::sleep(wait_interval).await;
+                }
+            }
+
             self.broadcast_chan_buf()
                 .send_to_chan(
-                    Self::job_result_pubsub_channel_name(jid).as_str(),
+                    channel_name.as_str(),
                     result_data.clone(),
                     None,
-                    Some(&Duration::from_secs(
-                        self.job_queue_config().expire_job_result_seconds as u64,
-                    )),
+                    ttl.as_ref(),
                     false,
                 )
                 .await
@@ -176,22 +194,13 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
             "subscribe_result_stream_receiving: job_id={}",
             &job_id.value
         );
+        // Emit End marker with Trailer, then terminate stream immediately
         let transformed_stream = stream
             .filter_map(|b| async move {
-                let out = ProstMessageCodec::deserialize_message::<ResultOutputItem>(b.as_slice());
-                match out {
-                    Ok(ResultOutputItem {
-                        item: Some(result_output_item::Item::Data(data)),
-                    }) => Some(ResultOutputItem {
-                        item: Some(result_output_item::Item::Data(data)),
-                    }),
-                    Ok(ResultOutputItem {
-                        item: Some(result_output_item::Item::End(e)),
-                    }) => Some(ResultOutputItem {
-                        item: Some(result_output_item::Item::End(e)),
-                    }),
-                    Ok(_) => {
-                        tracing::error!("invalid message: {:?}", out);
+                match ProstMessageCodec::deserialize_message::<ResultOutputItem>(b.as_slice()) {
+                    Ok(item) if item.item.is_some() => Some(item),
+                    Ok(invalid) => {
+                        tracing::error!("invalid message: {:?}", invalid);
                         None
                     }
                     Err(e) => {
@@ -200,7 +209,20 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
                     }
                 }
             })
-            .take_while(|r| future::ready(r.item.is_some()))
+            // For End marker: emit it, then emit None to trigger take_while termination
+            .flat_map(|item| {
+                if matches!(item.item, Some(result_output_item::Item::End(_))) {
+                    // End marker: return End followed by None (termination signal)
+                    futures::stream::iter(vec![Some(item), None])
+                } else {
+                    // Data item: wrap in Some
+                    futures::stream::iter(vec![Some(item)])
+                }
+            })
+            // Terminate when None is received (after End marker)
+            .take_while(|opt| futures::future::ready(opt.is_some()))
+            // Unwrap Option
+            .filter_map(futures::future::ready)
             .boxed();
         Ok(transformed_stream)
     }
@@ -379,6 +401,344 @@ mod test {
         let res = futures::future::join_all(jhv.into_iter()).await;
         assert_eq!(res.len(), 10);
         assert!(res.iter().all(|r| r.is_ok()));
+
+        Ok(())
+    }
+
+    /// Test subscribe_result_stream with End marker - verifies stream terminates correctly
+    #[tokio::test]
+    async fn test_subscribe_result_stream_terminates_on_end() -> Result<()> {
+        let app = ChanJobResultPubSubRepositoryImpl {
+            broadcast_chan_buf: ChanBuffer::new(None, 10000),
+            job_queue_config: Arc::new(JobQueueConfig {
+                expire_job_result_seconds: 60,
+                fetch_interval: 1000,
+            }),
+        };
+        let job_id = JobId { value: 999 };
+
+        // Start subscriber first
+        let app_clone = app.clone();
+        let job_id_clone = job_id;
+        let subscriber_handle = tokio::spawn(async move {
+            let mut stream = app_clone
+                .subscribe_result_stream(&job_id_clone, Some(10000))
+                .await
+                .expect("subscribe_result_stream failed");
+
+            let mut received_items = vec![];
+            let start = std::time::Instant::now();
+
+            while let Some(item) = stream.next().await {
+                let elapsed = start.elapsed();
+                eprintln!(
+                    "[{:>6.3}s] Received item: {:?}",
+                    elapsed.as_secs_f64(),
+                    item.item
+                );
+                received_items.push(item.clone());
+
+                // Check if this is the End marker
+                if matches!(item.item, Some(result_output_item::Item::End(_))) {
+                    eprintln!(
+                        "[{:>6.3}s] End marker received, stream should terminate",
+                        elapsed.as_secs_f64()
+                    );
+                }
+            }
+
+            eprintln!("Stream terminated after {} items", received_items.len());
+            received_items
+        });
+
+        // Wait for subscriber to be ready
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Publish stream data with Data items and End marker
+        let data_items: Vec<ResultOutputItem> = vec![
+            ResultOutputItem {
+                item: Some(result_output_item::Item::Data(b"data1".to_vec())),
+            },
+            ResultOutputItem {
+                item: Some(result_output_item::Item::Data(b"data2".to_vec())),
+            },
+            ResultOutputItem {
+                item: Some(result_output_item::Item::End(
+                    proto::jobworkerp::data::Trailer {
+                        metadata: HashMap::new(),
+                    },
+                )),
+            },
+        ];
+
+        let stream = futures::stream::iter(data_items).boxed();
+        app.publish_result_stream_data(job_id, stream).await?;
+
+        eprintln!("Published stream data, waiting for subscriber to complete...");
+
+        // Wait for subscriber with timeout
+        let result = tokio::time::timeout(Duration::from_secs(5), subscriber_handle).await;
+
+        match result {
+            Ok(Ok(items)) => {
+                eprintln!(
+                    "Subscriber completed successfully with {} items",
+                    items.len()
+                );
+                assert_eq!(items.len(), 3, "Should receive 3 items (2 data + 1 end)");
+                assert!(matches!(
+                    items[0].item,
+                    Some(result_output_item::Item::Data(_))
+                ));
+                assert!(matches!(
+                    items[1].item,
+                    Some(result_output_item::Item::Data(_))
+                ));
+                assert!(matches!(
+                    items[2].item,
+                    Some(result_output_item::Item::End(_))
+                ));
+            }
+            Ok(Err(e)) => {
+                panic!("Subscriber task failed: {:?}", e);
+            }
+            Err(_) => {
+                panic!("TIMEOUT: Stream did not terminate after End marker within 5 seconds");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Test to verify that publish_result polling prevents race condition:
+    /// Even when publish_result is called slightly before subscribe_result,
+    /// the polling mechanism (max_wait_attempts / wait_interval in publish_result)
+    /// allows the subscriber to connect and receive the message.
+    ///
+    /// Background: tokio::sync::broadcast only delivers messages to subscribers
+    /// who are already subscribed at the time of send. To mitigate this race condition,
+    /// publish_result polls for up to ~100ms (10 attempts * 10ms interval) waiting
+    /// for subscribers before sending.
+    #[tokio::test]
+    async fn test_publish_polling_prevents_race_condition() -> Result<()> {
+        let app = ChanJobResultPubSubRepositoryImpl {
+            broadcast_chan_buf: ChanBuffer::new(None, 10000),
+            job_queue_config: Arc::new(JobQueueConfig {
+                expire_job_result_seconds: 60,
+                fetch_interval: 1000,
+            }),
+        };
+        let job_id = JobId { value: 12345 };
+        let job_result_id = JobResultId { value: 6789 };
+        let worker_id = WorkerId { value: 1 };
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(worker_id),
+            output: Some(ResultOutput {
+                items: b"test_race".to_vec(),
+            }),
+            ..JobResultData::default()
+        };
+        let expected_result = JobResult {
+            id: Some(job_result_id),
+            data: Some(data.clone()),
+            metadata: HashMap::new(),
+        };
+
+        // Start publisher FIRST - it will poll for up to ~100ms waiting for subscribers
+        let app_clone = app.clone();
+        let data_clone = data.clone();
+        let publish_handle = tokio::spawn(async move {
+            eprintln!("[Polling Test] Publisher started, polling for subscribers...");
+            let result = app_clone
+                .publish_result(&job_result_id, &data_clone, true)
+                .await;
+            eprintln!("[Polling Test] Publisher completed");
+            result
+        });
+
+        // Start subscriber shortly after (within the ~100ms polling window)
+        // This simulates a realistic race condition scenario where subscriber
+        // starts slightly after publisher
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        eprintln!("[Polling Test] Starting subscriber within polling window...");
+
+        let app_clone2 = app.clone();
+        let subscribe_handle =
+            tokio::spawn(async move { app_clone2.subscribe_result(&job_id, Some(3000)).await });
+
+        // Wait for both to complete
+        let (publish_result, subscribe_result) = tokio::join!(publish_handle, subscribe_handle);
+
+        // Verify publisher succeeded
+        let publish_ok = publish_result
+            .expect("publish task panicked")
+            .expect("publish_result failed");
+        assert!(
+            publish_ok,
+            "publish_result should return true when message was sent"
+        );
+
+        // Verify subscriber received the message (polling prevented loss)
+        let received = subscribe_result
+            .expect("subscribe task panicked")
+            .expect("subscribe_result failed - polling did not prevent race condition");
+
+        eprintln!(
+            "[Polling Test] SUCCESS: Subscriber received message despite starting after publisher"
+        );
+        assert_eq!(received.id, expected_result.id);
+        assert_eq!(received.data, expected_result.data);
+
+        Ok(())
+    }
+
+    /// Test to verify that publish_result_stream_data exhibits the race condition.
+    ///
+    /// Unlike publish_result which has polling to wait for subscribers,
+    /// publish_result_stream_data does NOT have such polling mechanism.
+    /// Therefore, if stream data is published before any subscriber exists,
+    /// the messages will be lost.
+    ///
+    /// This test documents this known limitation of the stream publishing API.
+    #[tokio::test]
+    async fn test_race_condition_stream_publish_before_subscribe() -> Result<()> {
+        let app = ChanJobResultPubSubRepositoryImpl {
+            broadcast_chan_buf: ChanBuffer::new(None, 10000),
+            job_queue_config: Arc::new(JobQueueConfig {
+                expire_job_result_seconds: 60,
+                fetch_interval: 1000,
+            }),
+        };
+        let job_id = JobId { value: 99999 };
+
+        // CRITICAL: Publish stream data BEFORE any subscriber exists
+        eprintln!("[Stream Race Test] Publishing stream data BEFORE any subscriber...");
+        let data_items: Vec<ResultOutputItem> = vec![
+            ResultOutputItem {
+                item: Some(result_output_item::Item::Data(b"stream_data".to_vec())),
+            },
+            ResultOutputItem {
+                item: Some(result_output_item::Item::End(
+                    proto::jobworkerp::data::Trailer {
+                        metadata: HashMap::new(),
+                    },
+                )),
+            },
+        ];
+        let stream = futures::stream::iter(data_items).boxed();
+        app.publish_result_stream_data(job_id, stream).await?;
+        eprintln!("[Stream Race Test] Published. Now starting subscriber...");
+
+        // Small delay to ensure publish is complete
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Now try to subscribe to stream - should timeout because messages were already sent
+        let app_clone = app.clone();
+        let job_id_clone = job_id;
+        let subscribe_handle = tokio::spawn(async move {
+            let mut stream = app_clone
+                .subscribe_result_stream(&job_id_clone, Some(2000))
+                .await
+                .expect("subscribe_result_stream failed");
+
+            let mut count = 0;
+            while let Some(_item) = stream.next().await {
+                count += 1;
+            }
+            count
+        });
+
+        let result = tokio::time::timeout(Duration::from_secs(3), subscribe_handle).await;
+
+        match result {
+            Ok(Ok(count)) => {
+                if count == 0 {
+                    eprintln!(
+                        "[Stream Race Test] Received 0 items as expected - messages were lost"
+                    );
+                } else {
+                    panic!(
+                        "UNEXPECTED: Received {} items that were published before subscription!",
+                        count
+                    );
+                }
+            }
+            Ok(Err(e)) => {
+                eprintln!("[Stream Race Test] Task error: {:?}", e);
+            }
+            Err(_) => {
+                eprintln!(
+                    "[Stream Race Test] TIMEOUT - stream never terminated (no End marker received)"
+                );
+                // This also confirms the race condition - the End marker was lost
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Control test: Verify that subscribe BEFORE publish works correctly
+    #[tokio::test]
+    async fn test_no_race_condition_subscribe_before_publish() -> Result<()> {
+        let app = ChanJobResultPubSubRepositoryImpl {
+            broadcast_chan_buf: ChanBuffer::new(None, 10000),
+            job_queue_config: Arc::new(JobQueueConfig {
+                expire_job_result_seconds: 60,
+                fetch_interval: 1000,
+            }),
+        };
+        let job_id = JobId { value: 54321 };
+        let job_result_id = JobResultId { value: 9876 };
+        let worker_id = WorkerId { value: 1 };
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(worker_id),
+            output: Some(ResultOutput {
+                items: b"test_no_race".to_vec(),
+            }),
+            ..JobResultData::default()
+        };
+        let expected_result = JobResult {
+            id: Some(job_result_id),
+            data: Some(data.clone()),
+            metadata: HashMap::new(),
+        };
+
+        // Start subscriber FIRST
+        let app_clone = app.clone();
+        let job_id_clone = job_id;
+        let expected = expected_result.clone();
+        let subscriber_handle =
+            tokio::spawn(
+                async move { app_clone.subscribe_result(&job_id_clone, Some(5000)).await },
+            );
+
+        // Wait for subscriber to be ready
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // THEN publish
+        eprintln!("[Control Test] Publishing AFTER subscriber is ready...");
+        app.publish_result(&job_result_id, &data, true).await?;
+
+        let result = tokio::time::timeout(Duration::from_secs(2), subscriber_handle).await;
+
+        match result {
+            Ok(Ok(Ok(received))) => {
+                eprintln!("[Control Test] SUCCESS: Received message correctly");
+                assert_eq!(received.id, expected.id);
+                assert_eq!(received.data, expected.data);
+            }
+            Ok(Ok(Err(e))) => {
+                panic!("[Control Test] Subscribe error: {:?}", e);
+            }
+            Ok(Err(e)) => {
+                panic!("[Control Test] Task join error: {:?}", e);
+            }
+            Err(_) => {
+                panic!("[Control Test] TIMEOUT - this should NOT happen when subscribing before publishing!");
+            }
+        }
 
         Ok(())
     }

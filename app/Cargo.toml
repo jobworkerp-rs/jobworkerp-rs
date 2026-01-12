@@ -17,6 +17,7 @@ infra = { path = "../infra" }
 
 anyhow = { workspace = true }
 async-stream = { workspace = true }
+dashmap = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 debug_stub_derive = { workspace = true }

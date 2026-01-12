@@ -180,53 +180,75 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
         let repo = Arc::new(self.clone());
         let cn2 = Arc::new(cn);
 
-        let msg_stream = sub.into_on_message().filter_map(move |msg| {
-            let repo = repo.clone();
-            let cn2 = cn2.clone();
-            async move {
-                match msg.get_payload::<Vec<u8>>() {
-                    Ok(payload) => {
-                        tracing::debug!(
-                            "subscribe_result_stream_received: payload len={:?}",
-                            &payload.len()
-                        );
-                        let result =
-                            ProstMessageCodec::deserialize_message::<ResultOutputItem>(&payload)
+        let msg_stream = sub
+            .into_on_message()
+            .filter_map(move |msg| {
+                let repo = repo.clone();
+                let cn2 = cn2.clone();
+                async move {
+                    match msg.get_payload::<Vec<u8>>() {
+                        Ok(payload) => {
+                            tracing::debug!(
+                                "subscribe_result_stream_received: payload len={:?}",
+                                &payload.len()
+                            );
+                            let result =
+                                ProstMessageCodec::deserialize_message::<ResultOutputItem>(
+                                    &payload,
+                                )
                                 .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))
                                 .ok()?;
-                        match result.item {
-                            Some(result_output_item::Item::End(_)) => {
-                                tracing::debug!("subscribe_result_stream_received: end of stream");
-                                let _ = repo.unsubscribe(cn2.as_str()).await.inspect_err(|e| {
-                                    tracing::error!("unsubscribe:{:?}", e);
-                                });
-                                tracing::debug!(
-                                    "subscribe_result_stream_received: unsubscribed: {}",
-                                    cn2.as_str()
-                                );
-                                Some(result)
-                            }
-                            Some(res) => {
-                                tracing::debug!(
-                                    "subscribe_result_stream_received: result len={:?}",
-                                    &res.encoded_len()
-                                );
-                                Some(ResultOutputItem { item: Some(res) })
-                            }
-                            // skip if error in processing message
-                            None => {
-                                tracing::info!("subscribe_result_stream_received: item is None");
-                                None
+                            match result.item {
+                                Some(result_output_item::Item::End(_)) => {
+                                    tracing::debug!(
+                                        "subscribe_result_stream_received: end of stream"
+                                    );
+                                    let _ = repo.unsubscribe(cn2.as_str()).await.inspect_err(|e| {
+                                        tracing::error!("unsubscribe:{:?}", e);
+                                    });
+                                    tracing::debug!(
+                                        "subscribe_result_stream_received: unsubscribed: {}",
+                                        cn2.as_str()
+                                    );
+                                    Some(result)
+                                }
+                                Some(res) => {
+                                    tracing::debug!(
+                                        "subscribe_result_stream_received: result len={:?}",
+                                        &res.encoded_len()
+                                    );
+                                    Some(ResultOutputItem { item: Some(res) })
+                                }
+                                // skip if error in processing message
+                                None => {
+                                    tracing::info!(
+                                        "subscribe_result_stream_received: item is None"
+                                    );
+                                    None
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        tracing::error!("get_payload:{:?}", e);
-                        None
+                        Err(e) => {
+                            tracing::error!("get_payload:{:?}", e);
+                            None
+                        }
                     }
                 }
-            }
-        });
+            })
+            // For End marker: emit it, then emit None to trigger take_while termination
+            .flat_map(|item| {
+                if matches!(item.item, Some(result_output_item::Item::End(_))) {
+                    // End marker: return End followed by None (termination signal)
+                    futures::stream::iter(vec![Some(item), None])
+                } else {
+                    // Data item: wrap in Some
+                    futures::stream::iter(vec![Some(item)])
+                }
+            })
+            // Terminate when None is received (after End marker)
+            .take_while(|opt| futures::future::ready(opt.is_some()))
+            // Unwrap Option
+            .filter_map(futures::future::ready);
         Ok(msg_stream.boxed())
         // }
     }

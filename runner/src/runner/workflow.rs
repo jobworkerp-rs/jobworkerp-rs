@@ -1,3 +1,4 @@
+use crate::jobworkerp::runner::workflow_result::WorkflowStatus;
 use crate::jobworkerp::runner::{Empty, ReusableWorkflowRunnerSettings, WorkflowResult};
 use crate::runner::CollectStreamFuture;
 use crate::{schema_to_json_string, schema_to_json_string_option};
@@ -144,8 +145,17 @@ impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
                 }
             }
 
-            if let Some(data) = final_collected {
-                return Ok((data, metadata));
+            // FinalCollected がある場合はそこからステータスをチェック
+            if let Some(ref data) = final_collected {
+                if let Ok(result) = WorkflowResult::decode(data.as_slice()) {
+                    if result.status == WorkflowStatus::Faulted as i32 {
+                        return Err(anyhow::anyhow!(
+                            "Workflow execution failed: {}",
+                            result.error_message.as_deref().unwrap_or("Unknown error")
+                        ));
+                    }
+                }
+                return Ok((data.clone(), metadata));
             }
 
             // Return error if we received data items but all decodes failed
@@ -154,6 +164,16 @@ impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
                     "All {} WorkflowResult decode attempts failed in InlineWorkflow collect_stream",
                     decode_failure_count
                 ));
+            }
+
+            // final_result のステータスをチェック
+            if let Some(ref result) = final_result {
+                if result.status == WorkflowStatus::Faulted as i32 {
+                    return Err(anyhow::anyhow!(
+                        "Workflow execution failed: {}",
+                        result.error_message.as_deref().unwrap_or("Unknown error")
+                    ));
+                }
             }
 
             let bytes = final_result.map(|r| r.encode_to_vec()).unwrap_or_default();
@@ -285,8 +305,17 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
                 }
             }
 
-            if let Some(data) = final_collected {
-                return Ok((data, metadata));
+            // FinalCollected がある場合はそこからステータスをチェック
+            if let Some(ref data) = final_collected {
+                if let Ok(result) = WorkflowResult::decode(data.as_slice()) {
+                    if result.status == WorkflowStatus::Faulted as i32 {
+                        return Err(anyhow::anyhow!(
+                            "Workflow execution failed: {}",
+                            result.error_message.as_deref().unwrap_or("Unknown error")
+                        ));
+                    }
+                }
+                return Ok((data.clone(), metadata));
             }
 
             // Return error if we received data items but all decodes failed
@@ -295,6 +324,16 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
                     "All {} WorkflowResult decode attempts failed in ReusableWorkflow collect_stream",
                     decode_failure_count
                 ));
+            }
+
+            // final_result のステータスをチェック
+            if let Some(ref result) = final_result {
+                if result.status == WorkflowStatus::Faulted as i32 {
+                    return Err(anyhow::anyhow!(
+                        "Workflow execution failed: {}",
+                        result.error_message.as_deref().unwrap_or("Unknown error")
+                    ));
+                }
             }
 
             let bytes = final_result.map(|r| r.encode_to_vec()).unwrap_or_default();
@@ -306,7 +345,6 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jobworkerp::runner::workflow_result::WorkflowStatus;
     use futures::stream;
     use proto::jobworkerp::data::{result_output_item, Trailer};
 
@@ -441,11 +479,15 @@ mod tests {
         let items = vec![create_data_item(&result), create_end_item(HashMap::new())];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
-
-        let decoded = WorkflowResult::decode(bytes.as_slice()).unwrap();
-        assert_eq!(decoded.status, WorkflowStatus::Faulted as i32);
-        assert_eq!(decoded.error_message, Some("Task failed".to_string()));
+        // Faulted ステータスの場合は Err が返ることを確認
+        let result = runner.collect_stream(stream, None).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Task failed"),
+            "Error message should contain 'Task failed': {}",
+            err_msg
+        );
     }
 
     #[tokio::test]
@@ -484,5 +526,56 @@ mod tests {
         let decoded = WorkflowResult::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.id, "rwf-final");
         assert_eq!(decoded.output, r#"{"collected": true}"#);
+    }
+
+    #[tokio::test]
+    async fn test_reusable_workflow_collect_stream_faulted_status() {
+        let runner = ReusableWorkflowRunnerSpecImpl::new();
+        let mut result = create_workflow_result(
+            "rwf-err",
+            r#"{"error": "reusable workflow failed"}"#,
+            WorkflowStatus::Faulted,
+        );
+        result.error_message = Some("Reusable task failed".to_string());
+
+        let items = vec![create_data_item(&result), create_end_item(HashMap::new())];
+        let stream = stream::iter(items).boxed();
+
+        // Faulted ステータスの場合は Err が返ることを確認
+        let result = runner.collect_stream(stream, None).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Reusable task failed"),
+            "Error message should contain 'Reusable task failed': {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reusable_workflow_collect_stream_faulted_via_final_collected() {
+        let runner = ReusableWorkflowRunnerSpecImpl::new();
+        let mut final_result = create_workflow_result(
+            "rwf-err-final",
+            r#"{"error": "final error"}"#,
+            WorkflowStatus::Faulted,
+        );
+        final_result.error_message = Some("FinalCollected error".to_string());
+
+        let items = vec![
+            create_final_collected_item(final_result.encode_to_vec()),
+            create_end_item(HashMap::new()),
+        ];
+        let stream = stream::iter(items).boxed();
+
+        // FinalCollected 経由の Faulted も Err になることを確認
+        let result = runner.collect_stream(stream, None).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("FinalCollected error"),
+            "Error message should contain 'FinalCollected error': {}",
+            err_msg
+        );
     }
 }

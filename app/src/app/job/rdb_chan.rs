@@ -740,18 +740,32 @@ impl JobApp for RdbChanJobAppImpl {
                         .job_result_pubsub_repository()
                         .publish_result(id, data, true) // XXX to_listen = worker.broadcast_result (if possible)
                         .await;
-                    // stream data
+                    // Start stream publishing as background task (non-blocking)
+                    // This enables realtime streaming instead of batch delivery
                     if let Some(stream) = stream {
                         let pubsub_repo = self.job_result_pubsub_repository().clone();
+                        let job_id_for_stream = *jid;
                         tracing::debug!(
-                            "complete_job(direct): publish stream data: {}",
+                            "complete_job(direct): starting stream publish task: {}",
                             &jid.value
                         );
-                        pubsub_repo.publish_result_stream_data(*jid, stream).await?;
-                        tracing::debug!(
-                            "complete_job(direct): stream data published: {}",
-                            &jid.value
-                        );
+                        tokio::spawn(async move {
+                            if let Err(e) = pubsub_repo
+                                .publish_result_stream_data(job_id_for_stream, stream)
+                                .await
+                            {
+                                tracing::error!(
+                                    "complete_job(direct): stream publish error for job {}: {:?}",
+                                    job_id_for_stream.value,
+                                    e
+                                );
+                            } else {
+                                tracing::debug!(
+                                    "complete_job(direct): stream data published: {}",
+                                    job_id_for_stream.value
+                                );
+                            }
+                        });
                     }
                     tracing::debug!(
                         "Deleted memory cache for Direct Response job: {}",
@@ -760,16 +774,44 @@ impl JobApp for RdbChanJobAppImpl {
                     res
                 }
                 Ok(_res) => {
-                    // publish for listening result client
+                    // Publish result first so subscribe_result completes immediately.
+                    // Client uses tokio::join! for subscribe_result and subscribe_result_stream,
+                    // so both subscriptions start in parallel. Publishing result first allows
+                    // the client to receive the stream response without waiting for stream completion.
                     let r = self
                         .job_result_pubsub_repository()
                         .publish_result(id, data, true) // XXX to_listen = worker.broadcast_result (if possible)
                         .await;
-                    // broadcast stream data if exists
+                    tracing::debug!(
+                        "complete_job(other): result published, starting stream: {}",
+                        &jid.value
+                    );
+                    // Start stream publishing as background task (non-blocking)
+                    // This enables realtime streaming instead of batch delivery
                     if let Some(stream) = stream {
                         let pubsub_repo = self.job_result_pubsub_repository().clone();
-                        pubsub_repo.publish_result_stream_data(*jid, stream).await?;
-                        tracing::debug!("complete_job: stream data published: {}", &jid.value);
+                        let job_id_for_stream = *jid;
+                        tracing::debug!(
+                            "complete_job(other): starting stream publish task: {}",
+                            &jid.value
+                        );
+                        tokio::spawn(async move {
+                            if let Err(e) = pubsub_repo
+                                .publish_result_stream_data(job_id_for_stream, stream)
+                                .await
+                            {
+                                tracing::error!(
+                                    "complete_job(other): stream publish error for job {}: {:?}",
+                                    job_id_for_stream.value,
+                                    e
+                                );
+                            } else {
+                                tracing::debug!(
+                                    "complete_job(other): stream data published: {}",
+                                    job_id_for_stream.value
+                                );
+                            }
+                        });
                     }
                     r
                 }
