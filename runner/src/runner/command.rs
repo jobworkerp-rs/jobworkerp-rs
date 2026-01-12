@@ -325,10 +325,12 @@ impl RunnerTrait for CommandRunnerImpl {
         let should_monitor_memory = data.with_memory_monitoring;
 
         tracing::info!(
-            "run command: {}, args: {:?}, monitor_memory: {}, started_at: {}",
+            "run command: {}, args: {:?}, monitor_memory: {}, treat_nonzero_as_error: {}, success_exit_codes: {:?}, started_at: {}",
             &data.command,
             args,
             should_monitor_memory,
+            data.treat_nonzero_as_error,
+            &data.success_exit_codes,
             started_at
         );
         let spawn_result = tokio::select! {

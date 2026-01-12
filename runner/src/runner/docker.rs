@@ -10,7 +10,8 @@ use bollard::container::{
 };
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
-use bollard::Docker;
+use bollard::models::HostConfig;
+use bollard::{Docker, API_DEFAULT_VERSION};
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
@@ -23,6 +24,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
+
+// Default timeout: 1 hour (in seconds)
+const DEFAULT_DOCKER_TIMEOUT_SEC: u64 = 3600;
+
+/// Create Docker client with custom timeout
+fn connect_docker_with_timeout(timeout_sec: u64) -> Result<Docker> {
+    Docker::connect_with_socket("/var/run/docker.sock", timeout_sec, API_DEFAULT_VERSION)
+        .map_err(|e| anyhow!("Failed to connect to Docker: {}", e))
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -167,6 +177,8 @@ pub struct DockerExecRunner {
     instant_id: String,
     // Helper for dependency injection integration (optional for backward compatibility)
     cancel_helper: Option<CancelMonitoringHelper>,
+    // Current Docker API timeout in seconds
+    current_timeout_sec: u64,
 }
 
 impl DockerExecRunner {
@@ -176,6 +188,7 @@ impl DockerExecRunner {
             docker: None,
             instant_id: "".to_string(),
             cancel_helper: None,
+            current_timeout_sec: DEFAULT_DOCKER_TIMEOUT_SEC,
         }
     }
 
@@ -185,6 +198,7 @@ impl DockerExecRunner {
             docker: None,
             instant_id: "".to_string(),
             cancel_helper: Some(cancel_helper),
+            current_timeout_sec: DEFAULT_DOCKER_TIMEOUT_SEC,
         }
     }
 
@@ -197,9 +211,13 @@ impl DockerExecRunner {
         }
     }
     // create and start container
-    pub async fn create(&mut self, image_options: &CreateRunnerOptions<String>) -> Result<()> {
-        // use docker default socket file (/var/run/docker.sock)
-        let docker = Docker::connect_with_socket_defaults().unwrap();
+    pub async fn create(
+        &mut self,
+        image_options: &CreateRunnerOptions<String>,
+        timeout_sec: u64,
+    ) -> Result<()> {
+        let docker = connect_docker_with_timeout(timeout_sec)?;
+        self.current_timeout_sec = timeout_sec;
         match docker
             .create_image(Some(image_options.to_docker()), None, None)
             .try_collect::<Vec<_>>()
@@ -308,7 +326,8 @@ impl RunnerTrait for DockerExecRunner {
     // create and start container
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         let op = ProstMessageCodec::deserialize_message::<DockerRunnerSettings>(&settings)?;
-        self.create(&op.into()).await
+        let timeout_sec = op.timeout_sec.unwrap_or(DEFAULT_DOCKER_TIMEOUT_SEC);
+        self.create(&op.into(), timeout_sec).await
     }
 
     async fn run(
@@ -409,15 +428,17 @@ impl RunnerTrait for DockerExecRunner {
 async fn exec_test() -> Result<()> {
     let mut runner1 = DockerExecRunner::new();
     runner1
-        .create(&CreateRunnerOptions::new(Some(
-            "busybox:latest".to_string(),
-        )))
+        .create(
+            &CreateRunnerOptions::new(Some("busybox:latest".to_string())),
+            DEFAULT_DOCKER_TIMEOUT_SEC,
+        )
         .await?;
     let mut runner2 = DockerExecRunner::new();
     runner2
-        .create(&CreateRunnerOptions::new(Some(
-            "busybox:latest".to_string(),
-        )))
+        .create(
+            &CreateRunnerOptions::new(Some("busybox:latest".to_string())),
+            DEFAULT_DOCKER_TIMEOUT_SEC,
+        )
         .await?;
     let arg = ProstMessageCodec::serialize_message(&DockerArgs {
         cmd: vec!["ls".to_string(), "-alh".to_string(), "/etc".to_string()],
@@ -456,6 +477,8 @@ pub struct DockerRunner {
     current_container_id: Option<String>,
     // Helper for dependency injection integration (optional for backward compatibility)
     cancel_helper: Option<CancelMonitoringHelper>,
+    // Current Docker API timeout in seconds
+    current_timeout_sec: u64,
 }
 
 impl DockerRunner {
@@ -465,6 +488,7 @@ impl DockerRunner {
             docker: None,
             current_container_id: None,
             cancel_helper: None,
+            current_timeout_sec: DEFAULT_DOCKER_TIMEOUT_SEC,
         }
     }
 
@@ -474,6 +498,7 @@ impl DockerRunner {
             docker: None,
             current_container_id: None,
             cancel_helper: Some(cancel_helper),
+            current_timeout_sec: DEFAULT_DOCKER_TIMEOUT_SEC,
         }
     }
 
@@ -485,14 +510,29 @@ impl DockerRunner {
             CancellationToken::new()
         }
     }
-    pub async fn create(&mut self, image_options: &CreateRunnerOptions<String>) -> Result<()> {
+    pub async fn create(
+        &mut self,
+        image_options: &CreateRunnerOptions<String>,
+        timeout_sec: u64,
+    ) -> Result<()> {
+        self.current_timeout_sec = timeout_sec;
         if image_options.from_image.is_some() || image_options.from_src.is_some() {
-            let docker = Docker::connect_with_socket_defaults().unwrap();
-            docker
-                .create_image(Some(image_options.to_docker()), None, None)
-                .try_collect::<Vec<_>>()
-                .await
-                .map_err(JobWorkerError::DockerError)?;
+            let docker = connect_docker_with_timeout(timeout_sec)?;
+            let image_name = image_options.from_image.clone().unwrap_or_default();
+
+            // Check if image exists locally, pull only if not present
+            let image_exists = docker.inspect_image(&image_name).await.is_ok();
+
+            if !image_exists {
+                tracing::info!("Image {} not found locally, pulling...", &image_name);
+                docker
+                    .create_image(Some(image_options.to_docker()), None, None)
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .map_err(JobWorkerError::DockerError)?;
+            } else {
+                tracing::info!("Image {} found locally, skipping pull", &image_name);
+            }
             self.docker = Some(docker);
         } else {
             tracing::info!("docker image is not specified. should specify image in run() method");
@@ -500,6 +540,31 @@ impl DockerRunner {
         Ok(())
     }
     fn trans_docker_arg_to_config(&self, arg: &DockerArgs) -> Config<String> {
+        // Separate volumes into bind mounts (containing ':') and volume declarations (no ':')
+        // This allows docker run -v style syntax: "host:container[:mode]"
+        let (binds, volume_declarations): (Vec<_>, Vec<_>) =
+            arg.volumes.iter().cloned().partition(|v| v.contains(':'));
+
+        let volumes = if volume_declarations.is_empty() {
+            None
+        } else {
+            Some(
+                volume_declarations
+                    .into_iter()
+                    .map(|volume| (volume, HashMap::new()))
+                    .collect::<HashMap<_, _>>(),
+            )
+        };
+
+        let host_config = if binds.is_empty() {
+            None
+        } else {
+            Some(HostConfig {
+                binds: Some(binds),
+                ..Default::default()
+            })
+        };
+
         Config {
             image: arg.image.clone(),
             cmd: if arg.cmd.is_empty() {
@@ -524,17 +589,7 @@ impl DockerRunner {
             } else {
                 Some(arg.env.clone())
             },
-            volumes: if arg.volumes.is_empty() {
-                None
-            } else {
-                Some(
-                    arg.volumes
-                        .iter()
-                        .cloned()
-                        .map(|volume| (volume, HashMap::new()))
-                        .collect::<HashMap<_, _>>(),
-                )
-            },
+            volumes,
             working_dir: arg.working_dir.clone(),
             entrypoint: if arg.entrypoint.is_empty() {
                 None
@@ -548,6 +603,7 @@ impl DockerRunner {
             } else {
                 Some(arg.shell.clone())
             },
+            host_config,
             ..Default::default()
         }
     }
@@ -590,7 +646,8 @@ impl RunnerTrait for DockerRunner {
     // create and start container
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         let op = ProstMessageCodec::deserialize_message::<DockerRunnerSettings>(&settings)?;
-        self.create(&op.into()).await
+        let timeout_sec = op.timeout_sec.unwrap_or(DEFAULT_DOCKER_TIMEOUT_SEC);
+        self.create(&op.into(), timeout_sec).await
     }
     async fn run(
         &mut self,
@@ -604,8 +661,12 @@ impl RunnerTrait for DockerRunner {
         let result = async {
             let arg = ProstMessageCodec::deserialize_message::<DockerArgs>(args)?;
             let create_option = CreateRunnerOptions::new(arg.image.clone());
-            if self.docker.is_none() {
-                self.create(&create_option).await?;
+            // Get timeout from DockerArgs, fallback to current settings timeout
+            let timeout_sec = arg.timeout_sec.unwrap_or(self.current_timeout_sec);
+
+            // Reconnect if timeout changed or docker not initialized
+            if self.docker.is_none() || timeout_sec != self.current_timeout_sec {
+                self.create(&create_option, timeout_sec).await?;
             }
             if let Some(docker) = self.docker.as_ref() {
                 if cancellation_token.is_cancelled() {
@@ -613,17 +674,25 @@ impl RunnerTrait for DockerRunner {
                     return Err(JobWorkerError::CancelledError("Docker execution was cancelled before create_image".to_string()).into());
                 }
 
-                // create image if not exist
-                tokio::select! {
-                    result = docker
-                        .create_image(Some(create_option.to_docker()), None, None)
-                        .try_collect::<Vec<_>>() => {
-                        result.map_err(JobWorkerError::DockerError)?;
+                // Check if image exists locally, pull only if not present
+                let image_name = arg.image.clone().unwrap_or_default();
+                let image_exists = docker.inspect_image(&image_name).await.is_ok();
+
+                if !image_exists {
+                    tracing::info!("Image {} not found locally, pulling...", &image_name);
+                    tokio::select! {
+                        result = docker
+                            .create_image(Some(create_option.to_docker()), None, None)
+                            .try_collect::<Vec<_>>() => {
+                            result.map_err(JobWorkerError::DockerError)?;
+                        }
+                        _ = cancellation_token.cancelled() => {
+                            tracing::info!("Docker image creation was cancelled");
+                            return Err(JobWorkerError::CancelledError("Docker image creation was cancelled".to_string()).into());
+                        }
                     }
-                    _ = cancellation_token.cancelled() => {
-                        tracing::info!("Docker image creation was cancelled");
-                        return Err(JobWorkerError::CancelledError("Docker image creation was cancelled".to_string()).into());
-                    }
+                } else {
+                    tracing::info!("Image {} found locally, skipping pull", &image_name);
                 }
 
                 let mut config = self.trans_docker_arg_to_config(&arg);
@@ -910,15 +979,17 @@ mod test {
 
         let mut runner1 = DockerRunner::new();
         runner1
-            .create(&CreateRunnerOptions::new(Some(
-                "busybox:latest".to_string(),
-            )))
+            .create(
+                &CreateRunnerOptions::new(Some("busybox:latest".to_string())),
+                DEFAULT_DOCKER_TIMEOUT_SEC,
+            )
             .await?;
         let mut runner2 = DockerRunner::new();
         runner2
-            .create(&CreateRunnerOptions::new(Some(
-                "busybox:latest".to_string(),
-            )))
+            .create(
+                &CreateRunnerOptions::new(Some("busybox:latest".to_string())),
+                DEFAULT_DOCKER_TIMEOUT_SEC,
+            )
             .await?;
         let arg = ProstMessageCodec::serialize_message(&DockerArgs {
             image: Some("busybox:latest".to_string()),
