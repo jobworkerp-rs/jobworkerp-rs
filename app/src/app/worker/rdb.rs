@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::text::TextUtil;
+use dashmap::DashMap;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
@@ -25,6 +26,11 @@ pub struct RdbWorkerAppImpl {
     id_generator: Arc<IdGeneratorWrapper>,
     memory_cache: MokaCacheImpl<Arc<String>, Worker>,
     list_memory_cache: MokaCacheImpl<Arc<String>, Vec<Worker>>,
+    /// Dedicated cache for temporary workers without TTL.
+    /// MokaCache has a unified TTL for all entries, so temporary workers may be evicted
+    /// before long-running jobs complete. This DashMap stores temporary workers permanently
+    /// until explicitly deleted via delete_temp().
+    temp_worker_cache: Arc<DashMap<i64, Worker>>,
     repositories: Arc<RdbChanRepositoryModule>,
     descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     runner_app: Arc<RdbRunnerAppImpl>,
@@ -46,6 +52,7 @@ impl RdbWorkerAppImpl {
             id_generator,
             memory_cache,
             list_memory_cache,
+            temp_worker_cache: Arc::new(DashMap::new()),
             repositories,
             descriptor_cache,
             runner_app,
@@ -84,7 +91,6 @@ impl WorkerApp for RdbWorkerAppImpl {
 
         let mut wdata = worker;
         if with_random_name {
-            // generate random name
             wdata.name = TextUtil::generate_random_key(Some(&wdata.name));
         }
         let wid = WorkerId {
@@ -94,7 +100,11 @@ impl WorkerApp for RdbWorkerAppImpl {
             id: Some(wid),
             data: Some(wdata),
         };
-        // clear name cache (and list cache)
+
+        // Store in TTL-free cache to survive MokaCache expiration for long-running jobs
+        self.temp_worker_cache.insert(wid.value, worker.clone());
+
+        // Also store in MokaCache for fast lookup (fallback to temp_worker_cache if expired)
         self.create_cache(&wid, &worker).await?;
         // not broadcast to runner (single instance for rdb only)
         Ok(wid)
@@ -142,13 +152,16 @@ impl WorkerApp for RdbWorkerAppImpl {
 
     // Delete a temp worker from memory cache only (not from RDB)
     async fn delete_temp(&self, id: &WorkerId) -> Result<bool> {
-        // Find the worker first to get its name for cache clearing
-        let worker_name = self.find(id).await?.and_then(|w| w.data.map(|d| d.name));
+        // Remove from TTL-free temp_worker_cache
+        let removed = self.temp_worker_cache.remove(&id.value);
 
-        // Check if worker exists in cache before clearing
-        let existed = worker_name.is_some();
+        // Get worker name for cache clearing
+        let worker_name = removed
+            .as_ref()
+            .and_then(|(_, w)| w.data.as_ref().map(|d| d.name.clone()));
+        let existed = removed.is_some();
 
-        // Clear in-memory caches (id cache and name cache)
+        // Clear MokaCache (id cache and name cache)
         self.clear_cache(id).await;
         if let Some(name) = worker_name {
             self.clear_cache_by_name(&name).await;
@@ -188,9 +201,20 @@ impl WorkerApp for RdbWorkerAppImpl {
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_cache_key(id));
-        self.memory_cache
+        let cached = self
+            .memory_cache
             .with_cache_if_some(&k, || async { self.rdb_worker_repository().find(id).await })
-            .await
+            .await?;
+
+        if cached.is_some() {
+            return Ok(cached);
+        }
+
+        // Fallback to temp_worker_cache if MokaCache expired
+        Ok(self
+            .temp_worker_cache
+            .get(&id.value)
+            .map(|entry| entry.value().clone()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -499,6 +523,92 @@ mod tests {
             let deleted = app.delete_temp(&id).await?;
             assert!(deleted);
 
+            let not_found = app.find(&id).await?;
+            assert!(not_found.is_none());
+
+            Ok(())
+        })
+    }
+
+    async fn create_test_app_with_short_ttl() -> Result<RdbWorkerAppImpl> {
+        let rdb_module = Arc::new(setup_test_rdb_module(false).await);
+        let id_generator = Arc::new(IdGeneratorWrapper::new());
+
+        // Very short TTL for testing cache expiration behavior
+        let moka_config = memory_utils::cache::moka::MokaCacheConfig {
+            num_counters: 10000,
+            ttl: Some(Duration::from_millis(100)),
+        };
+
+        let descriptor_cache = Arc::new(MokaCacheImpl::new(&moka_config));
+        let storage_config = Arc::new(StorageConfig {
+            r#type: StorageType::Standalone,
+            restore_at_startup: Some(false),
+        });
+
+        let runner_app = RdbRunnerAppImpl::new(
+            TEST_PLUGIN_DIR.to_string(),
+            storage_config.clone(),
+            &moka_config,
+            rdb_module.clone(),
+            descriptor_cache.clone(),
+        );
+        runner_app.load_runner().await?;
+
+        let worker_app = RdbWorkerAppImpl::new(
+            storage_config.clone(),
+            id_generator.clone(),
+            &moka_config,
+            rdb_module,
+            descriptor_cache,
+            Arc::new(runner_app),
+        );
+
+        Ok(worker_app)
+    }
+
+    #[test]
+    fn test_create_temp_survives_cache_ttl() -> Result<()> {
+        // Test that temporary workers survive MokaCache TTL expiration
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_app_with_short_ttl().await?;
+            let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
+                name: "testTempTtlRunner".to_string(),
+            })?;
+
+            let temp_worker = WorkerData {
+                name: "temp_ttl_worker".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                ..Default::default()
+            };
+
+            let id = app.create_temp(temp_worker.clone(), true).await?;
+            assert!(id.value > 0);
+
+            // Wait for MokaCache TTL to expire (100ms + buffer)
+            tokio::time::sleep(Duration::from_millis(200)).await;
+
+            // Worker should still be found via temp_worker_cache fallback
+            let found = app.find(&id).await?;
+            assert!(
+                found.is_some(),
+                "temporary worker should survive MokaCache TTL expiration"
+            );
+
+            let worker_data = found.and_then(|w| w.data);
+            assert!(worker_data.is_some());
+            assert!(worker_data
+                .as_ref()
+                .unwrap()
+                .name
+                .starts_with(&temp_worker.name));
+
+            // delete_temp should still work after TTL expiration
+            let deleted = app.delete_temp(&id).await?;
+            assert!(deleted);
+
+            // After deletion, worker should not be found
             let not_found = app.find(&id).await?;
             assert!(not_found.is_none());
 

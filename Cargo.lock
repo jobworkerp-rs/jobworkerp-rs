@@ -151,6 +151,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "command-utils 0.1.0",
+ "dashmap",
  "debug_stub_derive",
  "dotenvy",
  "envy",

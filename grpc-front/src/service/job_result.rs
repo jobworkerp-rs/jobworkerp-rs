@@ -174,15 +174,16 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         let _s = Self::trace_request("job_result", "listen_stream", &request);
         let req = request.into_inner();
         let using = req.using.as_deref().unwrap_or(DEFAULT_METHOD_NAME);
+        let timeout = req.timeout;
         let res = match (req.job_id, req.worker) {
             (Some(job_id), Some(Worker::WorkerId(worker_id))) => {
                 self.app()
-                    .listen_result(&job_id, Some(&worker_id), None, None, true, using)
+                    .listen_result(&job_id, Some(&worker_id), None, timeout, true, using)
                     .await
             }
             (Some(job_id), Some(Worker::WorkerName(name))) => {
                 self.app()
-                    .listen_result(&job_id, None, Some(&name), None, true, using)
+                    .listen_result(&job_id, None, Some(&name), timeout, true, using)
                     .await
             }
             _ => Err(JobWorkerError::InvalidParameter(
