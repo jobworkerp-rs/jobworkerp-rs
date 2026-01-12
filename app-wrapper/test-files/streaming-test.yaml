@@ -6,14 +6,20 @@ document:
   dsl: 0.0.1
 input:
   schema:
-    command:
-      type: string
-      description: command to execute
-      default: echo
-    args:
-      type: array
-      description: arguments for command
-      default: ["hello", "streaming"]
+    format: json
+    document:
+      type: object
+      properties:
+        command:
+          type: string
+          description: command to execute
+          default: echo
+        args:
+          type: array
+          description: arguments for command
+          items:
+            type: string
+          default: ["hello", "streaming"]
 do:
   - StreamingTask:
       run:

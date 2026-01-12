@@ -176,6 +176,7 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
             "subscribe_result_stream_receiving: job_id={}",
             &job_id.value
         );
+        // Use scan to detect End item and terminate stream after emitting it
         let transformed_stream = stream
             .filter_map(|b| async move {
                 let out = ProstMessageCodec::deserialize_message::<ResultOutputItem>(b.as_slice());
@@ -200,7 +201,20 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
                     }
                 }
             })
-            .take_while(|r| future::ready(r.item.is_some()))
+            // Terminate stream after End item is emitted
+            .scan(false, |end_received, item| {
+                if *end_received {
+                    // Already received End, stop the stream
+                    future::ready(None)
+                } else if matches!(item.item, Some(result_output_item::Item::End(_))) {
+                    // Received End, emit it and mark for termination
+                    *end_received = true;
+                    future::ready(Some(item))
+                } else {
+                    // Normal item, pass through
+                    future::ready(Some(item))
+                }
+            })
             .boxed();
         Ok(transformed_stream)
     }
