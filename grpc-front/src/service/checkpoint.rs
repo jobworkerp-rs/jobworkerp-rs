@@ -14,6 +14,7 @@ use app_wrapper::workflow::execute::checkpoint::{
 };
 use app_wrapper::workflow::execute::context::WorkflowPosition;
 use app_wrapper::workflow::execute::task::ExecutionId;
+use command_utils::trace::Tracing;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -70,12 +71,17 @@ impl CheckpointGrpcImpl {
     }
 }
 
+// use tracing
+impl Tracing for CheckpointGrpcImpl {}
+
 #[tonic::async_trait]
 impl CheckpointService for CheckpointGrpcImpl {
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "get"))]
     async fn get(
         &self,
         request: Request<GetCheckpointRequest>,
     ) -> Result<Response<OptionalCheckpointResponse>, Status> {
+        let _s = Self::trace_request("checkpoint", "get", &request);
         let req = request.into_inner();
         let execution_id = ExecutionId { value: req.execution_id };
         let workflow_name = req.workflow_name;
@@ -97,10 +103,12 @@ impl CheckpointService for CheckpointGrpcImpl {
         }
     }
 
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "update"))]
     async fn update(
         &self,
         request: Request<UpdateCheckpointRequest>,
     ) -> Result<Response<SuccessResponse>, Status> {
+        let _s = Self::trace_request("checkpoint", "update", &request);
         let req = request.into_inner();
         let execution_id = ExecutionId { value: req.execution_id };
         let workflow_name = req.workflow_name;
