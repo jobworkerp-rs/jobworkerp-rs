@@ -77,6 +77,7 @@ impl Tracing for CheckpointGrpcImpl {}
 #[tonic::async_trait]
 impl CheckpointService for CheckpointGrpcImpl {
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "get"))]
+    /// Get checkpoint by execution_id, workflow_name, and position.
     async fn get(
         &self,
         request: Request<GetCheckpointRequest>,
@@ -104,6 +105,7 @@ impl CheckpointService for CheckpointGrpcImpl {
     }
 
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "update"))]
+    /// Update checkpoint. This allows modifying the context variables of the checkpoint.
     async fn update(
         &self,
         request: Request<UpdateCheckpointRequest>,
