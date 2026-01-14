@@ -89,10 +89,11 @@ impl CheckpointService for CheckpointGrpcImpl {
         let position = req.position;
 
         // Try Redis first, then Memory
-        let repo = if let Some(redis_repo) = &self.app_wrapper_module.repositories.redis_checkpoint_repository {
-            redis_repo
+        let repo: &dyn app_wrapper::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId = 
+        if let Some(redis_repo) = &self.app_wrapper_module.repositories.redis_checkpoint_repository {
+            redis_repo.as_ref()
         } else {
-             &self.app_wrapper_module.repositories.memory_checkpoint_repository
+             self.app_wrapper_module.repositories.memory_checkpoint_repository.as_ref()
         };
 
         match repo.get_checkpoint_with_id(&execution_id, &workflow_name, &position).await {
@@ -119,10 +120,11 @@ impl CheckpointService for CheckpointGrpcImpl {
         let checkpoint = Self::from_proto_checkpoint(checkpoint_proto)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
-        let repo = if let Some(redis_repo) = &self.app_wrapper_module.repositories.redis_checkpoint_repository {
-             redis_repo
+        let repo: &dyn app_wrapper::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId = 
+        if let Some(redis_repo) = &self.app_wrapper_module.repositories.redis_checkpoint_repository {
+             redis_repo.as_ref()
         } else {
-             &self.app_wrapper_module.repositories.memory_checkpoint_repository
+             self.app_wrapper_module.repositories.memory_checkpoint_repository.as_ref()
         };
 
         match repo.save_checkpoint_with_id(&execution_id, &workflow_name, &checkpoint).await {

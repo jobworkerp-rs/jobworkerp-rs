@@ -54,6 +54,11 @@ pub mod jobworkerp {
         pub type WorkerInstanceId = data::WorkerInstanceId;
         pub type WorkerInstanceData = data::WorkerInstanceData;
         pub type WorkerInstance = data::WorkerInstance;
+
+        // Checkpoint types
+        pub type CheckPoint = data::CheckPoint;
+        pub type WorkflowCheckPointContext = data::WorkflowCheckPointContext;
+        pub type TaskCheckPointContext = data::TaskCheckPointContext;
     }
     pub mod service {
         tonic::include_proto!("jobworkerp.service");

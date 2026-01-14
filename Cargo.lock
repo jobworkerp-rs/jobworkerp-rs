@@ -1710,6 +1710,7 @@ version = "0.18.1"
 dependencies = [
  "anyhow",
  "app",
+ "app-wrapper",
  "async-stream",
  "command-utils 0.1.0",
  "debug_stub_derive",
