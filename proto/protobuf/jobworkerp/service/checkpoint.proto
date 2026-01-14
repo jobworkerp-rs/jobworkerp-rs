@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package jobworkerp.service;
+
+import "jobworkerp/data/checkpoint.proto";
+import "jobworkerp/service/common.proto";
+
+message GetCheckpointRequest {
+  string execution_id = 1; // ExecutionId
+  string workflow_name = 2;
+  string position = 3;
+}
+
+message UpdateCheckpointRequest {
+  string execution_id = 1;
+  string workflow_name = 2;
+  jobworkerp.data.CheckPoint checkpoint = 3;
+}
+
+message OptionalCheckpointResponse {
+  optional jobworkerp.data.CheckPoint checkpoint = 1;
+}
+
+service CheckpointService {
+  rpc Get(GetCheckpointRequest) returns (OptionalCheckpointResponse);
+  rpc Update(UpdateCheckpointRequest) returns (SuccessResponse);
+}

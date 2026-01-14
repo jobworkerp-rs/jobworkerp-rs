@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use app::app::worker_instance::InstanceCleanupTask;
 use app::module::{AppConfigModule, AppModule};
+use app_wrapper::modules::AppWrapperModule;
 use command_utils::util::shutdown;
 use dotenvy::dotenv;
 use infra::infra::worker_instance::UseWorkerInstanceRepository;
@@ -50,13 +51,17 @@ async fn main() -> Result<()> {
     let cleanup_handle =
         tokio::spawn(async move { cleanup_task.start_cleanup_loop(shutdown_recv).await });
 
+    // Initialize AppWrapperModule
+    let redis_pool = app_module.repositories.redis_module.as_ref().map(|r| r.redis_pool);
+    let app_wrapper_module = Arc::new(AppWrapperModule::new_by_env(redis_pool));
+
     let (lock, mut wait) = shutdown::create_lock_and_wait();
 
     // Spawn shutdown signal handler (SIGINT + SIGTERM on Unix)
     shutdown::spawn_shutdown_handler(shutdown_send.clone());
 
     // trace::tracing_init_jaeger(&jeager_addr);
-    let ret = grpc_front::start_front_server(app_module, lock).await;
+    let ret = grpc_front::start_front_server(app_module, app_wrapper_module, lock).await;
 
     tracing::info!("waiting shutdown");
     wait.wait().await;

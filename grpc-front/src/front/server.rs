@@ -1,5 +1,6 @@
 use crate::proto::jobworkerp::function::service::function_service_server::FunctionServiceServer;
 use crate::proto::jobworkerp::function::service::function_set_service_server::FunctionSetServiceServer;
+use crate::proto::jobworkerp::service::checkpoint_service_server::CheckpointServiceServer;
 use crate::proto::jobworkerp::service::job_processing_status_service_server::JobProcessingStatusServiceServer;
 use crate::proto::jobworkerp::service::job_restore_service_server::JobRestoreServiceServer;
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultServiceServer;
@@ -8,6 +9,7 @@ use crate::proto::jobworkerp::service::runner_service_server::RunnerServiceServe
 use crate::proto::jobworkerp::service::worker_instance_service_server::WorkerInstanceServiceServer;
 use crate::proto::jobworkerp::service::worker_service_server::WorkerServiceServer;
 use crate::proto::FILE_DESCRIPTOR_SET;
+use crate::service::checkpoint::CheckpointGrpcImpl;
 use crate::service::function::FunctionGrpcImpl;
 use crate::service::function_set::FunctionSetGrpcImpl;
 use crate::service::job::JobGrpcImpl;
@@ -20,17 +22,16 @@ use crate::service::worker_instance::WorkerInstanceGrpcImpl;
 use anyhow::anyhow;
 use anyhow::Result;
 use app::module::AppModule;
+use app_wrapper::modules::AppWrapperModule;
 use command_utils::util::shutdown::ShutdownLock;
 use net_utils::grpc::enable_grpc_web;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::transport::Server;
-// use tonic_tracing_opentelemetry::middleware::filters;
-// use tonic_tracing_opentelemetry::middleware::server;
-// use tower::ServiceBuilder;
 
 pub async fn start_server(
     app_module: Arc<AppModule>,
+    app_wrapper_module: Arc<AppWrapperModule>,
     lock: ShutdownLock,
     addr: SocketAddr,
     use_web: bool,
@@ -49,7 +50,7 @@ pub async fn start_server(
         }
     });
 
-    let result = start_server_with_shutdown(app_module, addr, use_web, max_frame_size, rx).await;
+    let result = start_server_with_shutdown(app_module, app_wrapper_module, addr, use_web, max_frame_size, rx).await;
     lock.unlock();
     result
 }
@@ -58,6 +59,7 @@ pub async fn start_server(
 /// Used when shutdown signal is managed by the caller (e.g., boot_all_in_one_mcp).
 pub async fn start_server_with_shutdown(
     app_module: Arc<AppModule>,
+    app_wrapper_module: Arc<AppWrapperModule>,
     addr: SocketAddr,
     use_web: bool,
     max_frame_size: Option<u32>,
@@ -99,7 +101,10 @@ pub async fn start_server_with_shutdown(
                 FunctionGrpcImpl::new(app_module.clone()),
             )))
             .add_service(enable_grpc_web(WorkerInstanceServiceServer::new(
-                WorkerInstanceGrpcImpl::new(app_module),
+                WorkerInstanceGrpcImpl::new(app_module.clone()),
+            )))
+            .add_service(enable_grpc_web(CheckpointServiceServer::new(
+                CheckpointGrpcImpl::new(app_wrapper_module),
             )))
             .add_service(reflection)
             .add_service(health_service)
@@ -134,8 +139,11 @@ pub async fn start_server_with_shutdown(
                 app_module.clone(),
             )))
             .add_service(WorkerInstanceServiceServer::new(
-                WorkerInstanceGrpcImpl::new(app_module),
+                WorkerInstanceGrpcImpl::new(app_module.clone()),
             ))
+            .add_service(CheckpointServiceServer::new(CheckpointGrpcImpl::new(
+                app_wrapper_module,
+            )))
             .add_service(reflection)
             .add_service(health_service)
             .serve_with_shutdown(addr, async {

@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package jobworkerp.data;
+
+message WorkflowCheckPointContext {
+  string name = 1;
+  string input = 2; // JSON
+  string context_variables = 3; // JSON
+}
+
+message TaskCheckPointContext {
+  string input = 1; // JSON
+  string output = 2; // JSON
+  string context_variables = 3; // JSON
+  string flow_directive = 4;
+}
+
+message CheckPoint {
+  WorkflowCheckPointContext workflow = 1;
+  TaskCheckPointContext task = 2;
+  string position = 3; // WorkflowPosition as JSON pointer string
+}

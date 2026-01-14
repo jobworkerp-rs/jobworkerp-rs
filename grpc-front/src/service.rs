@@ -9,6 +9,7 @@ pub mod runner;
 pub mod validation;
 pub mod worker;
 pub mod worker_instance;
+pub mod checkpoint;
 
 use std::collections::HashMap;
 

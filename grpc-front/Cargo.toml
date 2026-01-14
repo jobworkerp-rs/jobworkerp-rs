@@ -18,6 +18,7 @@ jobworkerp-base = { path = "../base" }
 jobworkerp-runner = { path = "../runner" }
 infra = { path = "../infra" }
 app = { path = "../app" }
+app-wrapper = { path = "../app-wrapper" }
 
 anyhow = { workspace = true }
 async-stream = { workspace = true }
