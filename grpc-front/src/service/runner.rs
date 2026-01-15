@@ -5,11 +5,12 @@ use crate::proto::jobworkerp::data::{Runner, RunnerId};
 use crate::proto::jobworkerp::service::runner_service_server::RunnerService;
 use crate::proto::jobworkerp::service::{
     CountCondition, CountResponse, CountRunnerRequest, CreateRunnerRequest, CreateRunnerResponse,
-    FindListRequest, FindRunnerListRequest, OptionalRunnerResponse, RunnerNameRequest,
-    SuccessResponse,
+    DeleteRunnerRequest, FindListRequest, FindRunnerListRequest, OptionalRunnerResponse,
+    RunnerNameRequest, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::runner::RunnerApp;
+use app::app::worker::WorkerApp;
 use app::module::AppModule;
 use async_stream::stream;
 use command_utils::trace::Tracing;
@@ -19,6 +20,7 @@ use tonic::Response;
 
 pub trait RunnerGrpc {
     fn app(&self) -> &Arc<dyn RunnerApp + 'static>;
+    fn worker_app(&self) -> &Arc<dyn WorkerApp + 'static>;
 }
 
 const MAX_RESERVED_RUNNER_ID: i64 = 65535;
@@ -49,21 +51,54 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "delete"))]
     async fn delete(
         &self,
-        request: tonic::Request<RunnerId>,
+        request: tonic::Request<DeleteRunnerRequest>,
     ) -> Result<tonic::Response<SuccessResponse>, tonic::Status> {
         let _s = Self::trace_request("runner", "delete", &request);
         let req = request.get_ref();
+        let id = req
+            .id
+            .as_ref()
+            .ok_or_else(|| tonic::Status::invalid_argument("RunnerId is required"))?;
         // cannot delete reserved runner
-        if req.value <= MAX_RESERVED_RUNNER_ID {
+        if id.value <= MAX_RESERVED_RUNNER_ID {
             return Err(handle_error(
                 &JobWorkerError::InvalidParameter(format!(
                     "cannot delete reserved runner: {}",
-                    req.value
+                    id.value
                 ))
                 .into(),
             ));
         }
-        match self.app().delete_runner(req).await {
+
+        // cascading delete
+        if req.delete_workers {
+            let workers = self
+                .worker_app()
+                .find_list(
+                    vec![],         // runner_types
+                    None,           // channel
+                    None,           // limit
+                    None,           // offset
+                    None,           // name_filter
+                    None,           // is_periodic
+                    vec![id.value], // runner_ids
+                    None,           // sort_by
+                    None,           // ascending
+                )
+                .await
+                .map_err(|e| handle_error(&e))?;
+
+            for w in workers {
+                if let Some(wid) = w.id {
+                    self.worker_app()
+                        .delete(&wid)
+                        .await
+                        .map_err(|e| handle_error(&e))?;
+                }
+            }
+        }
+
+        match self.app().delete_runner(id).await {
             Ok(r) => Ok(Response::new(SuccessResponse { is_success: r })),
             Err(e) => Err(handle_error(&e)),
         }
@@ -215,6 +250,9 @@ impl RunnerGrpcImpl {
 impl RunnerGrpc for RunnerGrpcImpl {
     fn app(&self) -> &Arc<dyn RunnerApp + 'static> {
         &self.app_module.runner_app
+    }
+    fn worker_app(&self) -> &Arc<dyn WorkerApp + 'static> {
+        &self.app_module.worker_app
     }
 }
 
