@@ -1,6 +1,6 @@
 use super::{
     command::CommandRunnerImpl,
-    docker::{DockerExecRunner, DockerRunner},
+    docker::DockerRunner,
     grpc_unary::GrpcUnaryRunner,
     llm::LLMCompletionRunnerSpecImpl,
     llm_chat::LLMChatRunnerSpecImpl,
@@ -149,9 +149,6 @@ impl RunnerSpecFactory {
             }
             Some(RunnerType::PythonCommand) => {
                 Some(Box::new(PythonCommandRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
-            }
-            Some(RunnerType::Docker) if use_static => {
-                Some(Box::new(DockerExecRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::Docker) => {
                 Some(Box::new(DockerRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)

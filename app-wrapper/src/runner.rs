@@ -16,7 +16,7 @@ use jobworkerp_runner::runner::mcp::McpServerRunnerImpl;
 use jobworkerp_runner::runner::{
     cancellation::CancellableRunner,
     command::CommandRunnerImpl,
-    docker::{DockerExecRunner, DockerRunner},
+    docker::DockerRunner,
     grpc_unary::GrpcUnaryRunner,
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
@@ -80,10 +80,6 @@ impl RunnerFactory {
                 as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::PythonCommand) => Some(Box::new(
                 PythonCommandRunner::new_with_cancel_monitoring(create_cancel_helper()),
-            )
-                as Box<dyn CancellableRunner + Send + Sync>),
-            Some(RunnerType::Docker) if use_static => Some(Box::new(
-                DockerExecRunner::new_with_cancel_monitoring(create_cancel_helper()),
             )
                 as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::Docker) => Some(Box::new(DockerRunner::new_with_cancel_monitoring(
