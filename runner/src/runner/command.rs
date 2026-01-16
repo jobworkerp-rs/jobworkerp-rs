@@ -307,6 +307,9 @@ impl RunnerTrait for CommandRunnerImpl {
         let data =
             ProstMessageCodec::deserialize_message::<CommandArgs>(args).context("on run job")?;
         let mut command = Command::new(data.command.as_str());
+        if !data.working_dir.is_empty() {
+            command.current_dir(&data.working_dir);
+        }
         let args: &Vec<String> = &data.args;
         let mut stdout_messages = Vec::<String>::new();
         let mut stderr_messages = Vec::<String>::new();
@@ -616,6 +619,9 @@ impl RunnerTrait for CommandRunnerImpl {
         // Note: Cancellation manager lifecycle is now handled by DI Helper system
 
         let mut command = Command::new(command_str.as_str());
+        if !data.working_dir.is_empty() {
+            command.current_dir(&data.working_dir);
+        }
 
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1241,6 +1247,7 @@ mod tests {
             with_memory_monitoring: true,
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
+            working_dir: "".to_string(),
         };
 
         let res = runner
@@ -1278,6 +1285,7 @@ mod tests {
             with_memory_monitoring: false,
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
+            working_dir: "".to_string(),
         };
 
         let res = runner
@@ -1306,6 +1314,7 @@ mod tests {
             with_memory_monitoring: false,
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
+            working_dir: "".to_string(),
         };
 
         let res = runner
@@ -1329,6 +1338,7 @@ mod tests {
             with_memory_monitoring: true,
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
+            working_dir: "".to_string(),
         };
 
         let stream_result = runner
@@ -1409,6 +1419,7 @@ mod tests {
             with_memory_monitoring: true,
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
+            working_dir: "".to_string(),
         };
 
         eprintln!("\n=== Starting stream test with multiple lines ===");
@@ -1545,6 +1556,7 @@ mod tests {
             with_memory_monitoring: false,
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
+            working_dir: "".to_string(),
         };
 
         let arg_bytes = ProstMessageCodec::serialize_message(&arg).unwrap();
@@ -1746,6 +1758,7 @@ mod tests {
             with_memory_monitoring: false,
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
+            working_dir: "".to_string(),
         };
 
         let res = runner
@@ -1780,6 +1793,7 @@ mod tests {
             with_memory_monitoring: false,
             treat_nonzero_as_error: true,
             success_exit_codes: vec![],
+            working_dir: "".to_string(),
         };
 
         let res = runner
@@ -1813,6 +1827,7 @@ mod tests {
             with_memory_monitoring: false,
             treat_nonzero_as_error: true,
             success_exit_codes: vec![],
+            working_dir: "".to_string(),
         };
 
         let res = runner
@@ -1844,6 +1859,7 @@ mod tests {
             with_memory_monitoring: false,
             treat_nonzero_as_error: true,
             success_exit_codes: vec![0, 1],
+            working_dir: "".to_string(),
         };
 
         let res = runner
@@ -1875,6 +1891,7 @@ mod tests {
             with_memory_monitoring: false,
             treat_nonzero_as_error: true,
             success_exit_codes: vec![0, 1],
+            working_dir: "".to_string(),
         };
 
         let res = runner
@@ -1935,6 +1952,35 @@ mod tests {
             err_str.contains("exit"),
             "Error message should contain exit info"
         );
+    }
+
+    #[tokio::test]
+    async fn test_run_with_working_dir() {
+        let mut runner = CommandRunnerImpl::new();
+        let arg = CommandArgs {
+            command: "pwd".to_string(),
+            args: vec![],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
+            working_dir: "/tmp".to_string(),
+        };
+
+        let res = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+                None,
+            )
+            .await;
+
+        assert!(res.0.is_ok());
+        let result_bytes = res.0.unwrap();
+        let result =
+            ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
+
+        let stdout = result.stdout.unwrap_or_default();
+        assert!(stdout.trim().eq("/tmp") || stdout.trim().ends_with("/tmp"));
     }
 }
 
