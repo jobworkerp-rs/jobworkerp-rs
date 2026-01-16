@@ -9,6 +9,9 @@ use std::collections::HashMap;
 /// and creating appropriate error instances. It's particularly useful in async contexts
 /// where task execution needs to track position information.
 ///
+/// Stack traces are logged via tracing::error for debugging purposes,
+/// while user-facing error messages use Display format for readability.
+///
 /// # Usage
 ///
 /// Basic usage with error type and message:
@@ -38,7 +41,7 @@ use std::collections::HashMap;
 /// - `$result`: The Result to unwrap or convert to workflow error
 /// - `$error_type`: The error factory method name (e.g., bad_argument, internal_error)
 /// - `$message`: The error message to include in the error
-/// - `$detail` (optional): Additional detail message (defaults to Debug representation of error)
+/// - `$detail` (optional): Additional detail message (defaults to Display representation of error)
 #[macro_export]
 macro_rules! bail_with_position {
     ($task_context:expr, $result:expr, $error_type:ident, $message:expr) => {
@@ -46,12 +49,17 @@ macro_rules! bail_with_position {
             Ok(val) => val,
             Err(e) => {
                 let pos = $task_context.position.read().await;
+                tracing::error!(
+                    error = ?e,
+                    position = %pos.as_error_instance(),
+                    "{}", $message
+                );
                 return Err(
                     $crate::workflow::definition::workflow::errors::ErrorFactory::new()
                         .$error_type(
                             $message.to_string(),
                             Some(pos.as_error_instance()),
-                            Some(format!("{:?}", e)),
+                            Some(e.to_string()),
                         ),
                 );
             }
@@ -62,6 +70,12 @@ macro_rules! bail_with_position {
             Ok(val) => val,
             Err(e) => {
                 let pos = $task_context.position.read().await;
+                tracing::error!(
+                    error = ?e,
+                    position = %pos.as_error_instance(),
+                    detail = %$detail,
+                    "{}", $message
+                );
                 return Err(
                     $crate::workflow::definition::workflow::errors::ErrorFactory::new()
                         .$error_type(

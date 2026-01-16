@@ -223,8 +223,11 @@ impl DoTaskStreamExecutor {
                             yield Ok(event);
                         }
                         Err(mut e) => {
-                            let pos = prev.position.read().await;
-                            e.position(&pos);
+                            {
+                                let pos = prev.position.read().await;
+                                e.position(&pos);
+                                // pos is dropped here, releasing the read lock before yield
+                            }
                             tracing::debug!(
                                 "Error executing task {}: {:?}",
                                 name,

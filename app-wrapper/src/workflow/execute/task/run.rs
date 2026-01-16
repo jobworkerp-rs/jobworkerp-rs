@@ -288,10 +288,11 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     Err(e) => {
                         let pos = task_context.position.clone();
                         let pos = pos.read().await.as_error_instance();
+                        tracing::error!(error = ?e, position = %pos, "Failed to execute by jobworkerp (function)");
                         Err(workflow::errors::ErrorFactory::new().service_unavailable(
                             "Failed to execute by jobworkerp".to_string(),
                             Some(pos),
-                            Some(format!("{e:?}")),
+                            Some(e.to_string()),
                         ))
                     }
                 }?;
@@ -402,10 +403,11 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     Err(e) => {
                         let pos = task_context.position.clone();
                         let pos = pos.read().await.as_error_instance();
+                        tracing::error!(error = ?e, position = %pos, "Failed to execute by jobworkerp (runner)");
                         Err(workflow::errors::ErrorFactory::new().service_unavailable(
                             "Failed to execute by jobworkerp".to_string(),
                             Some(pos),
-                            Some(format!("{e:?}")),
+                            Some(e.to_string()),
                         ))
                     }
                 }?;
@@ -499,10 +501,11 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     Err(e) => {
                         let pos = task_context.position.clone();
                         let pos = pos.read().await.as_error_instance();
+                        tracing::error!(error = ?e, position = %pos, "Failed to execute by jobworkerp (worker function)");
                         Err(workflow::errors::ErrorFactory::new().service_unavailable(
                             "Failed to execute by jobworkerp".to_string(),
                             Some(pos),
-                            Some(format!("{e:?}")),
+                            Some(e.to_string()),
                         ))
                     }
                 }?;
@@ -614,10 +617,11 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     Err(e) => {
                         let pos = task_context.position.clone();
                         let pos = pos.read().await.as_error_instance();
+                        tracing::error!(error = ?e, position = %pos, "Failed to execute by jobworkerp (runner function)");
                         Err(workflow::errors::ErrorFactory::new().service_unavailable(
                             "Failed to execute by jobworkerp".to_string(),
                             Some(pos),
-                            Some(format!("{e:?}")),
+                            Some(e.to_string()),
                         ))
                     }
                 }?;
