@@ -101,7 +101,8 @@ fn create_docker_job(image: &str, command: Vec<String>, timeout_ms: u64) -> Job 
         entrypoint: vec![],
         network_disabled: Some(true), // Isolated network for security
         mac_address: None,
-        shell: vec![], // Add missing shell field
+        shell: vec![],
+        timeout_sec: None,
     };
     let args_bytes = ProstMessageCodec::serialize_message(&docker_args).unwrap();
 

@@ -300,6 +300,7 @@ pub trait RunnerResultHandler {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)]
     use super::*;
     use anyhow::Result;
     use jobworkerp_base::codec::UseProstCodec;
@@ -354,6 +355,7 @@ mod tests {
             with_memory_monitoring: false,
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
+            working_dir: String::new(),
         })?;
         let job = Job {
             id: Some(JobId { value: 1 }),

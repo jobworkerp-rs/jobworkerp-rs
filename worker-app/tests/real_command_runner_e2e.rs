@@ -466,7 +466,8 @@ async fn test_real_command_working_directory() -> Result<()> {
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
                 working_dir: temp_dir_path.clone(),
-            }).unwrap(),
+            })
+            .unwrap(),
             uniq_key: Some("real_command_cwd_test".to_string()),
             retried: 0,
             priority: 0,
