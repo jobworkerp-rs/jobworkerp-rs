@@ -94,6 +94,7 @@ impl From<bollard::errors::Error> for JobWorkerError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)]
     use super::*;
 
     #[test]
