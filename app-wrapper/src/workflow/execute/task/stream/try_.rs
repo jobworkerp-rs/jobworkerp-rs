@@ -214,6 +214,9 @@ impl TryStreamTaskExecutor {
                 Ok(res) => {
                     if error_caught {
                         if let Some(catch_do_tasks) = &task.catch.do_ {
+                            // Remove position before executing catch.do to avoid inheriting try position
+                            res.remove_position().await;
+
                             // Execute catch.do block
                             let do_tasks = DoTask {
                                 do_: catch_do_tasks.clone(),
@@ -241,7 +244,7 @@ impl TryStreamTaskExecutor {
                             );
 
                             let mut catch_do_stream = catch_do_executor
-                                .execute_stream(cx.clone(), Arc::new("[try_do]".to_string()), res.clone())
+                                .execute_stream(cx.clone(), Arc::new("[catch_do]".to_string()), res.clone())
                                 .boxed();
 
                             while let Some(result) = catch_do_stream.next().await {
@@ -257,6 +260,11 @@ impl TryStreamTaskExecutor {
                                         return;
                                     }
                                 }
+                            }
+
+                            // If no context was returned from catch.do stream, use the cleaned res
+                            if last_context.is_none() {
+                                last_context = Some(res);
                             }
                         } else {
                             res.remove_position().await;
@@ -302,8 +310,12 @@ impl TryStreamTaskExecutor {
                     attempt: Some(workflow::RetryLimitAttempt { count, duration }),
                 }) = limit.as_ref()
                 {
-                    if count.as_ref().is_some_and(|c| *c < retry_count) {
-                        tracing::debug!("Retry limit reached");
+                    if count.as_ref().is_some_and(|c| retry_count >= *c) {
+                        tracing::debug!(
+                            "Retry limit reached: retry_count={} >= count={:?}",
+                            retry_count,
+                            count
+                        );
                         return false;
                     }
                     if let Some(duration) = duration {

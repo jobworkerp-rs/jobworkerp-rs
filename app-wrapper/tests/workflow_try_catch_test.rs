@@ -97,8 +97,8 @@ fn create_try_catch_workflow_json() -> String {
     .to_string()
 }
 
-/// Create a workflow that raises an error and catches it, storing error in global context
-fn create_try_without_catch_do_workflow_json() -> String {
+/// Create a workflow that raises an error and catches it with catch.do, storing error in global context
+fn create_try_with_catch_do_storing_error_workflow_json() -> String {
     r#"{
         "document": {
             "dsl": "1.0.0",
@@ -336,11 +336,11 @@ async fn test_try_catch_with_raise_error() -> Result<()> {
 
 #[tokio::test]
 #[ignore = "requires backend with same db"]
-async fn test_try_without_catch_do() -> Result<()> {
+async fn test_try_with_catch_do_storing_error() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let mut runner = create_test_unified_runner().await?;
-    let workflow_json = create_try_without_catch_do_workflow_json();
+    let workflow_json = create_try_with_catch_do_storing_error_workflow_json();
     runner
         .load(create_workflow_settings(&workflow_json))
         .await?;

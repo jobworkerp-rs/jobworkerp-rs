@@ -27,11 +27,81 @@ use tokio_util::sync::CancellationToken;
 
 // Default timeout: 1 hour (in seconds)
 const DEFAULT_DOCKER_TIMEOUT_SEC: u64 = 3600;
+const DEFAULT_DOCKER_SOCKET_PATH: &str = "/var/run/docker.sock";
 
-/// Create Docker client with custom timeout
+/// Create Docker client with custom timeout, respecting DOCKER_HOST environment variable
+/// and rootless Docker socket locations.
+///
+/// Connection priority:
+/// 1. DOCKER_HOST environment variable (supports unix://, tcp://, http://)
+/// 2. XDG_RUNTIME_DIR/docker.sock (rootless Docker)
+/// 3. /var/run/docker.sock (default)
 fn connect_docker_with_timeout(timeout_sec: u64) -> Result<Docker> {
-    Docker::connect_with_socket("/var/run/docker.sock", timeout_sec, API_DEFAULT_VERSION)
-        .map_err(|e| anyhow!("Failed to connect to Docker: {}", e))
+    if let Ok(docker_host) = std::env::var("DOCKER_HOST") {
+        if let Some(socket_path) = docker_host.strip_prefix("unix://") {
+            tracing::debug!("Connecting to Docker via unix socket: {}", socket_path);
+            Docker::connect_with_socket(socket_path, timeout_sec, API_DEFAULT_VERSION).map_err(
+                |e| {
+                    anyhow!(
+                        "Failed to connect to Docker via unix socket '{}': {}",
+                        socket_path,
+                        e
+                    )
+                },
+            )
+        } else if docker_host.starts_with("tcp://") || docker_host.starts_with("http://") {
+            tracing::debug!("Connecting to Docker via HTTP: {}", docker_host);
+            Docker::connect_with_http(&docker_host, timeout_sec, API_DEFAULT_VERSION).map_err(|e| {
+                anyhow!(
+                    "Failed to connect to Docker via HTTP '{}': {}",
+                    docker_host,
+                    e
+                )
+            })
+        } else {
+            // Unsupported scheme, try to use bollard's default handling
+            tracing::warn!(
+                "Unsupported DOCKER_HOST scheme: '{}', falling back to default socket",
+                docker_host
+            );
+            connect_to_default_socket(timeout_sec)
+        }
+    } else {
+        connect_to_default_socket(timeout_sec)
+    }
+}
+
+/// Connect to Docker socket using default paths (rootless or system)
+fn connect_to_default_socket(timeout_sec: u64) -> Result<Docker> {
+    // Check for rootless Docker socket first
+    if let Ok(xdg_runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        let rootless_socket = format!("{}/docker.sock", xdg_runtime_dir);
+        if std::path::Path::new(&rootless_socket).exists() {
+            tracing::debug!("Connecting to rootless Docker socket: {}", rootless_socket);
+            return Docker::connect_with_socket(&rootless_socket, timeout_sec, API_DEFAULT_VERSION)
+                .map_err(|e| {
+                    anyhow!(
+                        "Failed to connect to rootless Docker socket '{}': {}",
+                        rootless_socket,
+                        e
+                    )
+                });
+        }
+    }
+
+    // Fall back to default system socket
+    tracing::debug!(
+        "Connecting to default Docker socket: {}",
+        DEFAULT_DOCKER_SOCKET_PATH
+    );
+    Docker::connect_with_socket(DEFAULT_DOCKER_SOCKET_PATH, timeout_sec, API_DEFAULT_VERSION)
+        .map_err(|e| {
+            anyhow!(
+                "Failed to connect to Docker socket '{}': {}",
+                DEFAULT_DOCKER_SOCKET_PATH,
+                e
+            )
+        })
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
