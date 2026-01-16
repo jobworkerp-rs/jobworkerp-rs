@@ -33,9 +33,12 @@ const DEFAULT_DOCKER_SOCKET_PATH: &str = "/var/run/docker.sock";
 /// and rootless Docker socket locations.
 ///
 /// Connection priority:
-/// 1. DOCKER_HOST environment variable (supports unix://, tcp://, http://)
+/// 1. DOCKER_HOST environment variable (supports unix://, tcp://, http://, https://)
 /// 2. XDG_RUNTIME_DIR/docker.sock (rootless Docker)
 /// 3. /var/run/docker.sock (default)
+///
+/// For HTTPS connections, certificates are read from DOCKER_CERT_PATH directory
+/// (expects key.pem, cert.pem, ca.pem files).
 fn connect_docker_with_timeout(timeout_sec: u64) -> Result<Docker> {
     if let Ok(docker_host) = std::env::var("DOCKER_HOST") {
         if let Some(socket_path) = docker_host.strip_prefix("unix://") {
@@ -58,17 +61,50 @@ fn connect_docker_with_timeout(timeout_sec: u64) -> Result<Docker> {
                     e
                 )
             })
+        } else if docker_host.starts_with("https://") {
+            tracing::debug!("Connecting to Docker via HTTPS: {}", docker_host);
+            connect_with_ssl_from_env(&docker_host, timeout_sec)
         } else {
-            // Unsupported scheme, try to use bollard's default handling
-            tracing::warn!(
-                "Unsupported DOCKER_HOST scheme: '{}', falling back to default socket",
+            Err(anyhow!(
+                "Unsupported DOCKER_HOST scheme: '{}'. Supported schemes are: unix://, tcp://, http://, https://",
                 docker_host
-            );
-            connect_to_default_socket(timeout_sec)
+            ))
         }
     } else {
         connect_to_default_socket(timeout_sec)
     }
+}
+
+/// Connect to Docker via SSL/TLS using certificates from DOCKER_CERT_PATH
+fn connect_with_ssl_from_env(docker_host: &str, timeout_sec: u64) -> Result<Docker> {
+    let cert_path = std::env::var("DOCKER_CERT_PATH").map_err(|_| {
+        anyhow!(
+            "DOCKER_CERT_PATH environment variable is required for HTTPS connections to '{}'",
+            docker_host
+        )
+    })?;
+
+    let cert_dir = std::path::Path::new(&cert_path);
+    let key_path = cert_dir.join("key.pem");
+    let cert_file_path = cert_dir.join("cert.pem");
+    let ca_path = cert_dir.join("ca.pem");
+
+    Docker::connect_with_ssl(
+        docker_host,
+        &key_path,
+        &cert_file_path,
+        &ca_path,
+        timeout_sec,
+        API_DEFAULT_VERSION,
+    )
+    .map_err(|e| {
+        anyhow!(
+            "Failed to connect to Docker via HTTPS '{}' with certificates from '{}': {}",
+            docker_host,
+            cert_path,
+            e
+        )
+    })
 }
 
 /// Connect to Docker socket using default paths (rootless or system)
