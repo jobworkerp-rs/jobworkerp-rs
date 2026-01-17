@@ -305,9 +305,8 @@ where
 
 //
 // run with docker tty and exec with shell
-// TODO instance pooling and stop docker instance when stopping worker
 //
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DockerExecRunner {
     docker: Option<Docker>,
     instant_id: String,
@@ -379,38 +378,6 @@ impl DockerExecRunner {
                 Ok(())
             }
             Err(e) => Err(JobWorkerError::DockerError(e).into()),
-        }
-    }
-
-    /// Stop and remove the container (test-only)
-    ///
-    /// This method is only available in test builds. In production, containers
-    /// are managed by the runner pool and should not be manually stopped.
-    #[cfg(test)]
-    pub async fn stop(&self, wait_secs: i64, force: bool) -> Result<()> {
-        if let Some(docker) = self.docker.as_ref() {
-            docker
-                .stop_container(
-                    &self.instant_id,
-                    Some(StopContainerOptions {
-                        t: Some(wait_secs as i32),
-                        ..Default::default()
-                    }),
-                )
-                .await
-                .map_err(JobWorkerError::DockerError)?;
-            docker
-                .remove_container(
-                    &self.instant_id,
-                    Some(RemoveContainerOptions {
-                        force,
-                        ..Default::default()
-                    }),
-                )
-                .await
-                .map_err(|e| JobWorkerError::DockerError(e).into())
-        } else {
-            Err(anyhow!("docker instance is not found"))
         }
     }
 
@@ -570,7 +537,7 @@ impl RunnerTrait for DockerExecRunner {
 //
 // docker one time runner (not use tty)
 //
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DockerRunner {
     docker: Option<Docker>,
     current_container_id: Option<String>,
@@ -965,6 +932,60 @@ impl UseCancelMonitoringHelper for DockerExecRunner {
     }
 }
 
+impl Drop for DockerExecRunner {
+    fn drop(&mut self) {
+        // Clean up Docker container when DockerExecRunner is dropped
+        if let Some(docker) = self.docker.take() {
+            let container_id = std::mem::take(&mut self.instant_id);
+            if !container_id.is_empty() {
+                // Spawn a background task to stop and remove the container
+                tokio::spawn(async move {
+                    // Graceful stop (SIGTERM with 10 second timeout)
+                    if let Err(e) = docker
+                        .stop_container(
+                            &container_id,
+                            Some(StopContainerOptions {
+                                t: Some(10),
+                                ..Default::default()
+                            }),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "DockerExecRunner Drop: failed to stop container {}: {}",
+                            container_id,
+                            e
+                        );
+                    }
+
+                    // Force remove
+                    if let Err(e) = docker
+                        .remove_container(
+                            &container_id,
+                            Some(RemoveContainerOptions {
+                                force: true,
+                                ..Default::default()
+                            }),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "DockerExecRunner Drop: failed to remove container {}: {}",
+                            container_id,
+                            e
+                        );
+                    }
+
+                    tracing::info!(
+                        "DockerExecRunner Drop: container {} stopped and removed",
+                        container_id
+                    );
+                });
+            }
+        }
+    }
+}
+
 // CancelMonitoring implementation for DockerRunner
 #[async_trait]
 impl super::cancellation::CancelMonitoring for DockerRunner {
@@ -1061,6 +1082,59 @@ impl super::cancellation::CancelMonitoring for DockerRunner {
 impl UseCancelMonitoringHelper for DockerRunner {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
+    }
+}
+
+impl Drop for DockerRunner {
+    fn drop(&mut self) {
+        // Clean up Docker container when DockerRunner is dropped
+        if let Some(docker) = self.docker.take() {
+            if let Some(container_id) = self.current_container_id.take() {
+                // Spawn a background task to stop and remove the container
+                tokio::spawn(async move {
+                    // Graceful stop (SIGTERM with 10 second timeout)
+                    if let Err(e) = docker
+                        .stop_container(
+                            &container_id,
+                            Some(StopContainerOptions {
+                                t: Some(10),
+                                ..Default::default()
+                            }),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "DockerRunner Drop: failed to stop container {}: {}",
+                            container_id,
+                            e
+                        );
+                    }
+
+                    // Force remove
+                    if let Err(e) = docker
+                        .remove_container(
+                            &container_id,
+                            Some(RemoveContainerOptions {
+                                force: true,
+                                ..Default::default()
+                            }),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "DockerRunner Drop: failed to remove container {}: {}",
+                            container_id,
+                            e
+                        );
+                    }
+
+                    tracing::info!(
+                        "DockerRunner Drop: container {} stopped and removed",
+                        container_id
+                    );
+                });
+            }
+        }
     }
 }
 
@@ -1231,8 +1305,7 @@ mod test {
             "Cancellation should prevent long execution, took {elapsed:?}"
         );
 
-        // Cleanup: stop and remove container
-        let _ = runner.stop(5, true).await;
+        // Container cleanup is handled automatically by Drop implementation
 
         eprintln!("=== Docker Exec pre-execution cancellation test completed ===");
     }
@@ -1407,5 +1480,120 @@ mod test {
         }
 
         eprintln!("✓ DockerRunner request_cancellation test completed");
+    }
+
+    /// Test that DockerExecRunner Drop stops and removes the container
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_docker_exec_runner_drop_stops_container() {
+        eprintln!("=== Testing DockerExecRunner Drop stops container ===");
+
+        let container_id: String;
+
+        // Create runner and container in a scope so Drop is called when scope ends
+        {
+            let mut runner = DockerExecRunner::new();
+            runner
+                .create(
+                    &CreateRunnerOptions::new(Some("busybox:latest".to_string())),
+                    DEFAULT_DOCKER_TIMEOUT_SEC,
+                )
+                .await
+                .expect("Failed to create Docker container");
+
+            // Store container ID for verification
+            container_id = runner.instant_id.clone();
+            assert!(!container_id.is_empty(), "Container ID should be set");
+
+            // Verify container is running
+            let docker = connect_docker_with_timeout(DEFAULT_DOCKER_TIMEOUT_SEC)
+                .expect("Failed to connect to Docker");
+            let inspect = docker.inspect_container(&container_id, None).await;
+            assert!(inspect.is_ok(), "Container should exist before Drop");
+
+            eprintln!("Container {} created and running", container_id);
+
+            // Runner will be dropped here, triggering cleanup
+        }
+
+        // Wait for the background cleanup task to complete
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+
+        // Verify container no longer exists
+        let docker = connect_docker_with_timeout(DEFAULT_DOCKER_TIMEOUT_SEC)
+            .expect("Failed to connect to Docker");
+        let inspect = docker.inspect_container(&container_id, None).await;
+        assert!(
+            inspect.is_err(),
+            "Container should be removed after Drop, but it still exists"
+        );
+
+        eprintln!(
+            "✓ Container {} was stopped and removed by Drop",
+            container_id
+        );
+        eprintln!("=== DockerExecRunner Drop test completed ===");
+    }
+
+    /// Test that DockerRunner Drop stops and removes the container
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_docker_runner_drop_stops_container() {
+        eprintln!("=== Testing DockerRunner Drop stops container ===");
+
+        let container_id: String;
+
+        // Create container directly and set it to DockerRunner to test Drop behavior
+        {
+            let docker = connect_docker_with_timeout(DEFAULT_DOCKER_TIMEOUT_SEC)
+                .expect("Failed to connect to Docker");
+
+            // Create a container that sleeps
+            let config = ContainerCreateBody {
+                image: Some("busybox:latest".to_string()),
+                cmd: Some(vec!["sleep".to_string(), "300".to_string()]),
+                ..Default::default()
+            };
+
+            let created = docker
+                .create_container(None::<CreateContainerOptions>, config)
+                .await
+                .expect("Failed to create container");
+            container_id = created.id.clone();
+
+            // Start the container
+            docker
+                .start_container(&container_id, None::<StartContainerOptions>)
+                .await
+                .expect("Failed to start container");
+
+            eprintln!("Container {} created and running", container_id);
+
+            // Create runner with the container ID set
+            let mut runner = DockerRunner::new();
+            runner.docker = Some(docker);
+            runner.current_container_id = Some(container_id.clone());
+
+            // Drop runner here - should trigger cleanup
+            drop(runner);
+        }
+
+        // Wait for the background cleanup task to complete
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+
+        // Verify container no longer exists
+        let docker = connect_docker_with_timeout(DEFAULT_DOCKER_TIMEOUT_SEC)
+            .expect("Failed to connect to Docker");
+        let inspect = docker.inspect_container(&container_id, None).await;
+        assert!(
+            inspect.is_err(),
+            "Container should be removed after Drop, but it still exists"
+        );
+
+        eprintln!(
+            "✓ Container {} was stopped and removed by Drop",
+            container_id
+        );
+        eprintln!("=== DockerRunner Drop test completed ===");
     }
 }
