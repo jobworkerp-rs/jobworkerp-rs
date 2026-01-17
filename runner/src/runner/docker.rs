@@ -54,8 +54,17 @@ fn connect_docker_with_timeout(timeout_sec: u64) -> Result<Docker> {
             )
         } else if docker_host.starts_with("tcp://") || docker_host.starts_with("http://") {
             // Check if TLS is requested for tcp:// connections
-            let use_tls = std::env::var("DOCKER_TLS_VERIFY").is_ok()
-                || std::env::var("DOCKER_CERT_PATH").is_ok();
+            // DOCKER_TLS_VERIFY must be "1" or "true" (case-insensitive) to enable TLS
+            // DOCKER_CERT_PATH being present and non-empty also enables TLS
+            let tls_verify_enabled = std::env::var("DOCKER_TLS_VERIFY")
+                .ok()
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            let cert_path_present = std::env::var("DOCKER_CERT_PATH")
+                .ok()
+                .map(|v| !v.is_empty())
+                .unwrap_or(false);
+            let use_tls = tls_verify_enabled || cert_path_present;
             if use_tls {
                 // Convert tcp:// to https:// for SSL connection
                 let https_host = docker_host
@@ -92,19 +101,50 @@ fn connect_docker_with_timeout(timeout_sec: u64) -> Result<Docker> {
     }
 }
 
-/// Connect to Docker via SSL/TLS using certificates from DOCKER_CERT_PATH
+/// Connect to Docker via SSL/TLS using certificates from DOCKER_CERT_PATH or default ~/.docker
 fn connect_with_ssl_from_env(docker_host: &str, timeout_sec: u64) -> Result<Docker> {
-    let cert_path = std::env::var("DOCKER_CERT_PATH").map_err(|_| {
-        anyhow!(
-            "DOCKER_CERT_PATH environment variable is required for HTTPS connections to '{}'",
-            docker_host
-        )
-    })?;
+    // Try DOCKER_CERT_PATH first, then fall back to ~/.docker
+    let cert_path = match std::env::var("DOCKER_CERT_PATH") {
+        Ok(path) if !path.is_empty() => path,
+        _ => {
+            // Fall back to default docker directory
+            let home_dir = std::env::var("HOME").map_err(|_| {
+                anyhow!(
+                    "Could not determine home directory (HOME not set) for default Docker certificates path for HTTPS connection to '{}'",
+                    docker_host
+                )
+            })?;
+            format!("{}/.docker", home_dir)
+        }
+    };
 
     let cert_dir = std::path::Path::new(&cert_path);
     let key_path = cert_dir.join("key.pem");
     let cert_file_path = cert_dir.join("cert.pem");
     let ca_path = cert_dir.join("ca.pem");
+
+    // Validate that required certificate files exist
+    if !key_path.exists() {
+        return Err(anyhow!(
+            "Docker TLS key file not found: '{}' (cert_path: '{}')",
+            key_path.display(),
+            cert_path
+        ));
+    }
+    if !cert_file_path.exists() {
+        return Err(anyhow!(
+            "Docker TLS certificate file not found: '{}' (cert_path: '{}')",
+            cert_file_path.display(),
+            cert_path
+        ));
+    }
+    if !ca_path.exists() {
+        return Err(anyhow!(
+            "Docker TLS CA certificate file not found: '{}' (cert_path: '{}')",
+            ca_path.display(),
+            cert_path
+        ));
+    }
 
     Docker::connect_with_ssl(
         docker_host,
@@ -938,49 +978,60 @@ impl Drop for DockerExecRunner {
         if let Some(docker) = self.docker.take() {
             let container_id = std::mem::take(&mut self.instant_id);
             if !container_id.is_empty() {
-                // Spawn a background task to stop and remove the container
-                tokio::spawn(async move {
-                    // Graceful stop (SIGTERM with 10 second timeout)
-                    if let Err(e) = docker
-                        .stop_container(
-                            &container_id,
-                            Some(StopContainerOptions {
-                                t: Some(10),
-                                ..Default::default()
-                            }),
-                        )
-                        .await
-                    {
+                // Check if Tokio runtime is available before spawning
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => {
+                        // Spawn a background task to stop and remove the container
+                        handle.spawn(async move {
+                            // Graceful stop (SIGTERM with 10 second timeout)
+                            if let Err(e) = docker
+                                .stop_container(
+                                    &container_id,
+                                    Some(StopContainerOptions {
+                                        t: Some(10),
+                                        ..Default::default()
+                                    }),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "DockerExecRunner Drop: failed to stop container {}: {}",
+                                    container_id,
+                                    e
+                                );
+                            }
+
+                            // Force remove
+                            if let Err(e) = docker
+                                .remove_container(
+                                    &container_id,
+                                    Some(RemoveContainerOptions {
+                                        force: true,
+                                        ..Default::default()
+                                    }),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "DockerExecRunner Drop: failed to remove container {}: {}",
+                                    container_id,
+                                    e
+                                );
+                            }
+
+                            tracing::info!(
+                                "DockerExecRunner Drop: container {} stopped and removed",
+                                container_id
+                            );
+                        });
+                    }
+                    Err(_) => {
                         tracing::warn!(
-                            "DockerExecRunner Drop: failed to stop container {}: {}",
-                            container_id,
-                            e
+                            "DockerExecRunner Drop: no Tokio runtime available, skipping cleanup for container {}",
+                            container_id
                         );
                     }
-
-                    // Force remove
-                    if let Err(e) = docker
-                        .remove_container(
-                            &container_id,
-                            Some(RemoveContainerOptions {
-                                force: true,
-                                ..Default::default()
-                            }),
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            "DockerExecRunner Drop: failed to remove container {}: {}",
-                            container_id,
-                            e
-                        );
-                    }
-
-                    tracing::info!(
-                        "DockerExecRunner Drop: container {} stopped and removed",
-                        container_id
-                    );
-                });
+                }
             }
         }
     }
@@ -1090,49 +1141,60 @@ impl Drop for DockerRunner {
         // Clean up Docker container when DockerRunner is dropped
         if let Some(docker) = self.docker.take() {
             if let Some(container_id) = self.current_container_id.take() {
-                // Spawn a background task to stop and remove the container
-                tokio::spawn(async move {
-                    // Graceful stop (SIGTERM with 10 second timeout)
-                    if let Err(e) = docker
-                        .stop_container(
-                            &container_id,
-                            Some(StopContainerOptions {
-                                t: Some(10),
-                                ..Default::default()
-                            }),
-                        )
-                        .await
-                    {
+                // Check if Tokio runtime is available before spawning
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => {
+                        // Spawn a background task to stop and remove the container
+                        handle.spawn(async move {
+                            // Graceful stop (SIGTERM with 10 second timeout)
+                            if let Err(e) = docker
+                                .stop_container(
+                                    &container_id,
+                                    Some(StopContainerOptions {
+                                        t: Some(10),
+                                        ..Default::default()
+                                    }),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "DockerRunner Drop: failed to stop container {}: {}",
+                                    container_id,
+                                    e
+                                );
+                            }
+
+                            // Force remove
+                            if let Err(e) = docker
+                                .remove_container(
+                                    &container_id,
+                                    Some(RemoveContainerOptions {
+                                        force: true,
+                                        ..Default::default()
+                                    }),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "DockerRunner Drop: failed to remove container {}: {}",
+                                    container_id,
+                                    e
+                                );
+                            }
+
+                            tracing::info!(
+                                "DockerRunner Drop: container {} stopped and removed",
+                                container_id
+                            );
+                        });
+                    }
+                    Err(_) => {
                         tracing::warn!(
-                            "DockerRunner Drop: failed to stop container {}: {}",
-                            container_id,
-                            e
+                            "DockerRunner Drop: no Tokio runtime available, skipping cleanup for container {}",
+                            container_id
                         );
                     }
-
-                    // Force remove
-                    if let Err(e) = docker
-                        .remove_container(
-                            &container_id,
-                            Some(RemoveContainerOptions {
-                                force: true,
-                                ..Default::default()
-                            }),
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            "DockerRunner Drop: failed to remove container {}: {}",
-                            container_id,
-                            e
-                        );
-                    }
-
-                    tracing::info!(
-                        "DockerRunner Drop: container {} stopped and removed",
-                        container_id
-                    );
-                });
+                }
             }
         }
     }
