@@ -125,7 +125,7 @@ fn create_docker_job(image: &str, command: Vec<String>, timeout_ms: u64) -> Job 
     }
 }
 
-/// Create test worker and runner data
+/// Create test worker and runner data for DockerRunner (run mode, use_static=false)
 fn create_test_data() -> (WorkerData, RunnerData) {
     let worker_data = WorkerData {
         name: "real_docker_test_worker".to_string(),
@@ -135,7 +135,7 @@ fn create_test_data() -> (WorkerData, RunnerData) {
         response_type: ResponseType::NoResult as i32,
         store_success: false,
         store_failure: false,
-        use_static: false, // Use real execution, not static pool
+        use_static: false, // DockerRunner (run mode)
         ..Default::default()
     };
 
@@ -145,6 +145,74 @@ fn create_test_data() -> (WorkerData, RunnerData) {
     };
 
     (worker_data, runner_data)
+}
+
+/// Create test worker and runner data for DockerExecRunner (exec mode, use_static=true)
+fn create_exec_test_data(image: &str) -> (WorkerData, RunnerData) {
+    use jobworkerp_runner::jobworkerp::runner::DockerRunnerSettings;
+
+    let settings = DockerRunnerSettings {
+        from_image: Some(image.to_string()),
+        ..Default::default()
+    };
+    let settings_bytes = ProstMessageCodec::serialize_message(&settings).unwrap();
+
+    let worker_data = WorkerData {
+        name: "real_docker_exec_test_worker".to_string(),
+        runner_settings: settings_bytes,
+        retry_policy: None,
+        channel: Some("test".to_string()),
+        response_type: ResponseType::NoResult as i32,
+        store_success: false,
+        store_failure: false,
+        use_static: true, // DockerExecRunner (exec mode)
+        ..Default::default()
+    };
+
+    let runner_data = RunnerData {
+        name: RunnerType::Docker.as_str_name().to_string(),
+        ..Default::default()
+    };
+
+    (worker_data, runner_data)
+}
+
+/// Create a test job for DockerExecRunner (exec mode) - command only, no image
+fn create_docker_exec_job(command: Vec<String>, timeout_ms: u64) -> Job {
+    let docker_args = DockerArgs {
+        image: None, // Image is specified in runner_settings for exec mode
+        user: None,
+        exposed_ports: vec![],
+        env: vec![],
+        cmd: command,
+        args_escaped: None,
+        volumes: vec![],
+        working_dir: None,
+        entrypoint: vec![],
+        network_disabled: None,
+        mac_address: None,
+        shell: vec![],
+        timeout_sec: None,
+    };
+    let args_bytes = ProstMessageCodec::serialize_message(&docker_args).unwrap();
+
+    Job {
+        id: Some(JobId { value: 1 }),
+        data: Some(JobData {
+            worker_id: Some(WorkerId { value: 1 }),
+            args: args_bytes,
+            uniq_key: Some("real_docker_exec_test".to_string()),
+            retried: 0,
+            priority: 0,
+            timeout: timeout_ms,
+            enqueue_time: command_utils::util::datetime::now_millis(),
+            run_after_time: command_utils::util::datetime::now_millis(),
+            grabbed_until_time: None,
+            streaming_type: 0,
+            using: None,
+        }),
+        ..Default::default()
+    }
 }
 
 /// Test basic Docker container execution with real container management
@@ -484,5 +552,111 @@ async fn test_real_docker_runner_complete_workflow() -> Result<()> {
     println!("  ✓ Mathematical computation passed");
 
     println!("=== Real DOCKER Runner Complete Workflow Test PASSED ===");
+    Ok(())
+}
+
+// ============================================================================
+// DockerExecRunner (exec mode, use_static=true) Tests
+// ============================================================================
+
+/// Test basic DockerExecRunner execution with persistent container
+#[ignore = "Requires Docker daemon(CI environment have Docker in docker but socket not mounted)"]
+#[tokio::test]
+async fn test_real_docker_exec_basic_execution() -> Result<()> {
+    let job_runner = get_real_job_runner().await;
+    let job = create_docker_exec_job(
+        vec!["echo".to_string(), "Hello DockerExecRunner E2E".to_string()],
+        30000,
+    );
+    let (worker_data, runner_data) = create_exec_test_data("busybox:latest");
+    let worker_id = WorkerId { value: 1 };
+
+    let start_time = Instant::now();
+    let (result, _stream) = job_runner
+        .run_job(&runner_data, &worker_id, &worker_data, job)
+        .await;
+    let elapsed_time = start_time.elapsed();
+
+    assert!(result.data.is_some());
+    let data = result.data.unwrap();
+    assert_eq!(data.status, ResultStatus::Success as i32);
+
+    assert!(data.output.is_some());
+    let docker_result: String = String::from_utf8_lossy(&data.output.unwrap().items).to_string();
+    assert!(docker_result.contains("Hello DockerExecRunner E2E"));
+
+    assert!(elapsed_time < Duration::from_secs(60));
+
+    println!("✓ Real DOCKER EXEC basic execution test passed");
+    Ok(())
+}
+
+/// Test DockerExecRunner with multiple commands (exec in same container)
+#[ignore = "Requires Docker daemon(CI environment have Docker in docker but socket not mounted)"]
+#[tokio::test]
+async fn test_real_docker_exec_linux_commands() -> Result<()> {
+    let job_runner = get_real_job_runner().await;
+
+    let job = create_docker_exec_job(
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "ls -la /etc && cat /etc/hostname".to_string(),
+        ],
+        30000,
+    );
+    let (worker_data, runner_data) = create_exec_test_data("busybox:latest");
+    let worker_id = WorkerId { value: 1 };
+
+    let (result, _stream) = job_runner
+        .run_job(&runner_data, &worker_id, &worker_data, job)
+        .await;
+
+    let data = result.data.unwrap();
+    assert_eq!(data.status, ResultStatus::Success as i32);
+
+    let docker_result: String = String::from_utf8_lossy(&data.output.unwrap().items).to_string();
+    // Should contain directory listing output
+    assert!(!docker_result.is_empty());
+
+    println!("✓ Real DOCKER EXEC Linux commands test passed");
+    Ok(())
+}
+
+/// Test DockerExecRunner with file operations
+#[ignore = "Requires Docker daemon(CI environment have Docker in docker but socket not mounted)"]
+#[tokio::test]
+async fn test_real_docker_exec_file_operations() -> Result<()> {
+    let job_runner = get_real_job_runner().await;
+
+    let job = create_docker_exec_job(
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            r#"
+            echo 'DockerExecRunner Test' > /tmp/exec_test.txt &&
+            cat /tmp/exec_test.txt &&
+            rm /tmp/exec_test.txt &&
+            echo 'File operations completed'
+            "#
+            .to_string(),
+        ],
+        30000,
+    );
+    let (worker_data, runner_data) = create_exec_test_data("busybox:latest");
+    let worker_id = WorkerId { value: 1 };
+
+    let (result, _stream) = job_runner
+        .run_job(&runner_data, &worker_id, &worker_data, job)
+        .await;
+
+    let data = result.data.unwrap();
+    assert_eq!(data.status, ResultStatus::Success as i32);
+
+    let docker_result: String = String::from_utf8_lossy(&data.output.unwrap().items).to_string();
+    assert!(docker_result.contains("DockerExecRunner Test"));
+    assert!(docker_result.contains("File operations completed"));
+
+    println!("✓ Real DOCKER EXEC file operations test passed");
     Ok(())
 }
