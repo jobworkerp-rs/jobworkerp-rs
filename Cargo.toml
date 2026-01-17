@@ -37,7 +37,7 @@ async-trait = "0.1"
 async-stream = "0.3"
 base64 = "0.22"
 bb8 = "0.9"
-bollard = { version = "0.18", features = ["buildkit", "chrono", "ssl"] }
+bollard = { version = "0.20", features = ["buildkit", "chrono", "ssl"] }
 bytes = "1.9"
 clap = "4.5"
 #console-subscriber = { version = "0.3", features = ["parking_lot"] }

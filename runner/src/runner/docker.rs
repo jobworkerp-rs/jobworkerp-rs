@@ -4,13 +4,13 @@ use crate::jobworkerp::runner::{DockerArgs, DockerRunnerSettings};
 use crate::schema_to_json_string;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use bollard::container::{
-    AttachContainerOptions, AttachContainerResults, Config, RemoveContainerOptions,
-    StopContainerOptions,
-};
+use bollard::container::AttachContainerResults;
 use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::image::CreateImageOptions;
-use bollard::models::HostConfig;
+use bollard::models::{ContainerCreateBody, HostConfig};
+use bollard::query_parameters::{
+    AttachContainerOptions, CreateContainerOptions, CreateImageOptionsBuilder,
+    RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
+};
 use bollard::{Docker, API_DEFAULT_VERSION};
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
@@ -53,14 +53,31 @@ fn connect_docker_with_timeout(timeout_sec: u64) -> Result<Docker> {
                 },
             )
         } else if docker_host.starts_with("tcp://") || docker_host.starts_with("http://") {
-            tracing::debug!("Connecting to Docker via HTTP: {}", docker_host);
-            Docker::connect_with_http(&docker_host, timeout_sec, API_DEFAULT_VERSION).map_err(|e| {
-                anyhow!(
-                    "Failed to connect to Docker via HTTP '{}': {}",
-                    docker_host,
-                    e
+            // Check if TLS is requested for tcp:// connections
+            let use_tls = std::env::var("DOCKER_TLS_VERIFY").is_ok()
+                || std::env::var("DOCKER_CERT_PATH").is_ok();
+            if use_tls {
+                // Convert tcp:// to https:// for SSL connection
+                let https_host = docker_host
+                    .replace("tcp://", "https://")
+                    .replace("http://", "https://");
+                tracing::debug!(
+                    "Connecting to Docker via HTTPS (TLS enabled): {}",
+                    https_host
+                );
+                connect_with_ssl_from_env(&https_host, timeout_sec)
+            } else {
+                tracing::debug!("Connecting to Docker via HTTP: {}", docker_host);
+                Docker::connect_with_http(&docker_host, timeout_sec, API_DEFAULT_VERSION).map_err(
+                    |e| {
+                        anyhow!(
+                            "Failed to connect to Docker via HTTP '{}': {}",
+                            docker_host,
+                            e
+                        )
+                    },
                 )
-            })
+            }
         } else if docker_host.starts_with("https://") {
             tracing::debug!("Connecting to Docker via HTTPS: {}", docker_host);
             connect_with_ssl_from_env(&docker_host, timeout_sec)
@@ -197,26 +214,39 @@ where
             ..Default::default()
         }
     }
-    pub fn to_docker(&self) -> CreateImageOptions<'_, T> {
-        CreateImageOptions {
-            from_image: self.from_image.clone().unwrap_or_default(),
-            from_src: self.from_src.clone().unwrap_or_default(),
-            repo: self.repo.clone().unwrap_or_default(),
-            tag: self.tag.clone().unwrap_or_default(),
-            platform: self.platform.clone().unwrap_or_default(),
-            changes: vec![],
+    pub fn to_docker(&self) -> bollard::query_parameters::CreateImageOptions {
+        let mut builder = CreateImageOptionsBuilder::default();
+        if let Some(ref image) = self.from_image {
+            let image_str: String = image.clone().into();
+            builder = builder.from_image(&image_str);
         }
+        if let Some(ref src) = self.from_src {
+            let src_str: String = src.clone().into();
+            builder = builder.from_src(&src_str);
+        }
+        if let Some(ref repo) = self.repo {
+            let repo_str: String = repo.clone().into();
+            builder = builder.repo(&repo_str);
+        }
+        if let Some(ref tag) = self.tag {
+            let tag_str: String = tag.clone().into();
+            builder = builder.tag(&tag_str);
+        }
+        if let Some(ref platform) = self.platform {
+            let platform_str: String = platform.clone().into();
+            builder = builder.platform(&platform_str);
+        }
+        builder.build()
     }
-    pub fn to_docker_exec_config(&self) -> Config<String> {
-        Config {
+    pub fn to_docker_exec_config(&self) -> ContainerCreateBody {
+        // Convert volumes HashMap to Vec<String> for bollard 0.20
+        let volumes = self.volumes.as_ref().map(|v| v.keys().cloned().collect());
+        ContainerCreateBody {
             image: self.from_image.clone().map(|s| s.into()),
-            // exposed_ports: self.exposed_ports.clone(),
             env: self.env.clone(),
-            volumes: self.volumes.clone(),
+            volumes,
             working_dir: self.working_dir.clone(),
             entrypoint: self.entrypoint.clone(),
-            // network_disabled: self.network_disabled,
-            // mac_address: self.mac_address.clone(),
             ..Default::default()
         }
     }
@@ -334,13 +364,13 @@ impl DockerExecRunner {
                 config.tty = Some(true);
 
                 let id = docker
-                    .create_container::<&str, String>(None, config)
+                    .create_container(None::<CreateContainerOptions>, config)
                     .await
                     .map_err(JobWorkerError::DockerError)?
                     .id;
                 tracing::info!("container id: {}", &id);
                 docker
-                    .start_container::<String>(&id, None)
+                    .start_container(&id, None::<StartContainerOptions>)
                     .await
                     .map_err(JobWorkerError::DockerError)?;
 
@@ -357,7 +387,10 @@ impl DockerExecRunner {
             docker
                 .stop_container(
                     &self.instant_id,
-                    Some(StopContainerOptions { t: wait_secs }),
+                    Some(StopContainerOptions {
+                        t: Some(wait_secs as i32),
+                        ..Default::default()
+                    }),
                 )
                 .await
                 .map_err(JobWorkerError::DockerError)?;
@@ -622,6 +655,9 @@ impl DockerRunner {
         timeout_sec: u64,
     ) -> Result<()> {
         self.current_timeout_sec = timeout_sec;
+
+        // Only create docker client and pull image if from_image or from_src is specified
+        // This avoids creating an unused client when image will be specified in run()
         if image_options.from_image.is_some() || image_options.from_src.is_some() {
             let docker = connect_docker_with_timeout(timeout_sec)?;
             let image_name = image_options.from_image.clone().unwrap_or_default();
@@ -641,25 +677,23 @@ impl DockerRunner {
             }
             self.docker = Some(docker);
         } else {
-            tracing::info!("docker image is not specified. should specify image in run() method");
+            tracing::debug!(
+                "docker image is not specified in settings, will be specified in run() method"
+            );
         }
         Ok(())
     }
-    fn trans_docker_arg_to_config(&self, arg: &DockerArgs) -> Config<String> {
+    fn trans_docker_arg_to_config(&self, arg: &DockerArgs) -> ContainerCreateBody {
         // Separate volumes into bind mounts (containing ':') and volume declarations (no ':')
         // This allows docker run -v style syntax: "host:container[:mode]"
         let (binds, volume_declarations): (Vec<_>, Vec<_>) =
             arg.volumes.iter().cloned().partition(|v| v.contains(':'));
 
+        // In bollard 0.20, volumes is Vec<String> instead of HashMap
         let volumes = if volume_declarations.is_empty() {
             None
         } else {
-            Some(
-                volume_declarations
-                    .into_iter()
-                    .map(|volume| (volume, HashMap::new()))
-                    .collect::<HashMap<_, _>>(),
-            )
+            Some(volume_declarations)
         };
 
         let host_config = if binds.is_empty() {
@@ -671,7 +705,7 @@ impl DockerRunner {
             })
         };
 
-        Config {
+        ContainerCreateBody {
             image: arg.image.clone(),
             cmd: if arg.cmd.is_empty() {
                 None
@@ -682,13 +716,7 @@ impl DockerRunner {
             exposed_ports: if arg.exposed_ports.is_empty() {
                 None
             } else {
-                Some(
-                    arg.exposed_ports
-                        .iter()
-                        .cloned()
-                        .map(|port| (port, HashMap::new()))
-                        .collect::<HashMap<_, _>>(),
-                )
+                Some(arg.exposed_ports.clone())
             },
             env: if arg.env.is_empty() {
                 None
@@ -703,7 +731,7 @@ impl DockerRunner {
                 Some(arg.entrypoint.clone())
             },
             network_disabled: arg.network_disabled,
-            mac_address: arg.mac_address.clone(),
+            // mac_address is deprecated since API v1.44
             shell: if arg.shell.is_empty() {
                 None
             } else {
@@ -807,7 +835,7 @@ impl RunnerTrait for DockerRunner {
                 config.attach_stderr = Some(true);
 
                 let created = tokio::select! {
-                    result = docker.create_container::<&str, String>(None, config) => result?,
+                    result = docker.create_container(None::<CreateContainerOptions>, config) => result?,
                     _ = cancellation_token.cancelled() => {
                         tracing::info!("Docker container creation was cancelled");
                         return Err(JobWorkerError::CancelledError("Docker container creation was cancelled".to_string()).into());
@@ -822,11 +850,10 @@ impl RunnerTrait for DockerRunner {
                 let attach_result = tokio::select! {
                     result = docker.attach_container(
                         &id,
-                        Some(AttachContainerOptions::<String> {
-                            stdout: Some(true),
-                            stderr: Some(true),
-                            // stdin: Some(true),
-                            stream: Some(true),
+                        Some(AttachContainerOptions {
+                            stdout: true,
+                            stderr: true,
+                            stream: true,
                             ..Default::default()
                         }),
                     ) => result?,
@@ -842,7 +869,7 @@ impl RunnerTrait for DockerRunner {
                 } = attach_result;
 
                 tokio::select! {
-                    result = docker.start_container::<String>(&id, None) => result?,
+                    result = docker.start_container(&id, None::<StartContainerOptions>) => result?,
                     _ = cancellation_token.cancelled() => {
                         tracing::info!("Docker container start was cancelled");
                         return Err(JobWorkerError::CancelledError("Docker container start was cancelled".to_string()).into());
@@ -1031,7 +1058,10 @@ impl super::cancellation::CancelMonitoring for DockerRunner {
                 if let Err(e) = docker
                     .stop_container(
                         &container_id,
-                        Some(bollard::container::StopContainerOptions { t: 10 }),
+                        Some(StopContainerOptions {
+                            t: Some(10),
+                            ..Default::default()
+                        }),
                     )
                     .await
                 {
@@ -1042,7 +1072,7 @@ impl super::cancellation::CancelMonitoring for DockerRunner {
                 if let Err(e) = docker
                     .remove_container(
                         &container_id,
-                        Some(bollard::container::RemoveContainerOptions {
+                        Some(RemoveContainerOptions {
                             force: true,
                             ..Default::default()
                         }),
