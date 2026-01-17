@@ -631,481 +631,490 @@ mod tests {
         }
     }
 
-    // NOTE: These tests use #[tokio::test] with multi-threaded runtime because
-    // the streaming implementation with RwLock requires multiple threads.
-    // The single-threaded TEST_RUNTIME causes deadlock in stream! macro contexts.
-    // DB connection pool is not used in these tests, so multi-threaded runtime is safe.
+    // NOTE: These tests use TEST_RUNTIME.block_on which is now multi-threaded
+    // to avoid deadlocks in stream! macro contexts that use RwLock, while also
+    // sharing the same DB connection pool across all tests.
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_try_stream_executor_success_emits_multiple_events() {
-        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-        let workflow = create_test_workflow();
-        let input = Arc::new(serde_json::json!({"test": "input"}));
-        let context = Arc::new(serde_json::json!({}));
+    #[test]
+    fn test_try_stream_executor_success_emits_multiple_events() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let workflow = create_test_workflow();
+            let input = Arc::new(serde_json::json!({"test": "input"}));
+            let context = Arc::new(serde_json::json!({}));
 
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
-            &workflow,
-            input.clone(),
-            context,
-            None,
-        )));
-        workflow_context.write().await.status = WorkflowStatus::Running;
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+            workflow_context.write().await.status = WorkflowStatus::Running;
 
-        let try_task = create_try_task_with_success();
-        let executor = TryStreamTaskExecutor::new(
-            workflow_context.clone(),
-            Duration::from_secs(60),
-            try_task,
-            Arc::new(JobExecutorWrapper::new(app_module)),
-            None,
-            None,
-            Arc::new(HashMap::new()),
-            false,
-        );
+            let try_task = create_try_task_with_success();
+            let executor = TryStreamTaskExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(60),
+                try_task,
+                Arc::new(JobExecutorWrapper::new(app_module)),
+                None,
+                None,
+                Arc::new(HashMap::new()),
+                false,
+            );
 
-        let task_context = TaskContext::new(
-            None,
-            input.clone(),
-            Arc::new(Mutex::new(serde_json::Map::new())),
-        );
+            let task_context = TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            );
 
-        let mut stream = executor
-            .execute_stream(
-                Arc::new(opentelemetry::Context::current()),
-                Arc::new("test_try".to_string()),
-                task_context,
-            )
-            .boxed();
+            let mut stream = executor
+                .execute_stream(
+                    Arc::new(opentelemetry::Context::current()),
+                    Arc::new("test_try".to_string()),
+                    task_context,
+                )
+                .boxed();
 
-        let mut event_count = 0;
-        let mut final_event = None;
+            let mut event_count = 0;
+            let mut final_event = None;
 
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(event) => {
-                    event_count += 1;
-                    final_event = Some(event);
-                }
-                Err(e) => {
-                    panic!("Unexpected error: {:?}", e);
-                }
-            }
-        }
-
-        // Multiple events should be emitted (one for each internal task + final)
-        assert!(
-            event_count >= 2,
-            "Expected at least 2 events (internal tasks), got {}",
-            event_count
-        );
-
-        // Verify final event has context
-        assert!(final_event.is_some());
-        let ctx = final_event.unwrap().into_context();
-        assert!(ctx.is_some(), "Final event should have TaskContext");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_try_stream_executor_empty_try_list() {
-        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-        let workflow = create_test_workflow();
-        let input = Arc::new(serde_json::json!({"test": "input"}));
-        let context = Arc::new(serde_json::json!({}));
-
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
-            &workflow,
-            input.clone(),
-            context,
-            None,
-        )));
-        workflow_context.write().await.status = WorkflowStatus::Running;
-
-        let try_task = workflow::TryTask {
-            try_: TaskList(vec![]), // Empty try list
-            catch: TryTaskCatch {
-                errors: None,
-                as_: Some("error".to_string()),
-                when: None,
-                except_when: None,
-                retry: None,
-                do_: None,
-            },
-            ..Default::default()
-        };
-
-        let executor = TryStreamTaskExecutor::new(
-            workflow_context.clone(),
-            Duration::from_secs(60),
-            try_task,
-            Arc::new(JobExecutorWrapper::new(app_module)),
-            None,
-            None,
-            Arc::new(HashMap::new()),
-            false,
-        );
-
-        let task_context = TaskContext::new(
-            None,
-            input.clone(),
-            Arc::new(Mutex::new(serde_json::Map::new())),
-        );
-
-        let mut stream = executor
-            .execute_stream(
-                Arc::new(opentelemetry::Context::current()),
-                Arc::new("test_empty".to_string()),
-                task_context,
-            )
-            .boxed();
-
-        let mut event_count = 0;
-        let mut had_error = false;
-
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(_) => {
-                    event_count += 1;
-                }
-                Err(_) => {
-                    had_error = true;
-                    break;
-                }
-            }
-        }
-
-        // Should complete without error even with empty try list
-        assert!(!had_error, "Empty try list should not cause error");
-        // Should emit at least final event
-        assert!(event_count >= 1, "Should emit at least one event");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_try_stream_executor_position_tracking() {
-        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-        let workflow = create_test_workflow();
-        let input = Arc::new(serde_json::json!({"test": "input"}));
-        let context = Arc::new(serde_json::json!({}));
-
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
-            &workflow,
-            input.clone(),
-            context,
-            None,
-        )));
-        workflow_context.write().await.status = WorkflowStatus::Running;
-
-        let try_task = create_try_task_with_success();
-        let executor = TryStreamTaskExecutor::new(
-            workflow_context.clone(),
-            Duration::from_secs(60),
-            try_task,
-            Arc::new(JobExecutorWrapper::new(app_module)),
-            None,
-            None,
-            Arc::new(HashMap::new()),
-            false,
-        );
-
-        let task_context = TaskContext::new(
-            None,
-            input.clone(),
-            Arc::new(Mutex::new(serde_json::Map::new())),
-        );
-        // Add initial position
-        task_context.add_position_name("ROOT".to_string()).await;
-
-        let mut stream = executor
-            .execute_stream(
-                Arc::new(opentelemetry::Context::current()),
-                Arc::new("test_position".to_string()),
-                task_context,
-            )
-            .boxed();
-
-        let mut positions: Vec<String> = Vec::new();
-
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(event) => {
-                    let pos = event.position();
-                    if !pos.is_empty() {
-                        positions.push(pos.to_string());
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(event) => {
+                        event_count += 1;
+                        final_event = Some(event);
+                    }
+                    Err(e) => {
+                        panic!("Unexpected error: {:?}", e);
                     }
                 }
-                Err(e) => {
-                    panic!("Unexpected error: {:?}", e);
-                }
             }
-        }
 
-        // Verify we got position info from internal tasks
-        assert!(
-            !positions.is_empty(),
-            "Should have position info from events"
-        );
+            // Multiple events should be emitted (one for each internal task + final)
+            assert!(
+                event_count >= 2,
+                "Expected at least 2 events (internal tasks), got {}",
+                event_count
+            );
 
-        // At least one position should contain "try"
-        let has_try_position = positions.iter().any(|p| p.contains("try"));
-        assert!(
-            has_try_position,
-            "At least one position should contain 'try': {:?}",
-            positions
-        );
+            // Verify final event has context
+            assert!(final_event.is_some());
+            let ctx = final_event.unwrap().into_context();
+            assert!(ctx.is_some(), "Final event should have TaskContext");
+        });
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_try_stream_executor_error_caught_without_when_condition() {
-        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-        let workflow = create_test_workflow();
-        let input = Arc::new(serde_json::json!({"test": "input"}));
-        let context = Arc::new(serde_json::json!({}));
+    #[test]
+    fn test_try_stream_executor_empty_try_list() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let workflow = create_test_workflow();
+            let input = Arc::new(serde_json::json!({"test": "input"}));
+            let context = Arc::new(serde_json::json!({}));
 
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
-            &workflow,
-            input.clone(),
-            context,
-            None,
-        )));
-        workflow_context.write().await.status = WorkflowStatus::Running;
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+            workflow_context.write().await.status = WorkflowStatus::Running;
 
-        // Create a try task that raises an error, with simple catch (no when/except_when)
-        let raise_task = RaiseTask {
-            raise: RaiseTaskConfiguration {
-                error: RaiseTaskError::Error(workflow::Error {
-                    type_: UriTemplate("test-error".to_string()),
-                    status: 500,
-                    detail: Some("Test error".to_string()),
-                    title: None,
-                    instance: None,
-                }),
-            },
-            output: None,
-            checkpoint: false,
-            export: None,
-            if_: None,
-            input: None,
-            metadata: serde_json::Map::new(),
-            then: None,
-            timeout: None,
-        };
+            let try_task = workflow::TryTask {
+                try_: TaskList(vec![]), // Empty try list
+                catch: TryTaskCatch {
+                    errors: None,
+                    as_: Some("error".to_string()),
+                    when: None,
+                    except_when: None,
+                    retry: None,
+                    do_: None,
+                },
+                ..Default::default()
+            };
 
-        let try_task = workflow::TryTask {
-            try_: TaskList(vec![{
-                let mut map = HashMap::new();
-                map.insert("raise_error".to_string(), Task::RaiseTask(raise_task));
-                map
-            }]),
-            catch: TryTaskCatch {
-                errors: None, // catch all
-                as_: Some("error".to_string()),
-                when: None,        // no when condition
-                except_when: None, // no except_when condition
-                retry: None,
-                do_: None, // no catch.do
-            },
-            ..Default::default()
-        };
+            let executor = TryStreamTaskExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(60),
+                try_task,
+                Arc::new(JobExecutorWrapper::new(app_module)),
+                None,
+                None,
+                Arc::new(HashMap::new()),
+                false,
+            );
 
-        let executor = TryStreamTaskExecutor::new(
-            workflow_context.clone(),
-            Duration::from_secs(60),
-            try_task,
-            Arc::new(JobExecutorWrapper::new(app_module)),
-            None,
-            None,
-            Arc::new(HashMap::new()),
-            false,
-        );
+            let task_context = TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            );
 
-        let task_context = TaskContext::new(
-            None,
-            input.clone(),
-            Arc::new(Mutex::new(serde_json::Map::new())),
-        );
+            let mut stream = executor
+                .execute_stream(
+                    Arc::new(opentelemetry::Context::current()),
+                    Arc::new("test_empty".to_string()),
+                    task_context,
+                )
+                .boxed();
 
-        let mut stream = executor
-            .execute_stream(
-                Arc::new(opentelemetry::Context::current()),
-                Arc::new("test_error_catch".to_string()),
-                task_context,
-            )
-            .boxed();
+            let mut event_count = 0;
+            let mut had_error = false;
 
-        let mut event_count = 0;
-        let mut had_error = false;
-        let mut final_context = None;
-
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(event) => {
-                    event_count += 1;
-                    if let Some(ctx) = event.context() {
-                        final_context = Some(ctx.clone());
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(_) => {
+                        event_count += 1;
+                    }
+                    Err(_) => {
+                        had_error = true;
+                        break;
                     }
                 }
-                Err(_) => {
-                    had_error = true;
-                    break;
-                }
             }
-        }
 
-        // Error should be caught (no when/except_when to reject it)
-        assert!(
-            !had_error,
-            "Error should be caught when no when/except_when conditions"
-        );
-
-        // Should have at least 1 event (the final tryTask completed event)
-        assert!(
-            event_count >= 1,
-            "Expected at least 1 event, got {}",
-            event_count
-        );
-
-        // Verify error was added to context
-        assert!(final_context.is_some(), "Should have final context");
-        let ctx = final_context.unwrap();
-        let error_value = ctx.get_context_value("error").await;
-        assert!(
-            error_value.is_some(),
-            "Error should be stored in context as 'error'"
-        );
+            // Should complete without error even with empty try list
+            assert!(!had_error, "Empty try list should not cause error");
+            // Should emit at least final event
+            assert!(event_count >= 1, "Should emit at least one event");
+        });
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_try_stream_executor_error_with_catch_do() {
-        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-        let workflow = create_test_workflow();
-        let input = Arc::new(serde_json::json!({"test": "input"}));
-        let context = Arc::new(serde_json::json!({}));
+    #[test]
+    fn test_try_stream_executor_position_tracking() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let workflow = create_test_workflow();
+            let input = Arc::new(serde_json::json!({"test": "input"}));
+            let context = Arc::new(serde_json::json!({}));
 
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
-            &workflow,
-            input.clone(),
-            context,
-            None,
-        )));
-        workflow_context.write().await.status = WorkflowStatus::Running;
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+            workflow_context.write().await.status = WorkflowStatus::Running;
 
-        let raise_task = RaiseTask {
-            raise: RaiseTaskConfiguration {
-                error: RaiseTaskError::Error(workflow::Error {
-                    type_: UriTemplate("test-error".to_string()),
-                    status: 500,
-                    detail: Some("Test error for catch.do".to_string()),
-                    title: None,
-                    instance: None,
-                }),
-            },
-            output: None,
-            checkpoint: false,
-            export: None,
-            if_: None,
-            input: None,
-            metadata: serde_json::Map::new(),
-            then: None,
-            timeout: None,
-        };
+            let try_task = create_try_task_with_success();
+            let executor = TryStreamTaskExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(60),
+                try_task,
+                Arc::new(JobExecutorWrapper::new(app_module)),
+                None,
+                None,
+                Arc::new(HashMap::new()),
+                false,
+            );
 
-        let catch_do_set = SetTask {
-            set: serde_json::json!({
-                "catch_do_executed": true
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
-            export: None,
-            if_: None,
-            input: None,
-            metadata: serde_json::Map::new(),
-            output: Some(Output {
-                as_: Some(workflow::OutputAs::Variant0("catch_result".to_string())),
-                schema: None,
-            }),
-            then: None,
-            timeout: None,
-            checkpoint: false,
-        };
+            let task_context = TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            );
+            // Add initial position
+            task_context.add_position_name("ROOT".to_string()).await;
 
-        let try_task = workflow::TryTask {
-            try_: TaskList(vec![{
-                let mut map = HashMap::new();
-                map.insert("raise_error".to_string(), Task::RaiseTask(raise_task));
-                map
-            }]),
-            catch: TryTaskCatch {
-                errors: None,
-                as_: Some("error".to_string()),
-                when: None,
-                except_when: None,
-                retry: None,
-                do_: Some(TaskList(vec![{
+            let mut stream = executor
+                .execute_stream(
+                    Arc::new(opentelemetry::Context::current()),
+                    Arc::new("test_position".to_string()),
+                    task_context,
+                )
+                .boxed();
+
+            let mut positions: Vec<String> = Vec::new();
+
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(event) => {
+                        let pos = event.position();
+                        if !pos.is_empty() {
+                            positions.push(pos.to_string());
+                        }
+                    }
+                    Err(e) => {
+                        panic!("Unexpected error: {:?}", e);
+                    }
+                }
+            }
+
+            // Verify we got position info from internal tasks
+            assert!(
+                !positions.is_empty(),
+                "Should have position info from events"
+            );
+
+            // At least one position should contain "try"
+            let has_try_position = positions.iter().any(|p| p.contains("try"));
+            assert!(
+                has_try_position,
+                "At least one position should contain 'try': {:?}",
+                positions
+            );
+        });
+    }
+
+    #[test]
+    fn test_try_stream_executor_error_caught_without_when_condition() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let workflow = create_test_workflow();
+            let input = Arc::new(serde_json::json!({"test": "input"}));
+            let context = Arc::new(serde_json::json!({}));
+
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+            workflow_context.write().await.status = WorkflowStatus::Running;
+
+            // Create a try task that raises an error, with simple catch (no when/except_when)
+            let raise_task = RaiseTask {
+                raise: RaiseTaskConfiguration {
+                    error: RaiseTaskError::Error(workflow::Error {
+                        type_: UriTemplate("test-error".to_string()),
+                        status: 500,
+                        detail: Some("Test error".to_string()),
+                        title: None,
+                        instance: None,
+                    }),
+                },
+                output: None,
+                checkpoint: false,
+                export: None,
+                if_: None,
+                input: None,
+                metadata: serde_json::Map::new(),
+                then: None,
+                timeout: None,
+            };
+
+            let try_task = workflow::TryTask {
+                try_: TaskList(vec![{
                     let mut map = HashMap::new();
-                    map.insert("catch_set".to_string(), Task::SetTask(catch_do_set));
+                    map.insert("raise_error".to_string(), Task::RaiseTask(raise_task));
                     map
-                }])),
-            },
-            ..Default::default()
-        };
+                }]),
+                catch: TryTaskCatch {
+                    errors: None, // catch all
+                    as_: Some("error".to_string()),
+                    when: None,        // no when condition
+                    except_when: None, // no except_when condition
+                    retry: None,
+                    do_: None, // no catch.do
+                },
+                ..Default::default()
+            };
 
-        let executor = TryStreamTaskExecutor::new(
-            workflow_context.clone(),
-            Duration::from_secs(60),
-            try_task,
-            Arc::new(JobExecutorWrapper::new(app_module)),
-            None,
-            None,
-            Arc::new(HashMap::new()),
-            false,
-        );
+            let executor = TryStreamTaskExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(60),
+                try_task,
+                Arc::new(JobExecutorWrapper::new(app_module)),
+                None,
+                None,
+                Arc::new(HashMap::new()),
+                false,
+            );
 
-        let task_context = TaskContext::new(
-            None,
-            input.clone(),
-            Arc::new(Mutex::new(serde_json::Map::new())),
-        );
+            let task_context = TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            );
 
-        let mut stream = executor
-            .execute_stream(
-                Arc::new(opentelemetry::Context::current()),
-                Arc::new("test_catch_do".to_string()),
-                task_context,
-            )
-            .boxed();
+            let mut stream = executor
+                .execute_stream(
+                    Arc::new(opentelemetry::Context::current()),
+                    Arc::new("test_error_catch".to_string()),
+                    task_context,
+                )
+                .boxed();
 
-        let mut event_count = 0;
-        let mut had_error = false;
+            let mut event_count = 0;
+            let mut had_error = false;
+            let mut final_context = None;
 
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(_) => {
-                    event_count += 1;
-                }
-                Err(_) => {
-                    had_error = true;
-                    break;
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(event) => {
+                        event_count += 1;
+                        if let Some(ctx) = event.context() {
+                            final_context = Some(ctx.clone());
+                        }
+                    }
+                    Err(_) => {
+                        had_error = true;
+                        break;
+                    }
                 }
             }
-        }
 
-        assert!(!had_error, "Error should be caught and handled by catch.do");
+            // Error should be caught (no when/except_when to reject it)
+            assert!(
+                !had_error,
+                "Error should be caught when no when/except_when conditions"
+            );
 
-        // Should have events from catch.do execution
-        assert!(
-            event_count >= 1,
-            "Expected events from catch.do, got {}",
-            event_count
-        );
+            // Should have at least 1 event (the final tryTask completed event)
+            assert!(
+                event_count >= 1,
+                "Expected at least 1 event, got {}",
+                event_count
+            );
 
-        // Verify catch.do was executed
-        let wf_ctx = workflow_context.read().await;
-        let ctx_vars = wf_ctx.context_variables.lock().await;
-        let catch_do_value = ctx_vars.get("catch_do_executed");
-        assert!(
-            catch_do_value.is_some(),
-            "catch.do should have set catch_do_executed"
-        );
-        assert_eq!(catch_do_value.unwrap(), &serde_json::json!(true));
+            // Verify error was added to context
+            assert!(final_context.is_some(), "Should have final context");
+            let ctx = final_context.unwrap();
+            let error_value = ctx.get_context_value("error").await;
+            assert!(
+                error_value.is_some(),
+                "Error should be stored in context as 'error'"
+            );
+        });
+    }
+
+    #[test]
+    fn test_try_stream_executor_error_with_catch_do() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let workflow = create_test_workflow();
+            let input = Arc::new(serde_json::json!({"test": "input"}));
+            let context = Arc::new(serde_json::json!({}));
+
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+            workflow_context.write().await.status = WorkflowStatus::Running;
+
+            let raise_task = RaiseTask {
+                raise: RaiseTaskConfiguration {
+                    error: RaiseTaskError::Error(workflow::Error {
+                        type_: UriTemplate("test-error".to_string()),
+                        status: 500,
+                        detail: Some("Test error for catch.do".to_string()),
+                        title: None,
+                        instance: None,
+                    }),
+                },
+                output: None,
+                checkpoint: false,
+                export: None,
+                if_: None,
+                input: None,
+                metadata: serde_json::Map::new(),
+                then: None,
+                timeout: None,
+            };
+
+            let catch_do_set = SetTask {
+                set: serde_json::json!({
+                    "catch_do_executed": true
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+                export: None,
+                if_: None,
+                input: None,
+                metadata: serde_json::Map::new(),
+                output: Some(Output {
+                    as_: Some(workflow::OutputAs::Variant0("catch_result".to_string())),
+                    schema: None,
+                }),
+                then: None,
+                timeout: None,
+                checkpoint: false,
+            };
+
+            let try_task = workflow::TryTask {
+                try_: TaskList(vec![{
+                    let mut map = HashMap::new();
+                    map.insert("raise_error".to_string(), Task::RaiseTask(raise_task));
+                    map
+                }]),
+                catch: TryTaskCatch {
+                    errors: None,
+                    as_: Some("error".to_string()),
+                    when: None,
+                    except_when: None,
+                    retry: None,
+                    do_: Some(TaskList(vec![{
+                        let mut map = HashMap::new();
+                        map.insert("catch_set".to_string(), Task::SetTask(catch_do_set));
+                        map
+                    }])),
+                },
+                ..Default::default()
+            };
+
+            let executor = TryStreamTaskExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(60),
+                try_task,
+                Arc::new(JobExecutorWrapper::new(app_module)),
+                None,
+                None,
+                Arc::new(HashMap::new()),
+                false,
+            );
+
+            let task_context = TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            );
+
+            let mut stream = executor
+                .execute_stream(
+                    Arc::new(opentelemetry::Context::current()),
+                    Arc::new("test_catch_do".to_string()),
+                    task_context,
+                )
+                .boxed();
+
+            let mut event_count = 0;
+            let mut had_error = false;
+
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(_) => {
+                        event_count += 1;
+                    }
+                    Err(_) => {
+                        had_error = true;
+                        break;
+                    }
+                }
+            }
+
+            assert!(!had_error, "Error should be caught and handled by catch.do");
+
+            // Should have events from catch.do execution
+            assert!(
+                event_count >= 1,
+                "Expected events from catch.do, got {}",
+                event_count
+            );
+
+            // Verify catch.do was executed
+            let wf_ctx = workflow_context.read().await;
+            let ctx_vars = wf_ctx.context_variables.lock().await;
+            let catch_do_value = ctx_vars.get("catch_do_executed");
+            assert!(
+                catch_do_value.is_some(),
+                "catch.do should have set catch_do_executed"
+            );
+            assert_eq!(catch_do_value.unwrap(), &serde_json::json!(true));
+        });
     }
 }

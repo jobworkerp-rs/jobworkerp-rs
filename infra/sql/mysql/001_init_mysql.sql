@@ -6,8 +6,8 @@ USE `test`;
 -- GRANT ALL ON test.* TO mysql IDENTIFIED BY 'mysql' WITH GRANT OPTION;
 -- FLUSH PRIVILEGES;
 
--- to ignore sqlx db migration
-DROP TABLE IF EXISTS  _sqlx_migration;
+-- Note: Do not drop or modify _sqlx_migrations table here
+-- It is managed by sqlx migrator and will be created/updated automatically
 
 
 -- SET time_zone = '+09:00';
