@@ -99,16 +99,16 @@ impl WorkflowExecutor {
             )
             .await
             .map_err(|e| {
-                tracing::error!("Failed to save checkpoint: {:#?}", e);
+                tracing::error!(error = ?e, "Failed to save checkpoint");
                 workflow::errors::ErrorFactory::new().service_unavailable(
-                    format!("Failed to execute by jobworkerp: {e:?}"),
+                    "Failed to save checkpoint".to_string(),
                     Some(
                         WorkflowPosition::new(vec![
                             serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
                         ])
                         .as_error_instance(),
                     ),
-                    Some(format!("{e:?}")),
+                    Some(e.to_string()),
                 )
             })?;
         } else {
@@ -236,25 +236,31 @@ impl WorkflowExecutor {
                         None
                     }
                     Err(e) => {
-                        tracing::error!("Failed to load checkpoint: {:#?}", e);
+                        tracing::error!(
+                            error = ?e,
+                            execution_id = %execution_id.value,
+                            workflow_name = %workflow_name,
+                            position = %pos.as_json_pointer(),
+                            "Failed to load checkpoint"
+                        );
                         // Mark workflow as Faulted before yielding error (consistent with other error paths)
                         let mut wf = initial_wfc.write().await;
                         wf.status = WorkflowStatus::Faulted;
-                        let error_output = Arc::new(serde_json::json!({"error": format!("{e:?}")}));
+                        let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
                         Self::record_workflow_output(&span, &error_output, &wf.status);
                         wf.output = Some(error_output);
                         drop(wf);
 
                         yield Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                            format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}, error: {:#?}",
-                              execution_id.value, workflow_name, &pos.as_json_pointer(), e),
+                            format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}",
+                              execution_id.value, workflow_name, &pos.as_json_pointer()),
                             Some(
                                 WorkflowPosition::new(vec![
                                     serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
                                 ])
                                 .as_error_instance(),
                             ),
-                            Some(format!("{e:?}")),
+                            Some(e.to_string()),
                         ));
 
                         return;
@@ -291,7 +297,7 @@ impl WorkflowExecutor {
                     }) {
                         Ok(_) => {}
                         Err(e) => {
-                            tracing::debug!("Failed to validate workflow input schema: {:#?}", e);
+                            tracing::error!(error = ?e, "Failed to validate workflow input schema");
                             let mut wf = initial_wfc.write().await;
                             wf.status = WorkflowStatus::Faulted;
                             let error_output =
@@ -307,7 +313,7 @@ impl WorkflowExecutor {
                                     ])
                                     .as_error_instance(),
                                 ),
-                                Some(format!("{e:?}")),
+                                Some(e.to_string()),
                             ));
                             return;
                         }
@@ -359,7 +365,7 @@ impl WorkflowExecutor {
             let expression = match expression_result {
                 Ok(e) => e,
                 Err(e) => {
-                    tracing::debug!("Failed to create expression: {:#?}", e);
+                    tracing::error!(error = ?e, "Failed to create expression");
                     let mut wf = initial_wfc.write().await;
                     wf.status = WorkflowStatus::Faulted;
                     let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
@@ -374,7 +380,7 @@ impl WorkflowExecutor {
                             ])
                             .as_error_instance(),
                         ),
-                        Some(format!("{e:?}")),
+                        Some(e.to_string()),
                     ));
                     return;
                 }
@@ -390,7 +396,7 @@ impl WorkflowExecutor {
                 match WorkflowExecutor::transform_input(input_with_defaults.clone(), from, &expression) {
                     Ok(v) => v,
                     Err(e) => {
-                        tracing::debug!("Failed to transform input: {:#?}", e);
+                        tracing::error!(error = ?e, "Failed to transform input");
                         let mut wf = initial_wfc.write().await;
                         wf.status = WorkflowStatus::Faulted;
                         let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
@@ -405,7 +411,7 @@ impl WorkflowExecutor {
                                 ])
                                 .as_error_instance(),
                             ),
-                            Some(format!("{e:?}")),
+                            Some(e.to_string()),
                         ));
                         return;
                     }
@@ -639,8 +645,16 @@ impl WorkflowExecutor {
                         if has_context {
                             let wf = initial_wfc.read().await;
                             let status = wf.status.clone();
-                            let res = Arc::new((*wf).clone());
+                            let mut res = (*wf).clone();
                             drop(wf);
+
+                            // Apply event's position to the context
+                            let event_position = event.position();
+                            if !event_position.is_empty() {
+                                if let Ok(pos) = WorkflowPosition::parse(event_position) {
+                                    res.position = pos;
+                                }
+                            }
 
                             // Mark as final if this is a terminal state
                             if matches!(
@@ -652,7 +666,7 @@ impl WorkflowExecutor {
                             ) {
                                 yielded_final = true;
                             }
-                            yield Ok(res);
+                            yield Ok(Arc::new(res));
                         }
                         // Start events are ignored for backward compatibility
                     }
@@ -661,10 +675,17 @@ impl WorkflowExecutor {
                         // (set by execute_workflow_with_events before yielding Err)
                         // First yield the faulted context to preserve workflow information (id, position, etc.)
                         let wf = initial_wfc.read().await;
-                        let res = Arc::new((*wf).clone());
+                        let mut res = (*wf).clone();
                         drop(wf);
 
-                        yield Ok(res);
+                        // Apply error's instance (position info) to the context
+                        if let Some(ref instance) = e.instance {
+                            if let Ok(pos) = WorkflowPosition::parse(instance) {
+                                res.position = pos;
+                            }
+                        }
+
+                        yield Ok(Arc::new(res));
                         // Then propagate the error so callers can detect it via is_err()
                         yield Err(e);
                         return;

@@ -44,20 +44,28 @@ impl RdbRunnerAppImpl {
             cache_ttl: Some(Duration::from_secs(60)), // TODO from setting
         }
     }
-    // load runners from db in initialization
+    // Load runners from DB directly using raw rows to avoid circular dependency.
+    // Using find_list() would fail for MCP servers when mcp-settings.toml is absent
+    // because create_runner_spec_by_name() requires mcp_configs to be populated first.
     async fn load_runners_from_db(&self) {
-        if let Ok(runners) = self.runner_repository().find_list(true, None, None).await {
-            for data in runners.into_iter().flat_map(|r| r.data) {
-                if let Err(e) = match data.runner_type {
-                    val if val == RunnerType::McpServer as i32 => self
-                        .runner_repository()
-                        .load_mcp_server(
-                            data.name.as_str(),
-                            data.description.as_str(),
-                            data.definition.as_str(),
-                        )
-                        .await
-                        .map(|_| ()),
+        if let Ok(runners) = self
+            .runner_repository()
+            .find_row_list_tx(self.runner_repository().db_pool(), true, None, None)
+            .await
+        {
+            for data in runners.into_iter() {
+                if let Err(e) = match data.r#type {
+                    val if val == RunnerType::McpServer as i32 => {
+                        tracing::debug!("load mcp server: {:?}", data);
+                        self.runner_repository()
+                            .load_mcp_server(
+                                data.name.as_str(),
+                                data.description.as_str(),
+                                data.definition.as_str(),
+                            )
+                            .await
+                            .map(|_| ())
+                    }
                     val if val == RunnerType::Plugin as i32 => self
                         .runner_repository()
                         .load_plugin(Some(data.name.as_str()), &data.definition, false)

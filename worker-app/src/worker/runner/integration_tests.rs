@@ -61,6 +61,7 @@ mod streaming_pool_guard_tests {
                 with_memory_monitoring: false,
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
+                working_dir: String::new(),
             };
 
             let stream_result = runner
@@ -107,6 +108,7 @@ mod streaming_pool_guard_tests {
                     with_memory_monitoring: false,
                     treat_nonzero_as_error: false,
                     success_exit_codes: vec![],
+                    working_dir: String::new(),
                 };
 
                 let stream_result = runner
@@ -202,6 +204,7 @@ mod streaming_pool_guard_tests {
                 with_memory_monitoring: false,
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
+                working_dir: String::new(),
             };
 
             let stream_result = runner
@@ -326,6 +329,7 @@ mod streaming_pool_guard_tests {
                 with_memory_monitoring: false,
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
+                working_dir: String::new(),
             };
 
             let stream_result = runner

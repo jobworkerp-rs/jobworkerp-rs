@@ -673,6 +673,7 @@ pub(crate) mod tests {
                 with_memory_monitoring: true,
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
+                working_dir: String::new(),
             })
             .unwrap();
             let job = Job {
@@ -735,6 +736,7 @@ pub(crate) mod tests {
                 with_memory_monitoring: true,
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
+                working_dir: String::new(),
             })
             .unwrap();
 
@@ -787,6 +789,7 @@ pub(crate) mod tests {
                 with_memory_monitoring: false,
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
+                working_dir: String::new(),
             })
             .unwrap();
 
@@ -865,6 +868,7 @@ pub(crate) mod tests {
                 with_memory_monitoring: false,
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
+                working_dir: String::new(),
             })
             .unwrap();
 
@@ -974,6 +978,7 @@ pub(crate) mod tests {
                 with_memory_monitoring: false,
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
+                working_dir: String::new(),
             })
             .unwrap();
 

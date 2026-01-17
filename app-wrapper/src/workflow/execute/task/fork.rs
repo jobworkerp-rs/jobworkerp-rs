@@ -186,16 +186,20 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                         }
                         Err(e) => {
                             // Stream returned an error, log and continue with others
-                            tracing::warn!("Task failed in compete mode: {:#?}", e);
+                            tracing::warn!(error = ?e, "Task failed in compete mode");
                             all_errors.push(e);
 
                             // If this was the last stream, we're done with errors
                             if stream_map.is_empty() {
+                                let pos = position.read().await.as_error_instance();
+                                let error_summary: Vec<String> =
+                                    all_errors.iter().map(|e| e.to_string()).collect();
+                                tracing::error!(errors = ?all_errors, position = %pos, "All tasks failed in compete mode");
                                 return Err(workflow::errors::ErrorFactory::new()
                                     .service_unavailable(
                                         "All tasks failed in compete mode".to_string(),
-                                        Some(position.read().await.as_error_instance()),
-                                        Some(format!("{all_errors:#?}")),
+                                        Some(pos),
+                                        Some(error_summary.join("; ")),
                                     ));
                             }
                         }
@@ -203,10 +207,13 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                 }
 
                 // If we get here, all streams ended without success
+                let pos = position.read().await.as_error_instance();
+                let error_summary: Vec<String> = all_errors.iter().map(|e| e.to_string()).collect();
+                tracing::error!(errors = ?all_errors, position = %pos, "All tasks failed in compete mode (no success)");
                 Err(workflow::errors::ErrorFactory::new().service_unavailable(
                     "All tasks failed in compete mode".to_string(),
-                    Some(position.read().await.as_error_instance()),
-                    Some(format!("{all_errors:#?}")),
+                    Some(pos),
+                    Some(error_summary.join("; ")),
                 ))
             } else {
                 // Normal mode: collect results from all tasks
