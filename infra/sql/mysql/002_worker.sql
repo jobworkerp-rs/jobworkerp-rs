@@ -24,7 +24,11 @@ CREATE TABLE `worker` (
   `use_static` TINYINT(1) NOT NULL DEFAULT 0, -- use runner as static
   `broadcast_results` TINYINT(1) NOT NULL DEFAULT 0, -- broadcast results to all listeners
   `created_at` BIGINT(20) NOT NULL DEFAULT 0, -- record creation timestamp (milliseconds)
-  UNIQUE KEY `name` (`name`)
+  UNIQUE KEY `name` (`name`),
+  KEY `idx_worker_runner_id` (`runner_id`),
+  KEY `idx_worker_channel` (`channel`),
+  KEY `idx_worker_periodic_interval` (`periodic_interval`),
+  KEY `idx_worker_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- optional table for db jobqueue
@@ -81,7 +85,9 @@ CREATE TABLE `runner` (
   `definition` TEXT NOT NULL, -- runner definition (mcp definition or plugin file name)
   `type` INT(10) NOT NULL, -- runner type. enum: command, request, grpc_unary, plugin
   `created_at` BIGINT(20) NOT NULL DEFAULT 0, -- record creation timestamp (milliseconds)
-  UNIQUE KEY `name` (`name`)
+  UNIQUE KEY `name` (`name`),
+  KEY `idx_runner_type` (`type`),
+  KEY `idx_runner_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 
@@ -162,20 +168,13 @@ CREATE TABLE `function_set_target` (
   UNIQUE KEY `set_target` (`set_id`, `target_id`, `target_type`, `using`(191))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Indexes for admin UI filtering and sorting
--- Note: MySQL does not support IF NOT EXISTS for CREATE INDEX (SQLite only)
--- This script runs only once during docker-entrypoint-initdb.d initialization
-CREATE INDEX idx_runner_type ON `runner`(`type`);
-CREATE INDEX idx_runner_created_at ON `runner`(`created_at`);
-
-CREATE INDEX idx_worker_runner_id ON `worker`(`runner_id`);
-CREATE INDEX idx_worker_channel ON `worker`(`channel`);
-CREATE INDEX idx_worker_periodic_interval ON `worker`(`periodic_interval`);
-CREATE INDEX idx_worker_created_at ON `worker`(`created_at`);
-
-
 -- Create job_processing_status table
-CREATE TABLE IF NOT EXISTS `job_processing_status` (
+-- Index design for fast search
+-- Note: MySQL/MariaDB uses composite indexes including deleted_at column
+-- This approach is different from SQLite's partial indexes (WHERE clause)
+-- Both achieve the same performance goal: filtering out deleted records efficiently
+DROP TABLE IF EXISTS `job_processing_status`;
+CREATE TABLE `job_processing_status` (
     -- Basic information
     `job_id` BIGINT PRIMARY KEY,
     `status` INT NOT NULL COMMENT 'PENDING=1, RUNNING=2, WAIT_RESULT=3, CANCELLING=4',
@@ -197,31 +196,20 @@ CREATE TABLE IF NOT EXISTS `job_processing_status` (
     -- Metadata
     `version` BIGINT NOT NULL COMMENT 'Optimistic lock version number',
     `deleted_at` BIGINT COMMENT 'Logical deletion timestamp (NULL: active, NOT NULL: deleted)',
-    `updated_at` BIGINT NOT NULL COMMENT 'Last update timestamp (for detecting sync delays)'
+    `updated_at` BIGINT NOT NULL COMMENT 'Last update timestamp (for detecting sync delays)',
+
+    -- Indexes
+    -- Status-based search (WHERE status = ? AND deleted_at IS NULL)
+    KEY `idx_jps_status_active` (`status`, `deleted_at`),
+    -- Worker-based search (WHERE worker_id = ? AND deleted_at IS NULL)
+    KEY `idx_jps_worker_id_active` (`worker_id`, `deleted_at`),
+    -- Channel-based search (WHERE channel = ? AND deleted_at IS NULL)
+    KEY `idx_jps_channel_active` (`channel`, `deleted_at`),
+    -- Start time sorting (WHERE deleted_at IS NULL ORDER BY start_time DESC)
+    KEY `idx_jps_start_time_active` (`start_time` DESC, `deleted_at`),
+    -- Composite index for status + start_time queries
+    KEY `idx_jps_status_start` (`status`, `start_time` DESC, `deleted_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- Index design for fast search
--- Note: MySQL/MariaDB uses composite indexes including deleted_at column
--- This approach is different from SQLite's partial indexes (WHERE clause)
--- Both achieve the same performance goal: filtering out deleted records efficiently
-
--- Status-based search (WHERE status = ? AND deleted_at IS NULL)
--- Composite index: (status, deleted_at) allows efficient filtering
-CREATE INDEX idx_jps_status_active ON job_processing_status(status, deleted_at);
-
--- Worker-based search (WHERE worker_id = ? AND deleted_at IS NULL)
-CREATE INDEX idx_jps_worker_id_active ON job_processing_status(worker_id, deleted_at);
-
--- Channel-based search (WHERE channel = ? AND deleted_at IS NULL)
-CREATE INDEX idx_jps_channel_active ON job_processing_status(channel, deleted_at);
-
--- Start time sorting (WHERE deleted_at IS NULL ORDER BY start_time DESC)
--- Index order: (start_time DESC, deleted_at) for efficient sorting
-CREATE INDEX idx_jps_start_time_active ON job_processing_status(start_time DESC, deleted_at);
-
--- Composite index for status + start_time queries
--- (WHERE status = ? AND deleted_at IS NULL ORDER BY start_time DESC)
-CREATE INDEX idx_jps_status_start ON job_processing_status(status, start_time DESC, deleted_at);
 
 -- Update table statistics
 ANALYZE TABLE job_processing_status;

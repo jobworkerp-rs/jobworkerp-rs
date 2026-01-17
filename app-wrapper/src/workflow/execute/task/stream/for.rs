@@ -669,15 +669,17 @@ impl ForTaskStreamExecutor {
                 final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
                 final_ctx.remove_context_value(&item_name).await;
                 final_ctx.remove_context_value(&index_name).await;
+                let pos_str = final_ctx.position.read().await.as_json_pointer();
                 final_ctx.remove_position().await;
-                yield Ok(WorkflowStreamEvent::task_completed("forTask", &task_name, final_ctx));
+                yield Ok(WorkflowStreamEvent::task_completed_with_position("forTask", &task_name, &pos_str, final_ctx));
             } else {
                 // Final cleanup
                 let final_ctx = original_context;
                 final_ctx.remove_context_value(&item_name).await;
                 final_ctx.remove_context_value(&index_name).await;
+                let pos_str = final_ctx.position.read().await.as_json_pointer();
                 final_ctx.remove_position().await;
-                yield Ok(WorkflowStreamEvent::task_completed("forTask", &task_name, final_ctx));
+                yield Ok(WorkflowStreamEvent::task_completed_with_position("forTask", &task_name, &pos_str, final_ctx));
             }
         });
 
@@ -712,9 +714,10 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                         );
                         let mut final_ctx = task_context;
                         final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
+                        let pos_str = final_ctx.position.read().await.as_json_pointer();
                         final_ctx.remove_position().await;
 
-                        yield Ok(WorkflowStreamEvent::task_completed("forTask", &task_name, final_ctx));
+                        yield Ok(WorkflowStreamEvent::task_completed_with_position("forTask", &task_name, &pos_str, final_ctx));
                         return;
                     }
 

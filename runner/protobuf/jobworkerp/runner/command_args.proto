@@ -15,5 +15,7 @@ message CommandArgs {
   // # exit codes to treat as success (default: [0] when treat_nonzero_as_error is true)
   // # useful for commands like grep that return 1 when no match found
   repeated int32 success_exit_codes = 5;
+  // # working directory for the command
+  string working_dir = 6;
 }
 

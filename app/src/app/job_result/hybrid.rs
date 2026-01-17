@@ -634,6 +634,7 @@ pub mod tests {
                 with_memory_monitoring: false,
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
+                working_dir: String::new(),
             })?;
             let mut data = JobResultData {
                 job_id: Some(job_id),

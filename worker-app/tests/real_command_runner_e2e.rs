@@ -95,6 +95,7 @@ fn create_command_job(command: &str, args: Vec<String>, timeout_ms: u64) -> Job 
         with_memory_monitoring: true,
         treat_nonzero_as_error: false,
         success_exit_codes: vec![],
+        working_dir: "".to_string(),
     };
     let args_bytes = ProstMessageCodec::serialize_message(&command_args).unwrap();
 
@@ -438,5 +439,71 @@ async fn test_real_command_runner_complete_workflow() -> Result<()> {
         .await;
 
     println!("=== Real COMMAND Runner Complete Workflow Test PASSED ===");
+    Ok(())
+}
+
+/// Test command execution with specific working directory
+#[tokio::test]
+async fn test_real_command_working_directory() -> Result<()> {
+    let job_runner = get_real_job_runner().await;
+
+    // Create a temporary directory using std::fs (since we are in test environment)
+    // We can use a unique path in /tmp
+    let temp_dir_path = format!("/tmp/jobworkerp_test_cwd_{}", std::process::id());
+    std::fs::create_dir_all(&temp_dir_path).unwrap();
+    // Create a file in it to verify
+    let temp_file_path = format!("{}/test_file.txt", temp_dir_path);
+    std::fs::write(&temp_file_path, "test content").unwrap();
+
+    let job = Job {
+        id: Some(JobId { value: 1 }),
+        data: Some(JobData {
+            worker_id: Some(WorkerId { value: 1 }),
+            args: ProstMessageCodec::serialize_message(&CommandArgs {
+                command: "ls".to_string(), // List files in the working directory
+                args: vec![],
+                with_memory_monitoring: true,
+                treat_nonzero_as_error: false,
+                success_exit_codes: vec![],
+                working_dir: temp_dir_path.clone(),
+            })
+            .unwrap(),
+            uniq_key: Some("real_command_cwd_test".to_string()),
+            retried: 0,
+            priority: 0,
+            timeout: 10000,
+            enqueue_time: command_utils::util::datetime::now_millis(),
+            run_after_time: command_utils::util::datetime::now_millis(),
+            grabbed_until_time: None,
+            streaming_type: 0,
+            using: None,
+        }),
+        ..Default::default()
+    };
+
+    let (worker_data, runner_data) = create_test_data();
+    let worker_id = WorkerId { value: 1 };
+
+    let (result, _stream) = job_runner
+        .run_job(&runner_data, &worker_id, &worker_data, job)
+        .await;
+
+    let data = result.data.unwrap();
+    assert_eq!(data.status, ResultStatus::Success as i32);
+
+    let command_result: CommandResult =
+        ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
+
+    assert_eq!(command_result.exit_code.unwrap_or(-1), 0);
+    assert!(command_result
+        .stdout
+        .as_ref()
+        .unwrap()
+        .contains("test_file.txt"));
+
+    // Cleanup
+    std::fs::remove_dir_all(&temp_dir_path).unwrap();
+
+    println!("✓ Real COMMAND working directory test passed");
     Ok(())
 }

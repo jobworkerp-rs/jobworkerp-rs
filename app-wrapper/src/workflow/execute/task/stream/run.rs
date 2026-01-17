@@ -202,12 +202,12 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
                     task_context.set_raw_output(o);
                 }
                 Err(e) => {
-                    tracing::error!("Failed to process stream for job {}: {:?}", job_id_value, e);
+                    tracing::error!(error = ?e, job_id = %job_id_value, "Failed to process stream");
                     let _ = event_tx.send(Err(workflow::errors::ErrorFactory::new()
                         .service_unavailable(
                             "Failed to process streaming result".to_string(),
                             None,
-                            Some(format!("{e:?}")),
+                            Some(e.to_string()),
                         )));
                     return;
                 }
@@ -331,10 +331,11 @@ async fn prepare_streaming_job(
             )
             .await
             .map_err(|e| {
+                tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming job by jobworkerp (function)");
                 workflow::errors::ErrorFactory::new().service_unavailable(
                     "Failed to start streaming job by jobworkerp".to_string(),
                     Some(pos_for_err),
-                    Some(format!("{e:?}")),
+                    Some(e.to_string()),
                 )
             })?
         }
@@ -379,10 +380,11 @@ async fn prepare_streaming_job(
             )
             .await
             .map_err(|e| {
+                tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming job by jobworkerp (worker function)");
                 workflow::errors::ErrorFactory::new().service_unavailable(
                     "Failed to start streaming job by jobworkerp".to_string(),
                     Some(pos_for_err),
-                    Some(format!("{e:?}")),
+                    Some(e.to_string()),
                 )
             })?
         }
@@ -449,10 +451,11 @@ async fn prepare_streaming_job(
             )
             .await
             .map_err(|e| {
+                tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming runner job by jobworkerp");
                 workflow::errors::ErrorFactory::new().service_unavailable(
                     "Failed to start streaming runner job by jobworkerp".to_string(),
                     Some(pos_for_err),
-                    Some(format!("{e:?}")),
+                    Some(e.to_string()),
                 )
             })?
         }
@@ -519,10 +522,11 @@ async fn prepare_streaming_job(
             )
             .await
             .map_err(|e| {
+                tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming runner function job by jobworkerp");
                 workflow::errors::ErrorFactory::new().service_unavailable(
                     "Failed to start streaming runner job by jobworkerp".to_string(),
                     Some(pos_for_err),
-                    Some(format!("{e:?}")),
+                    Some(e.to_string()),
                 )
             })?
         }
@@ -563,10 +567,11 @@ async fn prepare_streaming_job(
             ))
         }
         .map_err(|e| {
+            tracing::error!(error = ?e, position = %pos_for_err, "Failed to subscribe to result stream");
             workflow::errors::ErrorFactory::new().service_unavailable(
                 "Failed to subscribe to result stream".to_string(),
                 Some(pos_for_err),
-                Some(format!("{e:?}")),
+                Some(e.to_string()),
             )
         })?;
 
