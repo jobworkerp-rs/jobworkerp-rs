@@ -777,6 +777,12 @@ impl RunnerTrait for DockerRunner {
 
                 // Check if image exists locally, pull only if not present
                 let image_name = arg.image.clone().unwrap_or_default();
+                if image_name.is_empty() {
+                    return Err(JobWorkerError::InvalidParameter(
+                        "Docker image name is required but was not provided or is empty".to_string(),
+                    )
+                    .into());
+                }
                 let image_exists = docker.inspect_image(&image_name).await.is_ok();
 
                 if !image_exists {
