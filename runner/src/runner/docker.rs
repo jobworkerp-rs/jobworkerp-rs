@@ -1,10 +1,10 @@
 use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use super::{RunnerSpec, RunnerTrait};
-use crate::jobworkerp::runner::{DockerArgs, DockerRunnerSettings};
+use crate::jobworkerp::runner::{DockerArgs, DockerResult, DockerRunnerSettings};
 use crate::schema_to_json_string;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use bollard::container::AttachContainerResults;
+use bollard::container::{AttachContainerResults, LogOutput};
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
@@ -461,7 +461,8 @@ impl RunnerSpec for DockerExecRunner {
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!("../../protobuf/jobworkerp/runner/docker_args.proto")
                     .to_string(),
-                result_proto: "".to_string(), // Binary data (empty proto allowed)
+                result_proto: include_str!("../../protobuf/jobworkerp/runner/docker_result.proto")
+                    .to_string(),
                 description: Some("Execute command in Docker container (exec mode)".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
             },
@@ -493,6 +494,12 @@ impl RunnerTrait for DockerExecRunner {
 
         let result = async {
             if let Some(docker) = self.docker.as_ref() {
+                let started_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let start_time = std::time::Instant::now();
+
                 let req = ProstMessageCodec::deserialize_message::<DockerArgs>(arg)?;
                 let mut c: CreateExecOptions<String> = self.trans_exec_arg(req.clone());
                 // for log
@@ -515,7 +522,8 @@ impl RunnerTrait for DockerExecRunner {
                     }
                 };
 
-                let mut out = Vec::<Vec<u8>>::new();
+                let mut stdout_buf = Vec::<u8>::new();
+                let mut stderr_buf = Vec::<u8>::new();
                 let start_result = tokio::select! {
                     start_result = docker.start_exec(&exec, None) => start_result,
                     _ = cancellation_token.cancelled() => {
@@ -529,8 +537,19 @@ impl RunnerTrait for DockerExecRunner {
                         tokio::select! {
                             msg_result = output.next() => {
                                 match msg_result {
-                                    Some(Ok(msg)) => {
-                                        out.push(format!("{msg}\n").into_bytes().to_vec());
+                                    Some(Ok(log_output)) => {
+                                        match &log_output {
+                                            LogOutput::StdOut { message } => {
+                                                stdout_buf.extend_from_slice(message);
+                                            }
+                                            LogOutput::StdErr { message } => {
+                                                stderr_buf.extend_from_slice(message);
+                                            }
+                                            LogOutput::Console { message } => {
+                                                stdout_buf.extend_from_slice(message);
+                                            }
+                                            LogOutput::StdIn { .. } => {}
+                                        }
                                     }
                                     Some(Err(e)) => {
                                         tracing::error!("Docker output stream error: {}", e);
@@ -545,7 +564,22 @@ impl RunnerTrait for DockerExecRunner {
                             }
                         }
                     }
-                    Ok(out.concat())
+
+                    // Get exec exit code
+                    let exec_inspect = docker.inspect_exec(&exec).await.ok();
+                    let exit_code = exec_inspect.and_then(|i| i.exit_code.map(|c| c as i32));
+                    let execution_time_ms = start_time.elapsed().as_millis() as u64;
+
+                    let docker_result = DockerResult {
+                        exit_code,
+                        stdout: Some(String::from_utf8_lossy(&stdout_buf).to_string()),
+                        stderr: Some(String::from_utf8_lossy(&stderr_buf).to_string()),
+                        container_id: Some(self.instant_id.clone()),
+                        execution_time_ms: Some(execution_time_ms),
+                        started_at: Some(started_at),
+                    };
+
+                    ProstMessageCodec::serialize_message(&docker_result)
                 } else {
                     tracing::error!("unexpected error: cannot attach container (exec)");
                     Err(anyhow!("unexpected error: cannot attach container (exec)"))
@@ -730,7 +764,8 @@ impl RunnerSpec for DockerRunner {
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!("../../protobuf/jobworkerp/runner/docker_args.proto")
                     .to_string(),
-                result_proto: "".to_string(), // Binary data (empty proto allowed)
+                result_proto: include_str!("../../protobuf/jobworkerp/runner/docker_result.proto")
+                    .to_string(),
                 description: Some("Execute command in Docker container (run mode)".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
             },
@@ -760,6 +795,12 @@ impl RunnerTrait for DockerRunner {
         let cancellation_token = self.get_cancellation_token().await;
 
         let result = async {
+            let started_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let start_time = std::time::Instant::now();
+
             let arg = ProstMessageCodec::deserialize_message::<DockerArgs>(args)?;
             let create_option = CreateRunnerOptions::new(arg.image.clone());
             // Get timeout from DockerArgs, fallback to current settings timeout
@@ -849,20 +890,28 @@ impl RunnerTrait for DockerRunner {
                     }
                 }
 
-                let mut logs = Vec::<Vec<u8>>::new();
-                // pipe docker attach output into stdout
+                let mut stdout_buf = Vec::<u8>::new();
+                let mut stderr_buf = Vec::<u8>::new();
+                // pipe docker attach output into stdout/stderr
                 loop {
                     tokio::select! {
                         output_result = output.next() => {
                             match output_result {
-                                Some(Ok(output)) => {
-                                    match String::from_utf8(output.into_bytes().to_vec()) {
-                                        Ok(o) => {
-                                            tracing::info!("{}", &o);
-                                            logs.push(format!("{o}\n").into_bytes().to_vec())
-                                            // logs.push(o);
+                                Some(Ok(log_output)) => {
+                                    match &log_output {
+                                        LogOutput::StdOut { message } => {
+                                            tracing::info!("{}", String::from_utf8_lossy(message));
+                                            stdout_buf.extend_from_slice(message);
                                         }
-                                        Err(e) => tracing::error!("error in decoding logs: {:?}", e),
+                                        LogOutput::StdErr { message } => {
+                                            tracing::info!("{}", String::from_utf8_lossy(message));
+                                            stderr_buf.extend_from_slice(message);
+                                        }
+                                        LogOutput::Console { message } => {
+                                            tracing::info!("{}", String::from_utf8_lossy(message));
+                                            stdout_buf.extend_from_slice(message);
+                                        }
+                                        LogOutput::StdIn { .. } => {}
                                     }
                                 }
                                 Some(Err(e)) => {
@@ -878,6 +927,14 @@ impl RunnerTrait for DockerRunner {
                         }
                     }
                 }
+
+                // Get container exit code before removal
+                let container_inspect = docker.inspect_container(&id, None).await.ok();
+                let exit_code = container_inspect
+                    .and_then(|i| i.state)
+                    .and_then(|s| s.exit_code.map(|c| c as i32));
+                let execution_time_ms = start_time.elapsed().as_millis() as u64;
+
                 // remove container if persist to running
                 docker
                     .remove_container(
@@ -888,7 +945,17 @@ impl RunnerTrait for DockerRunner {
                         }),
                     )
                     .await?;
-                Ok(logs.concat())
+
+                let docker_result = DockerResult {
+                    exit_code,
+                    stdout: Some(String::from_utf8_lossy(&stdout_buf).to_string()),
+                    stderr: Some(String::from_utf8_lossy(&stderr_buf).to_string()),
+                    container_id: Some(id),
+                    execution_time_ms: Some(execution_time_ms),
+                    started_at: Some(started_at),
+                };
+
+                ProstMessageCodec::serialize_message(&docker_result)
             } else {
                 Err(anyhow!("docker instance is not found"))
             }
