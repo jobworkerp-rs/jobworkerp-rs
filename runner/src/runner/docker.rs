@@ -1382,6 +1382,177 @@ mod test {
         Ok(())
     }
 
+    /// Test that DockerRunner returns properly encoded DockerResult with separated stdout/stderr
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_docker_runner_result_decode() {
+        eprintln!("=== Testing DockerRunner result decoding ===");
+
+        let mut runner = DockerRunner::new();
+
+        // Run a command that outputs to both stdout and stderr
+        let arg = ProstMessageCodec::serialize_message(&DockerArgs {
+            image: Some("busybox:latest".to_string()),
+            cmd: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo 'stdout message' && echo 'stderr message' >&2".to_string(),
+            ],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (result, _metadata) = runner.run(&arg, HashMap::new(), None).await;
+
+        let result_bytes = result.expect("DockerRunner should succeed");
+        let docker_result: DockerResult = ProstMessageCodec::deserialize_message(&result_bytes)
+            .expect("Should decode DockerResult");
+
+        eprintln!("DockerResult: {:?}", docker_result);
+
+        // Verify stdout contains expected output
+        assert!(
+            docker_result
+                .stdout
+                .as_ref()
+                .is_some_and(|s| s.contains("stdout message")),
+            "stdout should contain 'stdout message', got: {:?}",
+            docker_result.stdout
+        );
+
+        // Verify stderr contains expected output
+        assert!(
+            docker_result
+                .stderr
+                .as_ref()
+                .is_some_and(|s| s.contains("stderr message")),
+            "stderr should contain 'stderr message', got: {:?}",
+            docker_result.stderr
+        );
+
+        // Verify exit code is 0
+        assert_eq!(docker_result.exit_code, Some(0), "exit_code should be 0");
+
+        // Verify container_id is present
+        assert!(
+            docker_result.container_id.is_some(),
+            "container_id should be present"
+        );
+
+        // Verify timing fields are present
+        assert!(
+            docker_result.execution_time_ms.is_some(),
+            "execution_time_ms should be present"
+        );
+        assert!(
+            docker_result.started_at.is_some(),
+            "started_at should be present"
+        );
+
+        eprintln!("=== DockerRunner result decode test completed ===");
+    }
+
+    /// Test that DockerExecRunner returns properly encoded DockerResult with separated stdout/stderr
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_docker_exec_runner_result_decode() {
+        eprintln!("=== Testing DockerExecRunner result decoding ===");
+
+        let mut runner = DockerExecRunner::new();
+        runner
+            .create(
+                &CreateRunnerOptions::new(Some("busybox:latest".to_string())),
+                DEFAULT_DOCKER_TIMEOUT_SEC,
+            )
+            .await
+            .expect("Failed to create Docker container");
+
+        // Run a command that outputs to both stdout and stderr
+        let arg = ProstMessageCodec::serialize_message(&DockerArgs {
+            cmd: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo 'exec stdout' && echo 'exec stderr' >&2".to_string(),
+            ],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (result, _metadata) = runner.run(&arg, HashMap::new(), None).await;
+
+        let result_bytes = result.expect("DockerExecRunner should succeed");
+        let docker_result: DockerResult = ProstMessageCodec::deserialize_message(&result_bytes)
+            .expect("Should decode DockerResult");
+
+        eprintln!("DockerResult: {:?}", docker_result);
+
+        // Verify stdout contains expected output
+        assert!(
+            docker_result
+                .stdout
+                .as_ref()
+                .is_some_and(|s| s.contains("exec stdout")),
+            "stdout should contain 'exec stdout', got: {:?}",
+            docker_result.stdout
+        );
+
+        // Verify stderr contains expected output
+        assert!(
+            docker_result
+                .stderr
+                .as_ref()
+                .is_some_and(|s| s.contains("exec stderr")),
+            "stderr should contain 'exec stderr', got: {:?}",
+            docker_result.stderr
+        );
+
+        // Verify exit code is 0
+        assert_eq!(docker_result.exit_code, Some(0), "exit_code should be 0");
+
+        // Verify container_id is present
+        assert!(
+            docker_result.container_id.is_some(),
+            "container_id should be present"
+        );
+
+        eprintln!("=== DockerExecRunner result decode test completed ===");
+    }
+
+    /// Test DockerRunner with non-zero exit code
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_docker_runner_nonzero_exit_code() {
+        eprintln!("=== Testing DockerRunner with non-zero exit code ===");
+
+        let mut runner = DockerRunner::new();
+
+        let arg = ProstMessageCodec::serialize_message(&DockerArgs {
+            image: Some("busybox:latest".to_string()),
+            cmd: vec!["sh".to_string(), "-c".to_string(), "exit 42".to_string()],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (result, _metadata) = runner.run(&arg, HashMap::new(), None).await;
+
+        let result_bytes =
+            result.expect("DockerRunner should return result even with non-zero exit");
+        let docker_result: DockerResult = ProstMessageCodec::deserialize_message(&result_bytes)
+            .expect("Should decode DockerResult");
+
+        eprintln!("DockerResult: {:?}", docker_result);
+
+        // Verify exit code is 42
+        assert_eq!(
+            docker_result.exit_code,
+            Some(42),
+            "exit_code should be 42, got: {:?}",
+            docker_result.exit_code
+        );
+
+        eprintln!("=== DockerRunner non-zero exit code test completed ===");
+    }
+
     #[tokio::test]
     #[ignore = "Requires Docker daemon"]
     async fn test_docker_exec_pre_execution_cancellation() {
