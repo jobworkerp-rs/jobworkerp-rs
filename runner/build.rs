@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "protobuf/jobworkerp/runner/command_result.proto",
                 "protobuf/jobworkerp/runner/docker_runner.proto",
                 "protobuf/jobworkerp/runner/docker_args.proto",
+                "protobuf/jobworkerp/runner/docker_result.proto",
                 "protobuf/jobworkerp/runner/grpc_unary_runner.proto",
                 "protobuf/jobworkerp/runner/grpc_unary_args.proto",
                 "protobuf/jobworkerp/runner/grpc_unary_result.proto",
