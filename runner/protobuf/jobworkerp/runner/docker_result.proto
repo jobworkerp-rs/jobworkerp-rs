@@ -1,0 +1,23 @@
+syntax = "proto3";
+package jobworkerp.runner;
+
+// Result from Docker runner execution with separated stdout/stderr
+message DockerResult {
+  // Exit code returned by the container (0 typically indicates success)
+  optional int32 exit_code = 1;
+
+  // Standard output (stdout) from the container
+  optional string stdout = 2;
+
+  // Standard error (stderr) from the container
+  optional string stderr = 3;
+
+  // Container ID for debugging purposes
+  optional string container_id = 4;
+
+  // Duration of container execution in milliseconds
+  optional uint64 execution_time_ms = 5;
+
+  // Timestamp when the container execution started (Unix timestamp in seconds)
+  optional uint64 started_at = 6;
+}
