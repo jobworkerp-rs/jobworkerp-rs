@@ -103,6 +103,8 @@ fn create_docker_job(image: &str, command: Vec<String>, timeout_ms: u64) -> Job 
         mac_address: None,
         shell: vec![],
         timeout_sec: None,
+        treat_nonzero_as_error: false,
+        success_exit_codes: vec![],
     };
     let args_bytes = ProstMessageCodec::serialize_message(&docker_args).unwrap();
 
@@ -193,6 +195,8 @@ fn create_docker_exec_job(command: Vec<String>, timeout_ms: u64) -> Job {
         mac_address: None,
         shell: vec![],
         timeout_sec: None,
+        treat_nonzero_as_error: false,
+        success_exit_codes: vec![],
     };
     let args_bytes = ProstMessageCodec::serialize_message(&docker_args).unwrap();
 
