@@ -570,6 +570,28 @@ impl RunnerTrait for DockerExecRunner {
                     let exit_code = exec_inspect.and_then(|i| i.exit_code.map(|c| c as i32));
                     let execution_time_ms = start_time.elapsed().as_millis() as u64;
 
+                    // Check if non-zero exit code should be treated as error
+                    if req.treat_nonzero_as_error {
+                        let is_success = match exit_code {
+                            Some(code) => {
+                                if req.success_exit_codes.is_empty() {
+                                    code == 0
+                                } else {
+                                    req.success_exit_codes.contains(&code)
+                                }
+                            }
+                            None => false, // signal terminated = error
+                        };
+
+                        if !is_success {
+                            return Err(JobWorkerError::RuntimeError(format!(
+                                "Docker exec exited with code {:?}. stderr: {}",
+                                exit_code,
+                                String::from_utf8_lossy(&stderr_buf)
+                            )).into());
+                        }
+                    }
+
                     let docker_result = DockerResult {
                         exit_code,
                         stdout: Some(String::from_utf8_lossy(&stdout_buf).to_string()),
@@ -934,6 +956,39 @@ impl RunnerTrait for DockerRunner {
                     .and_then(|i| i.state)
                     .and_then(|s| s.exit_code.map(|c| c as i32));
                 let execution_time_ms = start_time.elapsed().as_millis() as u64;
+
+                // Check if non-zero exit code should be treated as error
+                if arg.treat_nonzero_as_error {
+                    let is_success = match exit_code {
+                        Some(code) => {
+                            if arg.success_exit_codes.is_empty() {
+                                code == 0
+                            } else {
+                                arg.success_exit_codes.contains(&code)
+                            }
+                        }
+                        None => false, // signal terminated = error
+                    };
+
+                    if !is_success {
+                        // Container cleanup before returning error
+                        docker
+                            .remove_container(
+                                &id,
+                                Some(RemoveContainerOptions {
+                                    force: true,
+                                    ..Default::default()
+                                }),
+                            )
+                            .await?;
+
+                        return Err(JobWorkerError::RuntimeError(format!(
+                            "Docker container exited with code {:?}. stderr: {}",
+                            exit_code,
+                            String::from_utf8_lossy(&stderr_buf)
+                        )).into());
+                    }
+                }
 
                 // remove container if persist to running
                 docker
@@ -1551,6 +1606,192 @@ mod test {
         );
 
         eprintln!("=== DockerRunner non-zero exit code test completed ===");
+    }
+
+    /// Test DockerRunner with treat_nonzero_as_error enabled
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_docker_runner_treat_nonzero_as_error() {
+        eprintln!("=== Testing DockerRunner with treat_nonzero_as_error ===");
+
+        let mut runner = DockerRunner::new();
+
+        // Test with non-zero exit code and treat_nonzero_as_error=true
+        let arg = ProstMessageCodec::serialize_message(&DockerArgs {
+            image: Some("busybox:latest".to_string()),
+            cmd: vec!["sh".to_string(), "-c".to_string(), "exit 1".to_string()],
+            treat_nonzero_as_error: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (result, _metadata) = runner.run(&arg, HashMap::new(), None).await;
+
+        // Should return an error
+        assert!(
+            result.is_err(),
+            "DockerRunner should return error when treat_nonzero_as_error=true and exit code is non-zero"
+        );
+
+        let err = result.unwrap_err();
+        let err_str = err.to_string();
+        eprintln!("Error: {}", err_str);
+        assert!(
+            err_str.contains("exited with code"),
+            "Error message should mention exit code: {}",
+            err_str
+        );
+
+        eprintln!("=== DockerRunner treat_nonzero_as_error test completed ===");
+    }
+
+    /// Test DockerRunner with custom success_exit_codes
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_docker_runner_custom_success_exit_codes() {
+        eprintln!("=== Testing DockerRunner with custom success_exit_codes ===");
+
+        let mut runner = DockerRunner::new();
+
+        // Test with exit code 1 allowed via success_exit_codes
+        let arg = ProstMessageCodec::serialize_message(&DockerArgs {
+            image: Some("busybox:latest".to_string()),
+            cmd: vec!["sh".to_string(), "-c".to_string(), "exit 1".to_string()],
+            treat_nonzero_as_error: true,
+            success_exit_codes: vec![0, 1],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (result, _metadata) = runner.run(&arg, HashMap::new(), None).await;
+
+        // Should succeed because 1 is in success_exit_codes
+        let result_bytes =
+            result.expect("DockerRunner should succeed when exit code is in success_exit_codes");
+        let docker_result: DockerResult = ProstMessageCodec::deserialize_message(&result_bytes)
+            .expect("Should decode DockerResult");
+
+        eprintln!("DockerResult: {:?}", docker_result);
+        assert_eq!(docker_result.exit_code, Some(1), "exit_code should be 1");
+
+        // Now test with exit code 2 which is NOT in success_exit_codes
+        let mut runner2 = DockerRunner::new();
+        let arg2 = ProstMessageCodec::serialize_message(&DockerArgs {
+            image: Some("busybox:latest".to_string()),
+            cmd: vec!["sh".to_string(), "-c".to_string(), "exit 2".to_string()],
+            treat_nonzero_as_error: true,
+            success_exit_codes: vec![0, 1],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (result2, _metadata2) = runner2.run(&arg2, HashMap::new(), None).await;
+
+        // Should fail because 2 is NOT in success_exit_codes
+        assert!(
+            result2.is_err(),
+            "DockerRunner should return error when exit code is not in success_exit_codes"
+        );
+
+        eprintln!("=== DockerRunner custom success_exit_codes test completed ===");
+    }
+
+    /// Test DockerExecRunner with treat_nonzero_as_error enabled
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_docker_exec_runner_treat_nonzero_as_error() {
+        eprintln!("=== Testing DockerExecRunner with treat_nonzero_as_error ===");
+
+        let mut runner = DockerExecRunner::new();
+        runner
+            .create(
+                &CreateRunnerOptions::new(Some("busybox:latest".to_string())),
+                DEFAULT_DOCKER_TIMEOUT_SEC,
+            )
+            .await
+            .expect("Failed to create Docker container");
+
+        // Test with non-zero exit code and treat_nonzero_as_error=true
+        let arg = ProstMessageCodec::serialize_message(&DockerArgs {
+            cmd: vec!["sh".to_string(), "-c".to_string(), "exit 1".to_string()],
+            treat_nonzero_as_error: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (result, _metadata) = runner.run(&arg, HashMap::new(), None).await;
+
+        // Should return an error
+        assert!(
+            result.is_err(),
+            "DockerExecRunner should return error when treat_nonzero_as_error=true and exit code is non-zero"
+        );
+
+        let err = result.unwrap_err();
+        let err_str = err.to_string();
+        eprintln!("Error: {}", err_str);
+        assert!(
+            err_str.contains("exited with code"),
+            "Error message should mention exit code: {}",
+            err_str
+        );
+
+        eprintln!("=== DockerExecRunner treat_nonzero_as_error test completed ===");
+    }
+
+    /// Test DockerExecRunner with custom success_exit_codes
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_docker_exec_runner_custom_success_exit_codes() {
+        eprintln!("=== Testing DockerExecRunner with custom success_exit_codes ===");
+
+        let mut runner = DockerExecRunner::new();
+        runner
+            .create(
+                &CreateRunnerOptions::new(Some("busybox:latest".to_string())),
+                DEFAULT_DOCKER_TIMEOUT_SEC,
+            )
+            .await
+            .expect("Failed to create Docker container");
+
+        // Test with exit code 1 allowed via success_exit_codes
+        let arg = ProstMessageCodec::serialize_message(&DockerArgs {
+            cmd: vec!["sh".to_string(), "-c".to_string(), "exit 1".to_string()],
+            treat_nonzero_as_error: true,
+            success_exit_codes: vec![0, 1],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (result, _metadata) = runner.run(&arg, HashMap::new(), None).await;
+
+        // Should succeed because 1 is in success_exit_codes
+        let result_bytes = result
+            .expect("DockerExecRunner should succeed when exit code is in success_exit_codes");
+        let docker_result: DockerResult = ProstMessageCodec::deserialize_message(&result_bytes)
+            .expect("Should decode DockerResult");
+
+        eprintln!("DockerResult: {:?}", docker_result);
+        assert_eq!(docker_result.exit_code, Some(1), "exit_code should be 1");
+
+        // Test with exit code 2 which is NOT in success_exit_codes
+        let arg2 = ProstMessageCodec::serialize_message(&DockerArgs {
+            cmd: vec!["sh".to_string(), "-c".to_string(), "exit 2".to_string()],
+            treat_nonzero_as_error: true,
+            success_exit_codes: vec![0, 1],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (result2, _metadata2) = runner.run(&arg2, HashMap::new(), None).await;
+
+        // Should fail because 2 is NOT in success_exit_codes
+        assert!(
+            result2.is_err(),
+            "DockerExecRunner should return error when exit code is not in success_exit_codes"
+        );
+
+        eprintln!("=== DockerExecRunner custom success_exit_codes test completed ===");
     }
 
     #[tokio::test]

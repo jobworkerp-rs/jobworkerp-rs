@@ -66,5 +66,15 @@ message DockerArgs {
     // When use_static=true (exec mode), this field is ignored; use DockerRunnerSettings.timeout_sec instead.
     // If not set, uses DockerRunnerSettings.timeout_sec or defaults to 3600 seconds (1 hour).
     optional uint64 timeout_sec = 13;
+
+    // # Treat Non-Zero Exit Code as Error
+    // When set to true, a non-zero exit code from the container will be treated as an error.
+    // Default behavior (false) maintains backward compatibility - non-zero exit codes are not treated as errors.
+    bool treat_nonzero_as_error = 14;
+
+    // # Success Exit Codes
+    // List of exit codes to treat as success (default: [0] when treat_nonzero_as_error is true).
+    // Useful for containers that return non-zero codes for valid outcomes (e.g., grep returns 1 when no match).
+    repeated int32 success_exit_codes = 15;
 }
 
