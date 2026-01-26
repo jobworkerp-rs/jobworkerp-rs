@@ -21,6 +21,7 @@ use ollama_rs::generation::parameters::{FormatType, JsonStructure};
 use ollama_rs::generation::tools::{ToolCall as OllamaToolCall, ToolInfo};
 use ollama_rs::{
     generation::chat::{request::ChatMessageRequest, ChatMessage, MessageRole},
+    generation::images::Image as OllamaImage,
     models::ModelOptions,
     Ollama,
 };
@@ -231,27 +232,79 @@ impl OllamaChatService {
         }
     }
 
-    fn convert_messages(args: &LlmChatArgs) -> Vec<ChatMessage> {
-        args.messages
-            .iter()
-            .map(|m| {
-                let role = Self::role_to_enum(m.role());
-                let content = match &m.content {
-                    Some(content) => match &content.content {
-                        Some(llm::llm_chat_args::message_content::Content::Text(t)) => t.clone(),
-                        _ => "".to_string(),
-                    },
-                    None => "".to_string(),
-                };
-                ChatMessage {
-                    role,
-                    content,
-                    tool_calls: vec![],
-                    images: Some(vec![]),
-                    thinking: None, // TODO String? bool? args.options.and_then(|o| o.extract_reasoning_content),
+    async fn convert_messages(args: &LlmChatArgs) -> Vec<ChatMessage> {
+        let mut messages = Vec::with_capacity(args.messages.len());
+        for m in &args.messages {
+            let role = Self::role_to_enum(m.role());
+            let (content, images) = match &m.content {
+                Some(content) => match &content.content {
+                    Some(llm::llm_chat_args::message_content::Content::Text(t)) => {
+                        (t.clone(), vec![])
+                    }
+                    Some(llm::llm_chat_args::message_content::Content::Image(image)) => {
+                        match Self::convert_proto_image_to_ollama(image).await {
+                            Some(ollama_image) => (String::new(), vec![ollama_image]),
+                            None => {
+                                tracing::warn!("Failed to convert image, skipping");
+                                (String::new(), vec![])
+                            }
+                        }
+                    }
+                    _ => (String::new(), vec![]),
+                },
+                None => (String::new(), vec![]),
+            };
+            messages.push(ChatMessage {
+                role,
+                content,
+                tool_calls: vec![],
+                images: if images.is_empty() {
+                    None
+                } else {
+                    Some(images)
+                },
+                thinking: None,
+            });
+        }
+        messages
+    }
+
+    /// Convert proto Image to ollama_rs Image (base64 string)
+    async fn convert_proto_image_to_ollama(
+        image: &llm::llm_chat_args::message_content::Image,
+    ) -> Option<OllamaImage> {
+        let source = image.source.as_ref()?;
+        if !source.base64.is_empty() {
+            return Some(OllamaImage::from_base64(&source.base64));
+        }
+        if !source.url.is_empty() {
+            // Ollama only accepts base64, so fetch the image from URL and encode
+            // TODO adhoc reqwest get(set timeout, )
+            match reqwest::get(&source.url).await {
+                Ok(response) => match response.bytes().await {
+                    Ok(bytes) => {
+                        use base64::Engine;
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        Some(OllamaImage::from_base64(b64))
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to read image bytes from URL {}: {}",
+                            source.url,
+                            e
+                        );
+                        None
+                    }
+                },
+                Err(e) => {
+                    tracing::error!("Failed to fetch image from URL {}: {}", source.url, e);
+                    None
                 }
-            })
-            .collect()
+            }
+        } else {
+            tracing::warn!("Image has no base64 or URL source");
+            None
+        }
     }
 
     pub async fn request_chat(
@@ -278,7 +331,7 @@ impl OllamaChatService {
 
         let options = Self::create_chat_options(&args);
         let model = args.model.clone().unwrap_or_else(|| self.model.clone());
-        let mut messages = Self::convert_messages(&args);
+        let mut messages = Self::convert_messages(&args).await;
 
         if let Some(system_prompt) = self.system_prompt.clone() {
             messages.retain(|m| m.role != MessageRole::System);
@@ -949,7 +1002,7 @@ impl OllamaChatService {
 
         let options = Self::create_chat_options(&args);
         let model_name = args.model.clone().unwrap_or_else(|| self.model.clone());
-        let messages = Self::convert_messages(&args);
+        let messages = Self::convert_messages(&args).await;
 
         let mut req = ChatMessageRequest::new(model_name, messages);
         req = req.options(options);
