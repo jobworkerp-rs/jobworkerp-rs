@@ -199,6 +199,7 @@ impl GenaiChatService {
                                         call_id: call.call_id,
                                         fn_name: call.fn_name,
                                         fn_arguments: fn_arguments_value,
+                                        thought_signatures: None,
                                     }
                                 })
                                 .collect();
@@ -937,6 +938,19 @@ impl GenaiChatService {
                             }
                         }
                         ChatStreamEvent::ReasoningChunk(chunk) => {
+                            let llm_result = LlmChatResult {
+                                reasoning_content: Some(chunk.content),
+                                done: false,
+                                ..Default::default()
+                            };
+                            let bytes = prost::Message::encode_to_vec(&llm_result);
+                            if !bytes.is_empty() {
+                                yield ResultOutputItem {
+                                    item: Some(result_output_item::Item::Data(bytes)),
+                                };
+                            }
+                        }
+                        ChatStreamEvent::ThoughtSignatureChunk(chunk) => {
                             let llm_result = LlmChatResult {
                                 reasoning_content: Some(chunk.content),
                                 done: false,

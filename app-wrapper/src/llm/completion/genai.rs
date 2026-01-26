@@ -310,6 +310,20 @@ impl GenaiCompletionService {
                                 item: Some(result_output_item::Item::Data(bytes)),
                             })
                         },
+                        ChatStreamEvent::ThoughtSignatureChunk(chunk) => {
+                            let llm_result = LlmCompletionResult {
+                                reasoning_content: Some(chunk.content),
+                                done: false,
+                                ..Default::default()
+                            };
+                            let bytes = prost::Message::encode_to_vec(&llm_result);
+                            match bytes.is_empty() {
+                                true => None,
+                                false => Some(ResultOutputItem {
+                                    item: Some(result_output_item::Item::Data(bytes)),
+                                }),
+                            }
+                        },
                         ChatStreamEvent::ToolCallChunk(_) => {
                             // Handle tool call chunks - for now, we'll ignore them
                             // as they're not directly supported in the current LlmCompletionResult structure
