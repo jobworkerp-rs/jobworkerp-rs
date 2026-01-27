@@ -5,9 +5,9 @@
 use crate::config::AgUiServerConfig;
 use crate::error::{AgUiError, Result};
 use crate::events::{
-    extract_text_from_llm_chat_result, extract_tool_calls_from_llm_result, shared_adapter,
-    tool_calls_to_ag_ui_events, AgUiEvent, EventEncoder, InterruptInfo, InterruptPayload,
-    PendingToolCall, SharedWorkflowEventAdapter,
+    AgUiEvent, EventEncoder, InterruptInfo, InterruptPayload, PendingToolCall,
+    SharedWorkflowEventAdapter, extract_text_from_llm_chat_result,
+    extract_tool_calls_from_llm_result, shared_adapter, tool_calls_to_ag_ui_events,
 };
 use crate::session::{
     EventStore, HitlWaitingInfo, PendingToolCallInfo, Session, SessionManager, SessionState,
@@ -25,8 +25,8 @@ use async_stream::stream;
 use futures::{Stream, StreamExt};
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
 
 /// Fallback counter for event IDs when encoding fails.
@@ -1338,8 +1338,8 @@ where
                             let extracted_tool_calls = extract_tool_calls_from_llm_result(&output_bytes);
 
                             // Emit TOOL_CALL events for both modes (display purpose)
-                            if let Some(ref tool_calls) = extracted_tool_calls {
-                                if !tool_calls.tool_calls.is_empty() {
+                            if let Some(ref tool_calls) = extracted_tool_calls
+                                && !tool_calls.tool_calls.is_empty() {
                                     tracing::info!(
                                         job_id = job_id_value,
                                         tool_count = tool_calls.tool_calls.len(),
@@ -1358,7 +1358,6 @@ where
                                         yield (event_id, tool_event);
                                     }
                                 }
-                            }
 
                             // Emit TEXT_MESSAGE_END for the text portion
                             if let Some(msg_id) = message_id.clone() {

@@ -1,6 +1,6 @@
 use crate::{jobworkerp::runner::create_workflow_args::WorkerOptions, schema_to_json_string};
-use proto::jobworkerp::data::RunnerType;
 use proto::DEFAULT_METHOD_NAME;
+use proto::jobworkerp::data::RunnerType;
 use std::collections::HashMap;
 
 use super::RunnerSpec;

@@ -10,26 +10,26 @@ pub mod test {
 
     use anyhow::Result;
     use app::app::function::function_set::FunctionSetApp;
-    use app::module::{test::create_hybrid_test_app, AppModule};
+    use app::module::{AppModule, test::create_hybrid_test_app};
     use app_wrapper::llm::chat::ollama::OllamaChatService;
     use jobworkerp_base::error::JobWorkerError;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
         self, ChatRole, FunctionOptions, MessageContent,
     };
     use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
-    use jobworkerp_runner::jobworkerp::runner::llm::{llm_chat_args::LlmOptions, LlmChatArgs};
+    use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, llm_chat_args::LlmOptions};
     use proto::jobworkerp::data::RunnerId;
     use proto::jobworkerp::function::data::{
-        function_id, FunctionId, FunctionSetData, FunctionUsing,
+        FunctionId, FunctionSetData, FunctionUsing, function_id,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     /// Test configuration
     const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
     const TEST_MODEL: &str = "qwen3:30b"; // Use qwen3:30b model
-                                          // const TEST_MODEL: &str = "gpt-oss:20b";
+    // const TEST_MODEL: &str = "gpt-oss:20b";
     const TEST_TIMEOUT: Duration = Duration::from_secs(180);
 
     /// Setup function app with COMMAND runner for tool calls using test infrastructure
@@ -173,9 +173,9 @@ pub mod test {
 
         assert!(result.done, "Chat should be completed");
 
-        if let Some(content) = result.content {
-            if let Some(text_content) = content.content {
-                if let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
+        if let Some(content) = result.content
+            && let Some(text_content) = content.content
+                && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Date response: {}", text);
 
                 // The response should mention time/date information
@@ -187,8 +187,6 @@ pub mod test {
                     text
                 );
             }
-            }
-        }
 
         Ok(())
     }
@@ -211,9 +209,9 @@ pub mod test {
 
         assert!(result.done, "Chat should be completed");
 
-        if let Some(content) = result.content {
-            if let Some(text_content) = content.content {
-                if let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
+        if let Some(content) = result.content
+            && let Some(text_content) = content.content
+                && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Ls response: {}", text);
 
                 // The response should contain directory listing information
@@ -223,8 +221,6 @@ pub mod test {
                     text
                 );
             }
-            }
-        }
 
         Ok(())
     }
@@ -237,8 +233,8 @@ pub mod test {
 
         // Test with multiple commands
         let args = create_test_chat_args_with_tools(
-        "Please do the following: 1) Run 'echo Starting test' 2) Run 'date' to get current time 3) Run 'echo Test completed'. Execute these commands and summarize the results.",
-    );
+            "Please do the following: 1) Run 'echo Starting test' 2) Run 'date' to get current time 3) Run 'echo Test completed'. Execute these commands and summarize the results.",
+        );
 
         let context = opentelemetry::Context::current();
         let metadata = HashMap::new();
@@ -251,9 +247,9 @@ pub mod test {
 
         assert!(result.done, "Chat should be completed");
 
-        if let Some(content) = result.content {
-            if let Some(text_content) = content.content {
-                if let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
+        if let Some(content) = result.content
+            && let Some(text_content) = content.content
+                && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Multiple commands response: {}", text);
 
                 // The response should contain results from multiple commands
@@ -270,8 +266,6 @@ pub mod test {
                     text
                 );
             }
-            }
-        }
 
         Ok(())
     }
@@ -314,9 +308,9 @@ pub mod test {
 
         assert!(result.done, "Chat should be completed");
 
-        if let Some(content) = result.content {
-            if let Some(text_content) = content.content {
-                if let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
+        if let Some(content) = result.content
+            && let Some(text_content) = content.content
+                && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Regular chat response: {}", text);
 
                 // Should get a normal conversational response
@@ -326,8 +320,6 @@ pub mod test {
                     text
                 );
             }
-            }
-        }
 
         Ok(())
     }
@@ -341,8 +333,8 @@ pub mod test {
 
         // Test with a command that should fail
         let args = create_test_chat_args_with_tools(
-        "Please run the command 'this_command_does_not_exist_xyz123' and tell me what happens in watching stdout and stderr.",
-    );
+            "Please run the command 'this_command_does_not_exist_xyz123' and tell me what happens in watching stdout and stderr.",
+        );
 
         let context = opentelemetry::Context::current();
         let metadata = HashMap::new();
@@ -351,9 +343,9 @@ pub mod test {
 
         assert!(result.done, "Chat should be completed");
 
-        if let Some(content) = result.content {
-            if let Some(text_content) = content.content {
-                if let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
+        if let Some(content) = result.content
+            && let Some(text_content) = content.content
+                && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Failed command response: {}", text);
 
                 // The response should mention the error
@@ -366,8 +358,6 @@ pub mod test {
                     text
                 );
             }
-            }
-        }
 
         Ok(())
     }

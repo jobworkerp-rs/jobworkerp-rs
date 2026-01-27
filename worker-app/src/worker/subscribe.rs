@@ -81,7 +81,7 @@ mod test {
     use infra_utils::infra::test::setup_test_redis_client;
     use proto::jobworkerp::data::{RunnerId, WorkerData};
     use std::sync::Arc;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     // #[derive(Clone)]
     struct UseWorkerMapAndSubscribeImpl {

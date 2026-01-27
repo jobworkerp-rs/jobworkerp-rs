@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::proto::jobworkerp::service::JobRestoreRequest;
 use crate::proto::jobworkerp::service::{
-    job_restore_service_server::JobRestoreService, SuccessResponse,
+    SuccessResponse, job_restore_service_server::JobRestoreService,
 };
 use crate::service::error_handle::handle_error;
 use app::app::job::JobApp;

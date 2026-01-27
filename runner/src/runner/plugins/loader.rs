@@ -1,6 +1,6 @@
 use super::PluginLoader;
 use crate::runner::plugins::{
-    impls::PluginRunnerWrapperImpl, MultiMethodPluginRunner, PluginRunner, PluginRunnerVariant,
+    MultiMethodPluginRunner, PluginRunner, PluginRunnerVariant, impls::PluginRunnerWrapperImpl,
 };
 use crate::runner::timeout_config::RunnerTimeoutConfig;
 use anyhow::Result;

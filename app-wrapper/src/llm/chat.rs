@@ -1,13 +1,13 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use app::module::AppModule;
 use async_stream::stream;
 use async_trait::async_trait;
 use command_utils::trace::Tracing;
 use futures::stream::{BoxStream, StreamExt};
 use genai::GenaiChatService;
+use jobworkerp_base::APP_WORKER_NAME;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_base::APP_WORKER_NAME;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmRunnerSettings};
 use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
@@ -15,10 +15,10 @@ use jobworkerp_runner::runner::cancellation_helper::{
 use jobworkerp_runner::runner::llm_chat::LLMChatRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use ollama::OllamaChatService;
-use opentelemetry::trace::TraceContextExt;
 use opentelemetry::Context;
+use opentelemetry::trace::TraceContextExt;
 use prost::Message;
-use proto::jobworkerp::data::{result_output_item, ResultOutputItem, RunnerType};
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType, result_output_item};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;

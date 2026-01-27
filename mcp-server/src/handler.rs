@@ -4,8 +4,8 @@ use app::app::function::{FunctionApp, FunctionAppImpl};
 use app_wrapper::llm::chat::conversion::ToolConverter;
 use futures::StreamExt;
 use rmcp::{
-    model::*, service::NotificationContext, service::RequestContext, ErrorData as McpError,
-    RoleServer, ServerHandler,
+    ErrorData as McpError, RoleServer, ServerHandler, model::*, service::NotificationContext,
+    service::RequestContext,
 };
 use std::collections::HashMap;
 use std::sync::Arc;

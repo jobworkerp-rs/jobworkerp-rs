@@ -71,9 +71,12 @@ mod tests {
     #[test]
     fn test_from_env_with_defaults() {
         // Clear environment variables to test defaults
-        std::env::remove_var("JOB_STATUS_RDB_INDEXING");
-        std::env::remove_var("JOB_STATUS_CLEANUP_INTERVAL_HOURS");
-        std::env::remove_var("JOB_STATUS_RETENTION_HOURS");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("JOB_STATUS_RDB_INDEXING") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("JOB_STATUS_CLEANUP_INTERVAL_HOURS") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("JOB_STATUS_RETENTION_HOURS") };
 
         let config = JobStatusConfig::from_env();
         assert!(!config.rdb_indexing_enabled);
@@ -83,9 +86,12 @@ mod tests {
 
     #[test]
     fn test_from_env_with_custom_values() {
-        std::env::set_var("JOB_STATUS_RDB_INDEXING", "true");
-        std::env::set_var("JOB_STATUS_CLEANUP_INTERVAL_HOURS", "2");
-        std::env::set_var("JOB_STATUS_RETENTION_HOURS", "48");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("JOB_STATUS_RDB_INDEXING", "true") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("JOB_STATUS_CLEANUP_INTERVAL_HOURS", "2") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("JOB_STATUS_RETENTION_HOURS", "48") };
 
         let config = JobStatusConfig::from_env();
         assert!(config.rdb_indexing_enabled);
@@ -93,8 +99,11 @@ mod tests {
         assert_eq!(config.retention_hours, 48);
 
         // Cleanup
-        std::env::remove_var("JOB_STATUS_RDB_INDEXING");
-        std::env::remove_var("JOB_STATUS_CLEANUP_INTERVAL_HOURS");
-        std::env::remove_var("JOB_STATUS_RETENTION_HOURS");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("JOB_STATUS_RDB_INDEXING") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("JOB_STATUS_CLEANUP_INTERVAL_HOURS") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("JOB_STATUS_RETENTION_HOURS") };
     }
 }

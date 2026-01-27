@@ -1,8 +1,8 @@
 use app::app::function::helper::McpNameConverter;
 use command_utils::util::json_schema::SchemaCombiner;
 use proto::jobworkerp::function::data::FunctionSpecs;
-use rmcp::model::{ListToolsResult, Tool};
 use rmcp::ErrorData as McpError;
+use rmcp::model::{ListToolsResult, Tool};
 use serde_json;
 use tracing;
 
@@ -158,7 +158,7 @@ impl ToolConverter {
 mod tests {
     use super::*;
     use proto::jobworkerp::function::data::FunctionSpecs;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn make_single_schema_spec() -> FunctionSpecs {
         let mut method_schemas = std::collections::HashMap::new();

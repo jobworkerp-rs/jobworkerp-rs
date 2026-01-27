@@ -4,20 +4,20 @@
 //! and session management components working together.
 
 use ag_ui_front::events::state_diff::{
-    calculate_state_diff, create_state_delta_event, StateTracker,
+    StateTracker, calculate_state_diff, create_state_delta_event,
 };
 use ag_ui_front::events::{
-    result_output_stream_to_ag_ui_events, result_output_stream_to_ag_ui_events_with_end_guarantee,
-    AgUiEvent,
+    AgUiEvent, result_output_stream_to_ag_ui_events,
+    result_output_stream_to_ag_ui_events_with_end_guarantee,
 };
 use ag_ui_front::pubsub::merge_workflow_and_llm_streams;
 use ag_ui_front::types::ids::MessageId;
 use ag_ui_front::types::message::Role;
 use ag_ui_front::types::state::{TaskState, WorkflowState, WorkflowStatus};
 use ag_ui_front::{EventStore, InMemoryEventStore, InMemorySessionManager, SessionManager};
-use futures::stream::BoxStream;
 use futures::StreamExt;
-use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
+use futures::stream::BoxStream;
+use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
 use std::collections::HashMap;
 
 // Helper functions for creating test data

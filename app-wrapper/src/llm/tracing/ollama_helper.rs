@@ -130,42 +130,45 @@ impl UsageData for ChatMessageFinalResponseData {
 pub trait OllamaTracingHelper: GenericLLMTracingHelper {
     /// Convert ChatMessage vector to proper tracing input format
     fn convert_messages_to_input_ollama(messages: &[ChatMessage]) -> serde_json::Value {
-        serde_json::json!(messages
-            .iter()
-            .map(|m| {
-                let role_str = match m.role {
-                    ollama_rs::generation::chat::MessageRole::User => "user",
-                    ollama_rs::generation::chat::MessageRole::Assistant => "assistant",
-                    ollama_rs::generation::chat::MessageRole::System => "system",
-                    ollama_rs::generation::chat::MessageRole::Tool => "tool",
-                };
-                let mut msg_json = serde_json::json!({
-                    "role": role_str,
-                    "content": m.content
-                });
+        serde_json::json!(
+            messages
+                .iter()
+                .map(|m| {
+                    let role_str = match m.role {
+                        ollama_rs::generation::chat::MessageRole::User => "user",
+                        ollama_rs::generation::chat::MessageRole::Assistant => "assistant",
+                        ollama_rs::generation::chat::MessageRole::System => "system",
+                        ollama_rs::generation::chat::MessageRole::Tool => "tool",
+                    };
+                    let mut msg_json = serde_json::json!({
+                        "role": role_str,
+                        "content": m.content
+                    });
 
-                if !m.tool_calls.is_empty() {
-                    msg_json["tool_calls"] = serde_json::json!(m
-                        .tool_calls
-                        .iter()
-                        .map(|tc| serde_json::json!({
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments
-                            }
-                        }))
-                        .collect::<Vec<_>>());
-                }
+                    if !m.tool_calls.is_empty() {
+                        msg_json["tool_calls"] = serde_json::json!(
+                            m.tool_calls
+                                .iter()
+                                .map(|tc| serde_json::json!({
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments
+                                    }
+                                }))
+                                .collect::<Vec<_>>()
+                        );
+                    }
 
-                if let Some(images) = &m.images {
-                    if !images.is_empty() {
+                    if let Some(images) = &m.images
+                        && !images.is_empty()
+                    {
                         msg_json["images"] = serde_json::json!(images.len());
                     }
-                }
 
-                msg_json
-            })
-            .collect::<Vec<_>>())
+                    msg_json
+                })
+                .collect::<Vec<_>>()
+        )
     }
 
     /// Convert ModelOptions to proper model parameters format
@@ -175,13 +178,13 @@ pub trait OllamaTracingHelper: GenericLLMTracingHelper {
         let mut parameters = HashMap::new();
 
         // Serialize ModelOptions to get all fields
-        if let Ok(value) = serde_json::to_value(options) {
-            if let Some(obj) = value.as_object() {
-                for (key, val) in obj {
-                    // Only include non-null values
-                    if !val.is_null() {
-                        parameters.insert(key.clone(), val.clone());
-                    }
+        if let Ok(value) = serde_json::to_value(options)
+            && let Some(obj) = value.as_object()
+        {
+            for (key, val) in obj {
+                // Only include non-null values
+                if !val.is_null() {
+                    parameters.insert(key.clone(), val.clone());
                 }
             }
         }
@@ -233,8 +236,8 @@ pub trait OllamaTracingHelper: GenericLLMTracingHelper {
         call: &ollama_rs::generation::tools::ToolCall,
         action: F,
     ) -> impl std::future::Future<Output = Result<(serde_json::Value, opentelemetry::Context)>>
-           + Send
-           + 'static
+    + Send
+    + 'static
     where
         F: std::future::Future<Output = Result<serde_json::Value, JobWorkerError>> + Send + 'static,
     {

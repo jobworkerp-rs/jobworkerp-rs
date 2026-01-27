@@ -6,12 +6,12 @@
 
 #[cfg(test)]
 mod tests {
-    use super::super::hybrid::tests::create_test_app;
     use super::super::JobApp;
+    use super::super::hybrid::tests::create_test_app;
     use crate::app::worker::UseWorkerApp;
     use anyhow::Result;
-    use infra::infra::job::status::UseJobProcessingStatusRepository;
     use infra::infra::UseIdGenerator;
+    use infra::infra::job::status::UseJobProcessingStatusRepository;
     use infra_utils::infra::test::TEST_RUNTIME;
     use jobworkerp_base::codec::UseProstCodec;
     use proto::jobworkerp::data::{

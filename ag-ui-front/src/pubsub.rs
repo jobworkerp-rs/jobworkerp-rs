@@ -16,8 +16,8 @@ use crate::events::{AgUiEvent, SharedWorkflowEventAdapter};
 use crate::types::ids::MessageId;
 use app::app::job_result::JobResultApp;
 use futures::stream::BoxStream;
-use proto::jobworkerp::data::{JobId, ResultOutputItem};
 use proto::DEFAULT_METHOD_NAME;
+use proto::jobworkerp::data::{JobId, ResultOutputItem};
 use std::sync::Arc;
 
 /// Subscribe to LLM streaming results and convert to AG-UI events.
@@ -244,10 +244,10 @@ fn extract_text_from_json(json: &serde_json::Value) -> String {
                 return content.to_string();
             }
             // For LlmChatResult JSON format: content.text
-            if let Some(content_obj) = obj.get("content").and_then(|v| v.as_object()) {
-                if let Some(text) = content_obj.get("text").and_then(|v| v.as_str()) {
-                    return text.to_string();
-                }
+            if let Some(content_obj) = obj.get("content").and_then(|v| v.as_object())
+                && let Some(text) = content_obj.get("text").and_then(|v| v.as_str())
+            {
+                return text.to_string();
             }
             // Fallback: serialize the entire object
             serde_json::to_string(json).unwrap_or_default()

@@ -94,10 +94,14 @@ mod tests {
 
     #[test]
     fn test_from_env_with_defaults() {
-        std::env::remove_var("WORKER_INSTANCE_ENABLED");
-        std::env::remove_var("WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC");
-        std::env::remove_var("WORKER_INSTANCE_TIMEOUT_SEC");
-        std::env::remove_var("WORKER_INSTANCE_CLEANUP_INTERVAL_SEC");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("WORKER_INSTANCE_ENABLED") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("WORKER_INSTANCE_TIMEOUT_SEC") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("WORKER_INSTANCE_CLEANUP_INTERVAL_SEC") };
 
         let config = WorkerInstanceConfig::from_env();
         assert!(config.enabled);
@@ -108,10 +112,14 @@ mod tests {
 
     #[test]
     fn test_from_env_with_custom_values() {
-        std::env::set_var("WORKER_INSTANCE_ENABLED", "false");
-        std::env::set_var("WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC", "60");
-        std::env::set_var("WORKER_INSTANCE_TIMEOUT_SEC", "180");
-        std::env::set_var("WORKER_INSTANCE_CLEANUP_INTERVAL_SEC", "600");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("WORKER_INSTANCE_ENABLED", "false") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC", "60") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("WORKER_INSTANCE_TIMEOUT_SEC", "180") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("WORKER_INSTANCE_CLEANUP_INTERVAL_SEC", "600") };
 
         let config = WorkerInstanceConfig::from_env();
         assert!(!config.enabled);
@@ -120,9 +128,13 @@ mod tests {
         assert_eq!(config.cleanup_interval_sec, 600);
 
         // Cleanup
-        std::env::remove_var("WORKER_INSTANCE_ENABLED");
-        std::env::remove_var("WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC");
-        std::env::remove_var("WORKER_INSTANCE_TIMEOUT_SEC");
-        std::env::remove_var("WORKER_INSTANCE_CLEANUP_INTERVAL_SEC");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("WORKER_INSTANCE_ENABLED") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("WORKER_INSTANCE_TIMEOUT_SEC") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("WORKER_INSTANCE_CLEANUP_INTERVAL_SEC") };
     }
 }

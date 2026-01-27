@@ -11,16 +11,16 @@ use app::app::job::JobApp;
 use app::module::AppModule;
 use async_stream::stream;
 use command_utils::trace::Tracing;
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::result_output_item;
 use proto::jobworkerp::data::{Job, JobId, JobProcessingStatus, StreamingType};
 use std::fmt::Debug;
 use std::sync::Arc;
-use tonic::metadata::MetadataValue;
 use tonic::Response;
+use tonic::metadata::MetadataValue;
 
 pub trait JobGrpc {
     fn app(&self) -> &Arc<dyn JobApp + 'static>;
@@ -45,12 +45,12 @@ pub trait RequestValidator {
         }
 
         // Channel name length validation
-        if let Some(ref channel) = req.channel {
-            if channel.len() > jobworkerp_base::limits::MAX_CHANNEL_NAME_LENGTH {
-                return Err(tonic::Status::invalid_argument(
-                    "channel name too long (max: 255)",
-                ));
-            }
+        if let Some(ref channel) = req.channel
+            && channel.len() > jobworkerp_base::limits::MAX_CHANNEL_NAME_LENGTH
+        {
+            return Err(tonic::Status::invalid_argument(
+                "channel name too long (max: 255)",
+            ));
         }
 
         Ok(())
@@ -318,19 +318,20 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Ok((id, res, _)) => {
                 // For streaming requests where no actual stream is available (error cases),
                 // return an error status with JobResult in trailers
-                if let Some(job_result) = &res {
-                    if let Some(result_data) = &job_result.data {
-                        use proto::jobworkerp::data::ResultStatus;
-                        if result_data.status != ResultStatus::Success as i32 {
-                            tracing::warn!(
-                                "enqueue_for_stream: job {} failed with status {}, returning gRPC error with trailers",
-                                id.value, result_data.status
-                            );
+                if let Some(job_result) = &res
+                    && let Some(result_data) = &job_result.data
+                {
+                    use proto::jobworkerp::data::ResultStatus;
+                    if result_data.status != ResultStatus::Success as i32 {
+                        tracing::warn!(
+                            "enqueue_for_stream: job {} failed with status {}, returning gRPC error with trailers",
+                            id.value,
+                            result_data.status
+                        );
 
-                            let status = JobGrpcImpl::create_job_error_status(&id, result_data);
+                        let status = JobGrpcImpl::create_job_error_status(&id, result_data);
 
-                            return Err(status);
-                        }
+                        return Err(status);
                     }
                 }
 
@@ -604,8 +605,8 @@ impl JobGrpcImpl {
 mod tests {
     use super::*;
     use crate::proto::jobworkerp::data::{Priority, WorkerId};
-    use crate::proto::jobworkerp::service::job_request::Worker;
     use crate::proto::jobworkerp::service::JobRequest;
+    use crate::proto::jobworkerp::service::job_request::Worker;
     use jobworkerp_base::codec::UseProstCodec;
 
     struct Validator;

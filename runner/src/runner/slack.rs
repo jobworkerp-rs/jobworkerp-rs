@@ -6,7 +6,7 @@ use self::repository::SlackRepository;
 use crate::jobworkerp::runner::{SlackChatPostMessageArgs, SlackRunnerSettings};
 use crate::runner::RunnerTrait;
 use crate::schema_to_json_string;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
@@ -19,10 +19,10 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tonic::async_trait;
 
+use super::RunnerSpec;
 #[allow(unused_imports)] // Used in CancelMonitoring trait implementations
 use super::cancellation::CancelMonitoring;
 use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
-use super::RunnerSpec;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
 pub struct SlackResultOutput {
@@ -175,7 +175,7 @@ impl RunnerTrait for SlackPostMessageRunner {
         let message = ProstMessageCodec::deserialize_message::<SlackChatPostMessageArgs>(arg)?;
 
         use async_stream::stream;
-        use proto::jobworkerp::data::{result_output_item::Item, Trailer};
+        use proto::jobworkerp::data::{Trailer, result_output_item::Item};
 
         let trailer = Arc::new(Trailer {
             metadata: metadata.clone(),

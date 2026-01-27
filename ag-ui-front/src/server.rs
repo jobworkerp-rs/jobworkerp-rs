@@ -5,7 +5,7 @@ pub mod embedded;
 pub mod http;
 pub mod http_async;
 
-pub use auth::{extract_bearer_token, TokenStore};
+pub use auth::{TokenStore, extract_bearer_token};
 pub use embedded::boot_embedded_server;
-pub use http::{boot_ag_ui_server, AppState};
-pub use http_async::{boot_ag_ui_async_server, AsyncAppState};
+pub use http::{AppState, boot_ag_ui_server};
+pub use http_async::{AsyncAppState, boot_ag_ui_async_server};

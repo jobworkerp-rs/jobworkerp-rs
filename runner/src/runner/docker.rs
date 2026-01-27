@@ -2,7 +2,7 @@ use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelp
 use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{DockerArgs, DockerResult, DockerRunnerSettings};
 use crate::schema_to_json_string;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use bollard::container::{AttachContainerResults, LogOutput};
 use bollard::exec::{CreateExecOptions, StartExecResults};
@@ -11,15 +11,15 @@ use bollard::query_parameters::{
     AttachContainerOptions, CreateContainerOptions, CreateImageOptionsBuilder,
     RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
 };
-use bollard::{Docker, API_DEFAULT_VERSION};
-use futures::stream::BoxStream;
+use bollard::{API_DEFAULT_VERSION, Docker};
 use futures::TryStreamExt;
+use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
+use proto::DEFAULT_METHOD_NAME;
 use proto::jobworkerp::data::{
     JobData, JobId, JobResult, ResultOutputItem, RunnerType, StreamingOutputType,
 };
-use proto::DEFAULT_METHOD_NAME;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio_stream::StreamExt;
@@ -532,7 +532,7 @@ impl RunnerTrait for DockerExecRunner {
                     }
                 };
 
-                if let StartExecResults::Attached { mut output, .. } = start_result? {
+                match start_result? { StartExecResults::Attached { mut output, .. } => {
                     loop {
                         tokio::select! {
                             msg_result = output.next() => {
@@ -602,10 +602,10 @@ impl RunnerTrait for DockerExecRunner {
                     };
 
                     ProstMessageCodec::serialize_message(&docker_result)
-                } else {
+                } _ => {
                     tracing::error!("unexpected error: cannot attach container (exec)");
                     Err(anyhow!("unexpected error: cannot attach container (exec)"))
-                }
+                }}
             } else {
                 Err(anyhow!("docker instance is not found"))
             }
@@ -1267,61 +1267,61 @@ impl UseCancelMonitoringHelper for DockerRunner {
 impl Drop for DockerRunner {
     fn drop(&mut self) {
         // Clean up Docker container when DockerRunner is dropped
-        if let Some(docker) = self.docker.take() {
-            if let Some(container_id) = self.current_container_id.take() {
-                // Check if Tokio runtime is available before spawning
-                match tokio::runtime::Handle::try_current() {
-                    Ok(handle) => {
-                        // Spawn a background task to stop and remove the container
-                        handle.spawn(async move {
-                            // Graceful stop (SIGTERM with 10 second timeout)
-                            if let Err(e) = docker
-                                .stop_container(
-                                    &container_id,
-                                    Some(StopContainerOptions {
-                                        t: Some(10),
-                                        ..Default::default()
-                                    }),
-                                )
-                                .await
-                            {
-                                tracing::warn!(
-                                    "DockerRunner Drop: failed to stop container {}: {}",
-                                    container_id,
-                                    e
-                                );
-                            }
-
-                            // Force remove
-                            if let Err(e) = docker
-                                .remove_container(
-                                    &container_id,
-                                    Some(RemoveContainerOptions {
-                                        force: true,
-                                        ..Default::default()
-                                    }),
-                                )
-                                .await
-                            {
-                                tracing::warn!(
-                                    "DockerRunner Drop: failed to remove container {}: {}",
-                                    container_id,
-                                    e
-                                );
-                            }
-
-                            tracing::info!(
-                                "DockerRunner Drop: container {} stopped and removed",
-                                container_id
+        if let Some(docker) = self.docker.take()
+            && let Some(container_id) = self.current_container_id.take()
+        {
+            // Check if Tokio runtime is available before spawning
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    // Spawn a background task to stop and remove the container
+                    handle.spawn(async move {
+                        // Graceful stop (SIGTERM with 10 second timeout)
+                        if let Err(e) = docker
+                            .stop_container(
+                                &container_id,
+                                Some(StopContainerOptions {
+                                    t: Some(10),
+                                    ..Default::default()
+                                }),
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                "DockerRunner Drop: failed to stop container {}: {}",
+                                container_id,
+                                e
                             );
-                        });
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            "DockerRunner Drop: no Tokio runtime available, skipping cleanup for container {}",
+                        }
+
+                        // Force remove
+                        if let Err(e) = docker
+                            .remove_container(
+                                &container_id,
+                                Some(RemoveContainerOptions {
+                                    force: true,
+                                    ..Default::default()
+                                }),
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                "DockerRunner Drop: failed to remove container {}: {}",
+                                container_id,
+                                e
+                            );
+                        }
+
+                        tracing::info!(
+                            "DockerRunner Drop: container {} stopped and removed",
                             container_id
                         );
-                    }
+                    });
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "DockerRunner Drop: no Tokio runtime available, skipping cleanup for container {}",
+                        container_id
+                    );
                 }
             }
         }
@@ -1336,8 +1336,8 @@ mod test {
     };
     use async_trait::async_trait;
     use proto::jobworkerp::data::{JobData, JobId};
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     /// Test stub for RunnerCancellationManager
     /// Simple implementation that wraps a CancellationToken for unit testing

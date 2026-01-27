@@ -15,9 +15,9 @@ use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
+use proto::ProtobufHelper;
 use proto::jobworkerp::data::{RunnerType, StreamingType, WorkerId};
 use proto::jobworkerp::function::data::{FunctionResult, FunctionSpecs, WorkerOptions};
-use proto::ProtobufHelper;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -72,26 +72,19 @@ pub trait FunctionApp:
                 .find_list(vec![], None, None, None, None, None, vec![], None, None)
                 .await?;
             for worker in workers {
-                if let Some(wid) = worker.id {
-                    if let Some(data) = worker.data {
-                        if let Some(runner_id) = data.runner_id {
-                            if let Some(runner) = self.runner_app().find_runner(&runner_id).await? {
-                                if runner.id == Some(runner_id) {
-                                    // warn only
-                                    match Self::convert_worker_to_function_specs(wid, data, runner)
-                                    {
-                                        Ok(specs) => {
-                                            functions.push(specs);
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Failed to convert worker to function specs: {:?}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
-                            }
+                if let Some(wid) = worker.id
+                    && let Some(data) = worker.data
+                    && let Some(runner_id) = data.runner_id
+                    && let Some(runner) = self.runner_app().find_runner(&runner_id).await?
+                    && runner.id == Some(runner_id)
+                {
+                    // warn only
+                    match Self::convert_worker_to_function_specs(wid, data, runner) {
+                        Ok(specs) => {
+                            functions.push(specs);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to convert worker to function specs: {:?}", e);
                         }
                     }
                 }
@@ -112,7 +105,7 @@ pub trait FunctionApp:
         timeout_sec: u32,
         streaming: bool,
     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<FunctionResult>> + Send + 'a>> {
-        use futures::{stream, StreamExt};
+        use futures::{StreamExt, stream};
 
         let future = async move {
             tracing::debug!(
@@ -298,7 +291,7 @@ pub trait FunctionApp:
         using: Option<String>, // Method name for multi-method runners (MCP/Plugin)
     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<FunctionResult>> + Send + 'a>> {
         use futures::StreamExt;
-        use proto::jobworkerp::data::{result_output_item, ResultStatus};
+        use proto::jobworkerp::data::{ResultStatus, result_output_item};
         use proto::jobworkerp::function::data::FunctionExecutionInfo;
 
         Box::pin(stream! {

@@ -13,10 +13,10 @@ use app::module::AppModule;
 use async_stream::stream;
 use command_utils::trace::Tracing;
 use futures::stream::BoxStream;
+use infra::infra::UseJobQueueConfig;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::worker_instance::UseWorkerInstanceRepository;
 use infra::infra::worker_instance::WorkerInstanceRepository;
-use infra::infra::UseJobQueueConfig;
 use jobworkerp_base::WORKER_INSTANCE_CONFIG;
 use proto::jobworkerp::data::{RetryPolicy, StorageType};
 use std::fmt::Debug;
@@ -179,16 +179,16 @@ pub trait ResponseProcessor: UseJobqueueAndCodec {
 
 #[tonic::async_trait]
 impl<
-        T: WorkerGrpc
-            + RequestValidator
-            + ResponseProcessor
-            + UseWorkerConfig
-            + Tracing
-            + Send
-            + Debug
-            + Sync
-            + 'static,
-    > WorkerService for T
+    T: WorkerGrpc
+        + RequestValidator
+        + ResponseProcessor
+        + UseWorkerConfig
+        + Tracing
+        + Send
+        + Debug
+        + Sync
+        + 'static,
+> WorkerService for T
 {
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "create"))]
     async fn create(
@@ -469,7 +469,7 @@ impl ResponseProcessor for WorkerGrpcImpl {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use infra::infra::{job::rows::JobqueueAndCodec, JobQueueConfig};
+    use infra::infra::{JobQueueConfig, job::rows::JobqueueAndCodec};
     use jobworkerp_base::codec::UseProstCodec;
     use proto::jobworkerp::data::RetryType;
 
@@ -683,16 +683,18 @@ mod tests {
         assert!(v.validate_channel(None).is_ok());
 
         // Test with existing custom channel
-        assert!(v
-            .validate_channel(Some(&"custom-channel".to_string()))
-            .is_ok());
+        assert!(
+            v.validate_channel(Some(&"custom-channel".to_string()))
+                .is_ok()
+        );
 
         // Test with default channel name explicitly
-        assert!(v
-            .validate_channel(Some(
+        assert!(
+            v.validate_channel(Some(
                 &<Validator as UseJobqueueAndCodec>::DEFAULT_CHANNEL_NAME.to_string()
             ))
-            .is_ok());
+            .is_ok()
+        );
     }
 
     #[test]

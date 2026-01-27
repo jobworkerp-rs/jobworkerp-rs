@@ -13,11 +13,11 @@ use async_trait::async_trait;
 use chan::{ChanJobDispatcher, ChanJobDispatcherImpl};
 use command_utils::util::shutdown::ShutdownLock;
 use infra::infra::{
-    job::rdb::UseRdbChanJobRepository,
-    job::status::rdb::UseRdbJobProcessingStatusIndexRepository,
-    job::status::UseJobProcessingStatusRepository,
-    module::{rdb::RdbChanRepositoryModule, redis::RedisRepositoryModule},
     IdGeneratorWrapper, UseIdGenerator,
+    job::rdb::UseRdbChanJobRepository,
+    job::status::UseJobProcessingStatusRepository,
+    job::status::rdb::UseRdbJobProcessingStatusIndexRepository,
+    module::{rdb::RdbChanRepositoryModule, redis::RedisRepositoryModule},
 };
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{

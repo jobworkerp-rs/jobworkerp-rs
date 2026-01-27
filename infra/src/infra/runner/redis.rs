@@ -75,10 +75,9 @@ where
             data: Some(data),
             ..
         }) = rem
+            && let Err(e) = self.runner_spec_factory().unload_plugins(&data.name).await
         {
-            if let Err(e) = self.runner_spec_factory().unload_plugins(&data.name).await {
-                tracing::warn!("Failed to remove runner: {:?}", e);
-            }
+            tracing::warn!("Failed to remove runner: {:?}", e);
         }
         Ok(res)
     }

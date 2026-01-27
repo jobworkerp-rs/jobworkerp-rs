@@ -12,14 +12,14 @@
 ///
 /// Run with: cargo test --package app-wrapper --test script_runner_e2e_test -- --ignored --test-threads=1
 use anyhow::Result;
-use app::module::test::create_hybrid_test_app;
 use app::module::AppModule;
+use app::module::test::create_hybrid_test_app;
 use app_wrapper::modules::{AppWrapperConfigModule, AppWrapperModule, AppWrapperRepositoryModule};
+use app_wrapper::workflow::WorkflowConfig;
 use app_wrapper::workflow::definition::WorkflowLoader;
 use app_wrapper::workflow::execute::task::run::python::MAX_RECURSIVE_DEPTH;
 use app_wrapper::workflow::execute::workflow::WorkflowExecutor;
-use app_wrapper::workflow::WorkflowConfig;
-use futures::{pin_mut, StreamExt};
+use futures::{StreamExt, pin_mut};
 use infra_utils::infra::test::TEST_RUNTIME;
 use serde_json::json;
 use std::collections::HashMap;
@@ -238,10 +238,12 @@ Code example: print('hello')
         assert_eq!(result["execution_safe"], true);
         assert_eq!(result["has_triple_quotes"], true);
         assert!(result["payload_received"].as_str().unwrap().contains("'''"));
-        assert!(result["payload_received"]
-            .as_str()
-            .unwrap()
-            .contains("Code example"));
+        assert!(
+            result["payload_received"]
+                .as_str()
+                .unwrap()
+                .contains("Code example")
+        );
 
         println!("✅ Test 2: Triple-quote payload was safely handled via Base64 encoding");
 
@@ -826,9 +828,13 @@ fn test_e2e_test_setup_instructions() {
     println!("  2. Ensure uv is in PATH: uv --version");
     println!("  3. Python 3.8-3.13 should be available via uv");
     println!("\nRun tests:");
-    println!("  cargo test --package app-wrapper --test script_runner_e2e_test -- --ignored --test-threads=1");
+    println!(
+        "  cargo test --package app-wrapper --test script_runner_e2e_test -- --ignored --test-threads=1"
+    );
     println!("\nRun specific test:");
-    println!("  cargo test --package app-wrapper test_inline_script_with_base64_arguments -- --ignored --nocapture");
+    println!(
+        "  cargo test --package app-wrapper test_inline_script_with_base64_arguments -- --ignored --nocapture"
+    );
     println!("\nNote:");
     println!("  - Tests are marked with #[ignore] to avoid CI failures");
     println!("  - Use --test-threads=1 to avoid database conflicts");

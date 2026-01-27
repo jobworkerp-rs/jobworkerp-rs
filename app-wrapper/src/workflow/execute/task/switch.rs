@@ -120,7 +120,7 @@ mod tests {
     use crate::workflow::execute::context::{TaskContext, WorkflowContext};
     use crate::workflow::execute::task::TaskExecutorTrait;
     use opentelemetry::Context;
-    use serde_json::{json, Map};
+    use serde_json::{Map, json};
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::RwLock;

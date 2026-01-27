@@ -5,10 +5,10 @@ use crate::proto::jobworkerp::data::{JobResultSortField, ResultOutputItem};
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultService;
 use crate::proto::jobworkerp::service::listen_request::Worker;
 use crate::proto::jobworkerp::service::{
-    listen_by_worker_request, CountCondition, CountJobResultRequest, CountResponse,
-    DeleteJobResultBulkRequest, DeleteJobResultBulkResponse, FindJobResultListRequest,
-    FindListByJobIdRequest, FindListRequest, ListenByWorkerRequest, ListenRequest,
-    OptionalJobResultResponse, SuccessResponse,
+    CountCondition, CountJobResultRequest, CountResponse, DeleteJobResultBulkRequest,
+    DeleteJobResultBulkResponse, FindJobResultListRequest, FindListByJobIdRequest, FindListRequest,
+    ListenByWorkerRequest, ListenRequest, OptionalJobResultResponse, SuccessResponse,
+    listen_by_worker_request,
 };
 use crate::service::error_handle::handle_error;
 use crate::service::validation::{
@@ -22,12 +22,12 @@ use command_utils::trace::Tracing;
 use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
-use proto::jobworkerp::data::{JobResult, JobResultId};
 use proto::DEFAULT_METHOD_NAME;
+use proto::jobworkerp::data::{JobResult, JobResultId};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::metadata::MetadataValue;
 use tonic::Response;
+use tonic::metadata::MetadataValue;
 
 pub trait JobResultGrpc {
     fn app(&self) -> &Arc<dyn JobResultApp + 'static>;
@@ -398,7 +398,7 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         if req.end_time_before.is_none() && req.statuses.is_empty() && req.worker_ids.is_empty() {
             return Err(tonic::Status::invalid_argument(
                 "At least one filter condition is required (end_time_before, statuses, or worker_ids). \
-                 Unconditional deletion of all records is not permitted for safety reasons."
+                 Unconditional deletion of all records is not permitted for safety reasons.",
             ));
         }
 

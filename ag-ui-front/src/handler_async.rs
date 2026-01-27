@@ -6,7 +6,7 @@
 
 use crate::config::AgUiServerConfig;
 use crate::error::{AgUiError, Result};
-use crate::events::{shared_adapter, AgUiEvent, EventEncoder, SharedWorkflowEventAdapter};
+use crate::events::{AgUiEvent, EventEncoder, SharedWorkflowEventAdapter, shared_adapter};
 use crate::session::{EventStore, HitlWaitingInfo, Session, SessionManager, SessionState};
 use crate::types::{RunAgentInput, RunId, ThreadId, WorkflowState, WorkflowStatus};
 use app::app::function::FunctionApp;
@@ -21,8 +21,8 @@ use proto::jobworkerp::data::JobId;
 use proto::jobworkerp::function::data::FunctionResult;
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
 
 /// Fallback counter for event IDs when encoding fails.
@@ -586,8 +586,8 @@ where
         workflow_data: Option<&str>,
     ) -> Result<InlineWorkflowArgs> {
         use jobworkerp_runner::jobworkerp::runner::inline_workflow_args::{
-            checkpoint::{CheckPointContext, TaskCheckPointContext, WorkflowCheckPointContext},
             Checkpoint, WorkflowSource,
+            checkpoint::{CheckPointContext, TaskCheckPointContext, WorkflowCheckPointContext},
         };
 
         // For inline workflow, workflow_data must be provided by client

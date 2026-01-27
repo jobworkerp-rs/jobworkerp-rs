@@ -11,8 +11,8 @@ use crate::{
 };
 use anyhow::Result;
 use app::module::AppModule;
-use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
 use jobworkerp_runner::runner::mcp::McpServerRunnerImpl;
+use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
 use jobworkerp_runner::runner::{
     cancellation::CancellableRunner,
     command::CommandRunnerImpl,

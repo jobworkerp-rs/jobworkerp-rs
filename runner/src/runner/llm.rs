@@ -1,10 +1,10 @@
 use super::{CollectStreamFuture, RunnerSpec};
 use crate::jobworkerp::runner::llm::LlmCompletionResult;
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use prost::Message;
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use proto::DEFAULT_METHOD_NAME;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use std::collections::HashMap;
 
 pub struct LLMCompletionRunnerSpecImpl {}
@@ -106,7 +106,7 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
         _using: Option<&str>,
     ) -> CollectStreamFuture {
         use crate::jobworkerp::runner::llm::llm_completion_result::{
-            message_content, GenerationContext, MessageContent, Usage,
+            GenerationContext, MessageContent, Usage, message_content,
         };
         use proto::jobworkerp::data::result_output_item;
 
@@ -130,12 +130,11 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
                             Ok(chunk) => {
                                 successful_decode_count += 1;
                                 // Concatenate text content
-                                if let Some(content) = chunk.content {
-                                    if let Some(message_content::Content::Text(text)) =
+                                if let Some(content) = chunk.content
+                                    && let Some(message_content::Content::Text(text)) =
                                         content.content
-                                    {
-                                        combined_text.push_str(&text);
-                                    }
+                                {
+                                    combined_text.push_str(&text);
                                 }
 
                                 // Concatenate reasoning content
@@ -212,10 +211,10 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
 mod tests {
     use super::*;
     use crate::jobworkerp::runner::llm::llm_completion_result::{
-        message_content, GenerationContext, MessageContent, Usage,
+        GenerationContext, MessageContent, Usage, message_content,
     };
     use futures::stream;
-    use proto::jobworkerp::data::{result_output_item, Trailer};
+    use proto::jobworkerp::data::{Trailer, result_output_item};
 
     fn create_completion_result(
         text: &str,
@@ -367,10 +366,10 @@ mod tests {
         let (bytes, returned_metadata) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmCompletionResult::decode(bytes.as_slice()).unwrap();
-        if let Some(content) = decoded.content {
-            if let Some(message_content::Content::Text(text)) = content.content {
-                assert_eq!(text, "final result");
-            }
+        if let Some(content) = decoded.content
+            && let Some(message_content::Content::Text(text)) = content.content
+        {
+            assert_eq!(text, "final result");
         }
         assert_eq!(returned_metadata.get("key"), Some(&"value".to_string()));
     }

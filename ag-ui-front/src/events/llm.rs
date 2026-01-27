@@ -15,12 +15,12 @@ use crate::events::types::AgUiEvent;
 use crate::types::ids::MessageId;
 use crate::types::message::Role;
 use futures::stream::{BoxStream, StreamExt};
-use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmChatResult;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
 use prost::Message;
-use proto::jobworkerp::data::{result_output_item, ResultOutputItem};
-use std::sync::atomic::{AtomicBool, Ordering};
+use proto::jobworkerp::data::{ResultOutputItem, result_output_item};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Extracted tool call information from LlmChatResult.
 #[derive(Debug, Clone)]
@@ -54,17 +54,17 @@ pub struct ExtractedToolCalls {
 /// Returns `Some(ExtractedToolCalls)` if tool calls are found.
 pub fn extract_tool_calls_from_llm_result(bytes: &[u8]) -> Option<ExtractedToolCalls> {
     // First try protobuf decoding
-    if let Ok(result) = LlmChatResult::decode(bytes) {
-        if let Some(extracted) = extract_tool_calls_from_protobuf_result(&result) {
-            return Some(extracted);
-        }
+    if let Ok(result) = LlmChatResult::decode(bytes)
+        && let Some(extracted) = extract_tool_calls_from_protobuf_result(&result)
+    {
+        return Some(extracted);
     }
 
     // Fallback: try JSON decoding (for StreamingJobCompleted context.output)
-    if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(bytes) {
-        if let Some(extracted) = extract_tool_calls_from_json(&json_value) {
-            return Some(extracted);
-        }
+    if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(bytes)
+        && let Some(extracted) = extract_tool_calls_from_json(&json_value)
+    {
+        return Some(extracted);
     }
 
     tracing::trace!("No tool calls found in bytes (tried both protobuf and JSON)");
@@ -74,53 +74,52 @@ pub fn extract_tool_calls_from_llm_result(bytes: &[u8]) -> Option<ExtractedToolC
 /// Extract tool calls from a protobuf LlmChatResult.
 fn extract_tool_calls_from_protobuf_result(result: &LlmChatResult) -> Option<ExtractedToolCalls> {
     // Check for pending_tool_calls first (HITL mode)
-    if let Some(pending) = &result.pending_tool_calls {
-        if !pending.calls.is_empty() {
-            let tool_calls = pending
-                .calls
-                .iter()
-                .map(|call| ExtractedToolCall {
-                    call_id: call.call_id.clone(),
-                    fn_name: call.fn_name.clone(),
-                    fn_arguments: call.fn_arguments.clone(),
-                })
-                .collect();
-            let requires_execution = result.requires_tool_execution.unwrap_or(true);
-            tracing::debug!(
-                "Extracted {} pending tool calls from protobuf, requires_execution={}",
-                pending.calls.len(),
-                requires_execution
-            );
-            return Some(ExtractedToolCalls {
-                tool_calls,
-                requires_execution,
-            });
-        }
+    if let Some(pending) = &result.pending_tool_calls
+        && !pending.calls.is_empty()
+    {
+        let tool_calls = pending
+            .calls
+            .iter()
+            .map(|call| ExtractedToolCall {
+                call_id: call.call_id.clone(),
+                fn_name: call.fn_name.clone(),
+                fn_arguments: call.fn_arguments.clone(),
+            })
+            .collect();
+        let requires_execution = result.requires_tool_execution.unwrap_or(true);
+        tracing::debug!(
+            "Extracted {} pending tool calls from protobuf, requires_execution={}",
+            pending.calls.len(),
+            requires_execution
+        );
+        return Some(ExtractedToolCalls {
+            tool_calls,
+            requires_execution,
+        });
     }
 
     // Check for content.tool_calls (auto-calling mode, for display)
-    if let Some(content) = &result.content {
-        if let Some(message_content::Content::ToolCalls(tool_calls)) = &content.content {
-            if !tool_calls.calls.is_empty() {
-                let extracted = tool_calls
-                    .calls
-                    .iter()
-                    .map(|call| ExtractedToolCall {
-                        call_id: call.call_id.clone(),
-                        fn_name: call.fn_name.clone(),
-                        fn_arguments: call.fn_arguments.clone(),
-                    })
-                    .collect();
-                tracing::debug!(
-                    "Extracted {} tool calls from protobuf content (auto-calling mode)",
-                    tool_calls.calls.len()
-                );
-                return Some(ExtractedToolCalls {
-                    tool_calls: extracted,
-                    requires_execution: false,
-                });
-            }
-        }
+    if let Some(content) = &result.content
+        && let Some(message_content::Content::ToolCalls(tool_calls)) = &content.content
+        && !tool_calls.calls.is_empty()
+    {
+        let extracted = tool_calls
+            .calls
+            .iter()
+            .map(|call| ExtractedToolCall {
+                call_id: call.call_id.clone(),
+                fn_name: call.fn_name.clone(),
+                fn_arguments: call.fn_arguments.clone(),
+            })
+            .collect();
+        tracing::debug!(
+            "Extracted {} tool calls from protobuf content (auto-calling mode)",
+            tool_calls.calls.len()
+        );
+        return Some(ExtractedToolCalls {
+            tool_calls: extracted,
+            requires_execution: false,
+        });
     }
 
     None
@@ -213,10 +212,84 @@ fn extract_tool_calls_from_json(value: &serde_json::Value) -> Option<ExtractedTo
         .get("pending_tool_calls")
         .or_else(|| obj.get("pendingToolCalls"));
 
-    if let Some(pending) = pending_calls {
-        if let Some(calls_arr) = pending.get("calls").and_then(|c| c.as_array()) {
-            if !calls_arr.is_empty() {
-                let tool_calls: Vec<ExtractedToolCall> = calls_arr
+    if let Some(pending) = pending_calls
+        && let Some(calls_arr) = pending.get("calls").and_then(|c| c.as_array())
+        && !calls_arr.is_empty()
+    {
+        let tool_calls: Vec<ExtractedToolCall> = calls_arr
+            .iter()
+            .filter_map(|call| {
+                let call_obj = call.as_object()?;
+                let call_id = call_obj
+                    .get("call_id")
+                    .or_else(|| call_obj.get("callId"))
+                    .and_then(|v| v.as_str())?
+                    .to_string();
+                let fn_name = call_obj
+                    .get("fn_name")
+                    .or_else(|| call_obj.get("fnName"))
+                    .and_then(|v| v.as_str())?
+                    .to_string();
+                let fn_arguments = call_obj
+                    .get("fn_arguments")
+                    .or_else(|| call_obj.get("fnArguments"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Some(ExtractedToolCall {
+                    call_id,
+                    fn_name,
+                    fn_arguments,
+                })
+            })
+            .collect();
+
+        if !tool_calls.is_empty() {
+            let requires_execution = obj
+                .get("requires_tool_execution")
+                .or_else(|| obj.get("requiresToolExecution"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+
+            tracing::debug!(
+                "Extracted {} pending tool calls from JSON, requires_execution={}",
+                tool_calls.len(),
+                requires_execution
+            );
+            return Some(ExtractedToolCalls {
+                tool_calls,
+                requires_execution,
+            });
+        }
+    }
+
+    // Check for content.tool_calls
+    // Note: Even if tool_calls are in content, check requires_tool_execution flag
+    // to determine if this is HITL mode
+    if let Some(content) = obj.get("content")
+        && let Some(content_obj) = content.as_object()
+    {
+        // Check for toolCalls in content object
+        let tool_calls_value = content_obj
+            .get("tool_calls")
+            .or_else(|| content_obj.get("toolCalls"))
+            .or_else(|| {
+                content_obj.get("content").and_then(|c| {
+                    c.as_object()
+                        .and_then(|co| co.get("ToolCalls").or_else(|| co.get("tool_calls")))
+                })
+            });
+
+        if let Some(tc) = tool_calls_value {
+            let calls_arr = tc
+                .get("calls")
+                .and_then(|c| c.as_array())
+                .or_else(|| tc.as_array());
+
+            if let Some(calls) = calls_arr
+                && !calls.is_empty()
+            {
+                let extracted: Vec<ExtractedToolCall> = calls
                     .iter()
                     .filter_map(|call| {
                         let call_obj = call.as_object()?;
@@ -244,99 +317,24 @@ fn extract_tool_calls_from_json(value: &serde_json::Value) -> Option<ExtractedTo
                     })
                     .collect();
 
-                if !tool_calls.is_empty() {
+                if !extracted.is_empty() {
+                    // Check requires_tool_execution flag at root level
+                    // This determines if it's HITL mode (requires client approval)
                     let requires_execution = obj
                         .get("requires_tool_execution")
                         .or_else(|| obj.get("requiresToolExecution"))
                         .and_then(|v| v.as_bool())
-                        .unwrap_or(true);
+                        .unwrap_or(false);
 
                     tracing::debug!(
-                        "Extracted {} pending tool calls from JSON, requires_execution={}",
-                        tool_calls.len(),
+                        "Extracted {} tool calls from JSON content, requires_execution={}",
+                        extracted.len(),
                         requires_execution
                     );
                     return Some(ExtractedToolCalls {
-                        tool_calls,
+                        tool_calls: extracted,
                         requires_execution,
                     });
-                }
-            }
-        }
-    }
-
-    // Check for content.tool_calls
-    // Note: Even if tool_calls are in content, check requires_tool_execution flag
-    // to determine if this is HITL mode
-    if let Some(content) = obj.get("content") {
-        if let Some(content_obj) = content.as_object() {
-            // Check for toolCalls in content object
-            let tool_calls_value = content_obj
-                .get("tool_calls")
-                .or_else(|| content_obj.get("toolCalls"))
-                .or_else(|| {
-                    content_obj.get("content").and_then(|c| {
-                        c.as_object()
-                            .and_then(|co| co.get("ToolCalls").or_else(|| co.get("tool_calls")))
-                    })
-                });
-
-            if let Some(tc) = tool_calls_value {
-                let calls_arr = tc
-                    .get("calls")
-                    .and_then(|c| c.as_array())
-                    .or_else(|| tc.as_array());
-
-                if let Some(calls) = calls_arr {
-                    if !calls.is_empty() {
-                        let extracted: Vec<ExtractedToolCall> = calls
-                            .iter()
-                            .filter_map(|call| {
-                                let call_obj = call.as_object()?;
-                                let call_id = call_obj
-                                    .get("call_id")
-                                    .or_else(|| call_obj.get("callId"))
-                                    .and_then(|v| v.as_str())?
-                                    .to_string();
-                                let fn_name = call_obj
-                                    .get("fn_name")
-                                    .or_else(|| call_obj.get("fnName"))
-                                    .and_then(|v| v.as_str())?
-                                    .to_string();
-                                let fn_arguments = call_obj
-                                    .get("fn_arguments")
-                                    .or_else(|| call_obj.get("fnArguments"))
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                Some(ExtractedToolCall {
-                                    call_id,
-                                    fn_name,
-                                    fn_arguments,
-                                })
-                            })
-                            .collect();
-
-                        if !extracted.is_empty() {
-                            // Check requires_tool_execution flag at root level
-                            // This determines if it's HITL mode (requires client approval)
-                            let requires_execution = obj
-                                .get("requires_tool_execution")
-                                .or_else(|| obj.get("requiresToolExecution"))
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-
-                            tracing::debug!(
-                                "Extracted {} tool calls from JSON content, requires_execution={}",
-                                extracted.len(),
-                                requires_execution
-                            );
-                            return Some(ExtractedToolCalls {
-                                tool_calls: extracted,
-                                requires_execution,
-                            });
-                        }
-                    }
                 }
             }
         }
@@ -389,11 +387,7 @@ pub fn extract_text_from_llm_chat_result(bytes: &[u8]) -> Option<String> {
                 match content.content {
                     Some(message_content::Content::Text(text)) => {
                         tracing::debug!("Extracted text content: {}", text);
-                        if text.is_empty() {
-                            None
-                        } else {
-                            Some(text)
-                        }
+                        if text.is_empty() { None } else { Some(text) }
                     }
                     Some(message_content::Content::ToolCalls(_)) => {
                         // Tool calls are not rendered as text content in AG-UI

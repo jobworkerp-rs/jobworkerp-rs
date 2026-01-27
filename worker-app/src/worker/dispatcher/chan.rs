@@ -1,8 +1,8 @@
 use super::JobDispatcher;
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
+use crate::worker::runner::JobRunner;
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use crate::worker::runner::result::RunnerResultHandler;
-use crate::worker::runner::JobRunner;
 use anyhow::Result;
 use app::app::runner::{RunnerApp, UseRunnerApp};
 use app::app::worker::{UseWorkerApp, WorkerApp};
@@ -146,11 +146,10 @@ pub trait ChanJobDispatcher:
                     Ok(result) => Ok(result),
                     Err(e) => {
                         // Check if status should be deleted based on error type
-                        if let Some(jid) = job_id {
-                            if super::should_cleanup_status_on_error(&e) {
+                        if let Some(jid) = job_id
+                            && super::should_cleanup_status_on_error(&e) {
                                 self.cleanup_failed_job_status(&jid, "memory").await;
                             }
-                        }
                         Err(e)
                     }
                 }
@@ -348,8 +347,8 @@ pub trait ChanJobDispatcher:
                 .await?;
 
             // Index WAIT_RESULT status in RDB (if enabled) with full metadata
-            if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
-                if let Err(e) = index_repo
+            if let Some(index_repo) = self.rdb_job_processing_status_index_repository()
+                && let Err(e) = index_repo
                     .index_status(
                         &jid,
                         &JobProcessingStatus::WaitResult,
@@ -368,7 +367,6 @@ pub trait ChanJobDispatcher:
                         e
                     );
                 }
-            }
 
             self.result_processor().process_result(r.0, r.1, wdat).await
     }

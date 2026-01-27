@@ -4,13 +4,13 @@ use super::{JobResultApp, JobResultAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
-use futures::stream::BoxStream;
 use futures::Stream;
+use futures::stream::BoxStream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::job_result::pubsub::JobResultSubscriber;
 use infra::infra::job_result::pubsub::chan::{
     ChanJobResultPubSubRepositoryImpl, UseChanJobResultPubSubRepository,
 };
-use infra::infra::job_result::pubsub::JobResultSubscriber;
 use infra::infra::job_result::rdb::{RdbJobResultRepository, UseRdbJobResultRepository};
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
@@ -156,7 +156,7 @@ impl JobResultApp for RdbJobResultAppImpl {
         // find from db first if enabled
         let found = self.rdb_job_result_repository().find(id).await;
         // fill found.worker_name and found.max_retry from worker
-        let v = if let Ok(Some(ref fnd)) = found.as_ref() {
+        let v = if let Ok(Some(fnd)) = found.as_ref() {
             if let Some(dat) = fnd.data.as_ref() {
                 self._fill_worker_data_to_data(dat.clone()).await.map(|d| {
                     Some(JobResult {

@@ -20,7 +20,7 @@ use super::create_workflow::CreateWorkflowRunnerSpecImpl;
 use super::workflow::ReusableWorkflowRunnerSpecImpl;
 use super::{CollectStreamFuture, MethodJsonSchema, RunnerSpec};
 use crate::schema_to_json_string;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures::stream::BoxStream;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use std::collections::HashMap;
@@ -195,10 +195,12 @@ mod tests {
     fn test_resolve_method_unknown() {
         let result = WorkflowUnifiedRunnerSpecImpl::resolve_method(Some("unknown"));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown method 'unknown'"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown method 'unknown'")
+        );
     }
 
     #[test]
@@ -218,11 +220,12 @@ mod tests {
 
         // Verify run method
         let run = schemas.get("run").unwrap();
-        assert!(run
-            .description
-            .as_ref()
-            .unwrap()
-            .contains("Execute workflow"));
+        assert!(
+            run.description
+                .as_ref()
+                .unwrap()
+                .contains("Execute workflow")
+        );
         assert!(!run.args_proto.is_empty());
         assert!(!run.result_proto.is_empty());
         assert_eq!(run.output_type, StreamingOutputType::Both as i32);

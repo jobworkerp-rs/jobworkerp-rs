@@ -46,10 +46,12 @@ pub trait GenericLLMTracingHelper {
             span_builder = span_builder.model_parameters(params.clone());
         }
         if !tools.is_empty() {
-            let tools_json = serde_json::json!(tools
-                .iter()
-                .map(|t| t.get_name().to_string())
-                .collect::<Vec<_>>());
+            let tools_json = serde_json::json!(
+                tools
+                    .iter()
+                    .map(|t| t.get_name().to_string())
+                    .collect::<Vec<_>>()
+            );
             let mut metadata = HashMap::new();
             metadata.insert("tools".to_string(), tools_json);
             span_builder = span_builder.metadata(metadata);
@@ -154,8 +156,8 @@ pub trait GenericLLMTracingHelper {
         arguments: serde_json::Value,
         action: F,
     ) -> impl std::future::Future<Output = Result<(serde_json::Value, opentelemetry::Context)>>
-           + Send
-           + 'static
+    + Send
+    + 'static
     where
         F: std::future::Future<Output = Result<serde_json::Value, JobWorkerError>> + Send + 'static,
     {

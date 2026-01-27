@@ -75,7 +75,7 @@ pub mod test_common;
 /// Macro to convert a Rust type to a JSON schema string
 #[macro_export]
 macro_rules! schema_to_json_string {
-    ($type:ty, $method_name:expr) => {{
+    ($type:ty, $method_name:expr_2021) => {{
         let schema = schemars::schema_for!($type);
         match serde_json::to_string(&schema) {
             Ok(s) => s,
@@ -90,7 +90,7 @@ macro_rules! schema_to_json_string {
 /// Macro to convert a Rust type to an Option<String> JSON schema
 #[macro_export]
 macro_rules! schema_to_json_string_option {
-    ($type:ty, $method_name:expr) => {{
+    ($type:ty, $method_name:expr_2021) => {{
         let schema = schemars::schema_for!($type);
         match serde_json::to_string(&schema) {
             Ok(s) => Some(s),

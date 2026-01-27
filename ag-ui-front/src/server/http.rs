@@ -5,11 +5,11 @@
 use crate::config::ServerConfig;
 use crate::error::AgUiError;
 use crate::handler::AgUiHandler;
-use crate::server::auth::{auth_middleware, TokenStore};
+use crate::server::auth::{TokenStore, auth_middleware};
 use crate::session::{EventStore, SessionManager};
 use crate::types::RunAgentInput;
 use axum::extract::{Path, State};
-use axum::http::{header, Method, StatusCode};
+use axum::http::{Method, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};

@@ -5,7 +5,7 @@
 
 use crate::events::AgUiEvent;
 use crate::types::state::WorkflowState;
-use json_patch::{diff, Patch};
+use json_patch::{Patch, diff};
 
 /// Calculate the difference between two workflow states as JSON Patch operations.
 ///

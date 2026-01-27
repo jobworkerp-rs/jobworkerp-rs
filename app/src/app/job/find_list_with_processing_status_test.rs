@@ -6,8 +6,8 @@
 
 #[cfg(test)]
 mod tests {
-    use super::super::hybrid::tests::create_test_app;
     use super::super::JobApp;
+    use super::super::hybrid::tests::create_test_app;
     use crate::app::worker::UseWorkerApp;
     use anyhow::Result;
     use infra::infra::job::status::UseJobProcessingStatusRepository;
