@@ -45,7 +45,7 @@ reqwest = { workspace = true }
 rmcp = { workspace = true, features = [
     "client",
     "transport-child-process",
-    "transport-sse-client-reqwest",
+    "transport-streamable-http-client-reqwest",
 ] }
 schemars = { workspace = true }
 serde = { workspace = true }
