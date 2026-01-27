@@ -2,7 +2,7 @@ use super::rows::WorkerRow;
 use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use infra_utils::infra::rdb::{query_result, Rdb, RdbPool, UseRdbPool};
+use infra_utils::infra::rdb::{Rdb, RdbPool, UseRdbPool, query_result};
 use itertools::Itertools;
 use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
@@ -527,6 +527,7 @@ mod test {
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
+    use proto::TestRunnerSettings;
     use proto::jobworkerp::data::QueueType;
     use proto::jobworkerp::data::ResponseType;
     use proto::jobworkerp::data::RetryPolicy;
@@ -534,7 +535,6 @@ mod test {
     use proto::jobworkerp::data::RunnerType;
     use proto::jobworkerp::data::Worker;
     use proto::jobworkerp::data::WorkerData;
-    use proto::TestRunnerSettings;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbWorkerRepositoryImpl::new(pool);
@@ -2087,8 +2087,8 @@ mod test {
 
     #[test]
     fn run_test() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let rdb_pool = if cfg!(feature = "mysql") {
                 let pool = setup_test_rdb_from("sql/mysql").await;

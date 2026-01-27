@@ -1,10 +1,10 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use app::app::WorkerConfig;
 use app_wrapper::runner::RunnerFactory;
 use deadpool::managed::Timeouts;
 use deadpool::{
-    managed::{Manager, Metrics, Object, Pool, PoolConfig, RecycleResult},
     Runtime,
+    managed::{Manager, Metrics, Object, Pool, PoolConfig, RecycleResult},
 };
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::cancellation::CancellableRunner;
@@ -213,10 +213,12 @@ mod tests {
             assert!(res.is_err());
             // release runner
             drop(runner);
-            assert!(factory
-                .timeout_get(&Timeouts::wait_millis(1000))
-                .await
-                .is_ok());
+            assert!(
+                factory
+                    .timeout_get(&Timeouts::wait_millis(1000))
+                    .await
+                    .is_ok()
+            );
         });
         Ok(())
     }
@@ -235,25 +237,27 @@ mod tests {
                 Arc::new(McpServerFactory::default()),
             );
             runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
-            assert!(RunnerFactoryWithPool::new(
-                Arc::new(RunnerData {
-                    name: RunnerType::Command.as_str_name().to_string(),
-                    ..Default::default()
-                }),
-                Arc::new(WorkerData {
-                    runner_settings: vec![],
-                    channel: None,
-                    use_static: false,
-                    ..Default::default()
-                }),
-                Arc::new(runner_factory),
-                Arc::new(WorkerConfig {
-                    default_concurrency: 1, // => runner pool size 1
-                    ..WorkerConfig::default()
-                }),
-            )
-            .await
-            .is_err());
+            assert!(
+                RunnerFactoryWithPool::new(
+                    Arc::new(RunnerData {
+                        name: RunnerType::Command.as_str_name().to_string(),
+                        ..Default::default()
+                    }),
+                    Arc::new(WorkerData {
+                        runner_settings: vec![],
+                        channel: None,
+                        use_static: false,
+                        ..Default::default()
+                    }),
+                    Arc::new(runner_factory),
+                    Arc::new(WorkerConfig {
+                        default_concurrency: 1, // => runner pool size 1
+                        ..WorkerConfig::default()
+                    }),
+                )
+                .await
+                .is_err()
+            );
         });
         Ok(())
     }

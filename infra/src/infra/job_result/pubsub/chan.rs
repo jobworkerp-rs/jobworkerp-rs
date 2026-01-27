@@ -1,18 +1,18 @@
 use super::{JobResultPublisher, JobResultSubscriber};
-use crate::infra::{job::rows::UseJobqueueAndCodec, JobQueueConfig, UseJobQueueConfig};
+use crate::infra::{JobQueueConfig, UseJobQueueConfig, job::rows::UseJobqueueAndCodec};
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::{stream::BoxStream, Stream, StreamExt};
+use futures::{Stream, StreamExt, stream::BoxStream};
 use jobworkerp_base::{
     codec::{ProstMessageCodec, UseProstCodec},
     error::JobWorkerError,
 };
 use memory_utils::chan::{
-    broadcast::{BroadcastChan, UseBroadcastChanBuffer},
     ChanBuffer, ChanBufferItem,
+    broadcast::{BroadcastChan, UseBroadcastChanBuffer},
 };
 use proto::jobworkerp::data::{
-    result_output_item, JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, WorkerId, result_output_item,
 };
 use std::{pin::Pin, sync::Arc, time::Duration};
 
@@ -736,7 +736,9 @@ mod test {
                 panic!("[Control Test] Task join error: {:?}", e);
             }
             Err(_) => {
-                panic!("[Control Test] TIMEOUT - this should NOT happen when subscribing before publishing!");
+                panic!(
+                    "[Control Test] TIMEOUT - this should NOT happen when subscribing before publishing!"
+                );
             }
         }
 

@@ -1,10 +1,10 @@
 use anyhow::Result;
-use app::app::function::function_set::FunctionSetApp;
 use app::app::function::FunctionApp;
+use app::app::function::function_set::FunctionSetApp;
 use app::module::AppModule;
 use infra_utils::infra::test::TEST_RUNTIME;
 use proto::jobworkerp::data::{RunnerId, WorkerData};
-use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData, FunctionUsing};
+use proto::jobworkerp::function::data::{FunctionId, FunctionSetData, FunctionUsing, function_id};
 
 #[test]
 fn test_find_detail_with_runners_and_workers() -> Result<()> {

@@ -1,17 +1,17 @@
-use crate::app::function::function_set::FunctionSetAppImpl;
 use crate::app::function::FunctionAppImpl;
+use crate::app::function::function_set::FunctionSetAppImpl;
+use crate::app::job::JobApp;
 use crate::app::job::hybrid::HybridJobAppImpl;
 use crate::app::job::rdb_chan::RdbChanJobAppImpl;
-use crate::app::job::JobApp;
+use crate::app::job_result::JobResultApp;
 use crate::app::job_result::hybrid::HybridJobResultAppImpl;
 use crate::app::job_result::rdb::RdbJobResultAppImpl;
-use crate::app::job_result::JobResultApp;
 use crate::app::runner::hybrid::HybridRunnerAppImpl;
 use crate::app::runner::rdb::RdbRunnerAppImpl;
 use crate::app::runner::{RunnerApp, RunnerDataWithDescriptor};
+use crate::app::worker::WorkerApp;
 use crate::app::worker::hybrid::HybridWorkerAppImpl;
 use crate::app::worker::rdb::RdbWorkerAppImpl;
-use crate::app::worker::WorkerApp;
 use crate::app::{StorageConfig, WorkerConfig};
 use anyhow::Result;
 use infra::infra::job::queue::redis::UseRedisJobQueueRepository;
@@ -418,21 +418,19 @@ impl AppModule {
         use jobworkerp_base::job_status_config::JobStatusConfig;
 
         // Only start cleanup task if RDB indexing is enabled
-        if let Some(rdb_module) = self.repositories.rdb_module.as_ref() {
-            if let Some(index_repo) = &rdb_module.rdb_job_processing_status_index_repository {
-                let config = JobStatusConfig::from_env();
-                let task = JobStatusCleanupTask::new(
-                    Arc::clone(index_repo),
-                    config.cleanup_interval_hours,
-                );
-                let handle = task.spawn(shutdown_recv);
-                tracing::info!(
-                    cleanup_interval_hours = config.cleanup_interval_hours,
-                    retention_hours = config.retention_hours,
-                    "JobStatusCleanupTask started"
-                );
-                return Some(handle);
-            }
+        if let Some(rdb_module) = self.repositories.rdb_module.as_ref()
+            && let Some(index_repo) = &rdb_module.rdb_job_processing_status_index_repository
+        {
+            let config = JobStatusConfig::from_env();
+            let task =
+                JobStatusCleanupTask::new(Arc::clone(index_repo), config.cleanup_interval_hours);
+            let handle = task.spawn(shutdown_recv);
+            tracing::info!(
+                cleanup_interval_hours = config.cleanup_interval_hours,
+                retention_hours = config.retention_hours,
+                "JobStatusCleanupTask started"
+            );
+            return Some(handle);
         }
 
         tracing::debug!("JobStatusCleanupTask not started (RDB indexing disabled)");
@@ -457,15 +455,15 @@ pub mod test {
     use super::*;
     use crate::{
         app::{
-            function::function_set::FunctionSetAppImpl,
-            runner::{hybrid::HybridRunnerAppImpl, RunnerApp, RunnerDataWithDescriptor},
-            worker::hybrid::HybridWorkerAppImpl,
             StorageConfig,
+            function::function_set::FunctionSetAppImpl,
+            runner::{RunnerApp, RunnerDataWithDescriptor, hybrid::HybridRunnerAppImpl},
+            worker::hybrid::HybridWorkerAppImpl,
         },
         module::{AppConfigModule, AppModule},
     };
     use anyhow::Result;
-    use infra::infra::{module::RedisRdbOptionalRepositoryModule, IdGeneratorWrapper};
+    use infra::infra::{IdGeneratorWrapper, module::RedisRdbOptionalRepositoryModule};
     use jobworkerp_runner::runner::{
         factory::RunnerSpecFactory, mcp::proxy::McpServerFactory, plugins::Plugins,
     };
@@ -482,9 +480,9 @@ pub mod test {
     pub async fn create_hybrid_test_app_with_indexing(
         enable_rdb_indexing: bool,
     ) -> Result<AppModule> {
+        use infra::infra::module::HybridRepositoryModule;
         use infra::infra::module::rdb::test::setup_test_rdb_module;
         use infra::infra::module::redis::test::setup_test_redis_module;
-        use infra::infra::module::HybridRepositoryModule;
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Scalable,
             restore_at_startup: Some(false),

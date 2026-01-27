@@ -8,8 +8,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 
-use crate::runner::cancellation_helper::CancelMonitoringHelper;
 use crate::runner::RunnerTrait;
+use crate::runner::cancellation_helper::CancelMonitoringHelper;
 
 /// Result of cancellation monitoring setup
 #[derive(Debug)]

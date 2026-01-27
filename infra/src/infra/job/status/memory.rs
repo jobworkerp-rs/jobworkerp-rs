@@ -101,10 +101,11 @@ mod tests {
             repo.find_status(&id).await.unwrap(),
             Some(JobProcessingStatus::Pending)
         );
-        assert!(repo
-            .upsert_status(&id, &JobProcessingStatus::Running)
-            .await
-            .unwrap(),);
+        assert!(
+            repo.upsert_status(&id, &JobProcessingStatus::Running)
+                .await
+                .unwrap(),
+        );
         assert_eq!(
             repo.find_status(&id).await.unwrap(),
             Some(JobProcessingStatus::Running)

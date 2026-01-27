@@ -1,9 +1,9 @@
 use crate::infra::job::queue::JobQueueCancellationRepository;
 use crate::infra::job::rows::UseJobqueueAndCodec;
+use crate::infra::job_result::pubsub::JobResultSubscriber;
 use crate::infra::job_result::pubsub::redis::{
     RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
 };
-use crate::infra::job_result::pubsub::JobResultSubscriber;
 use crate::infra::{JobQueueConfig, UseJobQueueConfig};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -487,9 +487,9 @@ mod test {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use crate::infra::JobQueueConfig;
     use crate::infra::job::rows::JobqueueAndCodec;
     use crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
-    use crate::infra::JobQueueConfig;
 
     // create test of 'send_job()': store job with send_job() to redis and get job value from redis (by command)
     use super::*;

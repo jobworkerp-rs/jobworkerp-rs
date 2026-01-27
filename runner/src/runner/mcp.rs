@@ -1,23 +1,23 @@
+use crate::jobworkerp::runner::McpServerResult;
 use crate::jobworkerp::runner::mcp_server_result;
 use crate::jobworkerp::runner::mcp_server_result::BlobResourceContents;
 use crate::jobworkerp::runner::mcp_server_result::TextResourceContents;
-use crate::jobworkerp::runner::McpServerResult;
-use crate::runner::cancellation::CancelMonitoring;
-use crate::runner::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use crate::runner::RunnerSpec;
 use crate::runner::RunnerTrait;
+use crate::runner::cancellation::CancelMonitoring;
+use crate::runner::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use crate::schema_to_json_string_option;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use command_utils::protobuf::ProtobufDescriptor;
 use command_utils::trace::Tracing;
 use futures::stream::BoxStream;
+use jobworkerp_base::APP_WORKER_NAME;
 use jobworkerp_base::codec::ProstMessageCodec;
 use jobworkerp_base::codec::UseProstCodec;
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_base::APP_WORKER_NAME;
-use opentelemetry::trace::TraceContextExt;
 use opentelemetry::Context;
+use opentelemetry::trace::TraceContextExt;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
@@ -642,7 +642,7 @@ impl McpServerRunnerImpl {
         let tool_name_owned = tool_name.to_string();
 
         use async_stream::stream;
-        use proto::jobworkerp::data::{result_output_item::Item, Trailer};
+        use proto::jobworkerp::data::{Trailer, result_output_item::Item};
 
         let trailer = Arc::new(Trailer {
             metadata: metadata.clone(),

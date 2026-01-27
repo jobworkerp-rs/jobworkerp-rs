@@ -5,10 +5,10 @@ use super::{
 use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
-        workflow::{self, tasks::TaskTrait, Task},
+        workflow::{self, Task, tasks::TaskTrait},
     },
     execute::{
-        checkpoint::{repository::CheckPointRepositoryWithId, CheckPointContext},
+        checkpoint::{CheckPointContext, repository::CheckPointRepositoryWithId},
         context::{Then, WorkflowPosition},
         task::stream::run::RunStreamTaskExecutor,
     },
@@ -19,7 +19,7 @@ use async_stream::stream;
 use command_utils::trace::Tracing;
 use debug_stub_derive::DebugStub;
 use fork::ForkTaskExecutor;
-use futures::{pin_mut, StreamExt};
+use futures::{StreamExt, pin_mut};
 use jobworkerp_base::APP_NAME;
 use opentelemetry::trace::TraceContextExt;
 use run::RunTaskExecutor;
@@ -189,8 +189,7 @@ impl TaskExecutor {
                     "position {}: not reached checkpoint position: {} (relative: {:?}), execution_id: {:?}",
                     current_position.read().await.as_json_pointer(),
                     cp_position.as_json_pointer(),
-                    rel_path
-                        .as_ref(),
+                    rel_path.as_ref(),
                     execution_id
                 );
                 // skip task execution until the `from_position` is reached
@@ -520,22 +519,21 @@ impl TaskExecutor {
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         // XXX invalid by input transformation? (transform argument inner each task)
-        if let Some(schema) = self.task.input().and_then(|i| i.schema.as_ref()) {
-            if let Some(schema) = schema.json_schema() {
-                if let Err(e) = jsonschema::validate(schema, &task_context.input.clone()) {
-                    let m = format!(
-                        "Failed to validate input schema: {:#?}\n{:#?}\n{:#?}",
-                        schema, &task_context.raw_input, e
-                    );
-                    let pos = task_context.position.clone();
-                    pos.write().await.push("input".to_string());
-                    return Err(workflow::errors::ErrorFactory::new().bad_argument(
-                        m,
-                        Some(pos.read().await.as_error_instance()),
-                        Some(format!("{:?}", e.to_string())),
-                    ));
-                }
-            }
+        if let Some(schema) = self.task.input().and_then(|i| i.schema.as_ref())
+            && let Some(schema) = schema.json_schema()
+            && let Err(e) = jsonschema::validate(schema, &task_context.input.clone())
+        {
+            let m = format!(
+                "Failed to validate input schema: {:#?}\n{:#?}\n{:#?}",
+                schema, &task_context.raw_input, e
+            );
+            let pos = task_context.position.clone();
+            pos.write().await.push("input".to_string());
+            return Err(workflow::errors::ErrorFactory::new().bad_argument(
+                m,
+                Some(pos.read().await.as_error_instance()),
+                Some(format!("{:?}", e.to_string())),
+            ));
         }
 
         // Transform input
@@ -1877,10 +1875,10 @@ mod tests {
             // This test checks that timeout error mechanism works when triggered
             if has_timeout_error {
                 let timeout_error = events.iter().find_map(|e| {
-                    if let Err(err) = e {
-                        if err.status == 408 {
-                            return Some(err);
-                        }
+                    if let Err(err) = e
+                        && err.status == 408
+                    {
+                        return Some(err);
                     }
                     None
                 });

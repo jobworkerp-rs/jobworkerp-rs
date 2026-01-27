@@ -313,16 +313,18 @@ pub trait LLMTracingHelper: Send + Sync {
         }
 
         if !tools.is_empty() {
-            let tools_json = serde_json::json!(tools
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters
+            let tools_json = serde_json::json!(
+                tools
+                    .iter()
+                    .map(|t| {
+                        serde_json::json!({
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.parameters
+                        })
                     })
-                })
-                .collect::<Vec<_>>());
+                    .collect::<Vec<_>>()
+            );
             tracing::debug!(
                 "TODO: Should Be Adding tools to span: {}",
                 tools_json.to_string()
@@ -554,27 +556,28 @@ impl crate::llm::tracing::LLMRequestData
 {
     fn extract_input(&self) -> crate::llm::tracing::LLMInput {
         crate::llm::tracing::LLMInput {
-            messages: serde_json::json!(self
-                .messages
-                .iter()
-                .map(|m| {
-                    serde_json::json!({
-                        "role": match m.role {
-                            ollama_rs::generation::chat::MessageRole::User => "user",
-                            ollama_rs::generation::chat::MessageRole::Assistant => "assistant",
-                            ollama_rs::generation::chat::MessageRole::System => "system",
-                            ollama_rs::generation::chat::MessageRole::Tool => "tool",
-                        },
-                        "content": m.content,
-                        "tool_calls": if !m.tool_calls.is_empty() {
-                            Some(serde_json::json!(m.tool_calls))
-                        } else {
-                            None
-                        },
-                        "images": m.images.as_ref().map(|imgs| imgs.len())
+            messages: serde_json::json!(
+                self.messages
+                    .iter()
+                    .map(|m| {
+                        serde_json::json!({
+                            "role": match m.role {
+                                ollama_rs::generation::chat::MessageRole::User => "user",
+                                ollama_rs::generation::chat::MessageRole::Assistant => "assistant",
+                                ollama_rs::generation::chat::MessageRole::System => "system",
+                                ollama_rs::generation::chat::MessageRole::Tool => "tool",
+                            },
+                            "content": m.content,
+                            "tool_calls": if !m.tool_calls.is_empty() {
+                                Some(serde_json::json!(m.tool_calls))
+                            } else {
+                                None
+                            },
+                            "images": m.images.as_ref().map(|imgs| imgs.len())
+                        })
                     })
-                })
-                .collect::<Vec<_>>()),
+                    .collect::<Vec<_>>()
+            ),
             prompt: None,
         }
     }

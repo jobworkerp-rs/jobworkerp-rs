@@ -4,8 +4,8 @@ use app::app::function::{FunctionApp, FunctionAppImpl};
 use app_wrapper::llm::chat::conversion::ToolConverter;
 use futures::StreamExt;
 use rmcp::{
-    model::*, service::NotificationContext, service::RequestContext, ErrorData as McpError,
-    RoleServer, ServerHandler,
+    ErrorData as McpError, RoleServer, ServerHandler, model::*, service::NotificationContext,
+    service::RequestContext,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -75,7 +75,7 @@ impl ServerHandler for McpHandler {
 
     async fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         let functions = if let Some(name) = &self.config.set_name {
@@ -99,7 +99,7 @@ impl ServerHandler for McpHandler {
 
     async fn call_tool(
         &self,
-        request: CallToolRequestParam,
+        request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         // Tool name is passed directly to call_function_for_llm().
@@ -185,7 +185,7 @@ impl ServerHandler for McpHandler {
 
     async fn initialize(
         &self,
-        _request: InitializeRequestParam,
+        _request: InitializeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, McpError> {
         // Log HTTP request details if available (for debugging/auditing)

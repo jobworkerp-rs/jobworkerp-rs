@@ -14,8 +14,8 @@ use jobworkerp_runner::runner::{factory::RunnerSpecFactory, plugins::Plugins};
 use mcp_server::{McpHandler, McpServerConfig};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
-use worker_app::worker::dispatcher::JobDispatcher;
 use worker_app::WorkerModules;
+use worker_app::worker::dispatcher::JobDispatcher;
 
 const MCP_DEFAULT_ADDR: &str = "127.0.0.1:8000";
 

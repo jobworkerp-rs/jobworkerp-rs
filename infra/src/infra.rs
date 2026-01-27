@@ -171,7 +171,8 @@ pub mod test {
         use jobworkerp_base::JOB_STATUS_CONFIG;
 
         // Disable WAL for tests to ensure cross-process visibility
-        std::env::set_var("SQLITE_DISABLE_WAL", "1");
+        // SAFETY: called in test setup before spawning threads
+        unsafe { std::env::set_var("SQLITE_DISABLE_WAL", "1") };
 
         InfraConfigModule {
             rdb_config: Some(SQLITE_CONFIG.clone()),

@@ -670,10 +670,12 @@ mod test {
         let template = "$${{{unknown}}}";
         let result = DefaultTransformer::execute_liquid_template(input.clone(), template, &context);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("requested variable=unknown"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requested variable=unknown")
+        );
 
         // Test with context overriding input
         let input = Arc::new(json!({"name": "Alice"}));

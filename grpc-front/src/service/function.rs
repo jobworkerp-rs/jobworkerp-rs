@@ -155,12 +155,12 @@ pub trait FunctionRequestValidator {
             ));
         }
 
-        if let Some(create_worker_request::Runner::RunnerId(runner_id)) = &req.runner {
-            if runner_id.value <= 0 {
-                return Err(tonic::Status::invalid_argument(
-                    "runner_id must be greater than 0",
-                ));
-            }
+        if let Some(create_worker_request::Runner::RunnerId(runner_id)) = &req.runner
+            && runner_id.value <= 0
+        {
+            return Err(tonic::Status::invalid_argument(
+                "runner_id must be greater than 0",
+            ));
         }
 
         if let Some(create_worker_request::Runner::RunnerName(runner_name)) = &req.runner {
@@ -186,9 +186,10 @@ pub trait FunctionRequestValidator {
         }
         // Naming convention check (must start with letter, contain only alphanumeric, underscore, hyphen)
         if !WORKER_NAME_PATTERN.is_match(&req.name) {
-            return Err(tonic::Status::invalid_argument(
-                format!("Worker name '{}' is invalid. Must start with a letter (a-z, A-Z) and contain only alphanumeric characters, underscores, and hyphens", req.name)
-            ));
+            return Err(tonic::Status::invalid_argument(format!(
+                "Worker name '{}' is invalid. Must start with a letter (a-z, A-Z) and contain only alphanumeric characters, underscores, and hyphens",
+                req.name
+            )));
         }
 
         Ok(())
@@ -209,22 +210,20 @@ pub trait FunctionRequestValidator {
 
         if let Some(create_workflow_request::WorkflowSource::WorkflowData(data)) =
             &req.workflow_source
+            && data.is_empty()
         {
-            if data.is_empty() {
-                return Err(tonic::Status::invalid_argument(
-                    "workflow_data cannot be empty",
-                ));
-            }
+            return Err(tonic::Status::invalid_argument(
+                "workflow_data cannot be empty",
+            ));
         }
 
         if let Some(create_workflow_request::WorkflowSource::WorkflowUrl(url)) =
             &req.workflow_source
+            && url.is_empty()
         {
-            if url.is_empty() {
-                return Err(tonic::Status::invalid_argument(
-                    "workflow_url cannot be empty",
-                ));
-            }
+            return Err(tonic::Status::invalid_argument(
+                "workflow_url cannot be empty",
+            ));
         }
 
         if let Some(name) = &req.name {
@@ -238,9 +237,10 @@ pub trait FunctionRequestValidator {
             }
             // Naming convention check (must start with letter, contain only alphanumeric, underscore, hyphen)
             if !WORKER_NAME_PATTERN.is_match(name) {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Worker name '{}' is invalid. Must start with a letter (a-z, A-Z) and contain only alphanumeric characters, underscores, and hyphens", name)
-                ));
+                return Err(tonic::Status::invalid_argument(format!(
+                    "Worker name '{}' is invalid. Must start with a letter (a-z, A-Z) and contain only alphanumeric characters, underscores, and hyphens",
+                    name
+                )));
             }
         }
 

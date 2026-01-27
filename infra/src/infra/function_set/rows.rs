@@ -1,6 +1,6 @@
 use proto::jobworkerp::data::{RunnerId, WorkerId};
 use proto::jobworkerp::function::data::{
-    function_id, FunctionId, FunctionSet, FunctionSetData, FunctionSetId, FunctionUsing,
+    FunctionId, FunctionSet, FunctionSetData, FunctionSetId, FunctionUsing, function_id,
 };
 
 // Constants for target_type values

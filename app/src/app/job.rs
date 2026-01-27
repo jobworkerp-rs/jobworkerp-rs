@@ -22,12 +22,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use infra::infra::{
+    UseJobQueueConfig,
     job::{
         queue::redis::RedisJobQueueRepository,
-        redis::{schedule::RedisJobScheduleRepository, RedisJobRepository, UseRedisJobRepository},
+        redis::{RedisJobRepository, UseRedisJobRepository, schedule::RedisJobScheduleRepository},
         status::UseJobProcessingStatusRepository,
     },
-    UseJobQueueConfig,
 };
 use proto::calculate_direct_response_timeout_ms;
 use proto::jobworkerp::data::{
@@ -188,7 +188,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     async fn pop_run_after_jobs_to_run(&self) -> Result<Vec<Job>>;
 
     async fn restore_jobs_from_rdb(&self, include_grabbed: bool, limit: Option<&i32>)
-        -> Result<()>;
+    -> Result<()>;
 
     async fn find_restore_jobs_from_rdb(
         &self,
@@ -265,19 +265,19 @@ where
                 self.after_enqueue_to_redis_hook(job_id, job, worker, streaming_type);
 
                 // TTL prevents job orphaning when worker fails unexpectedly
-                if worker.queue_type == QueueType::Normal as i32 {
-                    if let Some(job_data) = &job.data {
-                        // For timeout=0 (unlimited), uses expire_job_result_seconds from config
-                        let ttl = self.calculate_job_ttl(job_data.timeout);
-                        self.redis_job_repository()
-                            .create_with_expire(&job_id, job_data, ttl)
-                            .await?;
-                        tracing::debug!(
-                            "Created job {} with TTL {:?} for running job visibility",
-                            job_id.value,
-                            ttl
-                        );
-                    }
+                if worker.queue_type == QueueType::Normal as i32
+                    && let Some(job_data) = &job.data
+                {
+                    // For timeout=0 (unlimited), uses expire_job_result_seconds from config
+                    let ttl = self.calculate_job_ttl(job_data.timeout);
+                    self.redis_job_repository()
+                        .create_with_expire(&job_id, job_data, ttl)
+                        .await?;
+                    tracing::debug!(
+                        "Created job {} with TTL {:?} for running job visibility",
+                        job_id.value,
+                        ttl
+                    );
                 }
                 // Direct response requires blocking until job completion
                 // EXCEPT for STREAMING_TYPE_INTERNAL - these jobs should return immediately

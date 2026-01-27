@@ -15,15 +15,15 @@ use std::time::{Duration, Instant};
 use tonic::transport::Channel;
 
 use grpc_front::proto::jobworkerp::service::{
+    CreateWorkerResponse, JobRequest, ListenRequest, OptionalRunnerResponse, RunnerNameRequest,
     job_result_service_client::JobResultServiceClient, job_service_client::JobServiceClient,
     runner_service_client::RunnerServiceClient, worker_service_client::WorkerServiceClient,
-    CreateWorkerResponse, JobRequest, ListenRequest, OptionalRunnerResponse, RunnerNameRequest,
 };
 
-use proto::jobworkerp::data::{result_output_item, QueueType, ResponseType, WorkerData, WorkerId};
+use proto::jobworkerp::data::{QueueType, ResponseType, WorkerData, WorkerId, result_output_item};
 
 use jobworkerp_runner::jobworkerp::runner::{
-    workflow_run_args::WorkflowSource, WorkflowResult, WorkflowRunArgs,
+    WorkflowResult, WorkflowRunArgs, workflow_run_args::WorkflowSource,
 };
 
 const GRPC_URL: &str = "http://localhost:9000";
@@ -263,8 +263,8 @@ do:
 /// Expectation: Results are streamed in realtime via listen_stream
 #[test]
 #[ignore = "Requires jobworkerp-rs server running on localhost:9000"]
-fn test_workflow_enqueue_for_stream_no_result_with_listen_stream(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_workflow_enqueue_for_stream_no_result_with_listen_stream()
+-> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         eprintln!("\n=== Test 2: Workflow enqueue_for_stream + NoResult + listen_stream ===\n");

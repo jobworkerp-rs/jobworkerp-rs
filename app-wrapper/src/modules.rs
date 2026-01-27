@@ -1,6 +1,6 @@
 use crate::workflow::{
-    execute::checkpoint::repository::{CheckPointRepositoryWithId, CheckPointRepositoryWithIdImpl},
     WorkflowConfig,
+    execute::checkpoint::repository::{CheckPointRepositoryWithId, CheckPointRepositoryWithIdImpl},
 };
 use infra_utils::infra::redis::RedisPool;
 use memory_utils::cache::moka::MokaCacheConfig;

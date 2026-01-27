@@ -93,13 +93,16 @@ impl Plugins {
         let runner_dirs: Vec<&str> = runner_dir_str.split(',').collect_vec();
         let mut loaded = Vec::new();
         for runner_dir in runner_dirs {
-            if let Ok(runner_path) = fs::read_dir(runner_dir) {
-                loaded.extend(
-                    self.load_plugin_files_from(runner_path, PluginType::Runner)
-                        .await,
-                );
-            } else {
-                tracing::warn!("runner plugin dir not found: {}", runner_dir);
+            match fs::read_dir(runner_dir) {
+                Ok(runner_path) => {
+                    loaded.extend(
+                        self.load_plugin_files_from(runner_path, PluginType::Runner)
+                            .await,
+                    );
+                }
+                _ => {
+                    tracing::warn!("runner plugin dir not found: {}", runner_dir);
+                }
             }
         }
         loaded
@@ -139,13 +142,16 @@ impl Plugins {
                     .is_some_and(|n| n.ends_with(Self::get_library_extension()))
             {
                 // use plugin name defined in plugin as plugin name
-                if let Ok(plugin) = self
+                match self
                     .load_plugin_from_path(None, &file.path(), &ptype, false)
                     .await
                 {
-                    loaded.push(plugin);
-                } else {
-                    tracing::warn!("cannot load plugin: {:?}", file.path());
+                    Ok(plugin) => {
+                        loaded.push(plugin);
+                    }
+                    _ => {
+                        tracing::warn!("cannot load plugin: {:?}", file.path());
+                    }
                 }
             } else if !file.path().exists() {
                 tracing::warn!("file not found: {:?}", file.path());

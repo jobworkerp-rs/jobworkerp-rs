@@ -16,7 +16,7 @@
 //! | null | ERROR | Not supported |
 //! | anyOf/oneOf/allOf | ERROR | Not supported |
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -80,13 +80,13 @@ pub fn validate_using_name(name: &str) -> Result<()> {
     }
 
     // Must start with alphanumeric character
-    if let Some(first_char) = name.chars().next() {
-        if !first_char.is_ascii_alphanumeric() {
-            return Err(anyhow!(
-                "using '{}' must start with alphanumeric character",
-                name
-            ));
-        }
+    if let Some(first_char) = name.chars().next()
+        && !first_char.is_ascii_alphanumeric()
+    {
+        return Err(anyhow!(
+            "using '{}' must start with alphanumeric character",
+            name
+        ));
     }
 
     // Character check (alphanumeric, underscore, hyphen, and dot allowed)

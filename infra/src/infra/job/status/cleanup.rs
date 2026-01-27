@@ -83,7 +83,7 @@ impl JobStatusCleanupTask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use infra_utils::infra::test::{setup_test_rdb_from, TEST_RUNTIME};
+    use infra_utils::infra::test::{TEST_RUNTIME, setup_test_rdb_from};
     use jobworkerp_base::job_status_config::JobStatusConfig;
 
     #[test]

@@ -1,16 +1,16 @@
 use crate::handler::McpHandler;
 use anyhow::Result;
 use axum::{
+    Router,
     extract::State,
     http::{HeaderMap, Request, StatusCode},
     middleware::{self, Next},
     response::{Html, Response},
     routing::get,
-    Router,
 };
 use command_utils::util::shutdown::ShutdownLock;
 use rmcp::transport::streamable_http_server::{
-    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use std::future::Future;
 use std::pin::Pin;

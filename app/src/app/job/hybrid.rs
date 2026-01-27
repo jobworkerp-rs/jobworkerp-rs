@@ -1,25 +1,25 @@
 use crate::app::{UseWorkerConfig, WorkerConfig};
 use crate::module::AppConfigModule;
 
-use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::JobBuilder;
+use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::{JobApp, JobCacheKeys, RedisJobAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use futures::stream::BoxStream;
-use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::queue::JobQueueCancellationRepository;
+use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::redis::{RedisJobRepository, UseRedisJobRepository};
 use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
+use infra::infra::job_result::pubsub::JobResultPublisher;
 use infra::infra::job_result::pubsub::redis::{
     RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
 };
-use infra::infra::job_result::pubsub::JobResultPublisher;
+use infra::infra::module::HybridRepositoryModule;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
-use infra::infra::module::HybridRepositoryModule;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
@@ -386,17 +386,16 @@ impl HybridJobAppImpl {
                     .await?;
 
                 // Update RDB index status to CANCELLING (if enabled)
-                if let Some(index_repo) = self.job_status_index_repository.as_ref() {
-                    if let Err(e) = index_repo
+                if let Some(index_repo) = self.job_status_index_repository.as_ref()
+                    && let Err(e) = index_repo
                         .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
                         .await
-                    {
-                        tracing::warn!(
-                            "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
-                            id.value,
-                            e
-                        );
-                    }
+                {
+                    tracing::warn!(
+                        "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
+                        id.value,
+                        e
+                    );
                 }
                 // Note: RDB index deleted_at will be set by cleanup_job()
 
@@ -419,17 +418,16 @@ impl HybridJobAppImpl {
                     .await?;
 
                 // Update RDB index status to CANCELLING (if enabled)
-                if let Some(index_repo) = self.job_status_index_repository.as_ref() {
-                    if let Err(e) = index_repo
+                if let Some(index_repo) = self.job_status_index_repository.as_ref()
+                    && let Err(e) = index_repo
                         .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
                         .await
-                    {
-                        tracing::warn!(
-                            "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
-                            id.value,
-                            e
-                        );
-                    }
+                {
+                    tracing::warn!(
+                        "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
+                        id.value,
+                        e
+                    );
                 }
                 // Note: RDB index deleted_at will be set by cleanup_job()
 
@@ -503,14 +501,14 @@ impl HybridJobAppImpl {
     pub(crate) async fn cleanup_job(&self, id: &JobId) -> Result<()> {
         // 1. Mark as logically deleted in RDB index BEFORE deleting Redis status
         //    (deleted_at must be set while we still know this job is being cleaned up)
-        if let Some(index_repo) = self.job_status_index_repository.as_ref() {
-            if let Err(e) = index_repo.mark_deleted_by_job_id(id).await {
-                tracing::warn!(
-                    "Failed to mark job {} as deleted in RDB index: {:?}",
-                    id.value,
-                    e
-                );
-            }
+        if let Some(index_repo) = self.job_status_index_repository.as_ref()
+            && let Err(e) = index_repo.mark_deleted_by_job_id(id).await
+        {
+            tracing::warn!(
+                "Failed to mark job {} as deleted in RDB index: {:?}",
+                id.value,
+                e
+            );
         }
 
         // 2. Delete job record from RDB
@@ -1046,14 +1044,14 @@ impl JobApp for HybridJobAppImpl {
         }
         let mut job_and_status = vec![];
         for j in ret.iter() {
-            if let Some(jid) = j.id.as_ref() {
-                if let Some(j) = self.find_job(jid).await? {
-                    let s = self
-                        .job_processing_status_repository()
-                        .find_status(jid)
-                        .await?;
-                    job_and_status.push((j, s));
-                }
+            if let Some(jid) = j.id.as_ref()
+                && let Some(j) = self.find_job(jid).await?
+            {
+                let s = self
+                    .job_processing_status_repository()
+                    .find_status(jid)
+                    .await?;
+                job_and_status.push((j, s));
             }
         }
         Ok(job_and_status)
@@ -1297,20 +1295,20 @@ impl RedisJobAppHelper for HybridJobAppImpl {
         streaming_type: StreamingType,
     ) {
         // Index PENDING status to RDB asynchronously
-        if let Some(worker_id) = job.data.as_ref().and_then(|d| d.worker_id) {
-            if let Some(job_data) = &job.data {
-                let request_streaming = streaming_type == StreamingType::Response;
-                self.index_job_status_async(
-                    job_id,
-                    JobProcessingStatus::Pending,
-                    worker_id,
-                    worker.channel.clone().unwrap_or_default(),
-                    job_data.priority,
-                    job_data.enqueue_time,
-                    request_streaming,
-                    worker.broadcast_results,
-                );
-            }
+        if let Some(worker_id) = job.data.as_ref().and_then(|d| d.worker_id)
+            && let Some(job_data) = &job.data
+        {
+            let request_streaming = streaming_type == StreamingType::Response;
+            self.index_job_status_async(
+                job_id,
+                JobProcessingStatus::Pending,
+                worker_id,
+                worker.channel.clone().unwrap_or_default(),
+                job_data.priority,
+                job_data.enqueue_time,
+                request_streaming,
+                worker.broadcast_results,
+            );
         }
     }
 }
@@ -1320,18 +1318,18 @@ impl RedisJobAppHelper for HybridJobAppImpl {
 #[cfg(any(test, feature = "test-utils"))]
 pub mod tests {
     use super::*;
-    use crate::app::runner::hybrid::HybridRunnerAppImpl;
     use crate::app::runner::RunnerApp;
+    use crate::app::runner::hybrid::HybridRunnerAppImpl;
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
     use crate::app::{StorageConfig, StorageType};
     use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
+    use infra::infra::IdGeneratorWrapper;
     use infra::infra::job::queue::redis::UseRedisJobQueueRepository;
     use infra::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
+    use infra::infra::module::HybridRepositoryModule;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
-    use infra::infra::module::HybridRepositoryModule;
-    use infra::infra::IdGeneratorWrapper;
     #[allow(unused_imports)]
     use jobworkerp_base::codec::UseProstCodec;
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
@@ -2029,16 +2027,18 @@ pub mod tests {
 
             // restore 1 lost jobs
             app.restore_jobs_from_rdb(false, None).await?;
-            assert!(app
-                .redis_job_repository()
-                .find_from_queue(channel, priority, &job_id)
-                .await?
-                .is_some());
-            assert!(app
-                .redis_job_repository()
-                .find_from_queue(channel, priority, &job_id2)
-                .await?
-                .is_some());
+            assert!(
+                app.redis_job_repository()
+                    .find_from_queue(channel, priority, &job_id)
+                    .await?
+                    .is_some()
+            );
+            assert!(
+                app.redis_job_repository()
+                    .find_from_queue(channel, priority, &job_id2)
+                    .await?
+                    .is_some()
+            );
             assert_eq!(
                 app.redis_job_repository()
                     .count_queue(channel, priority)

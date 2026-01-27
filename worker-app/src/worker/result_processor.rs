@@ -1,4 +1,9 @@
 use anyhow::Result;
+use app::app::JobBuilder;
+use app::app::StorageConfig;
+use app::app::UseStorageConfig;
+use app::app::UseWorkerConfig;
+use app::app::WorkerConfig;
 use app::app::job::JobApp;
 use app::app::job::UseJobApp;
 use app::app::job_result::JobResultApp;
@@ -7,11 +12,6 @@ use app::app::runner::RunnerApp;
 use app::app::runner::UseRunnerApp;
 use app::app::worker::UseWorkerApp;
 use app::app::worker::WorkerApp;
-use app::app::JobBuilder;
-use app::app::StorageConfig;
-use app::app::UseStorageConfig;
-use app::app::UseWorkerConfig;
-use app::app::WorkerConfig;
 use app::module::AppConfigModule;
 use app::module::AppModule;
 use command_utils::trace::Tracing;
@@ -140,13 +140,13 @@ impl ResultProcessorImpl {
             };
 
             // Delete temp worker if use_static is false (after all processing is done)
-            if !worker.use_static {
-                if let Some(wid) = dat.worker_id.as_ref() {
-                    if let Err(e) = self.worker_app().delete_temp(wid).await {
-                        tracing::info!("failed to delete temp worker {:?}: {:?}", wid, e);
-                    } else {
-                        tracing::debug!("deleted temp worker: {:?}", wid);
-                    }
+            if !worker.use_static
+                && let Some(wid) = dat.worker_id.as_ref()
+            {
+                if let Err(e) = self.worker_app().delete_temp(wid).await {
+                    tracing::info!("failed to delete temp worker {:?}: {:?}", wid, e);
+                } else {
+                    tracing::debug!("deleted temp worker: {:?}", wid);
                 }
             }
 

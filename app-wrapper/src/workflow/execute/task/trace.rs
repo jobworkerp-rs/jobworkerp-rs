@@ -1,8 +1,8 @@
 use crate::workflow::definition::workflow::Error;
 use crate::workflow::execute::context::{TaskContext, WorkflowStreamEvent};
 use command_utils::trace::Tracing;
-use opentelemetry::trace::SpanRef;
 use opentelemetry::KeyValue;
+use opentelemetry::trace::SpanRef;
 
 /// Trait for recording task execution traces to OpenTelemetry spans
 pub trait TaskTracing: Tracing {

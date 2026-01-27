@@ -19,11 +19,11 @@ members = [
     "ag-ui-front",
 ]
 
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
-version = "0.18.1"
-edition = "2021"
+version = "0.22.0"
+edition = "2024"
 authors = ["sutr"]
 description = "Job-Worker system with gRPC front server"
 repository = "https://github.com/jobworkerp-rs/jobworkerp-rs"
@@ -79,7 +79,7 @@ redis = { version = "1.0.2", features = [
 ] }
 reqwest = "0.12"
 #rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "9a771fb157056b4daa332626b2fa41b16a523756" }
-rmcp = { version = "0.10" }
+rmcp = { version = "0.14" }
 rs-snowflake = "0.6"
 rustls = { version = "0.23", default-features = false, features = [
     "ring",

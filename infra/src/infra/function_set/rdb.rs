@@ -331,7 +331,7 @@ mod test {
     use infra_utils::infra::rdb::UseRdbPool;
     use proto::jobworkerp::data::{RunnerId, WorkerId};
     use proto::jobworkerp::function::data::{
-        function_id, FunctionId, FunctionSet, FunctionSetData, FunctionUsing,
+        FunctionId, FunctionSet, FunctionSetData, FunctionUsing, function_id,
     };
     use std::sync::Arc;
 
@@ -417,8 +417,8 @@ mod test {
 
     #[test]
     fn run_test() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let rdb_pool = if cfg!(feature = "mysql") {
                 let pool = setup_test_rdb_from("sql/mysql").await;

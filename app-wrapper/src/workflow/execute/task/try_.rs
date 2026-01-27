@@ -3,8 +3,8 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext},
         task::{
-            stream::do_::DoTaskStreamExecutor, ExecutionId, Result, StreamTaskExecutorTrait,
-            TaskExecutorTrait,
+            ExecutionId, Result, StreamTaskExecutorTrait, TaskExecutorTrait,
+            stream::do_::DoTaskStreamExecutor,
         },
     },
 };
@@ -267,12 +267,11 @@ impl TryTaskExecutor {
                         return false;
                     }
                     // check retry duration
-                    if let Some(duration) = duration {
-                        if start_time.elapsed().as_secs_f64() > duration.to_millis() as f64 / 1000.0
-                        {
-                            tracing::debug!("Retry duration reached: {:?}", duration);
-                            return false;
-                        }
+                    if let Some(duration) = duration
+                        && start_time.elapsed().as_secs_f64() > duration.to_millis() as f64 / 1000.0
+                    {
+                        tracing::debug!("Retry duration reached: {:?}", duration);
+                        return false;
                     }
                     tracing::debug!("Retry count: ++{:?}", retry_count);
                 } else {
@@ -467,11 +466,11 @@ mod tests {
     use super::*;
     use crate::workflow::{
         definition::{
+            WorkflowLoader,
             workflow::{
                 self, Error, ErrorFilter, RetryLimit, RetryLimitAttempt, RetryPolicy, TaskList,
                 TryTaskCatch, TryTaskCatchRetry, UriTemplate,
             },
-            WorkflowLoader,
         },
         execute::context::{TaskContext, WorkflowContext, WorkflowStatus},
     };

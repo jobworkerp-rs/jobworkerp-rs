@@ -10,20 +10,20 @@ use anyhow::Result;
 use app::app::function::function_set::FunctionSetApp;
 use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::chat::ollama::OllamaChatService;
+use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ArgsContent;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::{
     ToolExecutionRequest, ToolExecutionRequests,
 };
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
-    message_content, ChatMessage, ChatRole, FunctionOptions, LlmOptions, MessageContent,
+    ChatMessage, ChatRole, FunctionOptions, LlmOptions, MessageContent, message_content,
 };
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content as ResultContent;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
-use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
 use proto::jobworkerp::data::RunnerId;
-use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData, FunctionUsing};
+use proto::jobworkerp::function::data::{FunctionId, FunctionSetData, FunctionUsing, function_id};
 use std::collections::HashMap;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 /// Test configuration
 const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
@@ -33,7 +33,8 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Create Ollama chat service for testing
 async fn create_test_service() -> Result<OllamaChatService> {
-    std::env::set_var("OTLP_ADDR", OTLP_ADDR);
+    // SAFETY: called in test setup before spawning threads
+    unsafe { std::env::set_var("OTLP_ADDR", OTLP_ADDR) };
     let app_module = create_hybrid_test_app().await?;
 
     let settings = OllamaRunnerSettings {
@@ -249,16 +250,16 @@ async fn test_manual_mode_execute_with_client_arguments() -> Result<()> {
     // Should now be done with final response
     assert!(result.done, "Should be done after tool execution");
 
-    if let Some(content) = result.content {
-        if let Some(ResultContent::Text(text)) = content.content {
-            println!("Final response: {}", text);
-            // Response should contain the modified text
-            assert!(
-                text.contains("MODIFIED_BY_CLIENT_TEST") || text.to_lowercase().contains("echo"),
-                "Response should contain execution result or mention echo: {}",
-                text
-            );
-        }
+    if let Some(content) = result.content
+        && let Some(ResultContent::Text(text)) = content.content
+    {
+        println!("Final response: {}", text);
+        // Response should contain the modified text
+        assert!(
+            text.contains("MODIFIED_BY_CLIENT_TEST") || text.to_lowercase().contains("echo"),
+            "Response should contain execution result or mention echo: {}",
+            text
+        );
     }
 
     Ok(())
@@ -348,17 +349,17 @@ async fn test_manual_mode_echo_with_custom_message() -> Result<()> {
 
     assert!(result.done, "Should be done after tool execution");
 
-    if let Some(content) = result.content {
-        if let Some(ResultContent::Text(text)) = content.content {
-            println!("Final response: {}", text);
-            // The response should contain our custom message
-            assert!(
-                text.contains(custom_message),
-                "Response should contain custom message '{}': {}",
-                custom_message,
-                text
-            );
-        }
+    if let Some(content) = result.content
+        && let Some(ResultContent::Text(text)) = content.content
+    {
+        println!("Final response: {}", text);
+        // The response should contain our custom message
+        assert!(
+            text.contains(custom_message),
+            "Response should contain custom message '{}': {}",
+            custom_message,
+            text
+        );
     }
 
     Ok(())

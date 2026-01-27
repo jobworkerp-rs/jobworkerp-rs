@@ -318,12 +318,11 @@ impl TryStreamTaskExecutor {
                         );
                         return false;
                     }
-                    if let Some(duration) = duration {
-                        if start_time.elapsed().as_secs_f64() > duration.to_millis() as f64 / 1000.0
-                        {
-                            tracing::debug!("Retry duration reached: {:?}", duration);
-                            return false;
-                        }
+                    if let Some(duration) = duration
+                        && start_time.elapsed().as_secs_f64() > duration.to_millis() as f64 / 1000.0
+                    {
+                        tracing::debug!("Retry duration reached: {:?}", duration);
+                        return false;
                     }
                     tracing::debug!("Retry count: ++{:?}", retry_count);
                 } else {

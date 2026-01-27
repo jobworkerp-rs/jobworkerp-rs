@@ -152,7 +152,7 @@ pub trait UseRedisFunctionSetRepository {
 async fn redis_test() -> Result<()> {
     use proto::jobworkerp::data::{RunnerId, WorkerId};
     use proto::jobworkerp::function::data::{
-        function_id, FunctionId, FunctionSetData, FunctionSetId, FunctionUsing,
+        FunctionId, FunctionSetData, FunctionSetId, FunctionUsing, function_id,
     };
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;

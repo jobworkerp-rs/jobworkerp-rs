@@ -12,8 +12,8 @@ use infra_utils::infra::rdb::{Rdb, RdbPool, UseRdbPool};
 use itertools::Itertools;
 use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
 use memory_utils::chan::{
-    mpmc::{Chan, UseChanBuffer},
     ChanBuffer, ChanBufferItem,
+    mpmc::{Chan, UseChanBuffer},
 };
 use proto::jobworkerp::data::{Job, JobData, JobId, JobProcessingStatus};
 use sqlx::Executor;
@@ -442,11 +442,11 @@ mod test {
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
     use jobworkerp_base::codec::UseProstCodec;
+    use proto::TestArgs;
     use proto::jobworkerp::data::Job;
     use proto::jobworkerp::data::JobData;
     use proto::jobworkerp::data::JobId;
     use proto::jobworkerp::data::WorkerId;
-    use proto::TestArgs;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -685,8 +685,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sqlite() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let sqlite_pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job;").execute(sqlite_pool).await?;
@@ -698,8 +698,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sqlite_streaming_type_values() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let sqlite_pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job;").execute(sqlite_pool).await?;
@@ -710,8 +710,8 @@ mod test {
     #[cfg(feature = "mysql")]
     #[test]
     fn test_mysql() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let mysql_pool = setup_test_rdb_from("sql/mysql").await;
             sqlx::query("TRUNCATE TABLE job;")
@@ -728,8 +728,8 @@ mod test {
     #[cfg(feature = "mysql")]
     #[test]
     fn test_mysql_streaming_type_values() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let mysql_pool = setup_test_rdb_from("sql/mysql").await;
             sqlx::query("TRUNCATE TABLE job;")

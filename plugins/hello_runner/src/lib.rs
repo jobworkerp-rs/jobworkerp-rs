@@ -1,12 +1,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::{stream::BoxStream, StreamExt};
+use futures::{StreamExt, stream::BoxStream};
 use hello::{HelloArgs, HelloRunnerResult, HelloRunnerSettings};
 use jobworkerp_runner::runner::plugins::MultiMethodPluginRunner;
 use prost::Message;
-use proto::jobworkerp::data::{result_output_item, ResultOutputItem};
+use proto::jobworkerp::data::{ResultOutputItem, result_output_item};
 use std::{alloc::System, collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tracing::Level;
 
 pub mod hello {
