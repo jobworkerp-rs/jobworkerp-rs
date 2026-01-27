@@ -2,12 +2,12 @@ use super::super::StreamTaskExecutorTrait;
 use crate::workflow::{
     definition::{
         transform::UseJqAndTemplateTransformer,
-        workflow::{self, tasks::TaskTrait, Task},
+        workflow::{self, Task, tasks::TaskTrait},
     },
     execute::{
         context::{TaskContext, Then, WorkflowContext, WorkflowStatus, WorkflowStreamEvent},
         expression::UseExpression,
-        task::{trace::TaskTracing, ExecutionId, TaskExecutor},
+        task::{ExecutionId, TaskExecutor, trace::TaskTracing},
     },
 };
 use anyhow::Result;
@@ -364,7 +364,7 @@ impl DoTaskStreamExecutor {
 
                         None  // Exit loop
                     }
-                    Then::TaskName(ref tname) => {
+                    Then::TaskName(tname) => {
                         tracing::info!("Jump to task: {}", tname);
                         task_map
                             .iter()

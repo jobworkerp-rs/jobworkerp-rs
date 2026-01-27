@@ -1,21 +1,21 @@
+use super::RunnerSpec;
 use super::cancellation::CancelMonitoring;
 use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
-use super::RunnerSpec;
 use crate::jobworkerp::runner::{
-    python_command_args, python_command_runner_settings, PythonCommandArgs, PythonCommandResult,
-    PythonCommandRunnerSettings,
+    PythonCommandArgs, PythonCommandResult, PythonCommandRunnerSettings, python_command_args,
+    python_command_runner_settings,
 };
 use crate::runner::RunnerTrait;
 use crate::schema_to_json_string_option;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
+use proto::DEFAULT_METHOD_NAME;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
-use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -52,7 +52,7 @@ impl PythonCommandRunner {
     fn kill_process_by_pid(pid: u32) -> Result<()> {
         #[cfg(unix)]
         {
-            use nix::sys::signal::{kill, Signal};
+            use nix::sys::signal::{Signal, kill};
             use nix::unistd::Pid;
             kill(Pid::from_raw(pid as i32), Signal::SIGKILL)
                 .context(format!("Failed to send SIGKILL to process {pid}"))?;
@@ -60,7 +60,7 @@ impl PythonCommandRunner {
         #[cfg(windows)]
         {
             use windows_sys::Win32::System::Threading::{
-                OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+                OpenProcess, PROCESS_TERMINATE, TerminateProcess,
             };
             unsafe {
                 let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
@@ -80,7 +80,7 @@ impl PythonCommandRunner {
     async fn graceful_kill_process_by_pid(pid: u32) -> Result<()> {
         #[cfg(unix)]
         {
-            use nix::sys::signal::{kill, Signal};
+            use nix::sys::signal::{Signal, kill};
             use nix::unistd::Pid;
 
             // First try SIGTERM for graceful shutdown
@@ -498,13 +498,16 @@ impl CancelMonitoring for PythonCommandRunner {
         let mut cancel_flag = self.process_cancel.lock().await;
         *cancel_flag = true;
 
-        if let Some(pid) = *self.current_process_id.lock().await {
-            let _ = Self::graceful_kill_process_by_pid(pid)
-                .await
-                .map_err(|e| tracing::error!("Failed to kill Python process {}: {}", pid, e));
-            tracing::info!("PythonCommandRunner: cancelled process by PID: {}", pid);
-        } else {
-            tracing::warn!("PythonCommandRunner: no active process to cancel");
+        match *self.current_process_id.lock().await {
+            Some(pid) => {
+                let _ = Self::graceful_kill_process_by_pid(pid)
+                    .await
+                    .map_err(|e| tracing::error!("Failed to kill Python process {}: {}", pid, e));
+                tracing::info!("PythonCommandRunner: cancelled process by PID: {}", pid);
+            }
+            _ => {
+                tracing::warn!("PythonCommandRunner: no active process to cancel");
+            }
         }
 
         Ok(())

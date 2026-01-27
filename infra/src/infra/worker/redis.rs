@@ -89,11 +89,11 @@ where
             .hset(Self::CACHE_KEY, id.value, m)
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into());
-        if res.as_ref().exists(|r| *r) {
-            if let Some(ex) = self.expire_sec() {
-                p.expire::<&str, ()>(Self::CACHE_KEY, ex as i64).await?;
-            };
-        }
+        if res.as_ref().exists(|r| *r)
+            && let Some(ex) = self.expire_sec()
+        {
+            p.expire::<&str, ()>(Self::CACHE_KEY, ex as i64).await?;
+        };
         res
     }
 
@@ -247,9 +247,9 @@ pub trait UseRedisWorkerRepository {
 #[tokio::test]
 async fn redis_test() -> Result<()> {
     use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+    use proto::TestRunnerSettings;
     use proto::jobworkerp::data::RetryPolicy;
     use proto::jobworkerp::data::{QueueType, ResponseType, RunnerId, WorkerData, WorkerId};
-    use proto::TestRunnerSettings;
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
     let cli = infra_utils::infra::test::setup_test_redis_client()?;

@@ -1,7 +1,7 @@
 use super::pool::RunnerPoolManagerImpl;
 use deadpool::managed::Object;
-use futures::stream::BoxStream;
 use futures::Stream;
+use futures::stream::BoxStream;
 use jobworkerp_runner::runner::cancellation_helper::CancelMonitoringHelper;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -40,12 +40,12 @@ impl<T> Stream for StreamWithPoolGuard<T> {
         let result = Pin::new(&mut self.stream).poll_next(cx);
 
         // Release pool guard when stream ends
-        if let Poll::Ready(None) = result {
-            if self._pool_guard.take().is_some() {
-                tracing::debug!(
-                    "Stream completed, releasing pool object (reset_for_pooling will be called)"
-                );
-            }
+        if let Poll::Ready(None) = result
+            && self._pool_guard.take().is_some()
+        {
+            tracing::debug!(
+                "Stream completed, releasing pool object (reset_for_pooling will be called)"
+            );
         }
 
         result
@@ -82,10 +82,12 @@ impl<T> Stream for StreamWithCancelGuard<T> {
         let result = Pin::new(&mut self.stream).poll_next(cx);
 
         // Release cancel guard when stream ends
-        if let Poll::Ready(None) = result {
-            if self._cancel_guard.take().is_some() {
-                tracing::debug!("Stream completed, releasing cancel helper (cancellation monitoring cleanup will happen)");
-            }
+        if let Poll::Ready(None) = result
+            && self._cancel_guard.take().is_some()
+        {
+            tracing::debug!(
+                "Stream completed, releasing cancel helper (cancellation monitoring cleanup will happen)"
+            );
         }
 
         result
@@ -110,7 +112,7 @@ mod tests {
     use app::module::test::TEST_PLUGIN_DIR;
     use app::{app::WorkerConfig, module::test::create_hybrid_test_app};
     use app_wrapper::runner::RunnerFactory;
-    use futures::{stream, StreamExt};
+    use futures::{StreamExt, stream};
     use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use proto::jobworkerp::data::{RunnerType, WorkerData};
     use std::sync::Arc;

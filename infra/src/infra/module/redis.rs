@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::infra::IdGeneratorWrapper;
+use crate::infra::InfraConfigModule;
 use crate::infra::job::queue::redis::{RedisJobQueueRepositoryImpl, UseRedisJobQueueRepository};
 use crate::infra::job::queue::{JobQueueCancellationRepository, UseJobQueueCancellationRepository};
 use crate::infra::job::redis::RedisJobRepositoryImpl;
@@ -11,8 +13,6 @@ use crate::infra::load_job_queue_config_from_env;
 use crate::infra::runner::redis::RedisRunnerRepositoryImpl;
 use crate::infra::runner::redis::UseRedisRunnerRepository;
 use crate::infra::worker::redis::{RedisWorkerRepositoryImpl, UseRedisWorkerRepository};
-use crate::infra::IdGeneratorWrapper;
-use crate::infra::InfraConfigModule;
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::redis::RedisClient;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
@@ -174,6 +174,7 @@ impl UseRedisRepositoryModule for RedisRepositoryModule {
 pub mod test {
     use super::RedisRepositoryModule;
     use crate::infra::{
+        IdGeneratorWrapper,
         job::queue::redis::RedisJobQueueRepositoryImpl,
         job::redis::RedisJobRepositoryImpl,
         job_result::{
@@ -182,7 +183,6 @@ pub mod test {
         module::test::TEST_PLUGIN_DIR,
         runner::redis::RedisRunnerRepositoryImpl,
         worker::redis::RedisWorkerRepositoryImpl,
-        IdGeneratorWrapper,
     };
     use anyhow::Context;
     use infra_utils::infra::test::{

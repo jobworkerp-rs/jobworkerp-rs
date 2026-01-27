@@ -1,14 +1,14 @@
 use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
-        workflow::{self, tasks::TaskTrait, ForOnError},
+        workflow::{self, ForOnError, tasks::TaskTrait},
     },
     execute::{
         context::{TaskContext, WorkflowContext, WorkflowStatus, WorkflowStreamEvent},
         expression::UseExpression,
         task::{
-            stream::do_::DoTaskStreamExecutor, trace::TaskTracing, ExecutionId,
-            StreamTaskExecutorTrait,
+            ExecutionId, StreamTaskExecutorTrait, stream::do_::DoTaskStreamExecutor,
+            trace::TaskTracing,
         },
     },
 };
@@ -19,7 +19,7 @@ use futures::stream::{self, Stream, StreamExt};
 use jobworkerp_base::APP_WORKER_NAME;
 use opentelemetry::trace::TraceContextExt;
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 
 pub struct ForTaskStreamExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
@@ -944,15 +944,13 @@ mod tests {
                         Ok(wc) => {
                             println!("Success result: status={:?}, output keys={:?}", wc.status,
                 wc.output.as_ref().map(|v| v.as_object().map(|o| o.keys().collect::<Vec<_>>())));
-                            if let Some(output) = wc.output.as_ref() {
-                                if let Some(obj) = output.as_object() {
-                                    if obj.contains_key("processed_item") && obj.contains_key("processed_index") {
+                            if let Some(output) = wc.output.as_ref()
+                                && let Some(obj) = output.as_object()
+                                    && obj.contains_key("processed_item") && obj.contains_key("processed_index") {
                                         println!("  → Item processed successfully: {} at index {}",
                                                 obj.get("processed_item").unwrap(),
                                                 obj.get("processed_index").unwrap());
                                     }
-                                }
-                            }
                             success_results.push(wc.clone());
                         }
                         Err(e) => {
@@ -1161,15 +1159,13 @@ mod tests {
                         Ok(wc) => {
                             println!("Result: status={:?}, output keys={:?}", wc.status,
                 wc.output.as_ref().map(|v| v.as_object().map(|o| o.keys().collect::<Vec<_>>())));
-                            if let Some(output) = wc.output.as_ref() {
-                                if let Some(obj) = output.as_object() {
-                                    if obj.contains_key("processed_item") && obj.contains_key("processed_index") {
+                            if let Some(output) = wc.output.as_ref()
+                                && let Some(obj) = output.as_object()
+                                    && obj.contains_key("processed_item") && obj.contains_key("processed_index") {
                                         println!("  → Item processed successfully: {} at index {}",
                                                 obj.get("processed_item").unwrap(),
                                                 obj.get("processed_index").unwrap());
                                     }
-                                }
-                            }
                             success_results.push(wc.clone());
                         }
                         Err(e) => {
@@ -1336,14 +1332,13 @@ mod tests {
                     }
                     Ok(wc) => {
                         // Check if error is in the output (workflow errors are now returned as Ok with Faulted status)
-                        if wc.status == WorkflowStatus::Faulted {
-                            if let Some(output) = wc.output.as_ref() {
-                                if let Some(err) = output.get("error") {
-                                    error_message = err.to_string();
-                                    found_error = true;
-                                    break;
-                                }
-                            }
+                        if wc.status == WorkflowStatus::Faulted
+                            && let Some(output) = wc.output.as_ref()
+                            && let Some(err) = output.get("error")
+                        {
+                            error_message = err.to_string();
+                            found_error = true;
+                            break;
                         }
                     }
                 }
@@ -1456,14 +1451,13 @@ mod tests {
                     }
                     Ok(wc) => {
                         // Check if error is in the output (workflow errors are now returned as Ok with Faulted status)
-                        if wc.status == WorkflowStatus::Faulted {
-                            if let Some(output) = wc.output.as_ref() {
-                                if let Some(err) = output.get("error") {
-                                    error_message = err.to_string();
-                                    found_error = true;
-                                    break;
-                                }
-                            }
+                        if wc.status == WorkflowStatus::Faulted
+                            && let Some(output) = wc.output.as_ref()
+                            && let Some(err) = output.get("error")
+                        {
+                            error_message = err.to_string();
+                            found_error = true;
+                            break;
                         }
                     }
                 }
@@ -1590,13 +1584,13 @@ mod tests {
                     Ok(wc) => {
                         last_status = wc.status.clone();
                         // Check if after_wait task executed (it shouldn't)
-                        if let Some(output) = wc.output.as_ref() {
-                            if let Some(obj) = output.as_object() {
-                                assert!(
-                                    !obj.contains_key("completed"),
-                                    "Task after wait should not execute"
-                                );
-                            }
+                        if let Some(output) = wc.output.as_ref()
+                            && let Some(obj) = output.as_object()
+                        {
+                            assert!(
+                                !obj.contains_key("completed"),
+                                "Task after wait should not execute"
+                            );
                         }
                     }
                 }

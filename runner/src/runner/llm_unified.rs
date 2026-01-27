@@ -14,7 +14,7 @@
 use super::llm::{LLMCompletionRunnerSpec, LLMCompletionRunnerSpecImpl};
 use super::llm_chat::LLMChatRunnerSpecImpl;
 use super::{CollectStreamFuture, MethodJsonSchema, RunnerSpec};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures::stream::BoxStream;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use std::collections::HashMap;
@@ -188,20 +188,24 @@ mod tests {
     fn test_resolve_method_unknown() {
         let result = LLMUnifiedRunnerSpecImpl::resolve_method(Some("unknown"));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown method 'unknown'"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown method 'unknown'")
+        );
     }
 
     #[test]
     fn test_resolve_method_none_is_error() {
         let result = LLMUnifiedRunnerSpecImpl::resolve_method(None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Method specification required"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Method specification required")
+        );
     }
 
     #[test]
@@ -221,11 +225,13 @@ mod tests {
 
         // Verify completion method
         let completion = schemas.get("completion").unwrap();
-        assert!(completion
-            .description
-            .as_ref()
-            .unwrap()
-            .contains("completion"));
+        assert!(
+            completion
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("completion")
+        );
         assert!(!completion.args_proto.is_empty());
         assert!(!completion.result_proto.is_empty());
 

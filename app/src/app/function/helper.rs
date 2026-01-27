@@ -1,13 +1,13 @@
-use crate::app::{job::execute::UseJobExecutor, WorkerConfig};
+use crate::app::{WorkerConfig, job::execute::UseJobExecutor};
 use anyhow::Result;
 use command_utils::{protobuf::ProtobufDescriptor, util::datetime};
 use infra::infra::runner::rows::RunnerWithSchema;
 use jobworkerp_base::error::JobWorkerError;
+use proto::DEFAULT_METHOD_NAME;
 use proto::jobworkerp::data::{
     JobResult, Priority, QueueType, ResponseType, RetryPolicy, RetryType, RunnerId, RunnerType,
     StreamingType, WorkerData,
 };
-use proto::DEFAULT_METHOD_NAME;
 use serde_json::{Map, Value};
 use std::{
     collections::HashMap,
@@ -132,37 +132,36 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         async move {
             tracing::debug!("found runner: {:?}, tool: {:?}", &runner, &tool_name_opt);
 
-            if let Some(ref tool_name) = tool_name_opt {
-                if runner
+            if let Some(ref tool_name) = tool_name_opt
+                && runner
                     .data
                     .as_ref()
                     .is_some_and(|d| d.runner_type() == RunnerType::McpServer)
-                {
-                    let tool_exists = runner
+            {
+                let tool_exists = runner
+                    .method_json_schema_map
+                    .as_ref()
+                    .map(|m| m.schemas.contains_key(tool_name))
+                    .unwrap_or(false);
+
+                if !tool_exists {
+                    let available_tools: Vec<_> = runner
                         .method_json_schema_map
                         .as_ref()
-                        .map(|m| m.schemas.contains_key(tool_name))
-                        .unwrap_or(false);
+                        .map(|m| m.schemas.keys().collect())
+                        .unwrap_or_default();
 
-                    if !tool_exists {
-                        let available_tools: Vec<_> = runner
-                            .method_json_schema_map
+                    return Err(JobWorkerError::InvalidParameter(format!(
+                        "Tool '{}' not found in MCP server '{}'. Available tools: {:?}",
+                        tool_name,
+                        runner
+                            .data
                             .as_ref()
-                            .map(|m| m.schemas.keys().collect())
-                            .unwrap_or_default();
-
-                        return Err(JobWorkerError::InvalidParameter(format!(
-                            "Tool '{}' not found in MCP server '{}'. Available tools: {:?}",
-                            tool_name,
-                            runner
-                                .data
-                                .as_ref()
-                                .map(|d| &d.name)
-                                .unwrap_or(&"unknown".to_string()),
-                            available_tools
-                        ))
-                        .into());
-                    }
+                            .map(|d| &d.name)
+                            .unwrap_or(&"unknown".to_string()),
+                        available_tools
+                    ))
+                    .into());
                 }
             }
 
@@ -552,13 +551,13 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         }
 
         // 5. Retry policy verification
-        if let Some(rp) = &worker_data.retry_policy {
-            if rp.basis < 1.0 {
-                return Err(JobWorkerError::InvalidParameter(
-                    "retry_basis should be greater than 1.0".to_string(),
-                )
-                .into());
-            }
+        if let Some(rp) = &worker_data.retry_policy
+            && rp.basis < 1.0
+        {
+            return Err(JobWorkerError::InvalidParameter(
+                "retry_basis should be greater than 1.0".to_string(),
+            )
+            .into());
         }
 
         // 6. Channel verification

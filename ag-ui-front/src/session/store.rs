@@ -4,9 +4,9 @@ use crate::events::AgUiEvent;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{watch, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{RwLock, watch};
 
 /// Type alias for event queue storage
 type EventQueue = VecDeque<(u64, AgUiEvent)>;

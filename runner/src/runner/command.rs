@@ -11,9 +11,9 @@ use jobworkerp_base::{
     codec::{ProstMessageCodec, UseProstCodec},
     error::JobWorkerError,
 };
-use proto::jobworkerp::data::{result_output_item::Item, StreamingOutputType};
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use proto::DEFAULT_METHOD_NAME;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use proto::jobworkerp::data::{StreamingOutputType, result_output_item::Item};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::{
@@ -67,7 +67,7 @@ impl CommandRunnerImpl {
         if let Some(pid) = child.id() {
             #[cfg(unix)]
             {
-                use nix::sys::signal::{kill, Signal};
+                use nix::sys::signal::{Signal, kill};
                 use nix::unistd::Pid;
 
                 // First try SIGTERM for graceful shutdown
@@ -591,7 +591,7 @@ impl RunnerTrait for CommandRunnerImpl {
         }.await;
 
         let _ = self.reset().await; // Ignore reset errors in cleanup
-                                    // Result processing simplified
+        // Result processing simplified
         (res, metadata)
     }
     async fn run_stream(
@@ -1153,7 +1153,7 @@ impl CancelMonitoring for CommandRunnerImpl {
         if let Some(stream_pid) = stream_pid {
             #[cfg(unix)]
             {
-                use nix::sys::signal::{kill, Signal};
+                use nix::sys::signal::{Signal, kill};
                 use nix::unistd::Pid;
 
                 // First try SIGTERM for graceful shutdown
@@ -1200,7 +1200,9 @@ impl CancelMonitoring for CommandRunnerImpl {
         if has_active_stream_process {
             // Maintain cancellation monitoring during streaming process execution
             // Rely on automatic cleanup (timeout-based) when process terminates
-            tracing::debug!("CommandRunner has active streaming process - keeping cancellation monitoring active");
+            tracing::debug!(
+                "CommandRunner has active streaming process - keeping cancellation monitoring active"
+            );
         } else {
             // Cleanup cancellation monitoring only when process terminates
             if let Some(helper) = &mut self.cancel_helper {
@@ -1236,7 +1238,7 @@ mod tests {
     use super::*;
     use crate::jobworkerp::runner::CommandArgs;
     use futures::StreamExt;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     #[tokio::test]
     async fn test_run() {
@@ -1368,7 +1370,8 @@ mod tests {
                     );
 
                     let result = result.unwrap();
-                    println!("Stream result: exit_code: {:?}, stdout: {:?}, stderr: {:?}, execution_time_ms: {:?}",
+                    println!(
+                        "Stream result: exit_code: {:?}, stdout: {:?}, stderr: {:?}, execution_time_ms: {:?}",
                         result.exit_code,
                         result.stdout.as_ref(),
                         result.stderr.as_ref(),

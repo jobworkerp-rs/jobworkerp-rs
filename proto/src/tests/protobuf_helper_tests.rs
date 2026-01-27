@@ -2,8 +2,8 @@
 //!
 //! Tests for method_proto_map-based schema parsing
 
-use crate::jobworkerp::data::{MethodProtoMap, MethodSchema, RunnerData, StreamingOutputType};
 use crate::ProtobufHelper;
+use crate::jobworkerp::data::{MethodProtoMap, MethodSchema, RunnerData, StreamingOutputType};
 use std::collections::HashMap;
 
 /// Test helper struct that implements ProtobufHelper

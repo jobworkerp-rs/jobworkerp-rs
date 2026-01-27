@@ -3,7 +3,7 @@
 //! Tests for FindChannelList aggregation and other gRPC service behaviors.
 //! These tests verify the channel aggregation logic from the repository layer.
 
-use infra::infra::worker_instance::{aggregate_instance_channels, ChannelAggregation};
+use infra::infra::worker_instance::{ChannelAggregation, aggregate_instance_channels};
 use proto::jobworkerp::data::{
     ChannelConfig, WorkerInstance, WorkerInstanceData, WorkerInstanceId,
 };

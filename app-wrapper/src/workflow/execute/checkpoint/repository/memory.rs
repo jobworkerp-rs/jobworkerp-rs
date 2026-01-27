@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
 use memory_utils::cache::moka::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 
-use crate::workflow::execute::checkpoint::{repository::CheckPointRepository, CheckPointContext};
+use crate::workflow::execute::checkpoint::{CheckPointContext, repository::CheckPointRepository};
 
 pub trait MemoryCheckPointRepository:
     CheckPointRepository + UseMokaCache<String, CheckPointContext> + Sync + 'static

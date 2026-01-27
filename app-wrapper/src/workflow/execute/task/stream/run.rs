@@ -262,10 +262,10 @@ async fn prepare_streaming_job(
     // === 2. Metadata merge ===
     let mut metadata = (**base_metadata).clone();
     for (k, v) in task_metadata {
-        if !metadata.contains_key(k) {
-            if let Some(v) = v.as_str() {
-                metadata.insert(k.clone(), v.to_string());
-            }
+        if !metadata.contains_key(k)
+            && let Some(v) = v.as_str()
+        {
+            metadata.insert(k.clone(), v.to_string());
         }
     }
     RunStreamTaskExecutor::inject_metadata_from_context(&mut metadata, cx);
@@ -750,7 +750,7 @@ async fn start_worker_streaming_job_static(
             return Err(anyhow::anyhow!(
                 "Worker '{}' has no id or data",
                 worker_name
-            ))
+            ));
         }
     };
 
@@ -782,7 +782,7 @@ async fn start_worker_streaming_job_static(
             return Err(anyhow::anyhow!(
                 "Runner for worker '{}' not found",
                 worker_name
-            ))
+            ));
         }
     };
 
@@ -867,7 +867,7 @@ async fn start_runner_streaming_job_static(
             return Err(anyhow::anyhow!(
                 "Runner '{}' has no id or data",
                 runner_name
-            ))
+            ));
         }
     };
 

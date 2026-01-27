@@ -152,10 +152,10 @@ impl RunnerCancellationManager {
     /// Cleanup cancellation monitoring
     pub async fn cleanup_monitoring(&mut self) -> Result<()> {
         // Send cleanup signal to stop subscribe loop
-        if let Some(sender) = self.cleanup_sender.take() {
-            if sender.send(()).is_err() {
-                tracing::warn!("Failed to send cleanup signal - receiver may have been dropped");
-            }
+        if let Some(sender) = self.cleanup_sender.take()
+            && sender.send(()).is_err()
+        {
+            tracing::warn!("Failed to send cleanup signal - receiver may have been dropped");
         }
 
         // Wait for task completion
@@ -248,7 +248,10 @@ impl RunnerCancellationManager {
                 CleanupResult::TaskError(join_error)
             }
             Err(_timeout_error) => {
-                tracing::warn!("{} task cleanup timed out - connection will auto-timeout via infrastructure timeout", task_name);
+                tracing::warn!(
+                    "{} task cleanup timed out - connection will auto-timeout via infrastructure timeout",
+                    task_name
+                );
                 CleanupResult::Timeout
             }
         }

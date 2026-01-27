@@ -307,14 +307,12 @@ impl SessionManager for RedisSessionManager {
             .ok()?;
 
         for key in keys {
-            if let Ok(json) = (*conn).get::<_, String>(&key).await {
-                if let Ok(data) = serde_json::from_str::<RedisSessionData>(&json) {
-                    if let Some(hitl_info) = &data.hitl_waiting_info {
-                        if hitl_info.interrupt_id == interrupt_id {
-                            return Some(data.into());
-                        }
-                    }
-                }
+            if let Ok(json) = (*conn).get::<_, String>(&key).await
+                && let Ok(data) = serde_json::from_str::<RedisSessionData>(&json)
+                && let Some(hitl_info) = &data.hitl_waiting_info
+                && hitl_info.interrupt_id == interrupt_id
+            {
+                return Some(data.into());
             }
         }
         None
@@ -326,37 +324,37 @@ impl SessionManager for RedisSessionManager {
             session.last_event_id = event_id;
             let data = RedisSessionData::from(&session);
 
-            if let Ok(mut conn) = self.pool.get().await {
-                if let Ok(json) = serde_json::to_string(&data) {
-                    let session_key = Self::session_key(session_id);
-                    let run_id_key = Self::run_id_key(&run_id);
-                    if let Err(e) = conn
-                        .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
-                        .await
-                    {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            error = %e,
-                            "Failed to update session in Redis"
-                        );
-                        return false;
-                    }
-                    // Refresh run_id index TTL to keep it in sync with session TTL
-                    if let Err(e) = conn
-                        .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
-                        .await
-                    {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            run_id = %run_id,
-                            ttl_sec = self.ttl_sec,
-                            error = %e,
-                            "Failed to refresh run_id index TTL"
-                        );
-                        return false;
-                    }
-                    return true;
+            if let Ok(mut conn) = self.pool.get().await
+                && let Ok(json) = serde_json::to_string(&data)
+            {
+                let session_key = Self::session_key(session_id);
+                let run_id_key = Self::run_id_key(&run_id);
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to update session in Redis"
+                    );
+                    return false;
                 }
+                // Refresh run_id index TTL to keep it in sync with session TTL
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        run_id = %run_id,
+                        ttl_sec = self.ttl_sec,
+                        error = %e,
+                        "Failed to refresh run_id index TTL"
+                    );
+                    return false;
+                }
+                return true;
             }
         }
         false
@@ -368,37 +366,37 @@ impl SessionManager for RedisSessionManager {
             session.state = state;
             let data = RedisSessionData::from(&session);
 
-            if let Ok(mut conn) = self.pool.get().await {
-                if let Ok(json) = serde_json::to_string(&data) {
-                    let session_key = Self::session_key(session_id);
-                    let run_id_key = Self::run_id_key(&run_id);
-                    if let Err(e) = conn
-                        .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
-                        .await
-                    {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            error = %e,
-                            "Failed to set session state in Redis"
-                        );
-                        return false;
-                    }
-                    // Refresh run_id index TTL to keep it in sync with session TTL
-                    if let Err(e) = conn
-                        .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
-                        .await
-                    {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            run_id = %run_id,
-                            ttl_sec = self.ttl_sec,
-                            error = %e,
-                            "Failed to refresh run_id index TTL"
-                        );
-                        return false;
-                    }
-                    return true;
+            if let Ok(mut conn) = self.pool.get().await
+                && let Ok(json) = serde_json::to_string(&data)
+            {
+                let session_key = Self::session_key(session_id);
+                let run_id_key = Self::run_id_key(&run_id);
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to set session state in Redis"
+                    );
+                    return false;
                 }
+                // Refresh run_id index TTL to keep it in sync with session TTL
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        run_id = %run_id,
+                        ttl_sec = self.ttl_sec,
+                        error = %e,
+                        "Failed to refresh run_id index TTL"
+                    );
+                    return false;
+                }
+                return true;
             }
         }
         false
@@ -419,37 +417,37 @@ impl SessionManager for RedisSessionManager {
             session.hitl_waiting_info = Some(hitl_info);
             let data = RedisSessionData::from(&session);
 
-            if let Ok(mut conn) = self.pool.get().await {
-                if let Ok(json) = serde_json::to_string(&data) {
-                    let session_key = Self::session_key(session_id);
-                    let run_id_key = Self::run_id_key(&run_id);
-                    if let Err(e) = conn
-                        .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
-                        .await
-                    {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            error = %e,
-                            "Failed to set paused state with HITL info in Redis"
-                        );
-                        return false;
-                    }
-                    // Refresh run_id index TTL to keep it in sync with session TTL
-                    if let Err(e) = conn
-                        .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
-                        .await
-                    {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            run_id = %run_id,
-                            ttl_sec = self.ttl_sec,
-                            error = %e,
-                            "Failed to refresh run_id index TTL"
-                        );
-                        return false;
-                    }
-                    return true;
+            if let Ok(mut conn) = self.pool.get().await
+                && let Ok(json) = serde_json::to_string(&data)
+            {
+                let session_key = Self::session_key(session_id);
+                let run_id_key = Self::run_id_key(&run_id);
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to set paused state with HITL info in Redis"
+                    );
+                    return false;
                 }
+                // Refresh run_id index TTL to keep it in sync with session TTL
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        run_id = %run_id,
+                        ttl_sec = self.ttl_sec,
+                        error = %e,
+                        "Failed to refresh run_id index TTL"
+                    );
+                    return false;
+                }
+                return true;
             }
         }
         false
@@ -465,37 +463,37 @@ impl SessionManager for RedisSessionManager {
             session.hitl_waiting_info = None;
             let data = RedisSessionData::from(&session);
 
-            if let Ok(mut conn) = self.pool.get().await {
-                if let Ok(json) = serde_json::to_string(&data) {
-                    let session_key = Self::session_key(session_id);
-                    let run_id_key = Self::run_id_key(&run_id);
-                    if let Err(e) = conn
-                        .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
-                        .await
-                    {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            error = %e,
-                            "Failed to clear HITL info in Redis"
-                        );
-                        return false;
-                    }
-                    // Refresh run_id index TTL to keep it in sync with session TTL
-                    if let Err(e) = conn
-                        .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
-                        .await
-                    {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            run_id = %run_id,
-                            ttl_sec = self.ttl_sec,
-                            error = %e,
-                            "Failed to refresh run_id index TTL"
-                        );
-                        return false;
-                    }
-                    return true;
+            if let Ok(mut conn) = self.pool.get().await
+                && let Ok(json) = serde_json::to_string(&data)
+            {
+                let session_key = Self::session_key(session_id);
+                let run_id_key = Self::run_id_key(&run_id);
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to clear HITL info in Redis"
+                    );
+                    return false;
                 }
+                // Refresh run_id index TTL to keep it in sync with session TTL
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        run_id = %run_id,
+                        ttl_sec = self.ttl_sec,
+                        error = %e,
+                        "Failed to refresh run_id index TTL"
+                    );
+                    return false;
+                }
+                return true;
             }
         }
         false
@@ -512,37 +510,37 @@ impl SessionManager for RedisSessionManager {
             session.state = new_state;
             let data = RedisSessionData::from(&session);
 
-            if let Ok(mut conn) = self.pool.get().await {
-                if let Ok(json) = serde_json::to_string(&data) {
-                    let session_key = Self::session_key(session_id);
-                    let run_id_key = Self::run_id_key(&run_id);
-                    if let Err(e) = conn
-                        .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
-                        .await
-                    {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            error = %e,
-                            "Failed to resume from paused state in Redis"
-                        );
-                        return false;
-                    }
-                    // Refresh run_id index TTL to keep it in sync with session TTL
-                    if let Err(e) = conn
-                        .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
-                        .await
-                    {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            run_id = %run_id,
-                            ttl_sec = self.ttl_sec,
-                            error = %e,
-                            "Failed to refresh run_id index TTL"
-                        );
-                        return false;
-                    }
-                    return true;
+            if let Ok(mut conn) = self.pool.get().await
+                && let Ok(json) = serde_json::to_string(&data)
+            {
+                let session_key = Self::session_key(session_id);
+                let run_id_key = Self::run_id_key(&run_id);
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to resume from paused state in Redis"
+                    );
+                    return false;
                 }
+                // Refresh run_id index TTL to keep it in sync with session TTL
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        run_id = %run_id,
+                        ttl_sec = self.ttl_sec,
+                        error = %e,
+                        "Failed to refresh run_id index TTL"
+                    );
+                    return false;
+                }
+                return true;
             }
         }
         false
@@ -554,11 +552,11 @@ impl SessionManager for RedisSessionManager {
             let session_key = Self::session_key(session_id);
             let json: Option<String> = (*conn).get(&session_key).await.ok().flatten();
 
-            if let Some(json) = json {
-                if let Ok(data) = serde_json::from_str::<RedisSessionData>(&json) {
-                    let run_id_key = Self::run_id_key(&data.run_id);
-                    let _: Result<(), _> = (*conn).del(&run_id_key).await;
-                }
+            if let Some(json) = json
+                && let Ok(data) = serde_json::from_str::<RedisSessionData>(&json)
+            {
+                let run_id_key = Self::run_id_key(&data.run_id);
+                let _: Result<(), _> = (*conn).del(&run_id_key).await;
             }
 
             let result: Result<i32, _> = (*conn).del(&session_key).await;

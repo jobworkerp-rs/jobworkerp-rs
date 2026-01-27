@@ -14,10 +14,10 @@ use anyhow::Result;
 use app::app::job::execute::{JobExecutorWrapper, UseJobExecutor};
 use app::module::test::create_hybrid_test_app;
 use infra_utils::infra::test::TEST_RUNTIME;
+use proto::DEFAULT_METHOD_NAME;
 use proto::jobworkerp::data::{
     JobId, QueueType, ResponseType, RunnerId, StreamingType, WorkerData,
 };
-use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -142,8 +142,8 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
         let worker_id = create_command_worker_with_response_type(
             &app_module,
             worker_name,
-            true,                    // broadcast_results=true for pubsub
-            ResponseType::NoResult,  // NoResult: worker process executes
+            true,                   // broadcast_results=true for pubsub
+            ResponseType::NoResult, // NoResult: worker process executes
         )
         .await?;
         eprintln!(
@@ -171,9 +171,9 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
                 worker_name,
                 &job_args,
                 None,
-                30,    // timeout
+                30,                  // timeout
                 StreamingType::None, // streaming=false (use broadcast instead)
-                None,  // using
+                None,                // using
             )
             .await;
 
@@ -223,9 +223,15 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
                         eprintln!("\n❌ Failed to receive broadcast result: {:?}", e);
                         eprintln!("   This may indicate the worker process is not running");
                         eprintln!("   or did not pick up the newly created worker.");
-                        eprintln!("\n   NOTE: This test requires a running jobworkerp worker process.");
-                        eprintln!("   The worker must be started AFTER the worker definition is created,");
-                        eprintln!("   or the running worker must detect and reload newly created workers.");
+                        eprintln!(
+                            "\n   NOTE: This test requires a running jobworkerp worker process."
+                        );
+                        eprintln!(
+                            "   The worker must be started AFTER the worker definition is created,"
+                        );
+                        eprintln!(
+                            "   or the running worker must detect and reload newly created workers."
+                        );
                     }
                 }
             }

@@ -1,7 +1,7 @@
 use crate::workflow::{
     definition::{
         transform::UseJqAndTemplateTransformer,
-        workflow::{self, tasks::TaskTrait, FlowDirective, Task},
+        workflow::{self, FlowDirective, Task, tasks::TaskTrait},
     },
     execute::checkpoint,
 };
@@ -11,8 +11,8 @@ pub use proto::jobworkerp::data::{JobId, JobResultId};
 
 // Re-export protobuf types for workflow events
 pub use proto::jobworkerp::data::{
-    workflow_event, JobCompletedEvent, JobStartedEvent, StreamingDataEvent, TaskCompletedEvent,
-    TaskStartedEvent, WorkflowEvent,
+    JobCompletedEvent, JobStartedEvent, StreamingDataEvent, TaskCompletedEvent, TaskStartedEvent,
+    WorkflowEvent, workflow_event,
 };
 use std::{collections::BTreeMap, fmt, ops::Deref, str::FromStr, sync::Arc};
 use tokio::sync::{Mutex, RwLock};

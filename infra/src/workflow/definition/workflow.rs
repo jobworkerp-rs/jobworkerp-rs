@@ -5452,8 +5452,8 @@ pub mod builder {
         pub fn metadata<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.metadata = value
@@ -5574,8 +5574,8 @@ pub mod builder {
         pub fn metadata<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.metadata = value
@@ -5616,8 +5616,8 @@ pub mod builder {
         pub fn tags<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.tags = value
@@ -6117,8 +6117,8 @@ pub mod builder {
         pub fn metadata<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.metadata = value
@@ -6375,8 +6375,8 @@ pub mod builder {
         pub fn metadata<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.metadata = value
@@ -6753,8 +6753,8 @@ pub mod builder {
         pub fn metadata<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.metadata = value
@@ -7121,8 +7121,8 @@ pub mod builder {
         pub fn arguments<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.arguments = value
@@ -7153,8 +7153,8 @@ pub mod builder {
         pub fn settings<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.settings = value
@@ -7223,8 +7223,8 @@ pub mod builder {
         pub fn arguments<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.arguments = value
@@ -7437,8 +7437,8 @@ pub mod builder {
         pub fn metadata<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.metadata = value
@@ -7654,8 +7654,8 @@ pub mod builder {
         pub fn metadata<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.metadata = value
@@ -7676,8 +7676,8 @@ pub mod builder {
         pub fn set<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.set = value
@@ -7878,8 +7878,8 @@ pub mod builder {
         pub fn metadata<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.metadata = value
@@ -7900,10 +7900,10 @@ pub mod builder {
         pub fn switch<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::std::vec::Vec<
-                    ::std::collections::HashMap<::std::string::String, super::SwitchCase>,
+                    ::std::vec::Vec<
+                        ::std::collections::HashMap<::std::string::String, super::SwitchCase>,
+                    >,
                 >,
-            >,
             T::Error: ::std::fmt::Display,
         {
             self.switch = value
@@ -8044,8 +8044,8 @@ pub mod builder {
         pub fn metadata<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.metadata = value
@@ -8244,8 +8244,8 @@ pub mod builder {
         pub fn metadata<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.metadata = value
@@ -8531,8 +8531,8 @@ pub mod builder {
         pub fn metadata<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
             T::Error: ::std::fmt::Display,
         {
             self.metadata = value

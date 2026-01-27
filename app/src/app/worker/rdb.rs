@@ -351,21 +351,21 @@ impl UseRunnerAppParserWithCache for RdbWorkerAppImpl {}
 
 #[cfg(test)]
 mod tests {
-    use crate::app::runner::rdb::RdbRunnerAppImpl;
-    use crate::app::runner::RunnerApp;
-    use crate::app::worker::rdb::RdbWorkerAppImpl;
-    use crate::app::worker::WorkerApp;
     use crate::app::StorageConfig;
+    use crate::app::runner::RunnerApp;
+    use crate::app::runner::rdb::RdbRunnerAppImpl;
+    use crate::app::worker::WorkerApp;
+    use crate::app::worker::rdb::RdbWorkerAppImpl;
     use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
+    use infra::infra::IdGeneratorWrapper;
     use infra::infra::job::rows::JobqueueAndCodec;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
-    use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
     use jobworkerp_base::codec::UseProstCodec;
     use memory_utils::cache::moka::MokaCacheImpl;
-    use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
     use proto::TestRunnerSettings;
+    use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -514,11 +514,13 @@ mod tests {
             assert!(found.is_some());
             let worker_data = found.and_then(|w| w.data);
             assert!(worker_data.is_some());
-            assert!(worker_data
-                .as_ref()
-                .unwrap()
-                .name
-                .starts_with(&temp_worker.name));
+            assert!(
+                worker_data
+                    .as_ref()
+                    .unwrap()
+                    .name
+                    .starts_with(&temp_worker.name)
+            );
 
             let deleted = app.delete_temp(&id).await?;
             assert!(deleted);
@@ -598,11 +600,13 @@ mod tests {
 
             let worker_data = found.and_then(|w| w.data);
             assert!(worker_data.is_some());
-            assert!(worker_data
-                .as_ref()
-                .unwrap()
-                .name
-                .starts_with(&temp_worker.name));
+            assert!(
+                worker_data
+                    .as_ref()
+                    .unwrap()
+                    .name
+                    .starts_with(&temp_worker.name)
+            );
 
             // delete_temp should still work after TTL expiration
             let deleted = app.delete_temp(&id).await?;

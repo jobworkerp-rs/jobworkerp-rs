@@ -2,11 +2,11 @@ use crate::jobworkerp::runner::workflow_result::WorkflowStatus;
 use crate::jobworkerp::runner::{Empty, ReusableWorkflowRunnerSettings, WorkflowResult};
 use crate::runner::CollectStreamFuture;
 use crate::{schema_to_json_string, schema_to_json_string_option};
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use prost::Message;
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use proto::DEFAULT_METHOD_NAME;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use std::collections::HashMap;
 
 use super::RunnerSpec;
@@ -147,13 +147,13 @@ impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
 
             // FinalCollected がある場合はそこからステータスをチェック
             if let Some(ref data) = final_collected {
-                if let Ok(result) = WorkflowResult::decode(data.as_slice()) {
-                    if result.status == WorkflowStatus::Faulted as i32 {
-                        return Err(anyhow::anyhow!(
-                            "Workflow execution failed: {}",
-                            result.error_message.as_deref().unwrap_or("Unknown error")
-                        ));
-                    }
+                if let Ok(result) = WorkflowResult::decode(data.as_slice())
+                    && result.status == WorkflowStatus::Faulted as i32
+                {
+                    return Err(anyhow::anyhow!(
+                        "Workflow execution failed: {}",
+                        result.error_message.as_deref().unwrap_or("Unknown error")
+                    ));
                 }
                 return Ok((data.clone(), metadata));
             }
@@ -167,13 +167,13 @@ impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
             }
 
             // final_result のステータスをチェック
-            if let Some(ref result) = final_result {
-                if result.status == WorkflowStatus::Faulted as i32 {
-                    return Err(anyhow::anyhow!(
-                        "Workflow execution failed: {}",
-                        result.error_message.as_deref().unwrap_or("Unknown error")
-                    ));
-                }
+            if let Some(ref result) = final_result
+                && result.status == WorkflowStatus::Faulted as i32
+            {
+                return Err(anyhow::anyhow!(
+                    "Workflow execution failed: {}",
+                    result.error_message.as_deref().unwrap_or("Unknown error")
+                ));
             }
 
             let bytes = final_result.map(|r| r.encode_to_vec()).unwrap_or_default();
@@ -307,13 +307,13 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
 
             // FinalCollected がある場合はそこからステータスをチェック
             if let Some(ref data) = final_collected {
-                if let Ok(result) = WorkflowResult::decode(data.as_slice()) {
-                    if result.status == WorkflowStatus::Faulted as i32 {
-                        return Err(anyhow::anyhow!(
-                            "Workflow execution failed: {}",
-                            result.error_message.as_deref().unwrap_or("Unknown error")
-                        ));
-                    }
+                if let Ok(result) = WorkflowResult::decode(data.as_slice())
+                    && result.status == WorkflowStatus::Faulted as i32
+                {
+                    return Err(anyhow::anyhow!(
+                        "Workflow execution failed: {}",
+                        result.error_message.as_deref().unwrap_or("Unknown error")
+                    ));
                 }
                 return Ok((data.clone(), metadata));
             }
@@ -327,13 +327,13 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
             }
 
             // final_result のステータスをチェック
-            if let Some(ref result) = final_result {
-                if result.status == WorkflowStatus::Faulted as i32 {
-                    return Err(anyhow::anyhow!(
-                        "Workflow execution failed: {}",
-                        result.error_message.as_deref().unwrap_or("Unknown error")
-                    ));
-                }
+            if let Some(ref result) = final_result
+                && result.status == WorkflowStatus::Faulted as i32
+            {
+                return Err(anyhow::anyhow!(
+                    "Workflow execution failed: {}",
+                    result.error_message.as_deref().unwrap_or("Unknown error")
+                ));
             }
 
             let bytes = final_result.map(|r| r.encode_to_vec()).unwrap_or_default();
@@ -346,7 +346,7 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
 mod tests {
     use super::*;
     use futures::stream;
-    use proto::jobworkerp::data::{result_output_item, Trailer};
+    use proto::jobworkerp::data::{Trailer, result_output_item};
 
     fn create_workflow_result(id: &str, output: &str, status: WorkflowStatus) -> WorkflowResult {
         WorkflowResult {

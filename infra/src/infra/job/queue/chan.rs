@@ -1,7 +1,7 @@
-use crate::infra::job::queue::JobQueueCancellationRepository;
-use crate::infra::job::rows::UseJobqueueAndCodec;
 use crate::infra::JobQueueConfig;
 use crate::infra::UseJobQueueConfig;
+use crate::infra::job::queue::JobQueueCancellationRepository;
+use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
@@ -498,10 +498,9 @@ impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
                             <ChanJobQueueRepositoryImpl as UseProstCodec>::deserialize_message::<
                                 JobId,
                             >(&data)
+                            && let Err(e) = callback(job_id).await
                         {
-                            if let Err(e) = callback(job_id).await {
-                                tracing::error!("Cancellation callback error: {:?}", e);
-                            }
+                            tracing::error!("Cancellation callback error: {:?}", e);
                         }
                     }
                     Some(Some(Err(e))) => {
@@ -551,10 +550,10 @@ mod test {
     use crate::infra::JobQueueConfig;
     use command_utils::util::datetime;
     use jobworkerp_base::codec::ProstMessageCodec;
-    use memory_utils::chan::mpmc::Chan;
-    use memory_utils::chan::mpmc::UseChanBuffer;
     use memory_utils::chan::ChanBuffer;
     use memory_utils::chan::ChanBufferItem;
+    use memory_utils::chan::mpmc::Chan;
+    use memory_utils::chan::mpmc::UseChanBuffer;
     use proto::jobworkerp::data::{Job, JobData, JobId, WorkerId};
     use std::sync::Arc;
 

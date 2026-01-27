@@ -4,9 +4,9 @@ use crate::types::ids::{RunId, ThreadId};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{watch, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{RwLock, watch};
 
 /// Session state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +130,7 @@ pub trait SessionManager: Send + Sync {
 
     /// Set session state to Paused with HITL waiting info
     async fn set_paused_with_hitl_info(&self, session_id: &str, hitl_info: HitlWaitingInfo)
-        -> bool;
+    -> bool;
 
     /// Clear HITL waiting info (when resuming)
     async fn clear_hitl_info(&self, session_id: &str) -> bool;
@@ -303,10 +303,11 @@ impl SessionManager for InMemorySessionManager {
     async fn get_session_by_interrupt_id(&self, interrupt_id: &str) -> Option<Session> {
         let sessions = self.inner.sessions.read().await;
         for session in sessions.values() {
-            if let Some(hitl_info) = &session.hitl_waiting_info {
-                if hitl_info.interrupt_id == interrupt_id && !self.inner.is_expired(session) {
-                    return Some(session.clone());
-                }
+            if let Some(hitl_info) = &session.hitl_waiting_info
+                && hitl_info.interrupt_id == interrupt_id
+                && !self.inner.is_expired(session)
+            {
+                return Some(session.clone());
             }
         }
         None

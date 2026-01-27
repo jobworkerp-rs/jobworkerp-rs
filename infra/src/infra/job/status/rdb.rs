@@ -504,7 +504,7 @@ pub trait UseRdbJobProcessingStatusIndexRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use infra_utils::infra::test::{setup_test_rdb_from, TEST_RUNTIME};
+    use infra_utils::infra::test::{TEST_RUNTIME, setup_test_rdb_from};
 
     async fn setup_test_db() -> &'static RdbPool {
         let pool = if cfg!(feature = "mysql") {

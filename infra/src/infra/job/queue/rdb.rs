@@ -184,9 +184,9 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::infra::JobQueueConfig;
     use crate::infra::job::rdb::RdbChanJobRepositoryImpl;
     use crate::infra::job::rdb::RdbJobRepository;
-    use crate::infra::JobQueueConfig;
     use anyhow::Result;
     use command_utils::util::datetime;
     use infra_utils::infra::rdb::RdbPool;

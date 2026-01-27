@@ -61,13 +61,13 @@ pub fn validate_offset(offset: Option<i64>) -> Result<(), Status> {
 /// * `Ok(())` if valid or None
 /// * `Err(Status)` if name_filter exceeds maximum length
 pub fn validate_name_filter(name_filter: Option<&String>) -> Result<(), Status> {
-    if let Some(name) = name_filter {
-        if name.len() > MAX_NAME_FILTER_LENGTH {
-            return Err(Status::invalid_argument(format!(
-                "name_filter exceeds maximum length of {} characters",
-                MAX_NAME_FILTER_LENGTH
-            )));
-        }
+    if let Some(name) = name_filter
+        && name.len() > MAX_NAME_FILTER_LENGTH
+    {
+        return Err(Status::invalid_argument(format!(
+            "name_filter exceeds maximum length of {} characters",
+            MAX_NAME_FILTER_LENGTH
+        )));
     }
     Ok(())
 }
@@ -81,13 +81,13 @@ pub fn validate_name_filter(name_filter: Option<&String>) -> Result<(), Status> 
 /// * `Ok(())` if valid or None
 /// * `Err(Status)` if channel name exceeds maximum length
 pub fn validate_channel(channel: Option<&String>) -> Result<(), Status> {
-    if let Some(ch) = channel {
-        if ch.len() > MAX_CHANNEL_NAME_LENGTH {
-            return Err(Status::invalid_argument(format!(
-                "channel name exceeds maximum length of {} characters",
-                MAX_CHANNEL_NAME_LENGTH
-            )));
-        }
+    if let Some(ch) = channel
+        && ch.len() > MAX_CHANNEL_NAME_LENGTH
+    {
+        return Err(Status::invalid_argument(format!(
+            "channel name exceeds maximum length of {} characters",
+            MAX_CHANNEL_NAME_LENGTH
+        )));
     }
     Ok(())
 }
@@ -166,21 +166,21 @@ pub fn validate_time_range(
             )));
         }
     } else {
-        if let Some(from) = time_from {
-            if from < 0 {
-                return Err(Status::invalid_argument(format!(
-                    "{}_from must be non-negative",
-                    param_name
-                )));
-            }
+        if let Some(from) = time_from
+            && from < 0
+        {
+            return Err(Status::invalid_argument(format!(
+                "{}_from must be non-negative",
+                param_name
+            )));
         }
-        if let Some(to) = time_to {
-            if to < 0 {
-                return Err(Status::invalid_argument(format!(
-                    "{}_to must be non-negative",
-                    param_name
-                )));
-            }
+        if let Some(to) = time_to
+            && to < 0
+        {
+            return Err(Status::invalid_argument(format!(
+                "{}_to must be non-negative",
+                param_name
+            )));
         }
     }
     Ok(())

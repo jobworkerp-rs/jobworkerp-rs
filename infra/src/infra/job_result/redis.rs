@@ -1,6 +1,6 @@
-use crate::infra::job::rows::UseJobqueueAndCodec;
 use crate::infra::JobQueueConfig;
 use crate::infra::UseJobQueueConfig;
+use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;

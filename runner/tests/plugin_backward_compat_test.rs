@@ -4,7 +4,7 @@ use jobworkerp_runner::runner::plugins::Plugins;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use jsonschema::Validator;
 use prost::Message;
-use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
+use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
 use std::collections::HashMap;
 
 const TEST_PLUGIN_DIR: &str = "./target/debug,../target/debug,../target/release,./target/release";
@@ -21,9 +21,11 @@ async fn test_load_legacy_plugin() -> Result<()> {
         .expect("LegacyCompat plugin should be loaded");
 
     assert_eq!(legacy_plugin.name, "LegacyCompat");
-    assert!(legacy_plugin
-        .description
-        .contains("Legacy compatibility test plugin"));
+    assert!(
+        legacy_plugin
+            .description
+            .contains("Legacy compatibility test plugin")
+    );
 
     Ok(())
 }

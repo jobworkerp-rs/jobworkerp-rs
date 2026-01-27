@@ -20,9 +20,9 @@ use app_wrapper::runner::{RunnerFactory, UseRunnerFactory};
 use command_utils::trace::Tracing;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
+use worker_app::worker::runner::JobRunner;
 use worker_app::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use worker_app::worker::runner::result::RunnerResultHandler;
-use worker_app::worker::runner::JobRunner;
 
 /// Real E2E Test JobRunner using actual test infrastructure
 struct RealE2EJobRunner {

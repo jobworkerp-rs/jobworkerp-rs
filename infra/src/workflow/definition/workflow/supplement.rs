@@ -19,9 +19,9 @@ impl Schema {
                     Some(document)
                 } else {
                     tracing::warn!(
-                    "Schema::json_schema not implemented for non-json format (Schema::Variant0): {}",
-                    format_
-                );
+                        "Schema::json_schema not implemented for non-json format (Schema::Variant0): {}",
+                        format_
+                    );
                     None
                 }
             }
@@ -91,28 +91,28 @@ impl Duration {
             } => {
                 let mut total_ms: u64 = 0;
 
-                if let Some(days) = days {
-                    if let Some(ms) = (*days as u64).checked_mul(24 * 60 * 60 * 1000) {
-                        total_ms = total_ms.saturating_add(ms);
-                    }
+                if let Some(days) = days
+                    && let Some(ms) = (*days as u64).checked_mul(24 * 60 * 60 * 1000)
+                {
+                    total_ms = total_ms.saturating_add(ms);
                 }
 
-                if let Some(hours) = hours {
-                    if let Some(ms) = (*hours as u64).checked_mul(60 * 60 * 1000) {
-                        total_ms = total_ms.saturating_add(ms);
-                    }
+                if let Some(hours) = hours
+                    && let Some(ms) = (*hours as u64).checked_mul(60 * 60 * 1000)
+                {
+                    total_ms = total_ms.saturating_add(ms);
                 }
 
-                if let Some(minutes) = minutes {
-                    if let Some(ms) = (*minutes as u64).checked_mul(60 * 1000) {
-                        total_ms = total_ms.saturating_add(ms);
-                    }
+                if let Some(minutes) = minutes
+                    && let Some(ms) = (*minutes as u64).checked_mul(60 * 1000)
+                {
+                    total_ms = total_ms.saturating_add(ms);
                 }
 
-                if let Some(seconds) = seconds {
-                    if let Some(ms) = (*seconds as u64).checked_mul(1000) {
-                        total_ms = total_ms.saturating_add(ms);
-                    }
+                if let Some(seconds) = seconds
+                    && let Some(ms) = (*seconds as u64).checked_mul(1000)
+                {
+                    total_ms = total_ms.saturating_add(ms);
                 }
 
                 if let Some(milliseconds) = milliseconds {

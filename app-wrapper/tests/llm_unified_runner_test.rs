@@ -8,7 +8,7 @@ use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::unified::LLMUnifiedRunnerImpl;
 use futures::StreamExt;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
-    message_content, ChatMessage, ChatRole, LlmOptions as ChatLlmOptions, MessageContent,
+    ChatMessage, ChatRole, LlmOptions as ChatLlmOptions, MessageContent, message_content,
 };
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_args::LlmOptions as CompletionLlmOptions;
@@ -22,7 +22,7 @@ use prost::Message;
 use proto::jobworkerp::data::result_output_item;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 /// Test configuration
 const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
@@ -84,11 +84,11 @@ async fn test_unified_runner_completion_method() -> Result<()> {
     let response = LlmCompletionResult::decode(&output[..])?;
 
     assert!(response.content.is_some());
-    if let Some(content) = response.content {
-        if let Some(llm_completion_result::message_content::Content::Text(text)) = content.content {
-            tracing::info!("Completion response: {}", text);
-            assert!(!text.is_empty());
-        }
+    if let Some(content) = response.content
+        && let Some(llm_completion_result::message_content::Content::Text(text)) = content.content
+    {
+        tracing::info!("Completion response: {}", text);
+        assert!(!text.is_empty());
     }
 
     tracing::info!("Unified runner completion method test passed!");
@@ -131,11 +131,11 @@ async fn test_unified_runner_chat_method() -> Result<()> {
     let response = LlmChatResult::decode(&output[..])?;
 
     assert!(response.content.is_some());
-    if let Some(content) = response.content {
-        if let Some(llm_chat_result::message_content::Content::Text(text)) = content.content {
-            tracing::info!("Chat response: {}", text);
-            assert!(!text.is_empty());
-        }
+    if let Some(content) = response.content
+        && let Some(llm_chat_result::message_content::Content::Text(text)) = content.content
+    {
+        tracing::info!("Chat response: {}", text);
+        assert!(!text.is_empty());
     }
 
     tracing::info!("Unified runner chat method test passed!");
@@ -175,15 +175,13 @@ async fn test_unified_runner_completion_stream() -> Result<()> {
         match item.item {
             Some(result_output_item::Item::Data(data)) => {
                 // Decode each chunk as LlmCompletionResult
-                if let Ok(result) = LlmCompletionResult::decode(&data[..]) {
-                    if let Some(content) = result.content {
-                        if let Some(llm_completion_result::message_content::Content::Text(text)) =
-                            content.content
-                        {
-                            tracing::debug!("Stream chunk: {}", text);
-                            combined_text.push_str(&text);
-                        }
-                    }
+                if let Ok(result) = LlmCompletionResult::decode(&data[..])
+                    && let Some(content) = result.content
+                    && let Some(llm_completion_result::message_content::Content::Text(text)) =
+                        content.content
+                {
+                    tracing::debug!("Stream chunk: {}", text);
+                    combined_text.push_str(&text);
                 }
                 chunks.push(data);
             }
@@ -244,15 +242,13 @@ async fn test_unified_runner_chat_stream() -> Result<()> {
         match item.item {
             Some(result_output_item::Item::Data(data)) => {
                 // Decode each chunk as LlmChatResult
-                if let Ok(result) = LlmChatResult::decode(&data[..]) {
-                    if let Some(content) = result.content {
-                        if let Some(llm_chat_result::message_content::Content::Text(text)) =
-                            content.content
-                        {
-                            tracing::debug!("Stream chunk: {}", text);
-                            combined_text.push_str(&text);
-                        }
-                    }
+                if let Ok(result) = LlmChatResult::decode(&data[..])
+                    && let Some(content) = result.content
+                    && let Some(llm_chat_result::message_content::Content::Text(text)) =
+                        content.content
+                {
+                    tracing::debug!("Stream chunk: {}", text);
+                    combined_text.push_str(&text);
                 }
                 chunks.push(data);
             }
@@ -382,19 +378,19 @@ async fn test_unified_runner_chat_with_json_schema() -> Result<()> {
     let response = LlmChatResult::decode(&output[..])?;
 
     assert!(response.content.is_some());
-    if let Some(content) = response.content {
-        if let Some(llm_chat_result::message_content::Content::Text(text)) = content.content {
-            let parsed: serde_json::Value = serde_json::from_str(&text)?;
-            assert!(parsed.get("answer").is_some());
-            assert!(parsed.get("confidence").is_some());
+    if let Some(content) = response.content
+        && let Some(llm_chat_result::message_content::Content::Text(text)) = content.content
+    {
+        let parsed: serde_json::Value = serde_json::from_str(&text)?;
+        assert!(parsed.get("answer").is_some());
+        assert!(parsed.get("confidence").is_some());
 
-            // LLM may output confidence as 0-1 or 0-100 scale depending on interpretation
-            if let Some(confidence) = parsed.get("confidence").and_then(|v| v.as_f64()) {
-                assert!(confidence >= 0.0, "confidence should be non-negative");
-            }
-
-            tracing::info!("Chat JSON Schema test passed. Response: {}", text);
+        // LLM may output confidence as 0-1 or 0-100 scale depending on interpretation
+        if let Some(confidence) = parsed.get("confidence").and_then(|v| v.as_f64()) {
+            assert!(confidence >= 0.0, "confidence should be non-negative");
         }
+
+        tracing::info!("Chat JSON Schema test passed. Response: {}", text);
     }
 
     tracing::info!("Unified runner chat with JSON schema test passed!");

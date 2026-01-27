@@ -1,6 +1,6 @@
 use super::TaskExecutor;
 use crate::workflow::{
-    definition::workflow::{tasks::TaskTrait, Task},
+    definition::workflow::{Task, tasks::TaskTrait},
     execute::{
         context::{TaskContext, WorkflowContext, WorkflowStreamEvent},
         task::{ExecutionId, Result, TaskExecutorTrait},
@@ -16,7 +16,7 @@ use crate::workflow::{
 use app::app::job::execute::JobExecutorWrapper;
 use command_utils::trace::Tracing;
 use debug_stub_derive::DebugStub;
-use futures::{future, Future, StreamExt};
+use futures::{Future, StreamExt, future};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tokio_stream::StreamMap;
@@ -229,10 +229,10 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                         match result {
                             Ok(event) => {
                                 // Extract context from completed events
-                                if let Some(context) = event.into_context() {
-                                    if !context.output.is_null() {
-                                        output.push((*context.output).clone());
-                                    }
+                                if let Some(context) = event.into_context()
+                                    && !context.output.is_null()
+                                {
+                                    output.push((*context.output).clone());
                                 }
                             }
                             Err(e) => {
@@ -535,10 +535,12 @@ mod tests {
 
             // all tasks failed
             assert!(result.is_err());
-            assert!(result
-                .unwrap_err()
-                .to_string()
-                .contains("All tasks failed in compete mode"));
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("All tasks failed in compete mode")
+            );
         })
     }
 }
