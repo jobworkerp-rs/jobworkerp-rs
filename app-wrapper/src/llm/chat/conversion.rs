@@ -91,6 +91,7 @@ impl ToolConverter {
         Ok(ListToolsResult {
             tools: tool_list,
             next_cursor: None,
+            meta: None,
         })
     }
 

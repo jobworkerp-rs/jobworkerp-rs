@@ -5,7 +5,7 @@ use debug_stub_derive::DebugStub;
 use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use rmcp::{
-    model::{CallToolRequestParam, CallToolResult, LoggingLevel, Tool},
+    model::{CallToolRequestParams, CallToolResult, LoggingLevel, Tool},
     service::{QuitReason, RunningService},
     transport::child_process::ConfigureCommandExt,
     ClientHandler, RoleClient, ServiceExt,
@@ -83,16 +83,12 @@ impl McpServerProxy {
                         .build()
                         .map_err(|e| anyhow::anyhow!("Failed to create reqwest client: {}", e))?;
 
+                    use rmcp::transport::streamable_http_client::{
+                        StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
+                    };
+                    let config = StreamableHttpClientTransportConfig::with_uri(url.as_str());
                     let transport =
-                        rmcp::transport::sse_client::SseClientTransport::start_with_client(
-                            reqwest_client,
-                            rmcp::transport::sse_client::SseClientConfig {
-                                sse_endpoint: url.as_str().into(),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .map_err(|e| anyhow::anyhow!("SSE transport error: {}", e))?;
+                        StreamableHttpClientTransport::with_client(reqwest_client, config);
                     // TODO use handler
                     ().serve(transport)
                         .await
@@ -156,9 +152,11 @@ impl McpServerProxy {
         tracing::debug!("calling tool: {tool_name}, args: {arguments:?}");
         let call_result = self
             .transport
-            .call_tool(CallToolRequestParam {
+            .call_tool(CallToolRequestParams {
                 name: Cow::Owned(tool_name.to_string()),
                 arguments,
+                meta: None,
+                task: None,
             })
             .await?;
         tracing::debug!("called tool: {tool_name}, result: {call_result:?}");
@@ -180,9 +178,11 @@ impl McpServerProxy {
         tracing::debug!("calling tool with cancellation: {tool_name}, args: {arguments:?}");
 
         tokio::select! {
-            result = self.transport.call_tool(CallToolRequestParam {
+            result = self.transport.call_tool(CallToolRequestParams {
                 name: Cow::Owned(tool_name.to_string()),
                 arguments,
+                meta: None,
+                task: None,
             }) => {
                 let call_result = result.map_err(|e| {
                     tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name, e);
