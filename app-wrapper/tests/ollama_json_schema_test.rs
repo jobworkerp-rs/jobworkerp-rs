@@ -9,16 +9,16 @@ use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::chat::ollama::OllamaChatService;
 use app_wrapper::llm::completion::ollama::OllamaService;
 use futures::StreamExt;
-use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
-    message_content, ChatRole, LlmOptions as ChatLlmOptions,
-};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, MessageContent};
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+    ChatRole, LlmOptions as ChatLlmOptions, message_content,
+};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_args::LlmOptions as CompletionLlmOptions;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmCompletionArgs};
 use std::collections::HashMap;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 
 /// Test configuration
@@ -102,8 +102,8 @@ async fn test_chat_with_json_schema() -> Result<()> {
     .await??;
 
     assert!(result.content.is_some());
-    if let Some(content) = result.content {
-        if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
+    if let Some(content) = result.content
+        && let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
             let parsed: serde_json::Value = serde_json::from_str(&text)?;
             assert!(parsed.get("answer").is_some());
             assert!(parsed.get("confidence").is_some());
@@ -114,7 +114,6 @@ async fn test_chat_with_json_schema() -> Result<()> {
 
             println!("Chat JSON Schema test passed. Response: {}", text);
         }
-    }
 
     Ok(())
 }
@@ -159,19 +158,19 @@ async fn test_completion_with_json_schema() -> Result<()> {
     .await??;
 
     assert!(result.content.is_some());
-    if let Some(content) = result.content {
-        if let Some(llm_completion_result::message_content::Content::Text(text)) = content.content {
-            let parsed: serde_json::Value = serde_json::from_str(&text)?;
-            assert!(parsed.get("translation").is_some());
-            assert!(parsed.get("source_language").is_some());
-            assert!(parsed.get("target_language").is_some());
+    if let Some(content) = result.content
+        && let Some(llm_completion_result::message_content::Content::Text(text)) = content.content
+    {
+        let parsed: serde_json::Value = serde_json::from_str(&text)?;
+        assert!(parsed.get("translation").is_some());
+        assert!(parsed.get("source_language").is_some());
+        assert!(parsed.get("target_language").is_some());
 
-            if let Some(translation) = parsed.get("translation").and_then(|v| v.as_str()) {
-                assert!(!translation.is_empty());
-            }
-
-            println!("Completion JSON Schema test passed. Response: {}", text);
+        if let Some(translation) = parsed.get("translation").and_then(|v| v.as_str()) {
+            assert!(!translation.is_empty());
         }
+
+        println!("Completion JSON Schema test passed. Response: {}", text);
     }
 
     Ok(())
@@ -306,8 +305,8 @@ async fn test_workflow_8level_schema_with_llm_chat() -> Result<()> {
     .await??;
 
     assert!(result.content.is_some());
-    if let Some(content) = result.content {
-        if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
+    if let Some(content) = result.content
+        && let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
             tracing::info!("Generated workflow response: {}", text);
 
             let parsed: serde_json::Value = serde_json::from_str(&text)?;
@@ -351,7 +350,6 @@ async fn test_workflow_8level_schema_with_llm_chat() -> Result<()> {
 
             tracing::info!("Workflow 8-level schema test with LLM_CHAT passed!");
         }
-    }
 
     Ok(())
 }
@@ -392,8 +390,8 @@ async fn test_complex_nested_workflow_with_llm_chat() -> Result<()> {
     .await??;
 
     assert!(result.content.is_some());
-    if let Some(content) = result.content {
-        if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
+    if let Some(content) = result.content
+        && let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
             tracing::info!("Generated complex workflow response: {}", text);
 
             let parsed: serde_json::Value = serde_json::from_str(&text)?;
@@ -441,7 +439,6 @@ async fn test_complex_nested_workflow_with_llm_chat() -> Result<()> {
 
             tracing::info!("Complex nested workflow schema test with LLM_CHAT passed!");
         }
-    }
 
     Ok(())
 }

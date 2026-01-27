@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::workflow::execute::{
-    checkpoint::{repository::memory::MemoryCheckPointRepositoryImpl, CheckPointContext},
+    checkpoint::{CheckPointContext, repository::memory::MemoryCheckPointRepositoryImpl},
     context::WorkflowPosition,
     task::ExecutionId,
 };

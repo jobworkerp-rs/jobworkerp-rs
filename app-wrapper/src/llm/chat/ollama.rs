@@ -1,16 +1,16 @@
 use super::super::tracing::ollama_helper::OllamaTracingHelper;
 use super::conversion::ToolConverter;
-use crate::llm::generic_tracing_helper::GenericLLMTracingHelper;
 use crate::llm::ThinkTagHelper;
+use crate::llm::generic_tracing_helper::GenericLLMTracingHelper;
 use anyhow::Result;
 use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
 use app::app::function::{FunctionApp, FunctionAppImpl};
 use command_utils::trace::impls::GenericOtelClient;
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequest;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequest;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{
@@ -20,10 +20,10 @@ use ollama_rs::generation::chat::ChatMessageResponse;
 use ollama_rs::generation::parameters::{FormatType, JsonStructure};
 use ollama_rs::generation::tools::{ToolCall as OllamaToolCall, ToolInfo};
 use ollama_rs::{
-    generation::chat::{request::ChatMessageRequest, ChatMessage, MessageRole},
+    Ollama,
+    generation::chat::{ChatMessage, MessageRole, request::ChatMessageRequest},
     generation::images::Image as OllamaImage,
     models::ModelOptions,
-    Ollama,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -504,16 +504,16 @@ impl OllamaChatService {
             if msg.role() != ChatRole::Tool {
                 continue;
             }
-            if let Some(ref content) = msg.content {
-                if let Some(ProtoContent::ToolExecutionRequests(reqs)) = &content.content {
-                    // Check if this message contains the target call_id
-                    if reqs.requests.iter().any(|r| r.call_id == call_id) {
-                        // Replace with text result
-                        msg.content = Some(llm::llm_chat_args::MessageContent {
-                            content: Some(ProtoContent::Text(result.to_string())),
-                        });
-                        return;
-                    }
+            if let Some(ref content) = msg.content
+                && let Some(ProtoContent::ToolExecutionRequests(reqs)) = &content.content
+            {
+                // Check if this message contains the target call_id
+                if reqs.requests.iter().any(|r| r.call_id == call_id) {
+                    // Replace with text result
+                    msg.content = Some(llm::llm_chat_args::MessageContent {
+                        content: Some(ProtoContent::Text(result.to_string())),
+                    });
+                    return;
                 }
             }
         }
@@ -689,7 +689,8 @@ impl OllamaChatService {
             }
 
             // Recursive call with updated context from tool execution
-            let result = Box::pin(self.request_chat_internal_with_tracing(
+
+            Box::pin(self.request_chat_internal_with_tracing(
                 model,
                 options,
                 messages,
@@ -699,8 +700,7 @@ impl OllamaChatService {
                 None, // json_schema is not used in recursive calls to avoid conflicts
                 is_auto_calling,
             ))
-            .await;
-            result
+            .await
         }
     }
 

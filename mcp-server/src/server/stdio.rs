@@ -1,6 +1,6 @@
 use crate::handler::McpHandler;
 use anyhow::Result;
-use rmcp::{transport::stdio, ServiceExt};
+use rmcp::{ServiceExt, transport::stdio};
 
 /// Boot the MCP Server in Stdio mode.
 ///

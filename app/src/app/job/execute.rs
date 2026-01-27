@@ -5,7 +5,7 @@ use crate::app::runner::{
 };
 use crate::app::worker::{UseWorkerApp, WorkerApp};
 use crate::module::AppModule;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use command_utils::cache_ok;
 use command_utils::protobuf::ProtobufDescriptor;
 use command_utils::util::scoped_cache::ScopedCache;
@@ -18,7 +18,7 @@ use proto::jobworkerp::data::{
     JobId, JobResult, Priority, QueueType, ResponseType, ResultOutputItem, ResultStatus,
     RetryPolicy, RetryType, RunnerData, RunnerId, StreamingType, Worker, WorkerData, WorkerId,
 };
-use proto::{ProtobufHelper, DEFAULT_METHOD_NAME};
+use proto::{DEFAULT_METHOD_NAME, ProtobufHelper};
 use std::collections::HashMap;
 use std::sync::Arc;
 

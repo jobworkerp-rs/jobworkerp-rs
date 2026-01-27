@@ -1,7 +1,7 @@
 use anyhow::Result;
 use command_utils::trace::impls::GenericOtelClient;
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent as GenaiMessageContent,
 };
@@ -11,9 +11,9 @@ use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{
-    llm_completion_result, LlmCompletionArgs, LlmCompletionResult,
+    LlmCompletionArgs, LlmCompletionResult, llm_completion_result,
 };
-use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
+use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
 use std::collections::HashMap;
 use std::sync::Arc;
 

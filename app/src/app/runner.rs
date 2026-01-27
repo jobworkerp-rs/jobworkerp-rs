@@ -8,8 +8,8 @@ use infra::infra::runner::rows::RunnerWithSchema;
 use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use prost_reflect::{DynamicMessage, MessageDescriptor};
-use proto::jobworkerp::data::{RunnerData, RunnerId};
 use proto::DEFAULT_METHOD_NAME;
+use proto::jobworkerp::data::{RunnerData, RunnerId};
 use std::{collections::HashMap, fmt, future::Future, sync::Arc};
 
 #[async_trait]
@@ -585,8 +585,8 @@ pub trait RunnerCacheHelper {
 pub mod test {
     use super::RunnerDataWithDescriptor;
     use infra::infra::runner::rows::RunnerWithSchema;
-    use proto::jobworkerp::data::{RunnerData, RunnerId, RunnerType, StreamingOutputType};
     use proto::DEFAULT_METHOD_NAME;
+    use proto::jobworkerp::data::{RunnerData, RunnerId, RunnerType, StreamingOutputType};
 
     pub fn test_runner_data(name: &str) -> RunnerData {
         let mut schemas = std::collections::HashMap::new();

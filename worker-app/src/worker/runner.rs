@@ -9,15 +9,15 @@ mod integration_tests;
 use self::map::UseRunnerPoolMap;
 use self::result::RunnerResultHandler;
 use self::stream_guard::{StreamWithCancelGuard, StreamWithPoolGuard};
-use anyhow::anyhow;
 use anyhow::Result;
+use anyhow::anyhow;
 use app_wrapper::runner::UseRunnerFactory;
 use async_trait::async_trait;
 use command_utils::trace::Tracing;
 use command_utils::util::datetime;
 use futures::{future::FutureExt, stream::BoxStream};
-use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::UseIdGenerator;
+use infra::infra::job::rows::UseJobqueueAndCodec;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::cancellation::CancellableRunner;
 use proto::jobworkerp::data::JobResult;
@@ -93,9 +93,9 @@ pub trait JobRunner:
                         // Non-streaming: Existing behavior (immediate Pool return)
                         let mut r = runner.lock().await;
                         tracing::debug!("static runner found (non-streaming): {:?}", r.name());
-                        let result = self.run_job_inner(worker_data, job, &mut r).await;
+
                         // runner is automatically dropped and returned to Pool
-                        result
+                        self.run_job_inner(worker_data, job, &mut r).await
                     }
                 }
                 Ok(None) => (self.handle_error_option(worker_data, job, None), None),
@@ -935,14 +935,13 @@ pub(crate) mod tests {
                     Some(result_output_item::Item::Data(data)) => {
                         let cmd_result =
                             ProstMessageCodec::deserialize_message::<CommandResult>(&data);
-                        if let Ok(cmd_result) = cmd_result {
-                            if cmd_result
+                        if let Ok(cmd_result) = cmd_result
+                            && cmd_result
                                 .stdout
                                 .as_ref()
                                 .is_some_and(|s| s.contains("internal_streaming_test"))
-                            {
-                                found_data = true;
-                            }
+                        {
+                            found_data = true;
                         }
                     }
                     Some(result_output_item::Item::End(_)) => {

@@ -4,7 +4,7 @@ pub mod redis;
 use std::pin::Pin;
 
 use anyhow::Result;
-use futures::{stream::BoxStream, Stream};
+use futures::{Stream, stream::BoxStream};
 use proto::jobworkerp::data::{
     JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, WorkerId,
 };

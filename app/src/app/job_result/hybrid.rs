@@ -4,15 +4,15 @@ use super::{JobResultApp, JobResultAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use infra::infra::job_result::pubsub::JobResultSubscriber;
 use infra::infra::job_result::pubsub::redis::{
     RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
 };
-use infra::infra::job_result::pubsub::JobResultSubscriber;
 use infra::infra::job_result::rdb::{RdbJobResultRepository, UseRdbJobResultRepository};
 use infra::infra::job_result::redis::{RedisJobResultRepository, UseRedisJobResultRepository};
+use infra::infra::module::HybridRepositoryModule;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
-use infra::infra::module::HybridRepositoryModule;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
@@ -478,16 +478,16 @@ impl UseRedisJobResultPubSubRepository for HybridJobResultAppImpl {
 #[cfg(any(test, feature = "test-utils"))]
 pub mod tests {
     use super::HybridJobResultAppImpl;
-    use crate::app::runner::hybrid::HybridRunnerAppImpl;
     use crate::app::runner::RunnerApp;
+    use crate::app::runner::hybrid::HybridRunnerAppImpl;
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
     use crate::app::{StorageConfig, StorageType};
     use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
+    use infra::infra::IdGeneratorWrapper;
+    use infra::infra::module::HybridRepositoryModule;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
-    use infra::infra::module::HybridRepositoryModule;
-    use infra::infra::IdGeneratorWrapper;
     use std::sync::Arc;
     use std::time::Duration;
 

@@ -1,5 +1,5 @@
 use crate::jobworkerp::data::{RetryPolicy, RetryType};
-use crate::{calculate_direct_response_timeout_ms, RetryPolicyExt};
+use crate::{RetryPolicyExt, calculate_direct_response_timeout_ms};
 
 #[test]
 fn test_no_retry_returns_job_timeout() {

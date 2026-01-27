@@ -831,8 +831,8 @@ mod test {
 
     #[test]
     fn run_test() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let rdb_pool = if cfg!(feature = "mysql") {
                 let pool = setup_test_rdb_from("sql/mysql").await;
@@ -855,8 +855,8 @@ mod test {
 
     #[test]
     fn test_add_from_mcp_server() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         use jobworkerp_runner::runner::mcp::integration_tests;
 
         TEST_RUNTIME.block_on(async {
@@ -941,8 +941,8 @@ mod test {
 
     #[test]
     fn test_create_plugin() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
 
         TEST_RUNTIME.block_on(async {
             let rdb_pool = if cfg!(feature = "mysql") {
@@ -1018,8 +1018,8 @@ mod test {
 
     #[test]
     fn test_create_mcp_server() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         use serde_json::json;
 
         TEST_RUNTIME.block_on(async {
@@ -1509,8 +1509,8 @@ mod test {
 
     #[test]
     fn test_sprint2_parameters() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
 
         TEST_RUNTIME.block_on(async {
             let rdb_pool = if cfg!(feature = "mysql") {

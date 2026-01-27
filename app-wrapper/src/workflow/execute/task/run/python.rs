@@ -14,15 +14,15 @@ use crate::workflow::{
         expression::UseExpression,
     },
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use app::app::{
     job::execute::{JobExecutorWrapper, UseJobExecutor},
     runner::UseRunnerApp,
 };
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use jobworkerp_runner::jobworkerp::runner::{
-    python_command_args, python_command_runner_settings, PythonCommandArgs, PythonCommandResult,
-    PythonCommandRunnerSettings,
+    PythonCommandArgs, PythonCommandResult, PythonCommandRunnerSettings, python_command_args,
+    python_command_runner_settings,
 };
 use proto::jobworkerp::data::{QueueType, ResponseType, StreamingType, WorkerData};
 use std::collections::HashMap;
@@ -111,30 +111,30 @@ impl PythonTaskExecutor {
         tracing::debug!("Evaluated arguments: {:#?}", evaluated_args);
 
         // Step 2: Inject evaluated arguments as global variables via Base64 encoding (secure)
-        if let serde_json::Value::Object(ref args_map) = evaluated_args {
-            if !args_map.is_empty() {
-                script_code.push_str("# Injected arguments (runtime expressions evaluated)\n");
-                script_code.push_str("# Security: Base64 encoding prevents code injection\n");
-                script_code.push_str("import json\n");
-                script_code.push_str("import base64\n\n");
+        if let serde_json::Value::Object(ref args_map) = evaluated_args
+            && !args_map.is_empty()
+        {
+            script_code.push_str("# Injected arguments (runtime expressions evaluated)\n");
+            script_code.push_str("# Security: Base64 encoding prevents code injection\n");
+            script_code.push_str("import json\n");
+            script_code.push_str("import base64\n\n");
 
-                for (key, value) in args_map {
-                    // Security validation
-                    validation::sanitize_python_variable(key, value)?;
+            for (key, value) in args_map {
+                // Security validation
+                validation::sanitize_python_variable(key, value)?;
 
-                    // Serialize and Base64 encode (prevents all injection attacks)
-                    let json_str = serde_json::to_string(value)
-                        .context("Failed to serialize argument value")?;
-                    let b64_encoded = STANDARD.encode(json_str.as_bytes());
+                // Serialize and Base64 encode (prevents all injection attacks)
+                let json_str =
+                    serde_json::to_string(value).context("Failed to serialize argument value")?;
+                let b64_encoded = STANDARD.encode(json_str.as_bytes());
 
-                    // Inject as Python variable (secure)
-                    script_code.push_str(&format!(
-                        "{} = json.loads(base64.b64decode('{}').decode('utf-8'))\n",
-                        key, b64_encoded
-                    ));
-                }
-                script_code.push('\n');
+                // Inject as Python variable (secure)
+                script_code.push_str(&format!(
+                    "{} = json.loads(base64.b64decode('{}').decode('utf-8'))\n",
+                    key, b64_encoded
+                ));
             }
+            script_code.push('\n');
         }
 
         // Step 3: Append user's script or download external script

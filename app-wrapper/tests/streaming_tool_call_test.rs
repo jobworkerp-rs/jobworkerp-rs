@@ -23,10 +23,10 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmChatResult};
 use proto::jobworkerp::data::RunnerId;
-use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData, FunctionUsing};
+use proto::jobworkerp::function::data::{FunctionId, FunctionSetData, FunctionUsing, function_id};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 /// Test configuration
 const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
@@ -36,7 +36,8 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Create Ollama chat service for streaming tests
 async fn create_test_service() -> Result<Arc<OllamaChatService>> {
-    std::env::set_var("OTLP_ADDR", OTLP_ADDR);
+    // SAFETY: called in test setup before spawning threads
+    unsafe { std::env::set_var("OTLP_ADDR", OTLP_ADDR) };
     let app_module = create_hybrid_test_app().await?;
 
     let settings = OllamaRunnerSettings {
@@ -259,10 +260,10 @@ async fn test_streaming_manual_mode_returns_pending_tool_calls() -> Result<()> {
         }
 
         // Collect text content
-        if let Some(ref content) = result.content {
-            if let Some(ResultContent::Text(ref text)) = content.content {
-                final_text.push_str(text);
-            }
+        if let Some(ref content) = result.content
+            && let Some(ResultContent::Text(ref text)) = content.content
+        {
+            final_text.push_str(text);
         }
 
         continuation_results.push(result);
@@ -355,10 +356,10 @@ async fn test_streaming_without_tools() -> Result<()> {
 
     while let Some(result) = stream.next().await {
         chunk_count += 1;
-        if let Some(ref content) = result.content {
-            if let Some(ResultContent::Text(ref text)) = content.content {
-                text_content.push_str(text);
-            }
+        if let Some(ref content) = result.content
+            && let Some(ResultContent::Text(ref text)) = content.content
+        {
+            text_content.push_str(text);
         }
     }
 

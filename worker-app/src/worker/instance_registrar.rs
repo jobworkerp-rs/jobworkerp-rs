@@ -5,7 +5,7 @@ use jobworkerp_base::worker_instance_config::WorkerInstanceConfig;
 use proto::jobworkerp::data::{ChannelConfig, StorageType, WorkerInstanceData, WorkerInstanceId};
 use std::sync::Arc;
 use tokio::sync::watch;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 
 /// Worker instance registrar for managing instance lifecycle
 ///

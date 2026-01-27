@@ -4,8 +4,8 @@ use crate::workflow::definition::{
     transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
     workflow::{self, Task, WorkflowSchema},
 };
-use crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId;
 use crate::workflow::execute::checkpoint::CheckPointContext;
+use crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId;
 use crate::workflow::execute::context::{
     self, TaskContext, WorkflowContext, WorkflowPosition, WorkflowStatus,
 };
@@ -18,8 +18,8 @@ use command_utils::trace::Tracing;
 use futures::{Stream, StreamExt};
 use jobworkerp_base::APP_WORKER_NAME;
 use opentelemetry::{
-    trace::{SpanRef, TraceContextExt},
     Context,
+    trace::{SpanRef, TraceContextExt},
 };
 use proto::jobworkerp::data::StorageType;
 use std::time::Duration;
@@ -104,7 +104,7 @@ impl WorkflowExecutor {
                     "Failed to save checkpoint".to_string(),
                     Some(
                         WorkflowPosition::new(vec![
-                            serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
+                            serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null),
                         ])
                         .as_error_instance(),
                     ),
@@ -112,8 +112,12 @@ impl WorkflowExecutor {
                 )
             })?;
         } else {
-            tracing::debug!("Necessary info is not provided, ignore checkpointing: execution_id={:?}, checkpoint={:?}, repository={:?}",
-                execution_id, checkpoint, checkpoint_repository);
+            tracing::debug!(
+                "Necessary info is not provided, ignore checkpointing: execution_id={:?}, checkpoint={:?}, repository={:?}",
+                execution_id,
+                checkpoint,
+                checkpoint_repository
+            );
         }
         let workflow_context = Arc::new(RwLock::new(context::WorkflowContext::new(
             &workflow,
@@ -487,8 +491,8 @@ impl WorkflowExecutor {
                 drop(lock);
 
                 // Transform output if specified
-                if let Some(output) = workflow.output.as_ref() {
-                    if let Some(as_) = output.as_.as_ref() {
+                if let Some(output) = workflow.output.as_ref()
+                    && let Some(as_) = output.as_.as_ref() {
                         let wfr = initial_wfc.read().await;
                         // Build TaskContext with correct $input and $output for workflow output transform
                         let last_output = wfr
@@ -534,7 +538,6 @@ impl WorkflowExecutor {
                             }
                         }
                     }
-                }
                 tracing::debug!(
                     "Final output transformed for workflow: {}, id={}",
                     workflow.document.name.as_str(),
@@ -650,11 +653,10 @@ impl WorkflowExecutor {
 
                             // Apply event's position to the context
                             let event_position = event.position();
-                            if !event_position.is_empty() {
-                                if let Ok(pos) = WorkflowPosition::parse(event_position) {
+                            if !event_position.is_empty()
+                                && let Ok(pos) = WorkflowPosition::parse(event_position) {
                                     res.position = pos;
                                 }
-                            }
 
                             // Mark as final if this is a terminal state
                             if matches!(
@@ -679,11 +681,10 @@ impl WorkflowExecutor {
                         drop(wf);
 
                         // Apply error's instance (position info) to the context
-                        if let Some(ref instance) = e.instance {
-                            if let Ok(pos) = WorkflowPosition::parse(instance) {
+                        if let Some(ref instance) = e.instance
+                            && let Ok(pos) = WorkflowPosition::parse(instance) {
                                 res.position = pos;
                             }
-                        }
 
                         yield Ok(Arc::new(res));
                         // Then propagate the error so callers can detect it via is_err()
@@ -983,16 +984,16 @@ mod tests {
     use super::*;
     use crate::modules::test::create_test_app_wrapper_module;
     use crate::workflow::definition::{
+        WorkflowLoader,
         workflow::{
             CheckpointConfig, CheckpointConfigStorage, Document, FlowDirective, FlowDirectiveEnum,
             Input, Output, OutputAs, SetTask, Task, TaskList, WorkflowName, WorkflowSchema,
             WorkflowVersion,
         },
-        WorkflowLoader,
     };
 
     use app::module::test::create_hybrid_test_app;
-    use futures::{pin_mut, StreamExt};
+    use futures::{StreamExt, pin_mut};
     use std::collections::HashMap;
     use std::str::FromStr;
     use std::sync::Arc;

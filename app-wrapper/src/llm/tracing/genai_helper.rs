@@ -9,34 +9,38 @@ use std::collections::HashMap;
 pub trait GenaiTracingHelper: GenericLLMTracingHelper {
     /// Convert ChatMessage vector to proper tracing input format
     fn convert_messages_to_input_genai(messages: &[ChatMessage]) -> serde_json::Value {
-        serde_json::json!(messages
-            .iter()
-            .map(|m| {
-                let mut msg_json = serde_json::json!({
-                    "role": m.get_role(),
-                    "content": m.get_content()
-                });
+        serde_json::json!(
+            messages
+                .iter()
+                .map(|m| {
+                    let mut msg_json = serde_json::json!({
+                        "role": m.get_role(),
+                        "content": m.get_content()
+                    });
 
-                let parts = m.content.parts();
-                if parts.len() > 1 {
-                    msg_json["parts_count"] = serde_json::json!(parts.len());
-                }
+                    let parts = m.content.parts();
+                    if parts.len() > 1 {
+                        msg_json["parts_count"] = serde_json::json!(parts.len());
+                    }
 
-                let tool_calls = m.content.tool_calls();
-                if !tool_calls.is_empty() {
-                    msg_json["tool_calls"] = serde_json::json!(tool_calls
-                        .iter()
-                        .map(|tc| serde_json::json!({
-                            "call_id": tc.call_id,
-                            "fn_name": tc.fn_name,
-                            "fn_arguments": tc.fn_arguments
-                        }))
-                        .collect::<Vec<_>>());
-                }
+                    let tool_calls = m.content.tool_calls();
+                    if !tool_calls.is_empty() {
+                        msg_json["tool_calls"] = serde_json::json!(
+                            tool_calls
+                                .iter()
+                                .map(|tc| serde_json::json!({
+                                    "call_id": tc.call_id,
+                                    "fn_name": tc.fn_name,
+                                    "fn_arguments": tc.fn_arguments
+                                }))
+                                .collect::<Vec<_>>()
+                        );
+                    }
 
-                msg_json
-            })
-            .collect::<Vec<_>>())
+                    msg_json
+                })
+                .collect::<Vec<_>>()
+        )
     }
 
     /// Convert ChatOptions to proper model parameters format
@@ -240,8 +244,9 @@ pub trait GenaiCompletionTracingHelper: GenericLLMTracingHelper {
         parent_context: Option<opentelemetry::Context>,
         span_attributes: command_utils::trace::attr::OtelSpanAttributes,
         action: F,
-    ) -> impl std::future::Future<Output = Result<(genai::chat::ChatResponse, opentelemetry::Context)>>
-           + Send
+    ) -> impl std::future::Future<
+        Output = Result<(genai::chat::ChatResponse, opentelemetry::Context)>,
+    > + Send
     where
         F: std::future::Future<Output = Result<genai::chat::ChatResponse, JobWorkerError>>
             + Send

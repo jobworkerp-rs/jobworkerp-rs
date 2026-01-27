@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;

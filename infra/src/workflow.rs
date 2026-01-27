@@ -1,10 +1,10 @@
 // WorkflowLoader and related functionality for loading and validating workflows
 // Moved from app-wrapper to resolve circular dependency (app -> app-wrapper -> app)
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use jobworkerp_runner::jobworkerp::runner::workflow_run_args::WorkflowSource;
 use net_utils::net::reqwest::{self, ReqwestClient};
 use serde::de::DeserializeOwned;
@@ -357,14 +357,14 @@ pub trait UseLoadUrlOrPath {
                         let res = client.client().get(url.clone()).send().await?;
                         if res.status().is_success() {
                             // Check Content-Length header if available for early rejection
-                            if let Some(content_length) = res.content_length() {
-                                if content_length as usize > MAX_WORKFLOW_HTTP_SIZE {
-                                    return Err(anyhow!(
-                                        "Workflow file too large: {} bytes (max: {} bytes)",
-                                        content_length,
-                                        MAX_WORKFLOW_HTTP_SIZE
-                                    ));
-                                }
+                            if let Some(content_length) = res.content_length()
+                                && content_length as usize > MAX_WORKFLOW_HTTP_SIZE
+                            {
+                                return Err(anyhow!(
+                                    "Workflow file too large: {} bytes (max: {} bytes)",
+                                    content_length,
+                                    MAX_WORKFLOW_HTTP_SIZE
+                                ));
                             }
 
                             // Stream response with size limit to prevent OOM
@@ -455,11 +455,12 @@ mod test {
             Some("Workflow test (switch)".to_string())
         );
         assert_eq!(flow.document.name.as_str(), "switch-test");
-        assert!(flow
-            .input
-            .schema
-            .as_ref()
-            .is_some_and(|s| { s.json_schema().is_some() }));
+        assert!(
+            flow.input
+                .schema
+                .as_ref()
+                .is_some_and(|s| { s.json_schema().is_some() })
+        );
 
         Ok(())
     }
@@ -476,26 +477,29 @@ mod test {
         println!("{flow:#?}");
         assert_eq!(flow.document.title, Some("Workflow test (ls)".to_string()));
         assert_eq!(flow.document.name.as_str(), "ls-test");
-        assert!(flow
-            .input
-            .schema
-            .as_ref()
-            .is_some_and(|s| { s.json_schema().is_some() }));
+        assert!(
+            flow.input
+                .schema
+                .as_ref()
+                .is_some_and(|s| { s.json_schema().is_some() })
+        );
 
         let run_task = match &flow.do_.0[0]["ListWorker"] {
             workflow::Task::RunTask(run_task) => run_task,
             _ => return Err("Expected RunTask but found different task type".into()),
         };
         assert!(run_task.metadata.is_empty());
-        assert!(run_task
-            .output
-            .as_ref()
-            .is_some_and(|o| o.as_.as_ref().is_some_and(|s| {
-                match s {
-                    workflow::OutputAs::Variant0(_v) => true, // string
-                    _ => false,
-                }
-            })));
+        assert!(
+            run_task
+                .output
+                .as_ref()
+                .is_some_and(|o| o.as_.as_ref().is_some_and(|s| {
+                    match s {
+                        workflow::OutputAs::Variant0(_v) => true, // string
+                        _ => false,
+                    }
+                }))
+        );
         assert!(run_task.input.as_ref().is_none());
         if let workflow::RunTaskConfiguration::Runner(workflow::RunRunner {
             runner:

@@ -106,7 +106,7 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
         data: &JobResultData,
         broadcast_result: bool,
     ) -> Result<bool>; // record result and create retry job if needed
-                       // return
+    // return
 
     async fn delete_job_result(&self, id: &JobResultId) -> Result<bool>;
     // fill in worker data in vector using _fill_worker_data() iteratively

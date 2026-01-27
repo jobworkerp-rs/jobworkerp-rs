@@ -3,14 +3,14 @@ use super::super::generic_tracing_helper::{
     ToolInfo as GenericToolInfo, UsageData,
 };
 use super::conversion::ToolConverter;
-use crate::llm::tracing::genai_helper::GenaiTracingHelper;
 use crate::llm::ThinkTagHelper;
+use crate::llm::tracing::genai_helper::GenaiTracingHelper;
 use anyhow::Result;
 use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
 use app::app::function::{FunctionApp, FunctionAppImpl};
 use command_utils::trace::impls::GenericOtelClient;
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent as GenaiMessageContent,
     Tool,
@@ -19,14 +19,14 @@ use genai::resolver::{Endpoint, ServiceTargetResolver};
 use genai::{Client, ServiceTarget};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp;
-use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequest;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequest;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{
-    llm_chat_result, LlmChatArgs, LlmChatResult, PendingToolCalls, ToolCallRequest,
+    LlmChatArgs, LlmChatResult, PendingToolCalls, ToolCallRequest, llm_chat_result,
 };
-use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
+use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -446,23 +446,23 @@ impl GenaiChatService {
         call_id: &str,
         result: &str,
     ) {
-        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
         use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::MessageContent;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
 
         for msg in messages.iter_mut() {
             if msg.role() != ChatRole::Tool {
                 continue;
             }
-            if let Some(ref content) = msg.content {
-                if let Some(ProtoContent::ToolExecutionRequests(reqs)) = &content.content {
-                    // Check if this message contains the target call_id
-                    if reqs.requests.iter().any(|r| r.call_id == call_id) {
-                        // Replace with text result
-                        msg.content = Some(MessageContent {
-                            content: Some(ProtoContent::Text(result.to_string())),
-                        });
-                        return;
-                    }
+            if let Some(ref content) = msg.content
+                && let Some(ProtoContent::ToolExecutionRequests(reqs)) = &content.content
+            {
+                // Check if this message contains the target call_id
+                if reqs.requests.iter().any(|r| r.call_id == call_id) {
+                    // Replace with text result
+                    msg.content = Some(MessageContent {
+                        content: Some(ProtoContent::Text(result.to_string())),
+                    });
+                    return;
                 }
             }
         }
@@ -559,49 +559,48 @@ impl GenaiChatService {
 
         tracing::debug!("GenAI chat response: {:#?}", &res);
 
-        if let Some(tool_calls) = Self::extract_tool_calls(&res) {
-            if !tool_calls.is_empty() {
-                tracing::debug!("Tool calls in response: {:#?}", &tool_calls);
+        if let Some(tool_calls) = Self::extract_tool_calls(&res)
+            && !tool_calls.is_empty()
+        {
+            tracing::debug!("Tool calls in response: {:#?}", &tool_calls);
 
-                // Check if auto-calling is enabled
-                if !is_auto_calling {
-                    // Manual mode: return tool calls for client approval
-                    tracing::debug!("Manual mode: returning tool calls for client approval");
-                    return Ok(ChatInternalResult::PendingTools { tool_calls });
-                }
-
-                // Auto mode: process tool calls automatically
-                let updated_context = if GenericLLMTracingHelper::get_otel_client(&*self).is_some()
-                {
-                    self.process_tool_calls_with_tracing(
-                        messages.clone(),
-                        &tool_calls,
-                        Some(current_context),
-                        metadata.clone(),
-                    )
-                    .await?
-                } else {
-                    self.process_tool_calls_without_tracing(
-                        messages.clone(),
-                        &tool_calls,
-                        metadata.clone(),
-                    )
-                    .await?;
-                    current_context
-                };
-
-                // Recursive call with updated context
-                return Box::pin(self.request_chat_internal_with_tracing(
-                    model,
-                    options,
-                    messages,
-                    tools,
-                    Some(updated_context),
-                    metadata,
-                    is_auto_calling,
-                ))
-                .await;
+            // Check if auto-calling is enabled
+            if !is_auto_calling {
+                // Manual mode: return tool calls for client approval
+                tracing::debug!("Manual mode: returning tool calls for client approval");
+                return Ok(ChatInternalResult::PendingTools { tool_calls });
             }
+
+            // Auto mode: process tool calls automatically
+            let updated_context = if GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
+                self.process_tool_calls_with_tracing(
+                    messages.clone(),
+                    &tool_calls,
+                    Some(current_context),
+                    metadata.clone(),
+                )
+                .await?
+            } else {
+                self.process_tool_calls_without_tracing(
+                    messages.clone(),
+                    &tool_calls,
+                    metadata.clone(),
+                )
+                .await?;
+                current_context
+            };
+
+            // Recursive call with updated context
+            return Box::pin(self.request_chat_internal_with_tracing(
+                model,
+                options,
+                messages,
+                tools,
+                Some(updated_context),
+                metadata,
+                is_auto_calling,
+            ))
+            .await;
         }
 
         Ok(ChatInternalResult::Final(Box::new(res)))

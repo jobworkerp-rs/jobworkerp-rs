@@ -1,4 +1,4 @@
-use crate::jobworkerp::runner::llm::llm_chat_result::{message_content, MessageContent, Usage};
+use crate::jobworkerp::runner::llm::llm_chat_result::{MessageContent, Usage, message_content};
 use crate::jobworkerp::runner::llm::{LlmChatResult, PendingToolCalls, ToolExecutionResult};
 use crate::{jobworkerp::runner::llm::LlmRunnerSettings, schema_to_json_string};
 use futures::stream::BoxStream;
@@ -238,9 +238,9 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::stream;
     use futures::StreamExt;
-    use proto::jobworkerp::data::{result_output_item, Trailer};
+    use futures::stream;
+    use proto::jobworkerp::data::{Trailer, result_output_item};
 
     fn create_text_chat_result(text: &str, reasoning: Option<&str>, done: bool) -> LlmChatResult {
         LlmChatResult {
@@ -462,10 +462,10 @@ mod tests {
         let (bytes, returned_metadata) = runner.collect_stream(stream, None).await.unwrap();
 
         let decoded = LlmChatResult::decode(bytes.as_slice()).unwrap();
-        if let Some(content) = decoded.content {
-            if let Some(message_content::Content::Text(text)) = content.content {
-                assert_eq!(text, "final result");
-            }
+        if let Some(content) = decoded.content
+            && let Some(message_content::Content::Text(text)) = content.content
+        {
+            assert_eq!(text, "final result");
         }
         assert_eq!(returned_metadata.get("key"), Some(&"value".to_string()));
     }

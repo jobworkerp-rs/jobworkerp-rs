@@ -1,5 +1,5 @@
-use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::JobBuilder;
+use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::{JobApp, JobCacheKeys};
 use crate::app::{UseWorkerConfig, WorkerConfig};
 use crate::module::AppConfigModule;
@@ -7,10 +7,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use futures::stream::BoxStream;
+use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::queue::chan::{
     ChanJobQueueRepository, ChanJobQueueRepositoryImpl, UseChanJobQueueRepository,
 };
-use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository;
@@ -203,17 +203,16 @@ impl RdbChanJobAppImpl {
                     .await?;
 
                 // Update RDB index status to CANCELLING (if enabled)
-                if let Some(index_repo) = self.job_status_index_repository.as_ref() {
-                    if let Err(e) = index_repo
+                if let Some(index_repo) = self.job_status_index_repository.as_ref()
+                    && let Err(e) = index_repo
                         .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
                         .await
-                    {
-                        tracing::warn!(
-                            "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
-                            id.value,
-                            e
-                        );
-                    }
+                {
+                    tracing::warn!(
+                        "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
+                        id.value,
+                        e
+                    );
                 }
                 // Note: RDB index deleted_at will be set by cleanup_job()
 
@@ -236,17 +235,16 @@ impl RdbChanJobAppImpl {
                     .await?;
 
                 // Update RDB index status to CANCELLING (if enabled)
-                if let Some(index_repo) = self.job_status_index_repository.as_ref() {
-                    if let Err(e) = index_repo
+                if let Some(index_repo) = self.job_status_index_repository.as_ref()
+                    && let Err(e) = index_repo
                         .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
                         .await
-                    {
-                        tracing::warn!(
-                            "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
-                            id.value,
-                            e
-                        );
-                    }
+                {
+                    tracing::warn!(
+                        "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
+                        id.value,
+                        e
+                    );
                 }
                 // Note: RDB index deleted_at will be set by cleanup_job()
 
@@ -312,14 +310,14 @@ impl RdbChanJobAppImpl {
     pub(crate) async fn cleanup_job(&self, id: &JobId) -> Result<()> {
         // 1. Mark as logically deleted in RDB index BEFORE deleting memory status
         //    (deleted_at must be set while we still know this job is being cleaned up)
-        if let Some(index_repo) = self.job_status_index_repository.as_ref() {
-            if let Err(e) = index_repo.mark_deleted_by_job_id(id).await {
-                tracing::warn!(
-                    "Failed to mark job {} as deleted in RDB index: {:?}",
-                    id.value,
-                    e
-                );
-            }
+        if let Some(index_repo) = self.job_status_index_repository.as_ref()
+            && let Err(e) = index_repo.mark_deleted_by_job_id(id).await
+        {
+            tracing::warn!(
+                "Failed to mark job {} as deleted in RDB index: {:?}",
+                id.value,
+                e
+            );
         }
 
         // 2. Delete job record from RDB
@@ -914,16 +912,15 @@ impl JobApp for RdbChanJobAppImpl {
             .await?;
         let mut res = vec![];
         for j in v {
-            if let Some(jid) = j.id.as_ref() {
-                if let Ok(status) = self
+            if let Some(jid) = j.id.as_ref()
+                && let Ok(status) = self
                     .job_processing_status_repository()
                     .find_status(jid)
                     .await
-                {
-                    res.push((j, status));
-                    if limit.is_some() && res.len() >= *limit.unwrap() as usize {
-                        break;
-                    }
+            {
+                res.push((j, status));
+                if limit.is_some() && res.len() >= *limit.unwrap() as usize {
+                    break;
                 }
             }
         }
@@ -1290,8 +1287,8 @@ where
 mod tests {
     use super::RdbChanJobAppImpl;
     use super::*;
-    use crate::app::runner::rdb::RdbRunnerAppImpl;
     use crate::app::runner::RunnerApp;
+    use crate::app::runner::rdb::RdbRunnerAppImpl;
     use crate::app::worker::rdb::RdbWorkerAppImpl;
     use crate::app::{StorageConfig, StorageType};
     use crate::module::test::TEST_PLUGIN_DIR;
@@ -1300,10 +1297,10 @@ mod tests {
     use infra::infra::job::rows::JobqueueAndCodec;
     use jobworkerp_base::codec::UseProstCodec;
     // use command_utils::util::tracing::tracing_init_test;
-    use infra::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
-    use infra::infra::job_result::pubsub::JobResultSubscriber;
-    use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::IdGeneratorWrapper;
+    use infra::infra::job_result::pubsub::JobResultSubscriber;
+    use infra::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
+    use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra_utils::infra::test::TEST_RUNTIME;
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
     use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
@@ -1972,7 +1969,8 @@ mod tests {
     fn test_cleanup_job_processing_status_disabled() {
         TEST_RUNTIME.block_on(async {
             // Setup: RDB indexing disabled
-            std::env::set_var("JOB_STATUS_RDB_INDEXING", "false");
+            // SAFETY: called in test setup before spawning threads
+            unsafe { std::env::set_var("JOB_STATUS_RDB_INDEXING", "false") };
 
             let (app, _) = create_test_app(false).await.unwrap();
 
@@ -1987,7 +1985,8 @@ mod tests {
             );
 
             // Cleanup
-            std::env::remove_var("JOB_STATUS_RDB_INDEXING");
+            // SAFETY: called in test cleanup
+            unsafe { std::env::remove_var("JOB_STATUS_RDB_INDEXING") };
         })
     }
 

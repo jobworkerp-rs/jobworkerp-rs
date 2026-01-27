@@ -4,22 +4,22 @@ use super::cancellation::CancelMonitoring;
 use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{
-    http_response_result, HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult,
+    HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult, http_response_result,
 };
 use crate::schema_to_json_string;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use jobworkerp_base::{
     codec::{ProstMessageCodec, UseProstCodec},
     error::JobWorkerError,
 };
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use proto::DEFAULT_METHOD_NAME;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use reqwest::{
-    header::{HeaderMap, HeaderName},
     Method, Url,
+    header::{HeaderMap, HeaderName},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -298,7 +298,7 @@ impl RunnerTrait for RequestRunner {
         let args = ProstMessageCodec::deserialize_message::<HttpRequestArgs>(arg)?;
 
         use async_stream::stream;
-        use proto::jobworkerp::data::{result_output_item::Item, Trailer};
+        use proto::jobworkerp::data::{Trailer, result_output_item::Item};
 
         let trailer = Arc::new(Trailer {
             metadata: metadata.clone(),
@@ -528,7 +528,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn run_request() {
-        use crate::jobworkerp::runner::{http_request_args::KeyValue, HttpRequestArgs};
+        use crate::jobworkerp::runner::{HttpRequestArgs, http_request_args::KeyValue};
 
         let mut runner = RequestRunner::new();
         runner.create("https://www.google.com/").unwrap();

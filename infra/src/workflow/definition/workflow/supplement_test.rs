@@ -219,8 +219,10 @@ mod tests {
         );
 
         assert!(multi_param_template.is_match("http://api.example.com/v1/users/123/posts/456"));
-        assert!(multi_param_template
-            .is_match("http://api.example.com/v2/users/user-abc/posts/post-xyz"));
+        assert!(
+            multi_param_template
+                .is_match("http://api.example.com/v2/users/user-abc/posts/post-xyz")
+        );
 
         assert!(!multi_param_template.is_match("http://api.example.com/v1/users/123/comments/456"));
 

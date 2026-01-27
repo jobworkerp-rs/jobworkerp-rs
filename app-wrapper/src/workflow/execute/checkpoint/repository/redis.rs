@@ -1,4 +1,4 @@
-use crate::workflow::execute::checkpoint::{repository::CheckPointRepository, CheckPointContext};
+use crate::workflow::execute::checkpoint::{CheckPointContext, repository::CheckPointRepository};
 use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;

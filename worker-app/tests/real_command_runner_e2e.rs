@@ -19,9 +19,9 @@ use app_wrapper::runner::{RunnerFactory, UseRunnerFactory};
 use command_utils::trace::Tracing;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
+use worker_app::worker::runner::JobRunner;
 use worker_app::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use worker_app::worker::runner::result::RunnerResultHandler;
-use worker_app::worker::runner::JobRunner;
 
 /// Real E2E Test JobRunner using actual test infrastructure
 struct RealE2EJobRunner {
@@ -163,11 +163,13 @@ async fn test_real_command_basic_execution() -> Result<()> {
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
     assert_eq!(command_result.exit_code.unwrap_or(-1), 0);
-    assert!(command_result
-        .stdout
-        .as_ref()
-        .unwrap()
-        .contains("Hello Real E2E Test"));
+    assert!(
+        command_result
+            .stdout
+            .as_ref()
+            .unwrap()
+            .contains("Hello Real E2E Test")
+    );
 
     assert!(command_result.max_memory_usage_kb.is_some());
 
@@ -211,11 +213,13 @@ async fn test_real_command_filesystem_operations() -> Result<()> {
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
     assert_eq!(command_result.exit_code.unwrap_or(-1), 0);
-    assert!(command_result
-        .stdout
-        .as_ref()
-        .unwrap()
-        .contains(test_content));
+    assert!(
+        command_result
+            .stdout
+            .as_ref()
+            .unwrap()
+            .contains(test_content)
+    );
 
     // Cleanup temp file
     let cleanup_job = create_command_job("rm", vec!["-f".to_string(), temp_file], 5000);
@@ -255,11 +259,13 @@ async fn test_real_command_environment_variables() -> Result<()> {
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
     assert_eq!(command_result.exit_code.unwrap_or(-1), 0);
-    assert!(command_result
-        .stdout
-        .as_ref()
-        .unwrap()
-        .contains("Real E2E Environment"));
+    assert!(
+        command_result
+            .stdout
+            .as_ref()
+            .unwrap()
+            .contains("Real E2E Environment")
+    );
 
     println!("✓ Real COMMAND environment variables test passed");
     Ok(())
@@ -320,12 +326,12 @@ async fn test_real_command_error_handling() -> Result<()> {
 
     tracing::debug!("Command result: {:?}", command_result);
     assert_ne!(command_result.exit_code.unwrap_or(0), 0); // Non-zero exit code
-                                                          // XXX change message depends on the system language and environment
-                                                          // assert!(command_result
-                                                          //     .stderr
-                                                          //     .as_ref()
-                                                          //     .unwrap()
-                                                          //     .contains("No such file or directory"));
+    // XXX change message depends on the system language and environment
+    // assert!(command_result
+    //     .stderr
+    //     .as_ref()
+    //     .unwrap()
+    //     .contains("No such file or directory"));
 
     println!("✓ Real COMMAND error handling test passed");
     Ok(())
@@ -495,11 +501,13 @@ async fn test_real_command_working_directory() -> Result<()> {
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
     assert_eq!(command_result.exit_code.unwrap_or(-1), 0);
-    assert!(command_result
-        .stdout
-        .as_ref()
-        .unwrap()
-        .contains("test_file.txt"));
+    assert!(
+        command_result
+            .stdout
+            .as_ref()
+            .unwrap()
+            .contains("test_file.txt")
+    );
 
     // Cleanup
     std::fs::remove_dir_all(&temp_dir_path).unwrap();

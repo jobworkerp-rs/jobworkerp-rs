@@ -13,12 +13,12 @@ use app::app::job::execute::JobExecutorWrapper;
 use app::module::test::create_hybrid_test_app;
 use app_wrapper::workflow::{
     definition::{
-        workflow::{self, RunJobRunner, RunJobWorker, RunTaskConfiguration},
         WorkflowLoader,
+        workflow::{self, RunJobRunner, RunJobWorker, RunTaskConfiguration},
     },
     execute::{
         context::{TaskContext, WorkflowContext, WorkflowStatus, WorkflowStreamEvent},
-        task::{stream::run::RunStreamTaskExecutor, StreamTaskExecutorTrait},
+        task::{StreamTaskExecutorTrait, stream::run::RunStreamTaskExecutor},
     },
 };
 use futures::StreamExt;

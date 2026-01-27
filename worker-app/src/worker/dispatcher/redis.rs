@@ -1,8 +1,8 @@
 use crate::worker::dispatcher::redis_run_after::RedisRunAfterJobDispatcher;
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
+use crate::worker::runner::JobRunner;
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use crate::worker::runner::result::RunnerResultHandler;
-use crate::worker::runner::JobRunner;
 use crate::worker::subscribe::UseSubscribeWorker;
 use anyhow::Result;
 use app::app::runner::{RunnerApp, UseRunnerApp};
@@ -34,8 +34,8 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing;
 
-use super::redis_run_after::{RedisRunAfterJobDispatcherImpl, UseRedisRunAfterJobDispatcher};
 use super::JobDispatcher;
+use super::redis_run_after::{RedisRunAfterJobDispatcherImpl, UseRedisRunAfterJobDispatcher};
 
 // create worker threads by concurrency settings
 // pop job from redis queue by blpop and execute by runner, and send result to redis
@@ -171,10 +171,10 @@ pub trait RedisJobDispatcher:
                         Ok(result) => Ok(result),
                         Err(e) => {
                             // Check if status should be deleted based on error type
-                            if let Some(jid) = job_id {
-                                if super::should_cleanup_status_on_error(&e) {
-                                    self.cleanup_failed_job_status(&jid, "redis").await;
-                                }
+                            if let Some(jid) = job_id
+                                && super::should_cleanup_status_on_error(&e)
+                            {
+                                self.cleanup_failed_job_status(&jid, "redis").await;
                             }
                             Err(e)
                         }

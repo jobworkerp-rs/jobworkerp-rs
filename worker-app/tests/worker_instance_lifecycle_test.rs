@@ -6,8 +6,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use infra::infra::worker_instance::memory::MemoryWorkerInstanceRepository;
 use infra::infra::worker_instance::WorkerInstanceRepository;
+use infra::infra::worker_instance::memory::MemoryWorkerInstanceRepository;
 use jobworkerp_base::worker_instance_config::WorkerInstanceConfig;
 use proto::jobworkerp::data::StorageType;
 use tokio::sync::watch;

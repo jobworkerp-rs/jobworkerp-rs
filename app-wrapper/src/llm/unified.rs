@@ -5,7 +5,7 @@
 
 use super::chat::LLMChatRunnerImpl;
 use super::completion::LLMCompletionRunnerImpl;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use app::module::AppModule;
 use async_trait::async_trait;
 use futures::stream::BoxStream;

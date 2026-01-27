@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::time::Duration;
@@ -601,10 +601,12 @@ Never use os.system() or subprocess without proper validation.
     async fn test_download_script_secure_non_https() {
         let result = download_script_secure("http://example.com/script.py").await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Only HTTPS URLs are allowed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Only HTTPS URLs are allowed")
+        );
     }
 
     #[tokio::test]

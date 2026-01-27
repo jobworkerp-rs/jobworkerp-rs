@@ -13,8 +13,8 @@ use crate::infra::worker::rdb::{RdbWorkerRepositoryImpl, UseRdbWorkerRepository}
 use crate::infra::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
 use jobworkerp_base::job_status_config::JobStatusConfig;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
-use memory_utils::chan::broadcast::BroadcastChan;
 use memory_utils::chan::ChanBuffer;
+use memory_utils::chan::broadcast::BroadcastChan;
 
 pub trait UseRdbChanRepositoryModule {
     fn rdb_repository_module(&self) -> &RdbChanRepositoryModule;
@@ -156,19 +156,19 @@ impl UseRdbChanRepositoryModule for RdbChanRepositoryModule {
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test {
     use super::RdbChanRepositoryModule;
+    use crate::infra::IdGeneratorWrapper;
     use crate::infra::function_set::rdb::FunctionSetRepositoryImpl;
     use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
     use crate::infra::module::test::TEST_PLUGIN_DIR;
     use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
-    use crate::infra::IdGeneratorWrapper;
+    use crate::infra::{
+        JobQueueConfig, job::status::memory::MemoryJobProcessingStatusRepository,
+        job::status::rdb::RdbJobProcessingStatusIndexRepository,
+        job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl,
+    };
     use crate::infra::{
         job::rdb::RdbChanJobRepositoryImpl, job_result::rdb::RdbJobResultRepositoryImpl,
         worker::rdb::RdbWorkerRepositoryImpl,
-    };
-    use crate::infra::{
-        job::status::memory::MemoryJobProcessingStatusRepository,
-        job::status::rdb::RdbJobProcessingStatusIndexRepository,
-        job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl, JobQueueConfig,
     };
     use infra_utils::infra::test::setup_test_rdb_from;
     use jobworkerp_base::job_status_config::JobStatusConfig;

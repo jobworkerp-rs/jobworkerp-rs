@@ -4,11 +4,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::option::ToVec;
 use debug_stub_derive::DebugStub;
+use infra::infra::IdGeneratorWrapper;
 use infra::infra::module::HybridRepositoryModule;
 use infra::infra::runner::rdb::RunnerRepository;
 use infra::infra::runner::rdb::{RdbRunnerRepositoryImpl, UseRdbRunnerRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
-use infra::infra::IdGeneratorWrapper;
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
@@ -321,15 +321,15 @@ impl RunnerCacheHelper for HybridRunnerAppImpl {}
 
 #[cfg(test)]
 mod test {
-    use crate::app::runner::hybrid::HybridRunnerAppImpl;
     use crate::app::runner::RunnerApp;
+    use crate::app::runner::hybrid::HybridRunnerAppImpl;
     use crate::app::{StorageConfig, StorageType};
     use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
+    use infra::infra::IdGeneratorWrapper;
+    use infra::infra::module::HybridRepositoryModule;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
-    use infra::infra::module::HybridRepositoryModule;
-    use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
     use memory_utils::cache::moka::MokaCacheImpl;
     use proto::jobworkerp::data::RunnerId;

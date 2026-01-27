@@ -1,16 +1,16 @@
 use super::{JobResultPublisher, JobResultSubscriber};
-use crate::infra::{job::rows::UseJobqueueAndCodec, JobQueueConfig, UseJobQueueConfig};
+use crate::infra::{JobQueueConfig, UseJobQueueConfig, job::rows::UseJobqueueAndCodec};
 use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
-use futures::{stream::BoxStream, Stream, StreamExt};
+use futures::{Stream, StreamExt, stream::BoxStream};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use jobworkerp_base::{
     codec::{ProstMessageCodec, UseProstCodec},
     error::JobWorkerError,
 };
 use proto::jobworkerp::data::{
-    result_output_item, JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, WorkerId, result_output_item,
 };
 use std::{pin::Pin, sync::Arc, time::Duration};
 

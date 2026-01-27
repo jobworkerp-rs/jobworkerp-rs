@@ -4,7 +4,7 @@ use proto::jobworkerp::data::StorageType;
 use rand::Rng;
 use std::sync::Arc;
 use tokio::sync::watch;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 
 /// Cleanup task for expired worker instances
 ///

@@ -1,4 +1,5 @@
 use super::{
+    RunnerSpec,
     command::CommandRunnerImpl,
     docker::{DockerExecRunner, DockerRunner},
     grpc_unary::GrpcUnaryRunner,
@@ -6,9 +7,9 @@ use super::{
     llm_chat::LLMChatRunnerSpecImpl,
     llm_unified::LLMUnifiedRunnerSpecImpl,
     mcp::{
+        McpServerRunnerImpl,
         config::McpServerConfig,
         proxy::{McpServerFactory, McpServerProxy},
-        McpServerRunnerImpl,
     },
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
@@ -16,7 +17,6 @@ use super::{
     slack::SlackPostMessageRunner,
     workflow::{InlineWorkflowRunnerSpecImpl, ReusableWorkflowRunnerSpecImpl},
     workflow_unified::WorkflowUnifiedRunnerSpecImpl,
-    RunnerSpec,
 };
 use anyhow::Result;
 use jobworkerp_base::error::JobWorkerError;
@@ -192,8 +192,8 @@ impl RunnerSpecFactory {
                 Some(Box::new(WorkflowUnifiedRunnerSpecImpl::new())
                     as Box<dyn RunnerSpec + Send + Sync>)
             }
-            _ => {
-                if let Ok(server) = self.mcp_clients.as_ref().connect_server(name).await {
+            _ => match self.mcp_clients.as_ref().connect_server(name).await {
+                Ok(server) => {
                     tracing::debug!("MCP server found: {}", &name);
                     match McpServerRunnerImpl::new(server, None).await {
                         Ok(mcp_runner) => {
@@ -204,16 +204,16 @@ impl RunnerSpecFactory {
                             None
                         }
                     }
-                } else {
-                    self.plugins
-                        .runner_plugins()
-                        .write()
-                        .await
-                        .find_plugin_runner_by_name(name)
-                        .await
-                        .map(|r| Box::new(r) as Box<dyn RunnerSpec + Send + Sync>)
                 }
-            }
+                _ => self
+                    .plugins
+                    .runner_plugins()
+                    .write()
+                    .await
+                    .find_plugin_runner_by_name(name)
+                    .await
+                    .map(|r| Box::new(r) as Box<dyn RunnerSpec + Send + Sync>),
+            },
         }
     }
 }

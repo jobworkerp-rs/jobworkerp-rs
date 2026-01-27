@@ -1,2 +1,2 @@
 pub mod workflow;
-pub use workflow::{validate_workflow_schema, StandardWorkflowValidator, WorkflowValidator};
+pub use workflow::{StandardWorkflowValidator, WorkflowValidator, validate_workflow_schema};

@@ -1,20 +1,20 @@
 use crate::jobworkerp::runner::{GrpcUnaryArgs, GrpcUnaryResult, GrpcUnaryRunnerSettings};
 use crate::schema_to_json_string;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use base64::Engine;
 use command_utils::protobuf::ProtobufDescriptor;
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
-use net_utils::grpc::reflection::GrpcReflectionClient;
 use net_utils::grpc::RawBytesCodec;
+use net_utils::grpc::reflection::GrpcReflectionClient;
 use prost_reflect::{DescriptorPool, MessageDescriptor};
+use proto::DEFAULT_METHOD_NAME;
 #[allow(unused_imports)] // Used in CancelMonitoring trait implementations
 use proto::jobworkerp::data::{
     JobData, JobId, JobResult, ResultOutputItem, RunnerType, StreamingOutputType,
 };
-use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -176,12 +176,12 @@ impl GrpcUnaryRunner {
         }
 
         // Apply authentication token if provided
-        if let Some(auth_token) = &settings.auth_token {
-            if !auth_token.is_empty() {
-                // Store the auth token for later use in request metadata
-                self.auth_token = Some(auth_token.clone());
-                tracing::debug!("Authorization token set for future requests");
-            }
+        if let Some(auth_token) = &settings.auth_token
+            && !auth_token.is_empty()
+        {
+            // Store the auth token for later use in request metadata
+            self.auth_token = Some(auth_token.clone());
+            tracing::debug!("Authorization token set for future requests");
         }
 
         self.client = Some(tonic::client::Grpc::new(channel));
@@ -426,7 +426,7 @@ impl RunnerTrait for GrpcUnaryRunner {
         let cancellation_token = self.get_cancellation_token().await;
 
         let result = async {
-            if let Some(mut client) = self.client.clone() {
+            match self.client.clone() { Some(mut client) => {
                 let req = ProstMessageCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
                 let codec = RawBytesCodec;
 
@@ -465,27 +465,27 @@ impl RunnerTrait for GrpcUnaryRunner {
 
                 let metadata_mut = request.metadata_mut();
                 for (key, value) in req.metadata.clone() {
-                    if let Ok(val) = MetadataValue::try_from(value.as_str()) {
-                        if let Ok(key) = tonic::metadata::MetadataKey::from_bytes(key.as_bytes()) {
+                    match MetadataValue::try_from(value.as_str()) { Ok(val) => {
+                        match tonic::metadata::MetadataKey::from_bytes(key.as_bytes()) { Ok(key) => {
                             metadata_mut.insert(key, val);
-                        } else {
+                        } _ => {
                             tracing::warn!("Invalid metadata key: {}", key);
-                        }
-                    } else {
+                        }}
+                    } _ => {
                         tracing::warn!("Invalid metadata value for key {}: {}", key, value);
-                    }
+                    }}
                 }
 
                 if let Some(token) = &self.auth_token {
                     let token_str = format!("Bearer {token}");
-                    if let Ok(val) = MetadataValue::try_from(token_str.as_str()) {
+                    match MetadataValue::try_from(token_str.as_str()) { Ok(val) => {
                         metadata_mut.insert(
                             tonic::metadata::MetadataKey::from_static("authorization"),
                             val,
                         );
-                    } else {
+                    } _ => {
                         tracing::warn!("Failed to create authorization metadata");
-                    }
+                    }}
                 }
 
                 // Ensure method path starts with '/' for valid gRPC path
@@ -568,9 +568,9 @@ impl RunnerTrait for GrpcUnaryRunner {
 
                 tracing::info!("grpc unary runner result: {:?}", &res);
                 Ok(ProstMessageCodec::serialize_message(&res)?)
-            } else {
+            } _ => {
                 Err(anyhow!("grpc client is not initialized"))
-            }
+            }}
         }.await;
 
         (result, metadata)
@@ -998,17 +998,17 @@ mod tests {
         // 8. Update the function set
         let update_request = {
             let mut function_set: serde_json::Value = serde_json::from_str(&find_result)?;
-            if let Some(data) = function_set.get_mut("data") {
-                if let Some(data_obj) = data.as_object_mut() {
-                    // Update the description
-                    if let Some(function_data) = data_obj.get_mut("data") {
-                        if let Some(function_data_obj) = function_data.as_object_mut() {
-                            function_data_obj.insert(
-                                "description".to_string(),
-                                "Updated via reflection test".into(),
-                            );
-                        }
-                    }
+            if let Some(data) = function_set.get_mut("data")
+                && let Some(data_obj) = data.as_object_mut()
+            {
+                // Update the description
+                if let Some(function_data) = data_obj.get_mut("data")
+                    && let Some(function_data_obj) = function_data.as_object_mut()
+                {
+                    function_data_obj.insert(
+                        "description".to_string(),
+                        "Updated via reflection test".into(),
+                    );
                 }
             }
 

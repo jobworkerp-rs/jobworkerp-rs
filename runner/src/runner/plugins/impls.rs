@@ -4,14 +4,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::PluginRunnerVariant;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures::executor::block_on;
 use futures::stream::BoxStream;
 use futures::stream::StreamExt;
-use proto::jobworkerp::data::result_output_item;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::Trailer;
+use proto::jobworkerp::data::result_output_item;
 use tokio::sync::RwLock;
 
 use super::super::cancellation::CancelMonitoring;

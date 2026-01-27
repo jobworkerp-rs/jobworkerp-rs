@@ -99,10 +99,10 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use jobworkerp_base::codec::ProstMessageCodec;
+    use proto::TestArgs;
     use proto::jobworkerp::data::{
         JobResult, JobResultData, JobResultId, ResponseType, ResultOutput,
     };
-    use proto::TestArgs;
 
     #[test]
     fn test_serialize_and_deserialize_job() {

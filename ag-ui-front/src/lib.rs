@@ -63,9 +63,9 @@ pub mod types;
 pub use config::{AgUiServerConfig, AuthConfig, ServerConfig};
 pub use error::{AgUiError, Result};
 pub use events::{
+    AgUiEvent, EventEncoder, LlmStreamingResult, SharedWorkflowEventAdapter, WorkflowEventAdapter,
     encode_comment, encode_retry, result_output_stream_to_ag_ui_events,
-    result_output_stream_to_ag_ui_events_with_end_guarantee, shared_adapter, AgUiEvent,
-    EventEncoder, LlmStreamingResult, SharedWorkflowEventAdapter, WorkflowEventAdapter,
+    result_output_stream_to_ag_ui_events_with_end_guarantee, shared_adapter,
 };
 pub use pubsub::{
     convert_result_stream_to_events, merge_workflow_and_llm_streams,

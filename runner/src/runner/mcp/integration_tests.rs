@@ -170,8 +170,8 @@ async fn test_time_mcp_server() -> Result<()> {
 #[tokio::test]
 async fn test_mcp_cancellation() -> Result<()> {
     use crate::runner::cancellation::CancelMonitoring;
-    use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
 
     let config = McpConfig {
         server: vec![create_time_mcp_server().await?],
@@ -347,9 +347,9 @@ async fn test_mcp_cancellation() -> Result<()> {
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
 async fn test_using_mode_initialization() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerSpec;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
 
     let config = McpConfig {
         server: vec![create_time_mcp_server().await?],
@@ -392,9 +392,9 @@ async fn test_using_mode_initialization() -> Result<()> {
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
 async fn test_using_mode_execution_with_explicit_method() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use std::collections::HashMap;
 
     let config = McpConfig {
@@ -432,9 +432,9 @@ async fn test_using_mode_execution_with_explicit_method() -> Result<()> {
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
 async fn test_using_mode_auto_select_single_tool() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use std::collections::HashMap;
 
     let config = McpConfig {
@@ -476,9 +476,9 @@ async fn test_using_mode_auto_select_single_tool() -> Result<()> {
 #[tokio::test]
 #[ignore] // Requires fetch MCP server - run with --ignored for full testing
 async fn test_using_mode_error_when_method_required() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use std::collections::HashMap;
 
     let config = McpConfig {
@@ -527,9 +527,9 @@ async fn test_using_mode_error_when_method_required() -> Result<()> {
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
 async fn test_using_mode_error_unknown_method() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use std::collections::HashMap;
 
     let config = McpConfig {
@@ -569,10 +569,10 @@ async fn test_using_mode_error_unknown_method() -> Result<()> {
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
 async fn test_using_mode_with_cancel_helper() -> Result<()> {
-    use crate::runner::cancellation_helper::CancelMonitoringHelper;
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
+    use crate::runner::cancellation_helper::CancelMonitoringHelper;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use std::collections::HashMap;
     use tokio_util::sync::CancellationToken;
 
@@ -617,9 +617,9 @@ async fn test_using_mode_with_cancel_helper() -> Result<()> {
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
 async fn test_using_mode_stream_execution() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use futures::StreamExt;
     use proto::jobworkerp::data::result_output_item::Item;
     use std::collections::HashMap;
@@ -690,9 +690,9 @@ async fn test_using_mode_stream_execution() -> Result<()> {
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
 async fn test_using_mode_stream_with_cancellation() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use futures::StreamExt;
     use proto::jobworkerp::data::result_output_item::Item;
     use std::collections::HashMap;
@@ -806,9 +806,9 @@ async fn test_using_mode_stream_with_cancellation() -> Result<()> {
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
 async fn test_mcp_tool_name_validation() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerSpec;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
 
     let config = McpConfig {
         server: vec![create_time_mcp_server().await?],
@@ -836,9 +836,9 @@ async fn test_mcp_tool_name_validation() -> Result<()> {
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
 async fn test_mcp_execution_with_valid_using() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use std::collections::HashMap;
 
     let config = McpConfig {
@@ -875,9 +875,9 @@ async fn test_mcp_execution_with_valid_using() -> Result<()> {
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
 async fn test_mcp_error_with_invalid_using() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use std::collections::HashMap;
 
     let config = McpConfig {
@@ -913,9 +913,9 @@ async fn test_mcp_error_with_invalid_using() -> Result<()> {
 
 #[tokio::test]
 async fn test_method_proto_map() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerSpec;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
 
     let config = McpConfig {
         server: vec![create_time_mcp_server().await?],
@@ -973,15 +973,15 @@ async fn test_method_proto_map() -> Result<()> {
 /// Test: collect_stream with single chunk
 #[tokio::test]
 async fn test_collect_stream_single_chunk() -> Result<()> {
+    use crate::jobworkerp::runner::McpServerResult;
     use crate::jobworkerp::runner::mcp_server_result::content::RawContent;
     use crate::jobworkerp::runner::mcp_server_result::{Content, TextContent};
-    use crate::jobworkerp::runner::McpServerResult;
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerSpec;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use prost::Message;
-    use proto::jobworkerp::data::result_output_item::Item;
     use proto::jobworkerp::data::ResultOutputItem;
+    use proto::jobworkerp::data::result_output_item::Item;
 
     let config = McpConfig {
         server: vec![create_time_mcp_server().await?],
@@ -1031,15 +1031,15 @@ async fn test_collect_stream_single_chunk() -> Result<()> {
 /// Test: collect_stream merges multiple text chunks
 #[tokio::test]
 async fn test_collect_stream_multiple_chunks_merges_text() -> Result<()> {
+    use crate::jobworkerp::runner::McpServerResult;
     use crate::jobworkerp::runner::mcp_server_result::content::RawContent;
     use crate::jobworkerp::runner::mcp_server_result::{Content, TextContent};
-    use crate::jobworkerp::runner::McpServerResult;
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerSpec;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use prost::Message;
-    use proto::jobworkerp::data::result_output_item::Item;
     use proto::jobworkerp::data::ResultOutputItem;
+    use proto::jobworkerp::data::result_output_item::Item;
 
     let config = McpConfig {
         server: vec![create_time_mcp_server().await?],
@@ -1097,15 +1097,15 @@ async fn test_collect_stream_multiple_chunks_merges_text() -> Result<()> {
 /// Test: collect_stream propagates error flag
 #[tokio::test]
 async fn test_collect_stream_propagates_error_flag() -> Result<()> {
+    use crate::jobworkerp::runner::McpServerResult;
     use crate::jobworkerp::runner::mcp_server_result::content::RawContent;
     use crate::jobworkerp::runner::mcp_server_result::{Content, TextContent};
-    use crate::jobworkerp::runner::McpServerResult;
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerSpec;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use prost::Message;
-    use proto::jobworkerp::data::result_output_item::Item;
     use proto::jobworkerp::data::ResultOutputItem;
+    use proto::jobworkerp::data::result_output_item::Item;
 
     let config = McpConfig {
         server: vec![create_time_mcp_server().await?],
@@ -1160,12 +1160,12 @@ async fn test_collect_stream_propagates_error_flag() -> Result<()> {
 #[tokio::test]
 async fn test_collect_stream_empty_chunks() -> Result<()> {
     use crate::jobworkerp::runner::McpServerResult;
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerSpec;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
     use prost::Message;
-    use proto::jobworkerp::data::result_output_item::Item;
     use proto::jobworkerp::data::ResultOutputItem;
+    use proto::jobworkerp::data::result_output_item::Item;
 
     let config = McpConfig {
         server: vec![create_time_mcp_server().await?],
@@ -1195,9 +1195,9 @@ async fn test_collect_stream_empty_chunks() -> Result<()> {
 
 #[tokio::test]
 async fn test_method_proto_map_multiple_tools() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerSpec;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
 
     let config = McpConfig {
         server: vec![create_fetch_mcp_server().await?],

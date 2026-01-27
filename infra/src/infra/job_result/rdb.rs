@@ -429,14 +429,14 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         let effective_cutoff = end_time_before.unwrap_or(cutoff_24h).min(cutoff_24h);
 
         // Explicit error if user tries to delete data within last 24 hours
-        if let Some(time) = end_time_before {
-            if time > cutoff_24h {
-                return Err(anyhow::anyhow!(
-                    "Cannot delete results within last 24 hours (requested: {}, cutoff: {})",
-                    time,
-                    cutoff_24h
-                ));
-            }
+        if let Some(time) = end_time_before
+            && time > cutoff_24h
+        {
+            return Err(anyhow::anyhow!(
+                "Cannot delete results within last 24 hours (requested: {}, cutoff: {})",
+                time,
+                cutoff_24h
+            ));
         }
 
         // Start transaction
@@ -532,6 +532,7 @@ mod test {
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
     use jobworkerp_base::codec::UseProstCodec;
+    use proto::TestArgs;
     use proto::jobworkerp::data::JobId;
     use proto::jobworkerp::data::JobResult;
     use proto::jobworkerp::data::JobResultData;
@@ -539,7 +540,6 @@ mod test {
     use proto::jobworkerp::data::ResultOutput;
     use proto::jobworkerp::data::ResultStatus;
     use proto::jobworkerp::data::WorkerId;
-    use proto::TestArgs;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbJobResultRepositoryImpl::new(pool);
@@ -638,8 +638,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sqlite() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let sqlite_pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;")
@@ -652,8 +652,8 @@ mod test {
     #[cfg(feature = "mysql")]
     #[test]
     fn test_mysql() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let mysql_pool = setup_test_rdb_from("sql/mysql").await;
             sqlx::query("TRUNCATE TABLE job_result;")
@@ -1753,8 +1753,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_find_list_by_worker_ids() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1765,8 +1765,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_find_list_by_statuses() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1777,8 +1777,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_find_list_by_time_range() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1789,8 +1789,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_find_list_by_priorities() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1801,8 +1801,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_find_list_by_uniq_key() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1813,8 +1813,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_find_list_by_pagination() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1825,8 +1825,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_find_list_by_sort() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1837,8 +1837,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_count_by_worker_ids() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1849,8 +1849,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_count_by_statuses() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1861,8 +1861,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_count_by_time_range() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1873,8 +1873,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_delete_bulk_by_time() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1885,8 +1885,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_delete_bulk_by_status() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1897,8 +1897,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_delete_bulk_safety_checks() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1909,8 +1909,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sprint4_delete_bulk_transaction() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1923,8 +1923,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_critical002_delete_bulk_enforces_24h_protection_without_time_filter() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1935,8 +1935,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_critical002_delete_bulk_explicit_time_within_24h_rejected() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1947,8 +1947,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_critical002_delete_bulk_old_data_with_status_filter_succeeds() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -1959,8 +1959,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_critical002_delete_bulk_mixed_recent_and_old_data() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -2071,8 +2071,8 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sqlite_streaming_type_values() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
@@ -2083,8 +2083,8 @@ mod test {
     #[cfg(feature = "mysql")]
     #[test]
     fn test_mysql_streaming_type_values() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("sql/mysql").await;
             sqlx::query("TRUNCATE TABLE job_result;")

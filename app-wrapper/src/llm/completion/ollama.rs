@@ -1,7 +1,7 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use command_utils::trace::impls::GenericOtelClient;
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
@@ -9,9 +9,9 @@ use jobworkerp_runner::jobworkerp::runner::llm::{self, LlmCompletionArgs, LlmCom
 use ollama_rs::generation::completion;
 use ollama_rs::generation::parameters::{FormatType, JsonStructure};
 use ollama_rs::{
-    generation::completion::{request::GenerationRequest, GenerationResponse},
-    models::ModelOptions,
     Ollama,
+    generation::completion::{GenerationResponse, request::GenerationRequest},
+    models::ModelOptions,
 };
 use proto::jobworkerp::data::RunnerType;
 use std::collections::HashMap;
@@ -438,13 +438,14 @@ The test checks that the response contains the expected content and meets our qu
             .await
             .expect("failed to run plugin");
         println!("response: {:?}", res.content);
-        assert!(res
-            .content
-            .is_some_and(|r| r.content.is_some_and(|res| match res {
-                message_content::Content::Text(text) => {
-                    text.len() > 10 && text.len() < 4096
-                }
-            })));
+        assert!(
+            res.content
+                .is_some_and(|r| r.content.is_some_and(|res| match res {
+                    message_content::Content::Text(text) => {
+                        text.len() > 10 && text.len() < 4096
+                    }
+                }))
+        );
         println!("Usage: {:?}", res.usage);
     }
 
