@@ -22,15 +22,15 @@ graph TB
     Storage --Job取得--> Worker[ワーカー]
     Worker --結果保存--> Storage
     Frontend --結果取得--> Storage
-    
+
     subgraph "ストレージ層"
     Redis[(Redis/mpsc chan<br>即時ジョブ)]
     RDB[(RDB<br>MySQL/SQLite<br>定期/時刻指定/backupジョブ)]
     end
-    
+
     Storage --- Redis
     Storage --- RDB
-    
+
     subgraph "ワーカー処理"
     Worker --> Runner1[Runner<br>COMMAND]
     Worker --> Runner2[Runner<br>HTTP_REQUEST]
@@ -58,28 +58,8 @@ graph TB
 ### 拡張機能
 - プラグインによる実行ジョブ内容（Runner）の拡張
 - Model Context Protocol (MCP) プロキシ機能: MCPサーバーで提供されるLLMや各種ツールをRunner経由で利用可能
-- ワークフロー機能: 複数のジョブを連携して実行
-
-## 目次
-
-- [クイックスタート](#クイックスタート)
-  - [ビルドと起動](#ビルドと起動)
-  - [Docker環境での実行](#docker環境での実行)
-  - [クライアントによる実行例](#クライアントによる実行例)
-- [機能詳細](#機能詳細)
-  - [組み込みRunner機能](#組み込みrunner機能)
-  - [ジョブキュー種別](#ジョブキュー種別)
-  - [結果の格納と取得](#結果の格納と取得)
-  - [MCPプロキシ機能](#mcpプロキシ機能)
-  - [WorkflowRunner](#WorkflowRunner)
-- [設定と環境変数](#設定と環境変数)
-  - [worker設定パラメータ](#worker設定パラメータ)
-  - [RDB設定](#rdb設定)
-  - [環境変数一覧](#環境変数一覧)
-- [拡張と開発](#拡張と開発)
-  - [プラグイン開発](#プラグイン開発)
-  - [エラーコード](#エラーコード)
-- [運用上の注意点](#運用上の注意点)
+- LLM統合: テキスト生成やツール呼び出し付きチャット（詳細は[LLM_ja.md](LLM_ja.md)を参照）
+- ワークフロー機能: 複数のジョブを連携して実行（詳細は[WORKFLOW_ja.md](WORKFLOW_ja.md)を参照）
 
 ## クイックスタート
 
@@ -186,7 +166,7 @@ $ ./target/release/jobworkerp-client runner list
 # create worker (specify runner id from runner list)
 1. $ ./target/release/jobworkerp-client worker create --name "ExampleRequest" --description "" --runner-id 2 --settings '{"base_url":"https://www.example.com/search"}' --response-type DIRECT
 
-# enqueue job (ls . ..)
+# enqueue job
 # specify worker_id value or worker name created by `worker create` (command 1. response)
 2-1. $ ./target/release/jobworkerp-client job enqueue --worker 1 --args '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
 2-2. $ ./target/release/jobworkerp-client job enqueue --worker "ExampleRequest" --args '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
@@ -200,7 +180,7 @@ $ ./target/release/jobworkerp-client runner list
 
 # enqueue job
 # sleep 60 seconds
-2. $ ./target/debug/jobworkerp-client job enqueue --worker 'SleepWorker' --args '{"command":"sleep","args":["60"]}'
+2. $ ./target/release/jobworkerp-client job enqueue --worker 'SleepWorker' --args '{"command":"sleep","args":["60"]}'
 
 # listen job (long polling with grpc)
 # specify job_id created by `job enqueue` (command 2. response)
@@ -217,14 +197,14 @@ $ ./target/release/jobworkerp-client runner list
 # enqueue job (echo Hello World !)
 # start job at [epoch second] % 3 == 1, per 3 seconds by run_after_time (epoch milliseconds) (see info log of jobworkerp all-in-one execution)
 # (If run_after_time is not specified, the command is executed repeatedly based on enqueue_time)
-2. $ ./target/debug/jobworkerp-client job enqueue --worker 'PeriodicEchoWorker' --args '{"command":"echo","args":["Hello", "World", "!"]}' --run-after-time 1000
+2. $ ./target/release/jobworkerp-client job enqueue --worker 'PeriodicEchoWorker' --args '{"command":"echo","args":["Hello", "World", "!"]}' --run-after-time 1000
 
 # listen by worker (stream)
  ./target/release/jobworkerp-client job-result listen-by-worker --worker 'PeriodicEchoWorker'
 
-# stop periodic job 
+# stop periodic job
 # specify job_id created by `job enqueue` (command 2. response)
-3. $ ./target/debug/jobworkerp-client job delete --id <got job id above>
+3. $ ./target/release/jobworkerp-client job delete --id <got job id above>
 ```
 
 ## 機能詳細
@@ -242,37 +222,8 @@ worker_runnerに組み込み定義されている機能を以下に記載しま�
 | GRPC_UNARY | gRPC通信 | gRPC unaryリクエスト | worker.runner_settings: URL+path, job.args: protobufエンコード引数 |
 | DOCKER | Dockerコンテナ実行 | docker run相当 | worker.runner_settings: FromImage/Tag, job.args: Image/Cmd など |
 | SLACK_POST_MESSAGE | Slackメッセージ投稿 | Slackチャンネルにメッセージを投稿 | worker.runner_settings: Slack API設定, job.args: チャンネル、メッセージ内容など |
-| LLM | LLM実行（マルチメソッド） | 各種LLM(外部サーバ/ローカル実行)を利用 | using: "completion"または"chat", worker.runner_settings: モデル設定, job.args: プロンプト/メッセージ |
-| WORKFLOW | ワークフロー実行（マルチメソッド） | 複数のジョブを定義された順序で実行 | using: "run"(デフォルト)または"create", worker.runner_settings: ワークフロー定義, job.args: 入力データ |
-
-#### LLMランナーの詳細
-
-LLMランナーはマルチメソッドランナーとして、`using`パラメータで以下のメソッドを指定します：
-
-- **completion**: テキスト補完（プロンプトベース）
-- **chat**: チャット会話（メッセージ履歴付き、ツール呼び出し対応）
-
-**対応するLLM実行方式**:
-- **外部サーバー**: Ollama、OpenAI API互換サーバー等
-- **ローカル実行**: MistralRSを使用したオンデバイス推論（`local_llm` feature必須）
-
-**ツール呼び出し（Tool Calling）**: chatメソッドでは、FunctionSetを指定することでLLMにツールを提供できます。`is_auto_calling`オプションで自動/手動モードを切り替え可能です：
-- `is_auto_calling: true` - LLMがツール呼び出しを返すと自動実行
-- `is_auto_calling: false`（デフォルト）- ツール呼び出しをクライアントに返却し、クライアント側で確認・修正後に実行をリクエスト
-
-**ローカルLLM機能の有効化**:
-```bash
-# ローカルLLM機能を有効にしてビルド
-cargo build --release --features local_llm
-
-# GPU加速も有効化（自動的にlocal_llm機能も有効）
-cargo build --release --features metal  # macOS Metal
-cargo build --release --features cuda   # NVIDIA CUDA
-```
-
-**注意**: Settings::Localを使用する場合は、必ず上記のいずれかのfeatureでビルドしてください。
-
-**非推奨**: `LLM_COMPLETION`と`LLM_CHAT`は非推奨です。代わりに`LLM`ランナーの`using`パラメータを使用してください。
+| LLM | LLM実行（マルチメソッド） | 各種LLMを外部サーバ経由で利用 | 詳細は[LLM_ja.md](LLM_ja.md)を参照 |
+| WORKFLOW | ワークフロー実行（マルチメソッド） | 複数のジョブを定義された順序で実行 | 詳細は[WORKFLOW_ja.md](WORKFLOW_ja.md)を参照 |
 
 ### ジョブキュー種別
 
@@ -374,108 +325,6 @@ MCPサーバーからの応答はジョブ結果として取得でき、response
 詳細なMCPプロトコル仕様については、[公式ドキュメント](https://modelcontextprotocol.io/)を参照してください。
 上記で利用しているMCPサーバサンプルに関しては [公式ドキュメント](https://github.com/modelcontextprotocol/servers)を参照してください。
 
-
-### WorkflowRunner
-
-Workflow Runnerは、定義された順序で複数のジョブを実行したり、再利用可能なワークフローを実行したりするための機能です。この機能は[Serverless Workflow](https://serverlessworkflow.io/) (v1.0.0)をベースにしており、機能の削除およびjobworkerp-rs独自の拡張機能(run taskのrunner, worker)が追加されています。([詳細(schema)](runner/schema/workflow.yaml))
-
-- **INLINE_WORKFLOW**: ジョブの引数で定義されたワークフローを実行する ([InlineWorkflowRunner](infra/src/infra/runner/inline_workflow.rs))
-  - ワークフロー定義全体をジョブ引数として渡して一度だけ実行することができる
-  - ワークフローは、ワークフロー定義ファイルへのURLかYAML/JSON形式のワークフロー定義データとして指定可能
-  - jq構文（${}）とLiquidテンプレート構文（$${}）の両方を使用した動的変数展開をサポート
-
-- **REUSABLE_WORKFLOW**: 再利用可能なワークフローを実行する ([ReusableWorkflowRunner](infra/src/infra/runner/reusable_workflow.rs))
-  - ワークフロー定義をworkerとして保存し、繰り返し実行することができる
-  - worker.runner_settingsにワークフロー定義を設定し、実行時にはjob引数として入力データのみを提供
-  - INLINE_WORKFLOWと同様に、jqとLiquidテンプレート構文を使用した変数展開が可能
-
-#### ワークフロー例
-
-以下は、ファイルをリストアップし、ディレクトリをさらに処理するワークフローの例です：
-($${...}: Liquid テンプレート、${...} jq)
-
-```yaml
-document:
-  id: 1
-  name: ls-test
-  namespace: default
-  title: Workflow test (ls)
-  version: 0.0.1
-  dsl: 0.0.1
-input:
-  schema:
-    document:
-      type: string
-      description: file name
-      default: /
-do:
-  - ListWorker:
-      run:
-        runner:
-          name: COMMAND
-          arguments:
-            command: ls
-            args: ["${.}"]
-          options: 
-            channel: workflow
-            useStatic: false
-            storeSuccess: true
-            storeFailure: true
-      output:
-        as: |- 
-          $${
-          {%- assign files = stdout | newline_to_br | split: '<br />' -%}
-          {"files": [
-          {%- for file in files -%}
-          "{{- file |strip_newlines -}}"{% unless forloop.last %},{% endunless -%}
-          {%- endfor -%}
-          ] }
-          }
-  - EachFileIteration:
-      for:
-        each: file
-        in: ${.files}
-        at: ind
-      do:
-        - ListWorkerInner:
-            if: |-
-              $${{%- assign head_char = file | slice: 0, 1 -%}{%- if head_char == "d" %}true{% else %}false{% endif -%}}
-            run:
-              runner:
-                name: COMMAND
-                arguments:
-                  command: ls
-                  args: ["$${/{{file}}}"]
-                options:
-                  channel: workflow
-                  useStatic: false
-                  storeSuccess: true
-                  storeFailure: true
-```
-
-#### ワークフローランナーの利用方法
-
-jobworkerp-clientを使用してワークフローランナーを利用する方法：
-
-上記のworkflow定義をワーカープロセスと同一ディレクトリに`ls.yaml`として保存した場合
-
-```shell
-# INLINE_WORKFLOW - ワークフローの一度限りの実行
-$ ./target/release/jobworkerp-client worker create --name "OneTimeFlow" --description "" --runner-id 65535 --response-type DIRECT --settings ''
-$ ./target/release/jobworkerp-client job enqueue --worker "OneTimeFlow" --args '{"workflow_url":"./ls.yaml", "input":"/home"}'
-
-# REUSABLE_WORKFLOW - 再利用可能なワークフローの作成
-$ ./target/release/jobworkerp-client worker create --name "ReusableFlow" --description "" --runner-id <REUSABLE_WORKFLOW_ID> --settings '{"json_data":"<YAML または JSON ワークフロー定義文字列>"}' --response-type DIRECT
-$ ./target/release/jobworkerp-client job enqueue --worker "ReusableFlow" --args '{"input":"..."}'
-
-# ワーカーを作成せずに直接ワークフローを実行する方法（ショートカット）
-$ ./target/release/jobworkerp-client job enqueue-workflow -i '/path/to/list' -w ./ls.yml
-# このコマンドは内部的に一時的なワーカーを自動的に作成し、ワークフローを実行し、workerを削除します
-# (将来的には一時的なworkerを作成しないでもjob実行できるようにする予定です)
-```
-
-> **注意**: workflow_urlには`https://` などのurl以外にもローカルファイルシステム上のファイルの絶対/相対パスも指定できます。相対パスの場合はjobworkerp-workerの実行ディレクトリからの相対パスを指定する必要があります。
-
 ## 設定と環境変数
 
 - 特に単位を明記していない時間項目の単位はミリ秒
@@ -519,11 +368,13 @@ $ ./target/release/jobworkerp-client job enqueue-workflow -i '/path/to/list' -w 
 | **ストレージ設定** | STORAGE_TYPE | Standalone: 単一インスタンス、Scalable: 複数インスタンス | Standalone |
 | | JOB_QUEUE_EXPIRE_JOB_RESULT_SECONDS | worker.broadcast_results=trueの場合の最大待ち時間 | 3600 |
 | | JOB_QUEUE_FETCH_INTERVAL | rdbに格納されたjobの定期fetch間隔 | 1000 |
-| | STORAGE_REFLESH_FROM_RDB | クラッシュ後のジョブ復旧フラグ | false |
+| | STORAGE_RESTORE_AT_STARTUP | クラッシュ後のジョブ復旧フラグ | false |
 | **GRPC設定** | GRPC_ADDR | grpcサーバアドレス:ポート | [::1]:9000 |
 | | USE_GRPC_WEB | grpcサーバでgRPC webを利用するか(boolean) | false |
 | **MCP設定** | MCP_CONFIG | MCPサーバー設定ファイルパス | mcp-settings.toml |
-
+| **ワーカーインスタンス設定** | WORKER_INSTANCE_ENABLED | ワーカーインスタンス登録の有効/無効 | true |
+| | WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC | ハートビート間隔 | 30 |
+| | WORKER_INSTANCE_TIMEOUT_SEC | 非アクティブタイムアウト (Scalableモードのみ) | 90 |
 
 ## 拡張と開発
 
@@ -545,4 +396,3 @@ TBD
 - id (job idなど)にはsnowflakeを利用、マシンidとして10bit各ホストのIPv4アドレスのホスト部を利用しているため、10bitを越えるホスト部を持つサブネットでの運用あるいは異なるサブネットで同一ホスト部を持つようなインスタンスを利用するような運用は避けてください。(重複したjob idを払いだす可能性があります)
 - worker.type = DOCKER をk8s環境上のworkerで実行する場合にはDocker Outside Of Dockerの設定あるいはDocker in Dockerの設定が必要になります (未テストです)
 - runner plugin内の処理でpanicを起こすとworkerプロセス自体が落ちます。そのためworkerはsupervisordやkubernetes deploymentなどの耐障害性のある運用をすることが推奨されます。(C-unwind の適用検討は今後の課題です)
-

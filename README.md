@@ -24,15 +24,15 @@ graph TB
     Storage --Job retrieval--> Worker[Worker]
     Worker --Result storage--> Storage
     Frontend --Result retrieval--> Storage
-    
+
     subgraph "Storage layer"
     Redis[(Redis/mpsc chan<br>Immediate jobs)]
     RDB[(RDB<br>MySQL/SQLite<br>Periodic/Scheduled/Backup jobs)]
     end
-    
+
     Storage --- Redis
     Storage --- RDB
-    
+
     subgraph "Worker processing"
     Worker --> Runner1[Runner<br>COMMAND]
     Worker --> Runner2[Runner<br>HTTP_REQUEST]
@@ -60,31 +60,8 @@ graph TB
 #### Extensibility
 - Extensible job execution content (Runner) through plugins
 - Model Context Protocol (MCP) proxy functionality: Access LLMs and various tools provided by MCP servers through Runners
-- Workflow functionality: Execute multiple jobs in coordination
-
-<!-- START doctoc generated TOC please keep comment here to allow auto update -->
-<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
-
-- [Command Examples](#command-examples)
-  - [Build and Launch](#build-and-launch)
-    - [Launch Example Using Docker Image](#launch-example-using-docker-image)
-  - [Execution Examples Using jobworkerp-client](#execution-examples-using-jobworkerp-client)
-- [Detailed Features of jobworkerp-worker](#detailed-features-of-jobworkerp-worker)
-  - [Built-in Functions of worker.runner_id](#built-in-functions-of-workerrunner_id)
-  - [Job Queue Types](#job-queue-types)
-  - [Result Storage (worker.store_success, worker.store_failure)](#result-storage-workerstore_success-workerstore_failure)
-  - [Result Retrieval Methods (worker.response_type)](#result-retrieval-methods-workerresponse_type)
-  - [MCP Proxy Functionality](#mcp-proxy-functionality)
-  - [Workflow Runners](#workflow-runners)
-- [Other Details](#other-details)
-  - [Worker Definition](#worker-definition)
-  - [RDB Definition](#rdb-definition)
-  - [Environment Variables](#environment-variables)
-- [About Plugins](#about-plugins)
-  - [About Error Codes](#about-error-codes)
-- [Operational Notes](#operational-notes)
-
-<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+- LLM integration: Text generation and chat with tool calling support (See [LLM.md](LLM.md) for details)
+- Workflow functionality: Execute multiple jobs in coordination (See [WORKFLOW.md](WORKFLOW.md) for details)
 
 ## Command Examples
 
@@ -193,7 +170,7 @@ $ ./target/release/jobworkerp-client runner list
 # create worker (specify runner id from runner list)
 1. $ ./target/release/jobworkerp-client worker create --name "ExampleRequest" --description "" --runner-id 2 --settings '{"base_url":"https://www.example.com/search"}' --response-type DIRECT
 
-# enqueue job (ls . ..)
+# enqueue job
 # specify worker_id value or worker name created by `worker create` (command 1. response)
 2-1. $ ./target/release/jobworkerp-client job enqueue --worker 1 --args '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
 2-2. $ ./target/release/jobworkerp-client job enqueue --worker "ExampleRequest" --args '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
@@ -207,7 +184,7 @@ $ ./target/release/jobworkerp-client runner list
 
 # enqueue job
 # sleep 60 seconds
-2. $ ./target/debug/jobworkerp-client job enqueue --worker 'SleepWorker' --args '{"command":"sleep","args":["60"]}'
+2. $ ./target/release/jobworkerp-client job enqueue --worker 'SleepWorker' --args '{"command":"sleep","args":["60"]}'
 
 # listen job (long polling with grpc)
 # specify job_id created by `job enqueue` (command 2. response)
@@ -224,14 +201,14 @@ $ ./target/release/jobworkerp-client runner list
 # enqueue job (echo Hello World !)
 # start job at [epoch second] % 3 == 1, per 3 seconds by run_after_time (epoch milliseconds) (see info log of jobworkerp all-in-one execution)
 # (If run_after_time is not specified, the command is executed repeatedly based on enqueue_time)
-2. $ ./target/debug/jobworkerp-client job enqueue --worker 'PeriodicEchoWorker' --args '{"command":"echo","args":["Hello", "World", "!"]}' --run-after-time 1000
+2. $ ./target/release/jobworkerp-client job enqueue --worker 'PeriodicEchoWorker' --args '{"command":"echo","args":["Hello", "World", "!"]}' --run-after-time 1000
 
 # listen by worker (stream)
  ./target/release/jobworkerp-client job-result listen-by-worker --worker 'PeriodicEchoWorker'
 
-# stop periodic job 
+# stop periodic job
 # specify job_id created by `job enqueue` (command 2. response)
-3. $ ./target/debug/jobworkerp-client job delete --id <got job id above>
+3. $ ./target/release/jobworkerp-client job delete --id <got job id above>
 ```
 
 ## Detailed Features of jobworkerp-worker
@@ -249,37 +226,8 @@ Each feature requires setting necessary values in protobuf format for worker.run
 | GRPC_UNARY | gRPC communication | gRPC unary requests | worker.runner_settings: URL+path, job.args: protobuf encoded arguments |
 | DOCKER | Docker container execution | Equivalent to docker run | worker.runner_settings: FromImage/Tag, job.args: Image/Cmd, etc. |
 | SLACK_POST_MESSAGE | Slack message posting | Posts messages to Slack channels | worker.runner_settings: Slack API settings, job.args: channel, message content, etc. |
-| LLM | LLM execution (multi-method) | Uses various LLMs (external servers/local execution) | using: "completion" or "chat", worker.runner_settings: model settings, job.args: prompts/messages |
-| WORKFLOW | Workflow execution (multi-method) | Executes multiple jobs in defined order | using: "run" (default) or "create", worker.runner_settings: workflow definition, job.args: input data |
-
-#### LLM Runner Details
-
-The LLM runner is a multi-method runner that uses the `using` parameter to specify the method:
-
-- **completion**: Text completion (prompt-based)
-- **chat**: Chat conversation (with message history and tool calling support)
-
-**Supported LLM Execution Methods**:
-- **External servers**: Ollama, OpenAI API-compatible servers, etc.
-- **Local execution**: On-device inference using MistralRS (requires `local_llm` feature)
-
-**Tool Calling**: The chat method supports providing tools to the LLM via FunctionSets. The `is_auto_calling` option controls automatic/manual mode:
-- `is_auto_calling: true` - Automatically execute tools when LLM returns tool calls
-- `is_auto_calling: false` (default) - Return tool calls to client for review/modification before execution
-
-**Enabling Local LLM Features**:
-```bash
-# Build with local LLM features enabled
-cargo build --release --features local_llm
-
-# Enable GPU acceleration (automatically enables local_llm)
-cargo build --release --features metal  # macOS Metal
-cargo build --release --features cuda   # NVIDIA CUDA
-```
-
-**Note**: When using Settings::Local, you must build with one of the above features.
-
-**Deprecated**: `LLM_COMPLETION` and `LLM_CHAT` are deprecated. Use the `LLM` runner with the `using` parameter instead.
+| LLM | LLM execution (multi-method) | Uses various LLMs via external servers | See [LLM.md](LLM.md) for details |
+| WORKFLOW | Workflow execution (multi-method) | Executes multiple jobs in defined order | See [WORKFLOW.md](WORKFLOW.md) for details |
 
 ### Job Queue Types
 
@@ -380,108 +328,6 @@ Responses from the MCP server can be retrieved as job results and processed dire
 For detailed MCP protocol specifications, refer to the [official documentation](https://modelcontextprotocol.io/).
 For information about the MCP server samples used above, refer to the [official documentation](https://github.com/modelcontextprotocol/servers).
 
-
-### Workflow Runner
-
-The Workflow Runner is a feature that allows executing multiple jobs in a defined order or executing reusable workflows. This feature is based on [Serverless Workflow](https://serverlessworkflow.io/) (v1.0.0), with some features removed and jobworkerp-rs-specific extensions added (runner and worker for run tasks). ([Details (schema)](runner/schema/workflow.yaml))
-
-- **INLINE_WORKFLOW**: Executes a workflow defined in job arguments ([InlineWorkflowRunner](infra/src/infra/runner/inline_workflow.rs))
-  - Can execute a workflow once by passing the entire workflow definition as a job argument
-  - Workflows can be specified as a URL to a workflow definition file or as YAML/JSON format workflow definition data
-  - Supports dynamic variable expansion using both jq syntax (${}) and Liquid template syntax ($${})
-
-- **REUSABLE_WORKFLOW**: Executes a reusable workflow ([ReusableWorkflowRunner](infra/src/infra/runner/reusable_workflow.rs))
-  - Can save workflow definitions as a worker and execute them repeatedly
-  - Sets the workflow definition in worker.runner_settings and provides only input data as job arguments during execution
-  - Supports variable expansion using jq and Liquid template syntax, similar to INLINE_WORKFLOW
-
-#### Workflow Example
-
-Below is an example of a workflow that lists files and further processes directories:
-($${...}: Liquid template, ${...}: jq)
-
-```yaml
-document:
-  id: 1
-  name: ls-test
-  namespace: default
-  title: Workflow test (ls)
-  version: 0.0.1
-  dsl: 0.0.1
-input:
-  schema:
-    document:
-      type: string
-      description: file name
-      default: /
-do:
-  - ListWorker:
-      run:
-        runner:
-          name: COMMAND
-          arguments:
-            command: ls
-            args: ["${.}"]
-          options: 
-            channel: workflow
-            useStatic: false
-            storeSuccess: true
-            storeFailure: true
-      output:
-        as: |- 
-          $${
-          {%- assign files = stdout | newline_to_br | split: '<br />' -%}
-          {"files": [
-          {%- for file in files -%}
-          "{{- file |strip_newlines -}}"{% unless forloop.last %},{% endunless -%}
-          {%- endfor -%}
-          ] }
-          }
-  - EachFileIteration:
-      for:
-        each: file
-        in: ${.files}
-        at: ind
-      do:
-        - ListWorkerInner:
-            if: |-
-              $${{%- assign head_char = file | slice: 0, 1 -%}{%- if head_char == "d" %}true{% else %}false{% endif -%}}
-            run:
-              runner:
-                name: COMMAND
-                arguments:
-                  command: ls
-                  args: ["$${/{{file}}}"]
-                options:
-                  channel: workflow
-                  useStatic: false
-                  storeSuccess: true
-                  storeFailure: true
-```
-
-#### How to Use the Workflow Runner
-
-Methods for using the workflow runner with jobworkerp-client:
-
-If you save the above workflow definition as `ls.yaml` in the same directory as the worker process:
-
-```shell
-# INLINE_WORKFLOW - One-time execution of a workflow
-$ ./target/release/jobworkerp-client worker create --name "OneTimeFlow" --description "" --runner-id 65535 --response-type DIRECT --settings ''
-$ ./target/release/jobworkerp-client job enqueue --worker "OneTimeFlow" --args '{"workflow_url":"./ls.yaml", "input":"/home"}'
-
-# REUSABLE_WORKFLOW - Creating a reusable workflow
-$ ./target/release/jobworkerp-client worker create --name "ReusableFlow" --description "" --runner-id <REUSABLE_WORKFLOW_ID> --settings '{"json_data":"<YAML or JSON workflow definition string>"}' --response-type DIRECT
-$ ./target/release/jobworkerp-client job enqueue --worker "ReusableFlow" --args '{"input":"..."}'
-
-# Method to execute a workflow directly without creating a worker (shortcut)
-$ ./target/release/jobworkerp-client job enqueue-workflow -i '/path/to/list' -w ./ls.yml
-# This command automatically creates a temporary worker, executes the workflow, and deletes the worker
-# (In the future, we plan to enable job execution without creating a temporary worker)
-```
-
-> **Note**: workflow_url can specify not only URLs like `https://` but also absolute/relative paths to files on the local filesystem. If a relative path is specified, it must be relative to the execution directory of jobworkerp-worker.
-
 ## Other Details
 
 ### Worker Definition
@@ -523,10 +369,13 @@ Database schema:
 | **Storage Settings** | STORAGE_TYPE | Standalone: Single instance, Scalable: Multiple instances | Standalone |
 | | JOB_QUEUE_EXPIRE_JOB_RESULT_SECONDS | Maximum wait time for worker.broadcast_results=true | 3600 |
 | | JOB_QUEUE_FETCH_INTERVAL | Interval for periodic fetch of jobs stored in RDB | 1000 |
-| | STORAGE_REFLESH_FROM_RDB | Flag for restoring jobs after crashes | false |
+| | STORAGE_RESTORE_AT_STARTUP | Flag for restoring jobs after crashes | false |
 | **gRPC Settings** | GRPC_ADDR | gRPC server address:port | [::1]:9000 |
 | | USE_GRPC_WEB | Whether to use gRPC web on the gRPC server (boolean) | false |
 | **MCP Settings** | MCP_CONFIG | Path to MCP server configuration file | mcp-settings.toml |
+| **Worker Instance Settings** | WORKER_INSTANCE_ENABLED | Enable/disable worker instance registration | true |
+| | WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC | Heartbeat interval | 30 |
+| | WORKER_INSTANCE_TIMEOUT_SEC | Inactive timeout (Scalable only) | 90 |
 
 ## About Plugins
 
