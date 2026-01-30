@@ -236,9 +236,12 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
             .take_while(|opt| futures::future::ready(opt.is_some()))
             // Unwrap Option
             .filter_map(futures::future::ready)
-            // Clean up channel when stream terminates (via End marker or drop)
+            // Clean up channel when stream completes normally (e.g., via End marker or timeout).
+            // Note: This cleanup does NOT run on early drop (e.g., client disconnect).
+            // For early-drop cleanup, a Drop wrapper would be needed, but TTL-based
+            // eviction serves as a fallback for those cases.
             .chain(futures::stream::once(async move {
-                // This runs when stream terminates - clean up channel if no other subscribers
+                // This runs after the previous stream completes - clean up if no other subscribers
                 if chan_buf.receiver_count(cn_for_cleanup.as_str()).await == 0 {
                     let _ = chan_buf
                         .delete_chan(cn_for_cleanup.as_str())
