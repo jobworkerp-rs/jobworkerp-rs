@@ -359,7 +359,6 @@ pub struct ChanJobQueueRepositoryImpl {
     pub shared_buffer: Arc<Mutex<HashMap<String, Vec<proto::jobworkerp::data::Job>>>>,
     pub job_queue_config: Arc<JobQueueConfig>,
     pub broadcast_cancel_chan_buf: BroadcastChan<Vec<u8>>,
-    pub cancelled_jobs: Arc<Mutex<HashSet<i64>>>,
 }
 impl UseChanBuffer for ChanJobQueueRepositoryImpl {
     type Item = Vec<u8>;
@@ -392,12 +391,6 @@ impl ChanJobQueueRepository for ChanJobQueueRepositoryImpl {}
 impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
     /// Memory environment cancellation notification broadcast (using BroadcastChan)
     async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
-        // Mark job as cancelled in memory
-        {
-            let mut cancelled_jobs = self.cancelled_jobs.lock().await;
-            cancelled_jobs.insert(job_id.value);
-        }
-
         let job_id_bytes = Self::serialize_message(job_id)?;
 
         match self.broadcast_cancel_chan().send(job_id_bytes) {
@@ -535,7 +528,6 @@ impl ChanJobQueueRepositoryImpl {
             job_queue_config,
             shared_buffer: Arc::new(Mutex::new(HashMap::new())),
             broadcast_cancel_chan_buf: broadcast_chan_buf,
-            cancelled_jobs: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }
