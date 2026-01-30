@@ -142,10 +142,21 @@ impl RunnerApp for RdbRunnerAppImpl {
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key(false))
             .await;
+        // Clear name cache to invalidate previous NotFound results
+        let _ = self
+            .delete_cache_locked(&Self::find_name_cache_key(name))
+            .await;
         Ok(id)
     }
 
     async fn delete_runner(&self, id: &RunnerId) -> Result<bool> {
+        // Get runner name before deletion for cache invalidation
+        let runner_name = self
+            .runner_repository()
+            .find(id)
+            .await?
+            .and_then(|r| r.data.map(|d| d.name));
+
         let res = self.runner_repository().remove(id).await?;
         // clear memory cache
         let _ = self
@@ -157,6 +168,12 @@ impl RunnerApp for RdbRunnerAppImpl {
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key(false))
             .await;
+        // Clear name cache if runner was found
+        if let Some(name) = runner_name {
+            let _ = self
+                .delete_cache_locked(&Self::find_name_cache_key(&name))
+                .await;
+        }
         Ok(res)
     }
 
