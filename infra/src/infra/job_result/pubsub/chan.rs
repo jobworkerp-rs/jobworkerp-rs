@@ -152,6 +152,16 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
             )
             .await
             .inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?;
+
+        // Clean up the channel if no other subscribers (like Redis unsubscribe)
+        if self.broadcast_chan_buf().receiver_count(cn.as_str()).await == 0 {
+            let _ = self
+                .broadcast_chan_buf()
+                .delete_chan(cn.as_str())
+                .await
+                .inspect_err(|e| tracing::warn!("failed to delete channel: {:?}", e));
+        }
+
         let res = Self::deserialize_message::<JobResult>(&message)
             .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
         tracing::debug!("subscribe_result_received: result={:?}", &res.id);
@@ -195,6 +205,9 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
             &job_id.value
         );
         // Emit End marker with Trailer, then terminate stream immediately
+        // Capture chan_buf for cleanup when stream terminates
+        let chan_buf = self.broadcast_chan_buf().clone();
+        let cn_for_cleanup = cn.clone();
         let transformed_stream = stream
             .filter_map(|b| async move {
                 match ProstMessageCodec::deserialize_message::<ResultOutputItem>(b.as_slice()) {
@@ -223,6 +236,22 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
             .take_while(|opt| futures::future::ready(opt.is_some()))
             // Unwrap Option
             .filter_map(futures::future::ready)
+            // Clean up channel when stream terminates (via End marker or drop)
+            .chain(futures::stream::once(async move {
+                // This runs when stream terminates - clean up channel if no other subscribers
+                if chan_buf.receiver_count(cn_for_cleanup.as_str()).await == 0 {
+                    let _ = chan_buf
+                        .delete_chan(cn_for_cleanup.as_str())
+                        .await
+                        .inspect_err(|e| {
+                            tracing::warn!("failed to delete stream channel: {:?}", e)
+                        });
+                }
+                // Return a marker that will be filtered out
+                ResultOutputItem { item: None }
+            }))
+            // Filter out the cleanup marker
+            .filter(|item| futures::future::ready(item.item.is_some()))
             .boxed();
         Ok(transformed_stream)
     }
