@@ -138,10 +138,21 @@ impl RunnerApp for HybridRunnerAppImpl {
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key(false))
             .await;
+        // Clear name cache to invalidate previous NotFound results
+        let _ = self
+            .delete_cache_locked(&Self::find_name_cache_key(name))
+            .await;
         Ok(r)
     }
 
     async fn delete_runner(&self, id: &RunnerId) -> Result<bool> {
+        // Get runner name before deletion for cache invalidation
+        let runner_name = self
+            .runner_repository()
+            .find(id)
+            .await?
+            .and_then(|r| r.data.map(|d| d.name));
+
         let res = self.runner_repository().remove(id).await?;
         // clear memory cache
         let _ = self
@@ -153,6 +164,12 @@ impl RunnerApp for HybridRunnerAppImpl {
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key(false))
             .await;
+        // Clear name cache if runner was found
+        if let Some(name) = runner_name {
+            let _ = self
+                .delete_cache_locked(&Self::find_name_cache_key(&name))
+                .await;
+        }
         Ok(res)
     }
 
@@ -321,6 +338,7 @@ impl RunnerCacheHelper for HybridRunnerAppImpl {}
 
 #[cfg(test)]
 mod test {
+    use super::RunnerCacheHelper;
     use crate::app::runner::RunnerApp;
     use crate::app::runner::hybrid::HybridRunnerAppImpl;
     use crate::app::{StorageConfig, StorageType};
@@ -331,7 +349,7 @@ mod test {
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra_utils::infra::test::TEST_RUNTIME;
-    use memory_utils::cache::moka::MokaCacheImpl;
+    use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
     use proto::jobworkerp::data::RunnerId;
     use std::sync::Arc;
     use std::time::Duration;
@@ -386,6 +404,138 @@ mod test {
             let app = create_test_app().await.unwrap();
             let res = app.count().await;
             assert!(res.is_ok());
+        });
+    }
+
+    // Test that name cache is working correctly
+    // Uses find_runner (by ID) first to get runner info, then tests name cache
+    #[test]
+    fn test_name_cache_with_runner() {
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_app().await.unwrap();
+
+            // First find a runner by ID (ID 1 is Command runner)
+            let runner_by_id = app.find_runner(&RunnerId { value: 1 }).await.unwrap();
+            assert!(runner_by_id.is_some(), "Runner with ID 1 should exist");
+
+            let runner_name = runner_by_id
+                .as_ref()
+                .unwrap()
+                .data
+                .as_ref()
+                .unwrap()
+                .name
+                .clone();
+
+            // First call populates the name cache
+            let res1 = app.find_runner_by_name(&runner_name).await.unwrap();
+            assert!(res1.is_some(), "Runner should be found by name");
+
+            // Verify cache was populated
+            let cache_key = HybridRunnerAppImpl::find_name_cache_key(&runner_name);
+            let cached = app.find_cache(&cache_key).await;
+            assert!(cached.is_some(), "Name cache should be populated");
+
+            // Second call should use cache
+            let res2 = app.find_runner_by_name(&runner_name).await.unwrap();
+            assert!(res2.is_some(), "Runner should still be found from cache");
+
+            // Verify both results are the same
+            assert_eq!(
+                res1.as_ref().unwrap().data.as_ref().map(|d| &d.name),
+                res2.as_ref().unwrap().data.as_ref().map(|d| &d.name),
+                "Cached result should match original"
+            );
+        });
+    }
+
+    // Test that delete_runner clears name cache
+    // Uses a real MCP server runner to test full create/find/delete cycle
+    #[test]
+    fn test_delete_runner_clears_name_cache() {
+        use proto::jobworkerp::data::RunnerType;
+
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_app().await.unwrap();
+
+            // Create a real MCP server runner using create_runner
+            let test_runner_name = "TestMcpServerForDeleteCacheTest";
+            let definition = serde_json::json!({
+                "transport": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-everything"]
+            })
+            .to_string();
+
+            let runner_id = app
+                .create_runner(
+                    test_runner_name,
+                    "Test MCP Server for cache test",
+                    RunnerType::McpServer as i32,
+                    &definition,
+                )
+                .await
+                .unwrap();
+
+            // Find by name - this should work because create_runner registers with runner_spec_factory
+            let res = app.find_runner_by_name(test_runner_name).await.unwrap();
+            assert!(res.is_some(), "Runner should be found by name after create");
+
+            // Verify cache key exists
+            let cache_key = HybridRunnerAppImpl::find_name_cache_key(test_runner_name);
+            let cached = app.find_cache(&cache_key).await;
+            assert!(cached.is_some(), "Name cache should be populated");
+
+            // Delete the runner (this should clear name cache)
+            let deleted = app.delete_runner(&runner_id).await.unwrap();
+            assert!(deleted, "Runner should be deleted");
+
+            // Verify name cache was cleared
+            let cached_after = app.find_cache(&cache_key).await;
+            assert!(
+                cached_after.is_none(),
+                "Name cache should be cleared after delete"
+            );
+
+            // Verify runner is actually deleted from DB
+            let res_after_delete = app.find_runner(&runner_id).await.unwrap();
+            assert!(
+                res_after_delete.is_none(),
+                "Runner should not exist after delete"
+            );
+        });
+    }
+
+    // Test that create_runner clears name cache for previously not-found names
+    #[test]
+    fn test_create_runner_clears_name_cache() {
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_app().await.unwrap();
+            let test_name = "nonexistent_runner_for_cache_test";
+
+            // Search for non-existent runner to populate cache with empty result
+            let res = app.find_runner_by_name(test_name).await.unwrap();
+            assert!(res.is_none(), "Runner should not exist initially");
+
+            // Verify cache was populated (with empty vec)
+            let cache_key = HybridRunnerAppImpl::find_name_cache_key(test_name);
+            let cached = app.find_cache(&cache_key).await;
+            assert!(
+                cached.is_some(),
+                "Name cache should be populated even for not-found"
+            );
+
+            // Simulate what create_runner does - clear the name cache
+            let _ = app
+                .delete_cache_locked(&HybridRunnerAppImpl::find_name_cache_key(test_name))
+                .await;
+
+            // Verify name cache was cleared
+            let cached_after = app.find_cache(&cache_key).await;
+            assert!(
+                cached_after.is_none(),
+                "Name cache should be cleared after create operation"
+            );
         });
     }
 }
