@@ -230,6 +230,7 @@ async fn redis_test() -> Result<()> {
     let job_queue_config = Arc::new(JobQueueConfig {
         expire_job_result_seconds: 60,
         fetch_interval: 1000,
+        channel_buffer_size: 10000,
     });
 
     let repo = RedisJobRepositoryImpl {
@@ -308,6 +309,7 @@ async fn redis_individual_ttl_test() -> Result<()> {
     let job_queue_config = Arc::new(JobQueueConfig {
         expire_job_result_seconds: 60,
         fetch_interval: 1000,
+        channel_buffer_size: 10000,
     });
 
     let repo = RedisJobRepositoryImpl {
