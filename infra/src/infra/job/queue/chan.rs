@@ -737,6 +737,7 @@ mod test {
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
+            channel_buffer_size: 10000,
         });
         let repo = ChanJobQueueRepositoryImpl {
             job_queue_config,
@@ -823,6 +824,7 @@ mod test {
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
+            channel_buffer_size: 10000,
         });
         let broadcast_chan_buf = BroadcastChan::new(100);
         let repo =
