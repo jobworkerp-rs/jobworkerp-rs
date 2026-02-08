@@ -1368,7 +1368,7 @@ pub mod tests {
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
-            channel_buffer_size: 10_000,
+            channel_capacity: 10_000,
         });
         let worker_config = Arc::new(WorkerConfig {
             default_concurrency: 4,
