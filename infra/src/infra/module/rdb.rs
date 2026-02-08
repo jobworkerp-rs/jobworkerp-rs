@@ -16,6 +16,11 @@ use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use memory_utils::chan::ChanBuffer;
 use memory_utils::chan::broadcast::BroadcastChan;
 
+/// Maximum number of named channels the ChanBuffer stretto cache can hold.
+/// Limits concurrent subscriptions (e.g., simultaneous DIRECT response jobs).
+/// TODO: load from config
+const DEFAULT_MAX_CHANNELS: usize = 10_000;
+
 pub trait UseRdbChanRepositoryModule {
     fn rdb_repository_module(&self) -> &RdbChanRepositoryModule;
 }
@@ -87,12 +92,12 @@ impl RdbChanRepositoryModule {
             ),
             rdb_job_processing_status_index_repository,
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
-                ChanBuffer::new(Some(job_queue_config.channel_buffer_size), 100_000), // broadcast chan. TODO from config
+                ChanBuffer::new(Some(job_queue_config.channel_capacity), DEFAULT_MAX_CHANNELS),
                 job_queue_config.clone(),
             ),
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 job_queue_config.clone(),
-                ChanBuffer::new(Some(job_queue_config.channel_buffer_size), 100_000), // mpmc chan. TODO from config
+                ChanBuffer::new(Some(job_queue_config.channel_capacity), DEFAULT_MAX_CHANNELS),
                 BroadcastChan::new(1000), // broadcast chan for cancellation. TODO from config
             ),
             function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
@@ -135,17 +140,17 @@ impl RdbChanRepositoryModule {
             rdb_job_processing_status_index_repository,
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
                 ChanBuffer::new(
-                    Some(config_module.job_queue_config.channel_buffer_size),
-                    100_000,
-                ), // TODO from config
+                    Some(config_module.job_queue_config.channel_capacity),
+                    DEFAULT_MAX_CHANNELS,
+                ),
                 config_module.job_queue_config.clone(),
             ),
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
                 ChanBuffer::new(
-                    Some(config_module.job_queue_config.channel_buffer_size),
-                    100_000,
-                ), // TODO from config
+                    Some(config_module.job_queue_config.channel_capacity),
+                    DEFAULT_MAX_CHANNELS,
+                ),
                 BroadcastChan::new(1000), // broadcast chan for cancellation. TODO from config
             ),
             function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
