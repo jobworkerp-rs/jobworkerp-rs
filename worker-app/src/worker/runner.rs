@@ -291,6 +291,7 @@ pub trait JobRunner:
             store_success: false,
             store_failure: true,
             using: data.using,
+            broadcast_results: worker_data.broadcast_results,
         };
 
         JobResult {
@@ -573,6 +574,7 @@ pub trait JobRunner:
             store_success: worker.store_success,
             store_failure: worker.store_failure,
             using: dat.using,
+            broadcast_results: worker.broadcast_results,
         };
         JobResult {
             id: Some(JobResultId {

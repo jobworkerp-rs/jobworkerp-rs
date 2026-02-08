@@ -282,6 +282,7 @@ async fn redis_test() -> Result<()> {
         store_success: true,
         store_failure: true,
         using: None,
+        broadcast_results: false,
     };
     // clear first
     repo.delete(&id).await?;

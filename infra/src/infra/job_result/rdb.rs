@@ -571,6 +571,7 @@ mod test {
             store_success: false, // fixed
             store_failure: false, // fixed
             using: None,
+            broadcast_results: false, // fixed
         });
 
         let id = JobResultId { value: 111 };
@@ -616,6 +617,7 @@ mod test {
             store_success: false,
             store_failure: false,
             using: None,
+            broadcast_results: false,
         };
         let updated = repository.update(&mut tx, &id, &update).await?;
         assert!(updated);
@@ -700,6 +702,7 @@ mod test {
             store_success: false,
             store_failure: false,
             using: None,
+            broadcast_results: false,
         }
     }
 
@@ -2010,6 +2013,7 @@ mod test {
                 store_success: false,
                 store_failure: false,
                 using: None,
+                broadcast_results: false,
             };
 
             // Create job result

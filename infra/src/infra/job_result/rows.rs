@@ -61,6 +61,7 @@ impl JobResultRow {
                 store_success: false,
                 store_failure: false,
                 using: self.using.clone(),
+                broadcast_results: false,
             }),
             ..Default::default()
         }

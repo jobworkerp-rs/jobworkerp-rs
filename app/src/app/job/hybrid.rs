@@ -887,7 +887,7 @@ impl JobApp for HybridJobAppImpl {
                     // (XXX can receive response by listen_after, listen_by_worker for DIRECT response)
                     let _ = self
                         .job_result_pubsub_repository()
-                        .publish_result(id, data, true) // XXX to_listen must be set worker.broadcast_results
+                        .publish_result(id, data, true)
                         .await
                         .inspect_err(|e| {
                             tracing::warn!("complete_job: pubsub publish error: {:?}", e)
@@ -901,7 +901,7 @@ impl JobApp for HybridJobAppImpl {
                     // the client to receive the stream response without waiting for stream completion.
                     let r = self
                         .job_result_pubsub_repository()
-                        .publish_result(id, data, true) // XXX to_listen must be set worker.broadcast_results
+                        .publish_result(id, data, data.broadcast_results)
                         .await;
                     tracing::debug!(
                         "complete_job(no_result): result published, starting stream: {}",
@@ -1564,6 +1564,7 @@ pub mod tests {
                     store_success: false,
                     store_failure: false,
                     using: None,
+                    broadcast_results: false,
                 }),
                 ..Default::default()
             };
@@ -1741,6 +1742,7 @@ pub mod tests {
                     store_success: false,
                     store_failure: false,
                     using: None,
+                    broadcast_results: true,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1868,6 +1870,7 @@ pub mod tests {
                     store_success: true,
                     store_failure: false,
                     using: None,
+                    broadcast_results: false,
                 }),
                 metadata: (*metadata).clone(),
             };

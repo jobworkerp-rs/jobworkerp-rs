@@ -166,6 +166,7 @@ mod tests {
             store_success: true,
             store_failure: true,
             using: None,
+            broadcast_results: false,
         };
         struct JobQueueImpl {}
         impl UseProstCodec for JobQueueImpl {}
