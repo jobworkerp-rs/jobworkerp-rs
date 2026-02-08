@@ -35,6 +35,16 @@ pub trait ChanJobQueueRepository:
             .unwrap_or(&Self::DEFAULT_CHANNEL_NAME.to_string())
             .to_owned();
         let qn = Self::queue_channel_name(cn.clone(), job.data.as_ref().map(|d| &d.priority));
+
+        // Add to shared_buffer FIRST to prevent race condition (consumer receiving before it's added)
+        {
+            let mut shared_buffer = self.queue_list_buffer().lock().await;
+            shared_buffer
+                .entry(qn.clone())
+                .or_insert_with(Vec::new)
+                .push(job.clone());
+        }
+
         match self
             .chan_buf()
             .send_to_chan(
@@ -47,16 +57,23 @@ pub trait ChanJobQueueRepository:
             .await
         {
             Ok(b) => {
-                if b {
+                if !b {
+                    // unexpected: not sent (should be error usually if dup key, but if just false, rollback)
                     let mut shared_buffer = self.queue_list_buffer().lock().await;
-                    shared_buffer
-                        .entry(qn.clone())
-                        .or_insert_with(Vec::new)
-                        .push(job.clone());
-                };
+                    if let Some(v) = shared_buffer.get_mut(&qn) {
+                        v.retain(|x| x.id != job.id);
+                    }
+                }
                 Ok(self.chan_buf().count_chan_opt(qn).await.unwrap_or(0) as i64)
             }
-            Err(e) => Err(JobWorkerError::ChanError(e).into()),
+            Err(e) => {
+                // Rollback on error
+                let mut shared_buffer = self.queue_list_buffer().lock().await;
+                if let Some(v) = shared_buffer.get_mut(&qn) {
+                    v.retain(|x| x.id != job.id);
+                }
+                Err(JobWorkerError::ChanError(e).into())
+            }
         }
     }
 
@@ -870,4 +887,5 @@ mod test {
         tracing::info!("Successfully sent and received JobId via protobuf in memory cancellation");
         Ok(())
     }
+
 }

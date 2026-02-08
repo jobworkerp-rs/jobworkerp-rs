@@ -314,6 +314,12 @@ impl RunnerApp for HybridRunnerAppImpl {
         self.store_proto_cache(runner_id, &runner_data).await;
         // clear memory cache
         let _ = self
+            .delete_cache_locked(&Self::find_cache_key(&runner_id.value))
+            .await;
+        let _ = self
+            .delete_cache_locked(&Self::find_name_cache_key(name))
+            .await;
+        let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key(true))
             .await;
         let _ = self

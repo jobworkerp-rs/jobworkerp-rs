@@ -1368,6 +1368,7 @@ pub mod tests {
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
+            channel_buffer_size: 10_000,
         });
         let worker_config = Arc::new(WorkerConfig {
             default_concurrency: 4,
@@ -1389,6 +1390,10 @@ pub mod tests {
             .create_test_runner(&TEST_RUNNER_ID, "Test")
             .await
             .unwrap();
+        // DEBUG
+        let found = runner_app.find_runner(&TEST_RUNNER_ID).await?;
+        println!("DEBUG: Found runner after create: {:?}", found);
+
         let worker_app = HybridWorkerAppImpl::new(
             storage_config.clone(),
             id_generator.clone(),
