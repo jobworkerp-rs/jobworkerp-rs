@@ -778,7 +778,7 @@ impl JobApp for RdbChanJobAppImpl {
                     // the client to receive the stream response without waiting for stream completion.
                     let r = self
                         .job_result_pubsub_repository()
-                        .publish_result(id, data, true) // XXX to_listen = worker.broadcast_result (if possible)
+                        .publish_result(id, data, data.broadcast_results)
                         .await;
                     tracing::debug!(
                         "complete_job(other): result published, starting stream: {}",
@@ -1526,6 +1526,7 @@ mod tests {
                     store_success: false,
                     store_failure: false,
                     using: None,
+                    broadcast_results: false,
                 }),
                 ..Default::default()
             };
@@ -1648,6 +1649,7 @@ mod tests {
                     store_success: true,
                     store_failure: true,
                     using: None,
+                    broadcast_results: true,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1773,6 +1775,7 @@ mod tests {
                     store_success: true,
                     store_failure: false,
                     using: None,
+                    broadcast_results: false,
                 }),
                 metadata: (*metadata).clone(),
             };
