@@ -30,35 +30,37 @@ fn setup_python_env(server_path: &Path) -> HashMap<String, String> {
 async fn setup_python_environment_with_uv(
     server_path: &PathBuf,
 ) -> Result<HashMap<String, String>> {
-    // Change current directory to server directory (for dependency installation)
-    let original_dir = std::env::current_dir()?;
-    std::env::set_current_dir(server_path)?;
+    // Canonicalize to absolute path so VIRTUAL_ENV and venv target work
+    // regardless of the test runner's working directory.
+    let server_path = std::fs::canonicalize(server_path)?;
+    let venv_path = server_path.join(".venv");
 
-    let uv_venv = std::process::Command::new("uv").args(["venv"]).status()?;
+    // Explicitly target this server's venv to avoid uv picking up a
+    // parent directory's .venv (e.g., the workspace root).
+    let uv_venv = std::process::Command::new("uv")
+        .args(["venv", &venv_path.to_string_lossy()])
+        .current_dir(&server_path)
+        .status()?;
 
     if !uv_venv.success() {
-        std::env::set_current_dir(original_dir)?;
         return Err(anyhow::anyhow!(
             "Failed to create virtual environment with uv"
         ));
     }
 
-    // Install dependencies using uv command
     let uv_install = std::process::Command::new("uv")
         .args(["pip", "install", "-e", "."])
+        .env("VIRTUAL_ENV", &venv_path)
+        .current_dir(&server_path)
         .status()?;
 
     if !uv_install.success() {
-        std::env::set_current_dir(original_dir)?;
         return Err(anyhow::anyhow!("Failed to install dependencies with uv"));
     }
 
-    std::env::set_current_dir(original_dir)?;
-
     // Set environment variables
-    let mut envs = setup_python_env(server_path);
+    let mut envs = setup_python_env(&server_path);
 
-    let venv_path = server_path.join(".venv");
     let venv_bin_path = if cfg!(target_os = "windows") {
         venv_path.join("Scripts")
     } else {
@@ -66,8 +68,17 @@ async fn setup_python_environment_with_uv(
     };
 
     let path_env = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", venv_bin_path.to_string_lossy(), path_env);
+    let path_sep = if cfg!(target_os = "windows") {
+        ";"
+    } else {
+        ":"
+    };
+    let new_path = format!("{}{path_sep}{}", venv_bin_path.to_string_lossy(), path_env);
     envs.insert("PATH".to_string(), new_path);
+    envs.insert(
+        "VIRTUAL_ENV".to_string(),
+        venv_path.to_string_lossy().to_string(),
+    );
 
     Ok(envs)
 }
@@ -85,7 +96,7 @@ fn get_venv_python(server_path: &Path) -> PathBuf {
 
 pub async fn create_time_mcp_server_transport() -> Result<McpServerTransportConfig> {
     // Time server configuration
-    let time_server_path = get_mcp_server_path("time");
+    let time_server_path = std::fs::canonicalize(get_mcp_server_path("time"))?;
 
     // Set up virtual environment
     let envs = setup_python_environment_with_uv(&time_server_path).await?;

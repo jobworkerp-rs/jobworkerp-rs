@@ -31,7 +31,8 @@ pub struct JobResultRow {
 }
 
 impl JobResultRow {
-    //.XXX fill in without worker_name, max_retry, response_type, store_success, store_failure
+    // Fields not stored in RDB are filled with defaults:
+    // worker_name, max_retry, response_type, store_success, store_failure, broadcast_results
     #[allow(deprecated)]
     pub fn to_proto(&self) -> JobResult {
         JobResult {

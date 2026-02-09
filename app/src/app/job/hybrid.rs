@@ -887,6 +887,7 @@ impl JobApp for HybridJobAppImpl {
                     // (XXX can receive response by listen_after, listen_by_worker for DIRECT response)
                     let _ = self
                         .job_result_pubsub_repository()
+                        // Direct: always publish because the client blocks waiting for the result
                         .publish_result(id, data, true)
                         .await
                         .inspect_err(|e| {
@@ -1390,10 +1391,6 @@ pub mod tests {
             .create_test_runner(&TEST_RUNNER_ID, "Test")
             .await
             .unwrap();
-        // DEBUG
-        let found = runner_app.find_runner(&TEST_RUNNER_ID).await?;
-        println!("DEBUG: Found runner after create: {:?}", found);
-
         let worker_app = HybridWorkerAppImpl::new(
             storage_config.clone(),
             id_generator.clone(),

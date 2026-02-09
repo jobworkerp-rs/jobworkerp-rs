@@ -736,7 +736,8 @@ impl JobApp for RdbChanJobAppImpl {
                 Ok(ResponseType::Direct) => {
                     let res = self
                         .job_result_pubsub_repository()
-                        .publish_result(id, data, true) // XXX to_listen = worker.broadcast_result (if possible)
+                        // Direct: always publish because the client blocks waiting for the result
+                        .publish_result(id, data, true)
                         .await;
                     // Start stream publishing as background task (non-blocking)
                     // This enables realtime streaming instead of batch delivery
@@ -1213,7 +1214,9 @@ where
                     // For timeout=0 (unlimited), uses expire_job_result_seconds from config
                     let job_ttl = self.calculate_job_ttl(job_data.timeout);
 
-                    self.set_cache(cache_key, job.clone(), job_ttl.as_ref())
+                    // Direct jobs exist only in cache (not in RDB), so wait for
+                    // stretto admission to complete before returning.
+                    self.set_and_wait_cache(cache_key, job.clone(), job_ttl.as_ref())
                         .await;
                     tracing::debug!(
                         "Cached Direct Response job {} with TTL {:?} for running job visibility",
