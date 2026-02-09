@@ -887,5 +887,4 @@ mod test {
         tracing::info!("Successfully sent and received JobId via protobuf in memory cancellation");
         Ok(())
     }
-
 }

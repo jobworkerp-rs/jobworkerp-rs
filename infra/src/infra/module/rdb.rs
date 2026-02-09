@@ -17,8 +17,11 @@ use memory_utils::chan::ChanBuffer;
 use memory_utils::chan::broadcast::BroadcastChan;
 
 /// Maximum number of named channels the ChanBuffer stretto cache can hold.
-/// Limits concurrent subscriptions (e.g., simultaneous DIRECT response jobs).
-/// TODO: load from config
+/// This limits the number of concurrent broadcast/mpmc channels (e.g.,
+/// simultaneous DIRECT response jobs waiting for results). When this limit
+/// is reached, stretto may evict older channels, causing subscribers to
+/// miss results. Increase this value for high-concurrency DIRECT workloads.
+/// TODO: load from config (e.g., JOB_QUEUE_MAX_CHANNELS)
 const DEFAULT_MAX_CHANNELS: usize = 10_000;
 
 pub trait UseRdbChanRepositoryModule {
@@ -92,12 +95,18 @@ impl RdbChanRepositoryModule {
             ),
             rdb_job_processing_status_index_repository,
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
-                ChanBuffer::new(Some(job_queue_config.channel_capacity), DEFAULT_MAX_CHANNELS),
+                ChanBuffer::new(
+                    Some(job_queue_config.channel_capacity),
+                    DEFAULT_MAX_CHANNELS,
+                ),
                 job_queue_config.clone(),
             ),
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 job_queue_config.clone(),
-                ChanBuffer::new(Some(job_queue_config.channel_capacity), DEFAULT_MAX_CHANNELS),
+                ChanBuffer::new(
+                    Some(job_queue_config.channel_capacity),
+                    DEFAULT_MAX_CHANNELS,
+                ),
                 BroadcastChan::new(1000), // broadcast chan for cancellation. TODO from config
             ),
             function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),

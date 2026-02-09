@@ -70,10 +70,7 @@ pub struct JobQueueConfig {
     /// msec for periodic or run_after job
     pub fetch_interval: u32,
     /// max number of messages each in-memory channel can hold (use Standalone mode only)
-    #[serde(
-        alias = "channel_buffer_size",
-        default = "default_channel_capacity"
-    )]
+    #[serde(alias = "channel_buffer_size", default = "default_channel_capacity")]
     pub channel_capacity: usize,
 }
 
@@ -86,7 +83,7 @@ impl Default for JobQueueConfig {
         tracing::info!("Use default JobQueueConfig.");
         Self {
             expire_job_result_seconds: 24 * 60 * 60, // 1day
-            fetch_interval: 1000,                    // 5sec
+            fetch_interval: 1000,                    // 1sec
             channel_capacity: 10_000,
         }
     }

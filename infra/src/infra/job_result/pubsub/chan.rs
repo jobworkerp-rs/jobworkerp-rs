@@ -98,7 +98,7 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 true,
             )
             .await
-            .inspect_err(|e| tracing::debug!("send_to_worker_chan skipped (no subscriber): {:?}", e))
+            .inspect_err(|e| tracing::warn!("send_to_worker_chan error: {:?}", e))
             .unwrap_or(false);
         res.map(|r| r || res2)
     }
