@@ -94,6 +94,11 @@ message JobResultData {
   // Runner implementation used for MCP/Plugin runners
   // Preserved for retry and periodic job re-execution
   optional string using = 20;
+
+  // # Broadcast Results Flag
+  // from worker.data.broadcast_results
+  // Controls whether job results are published to broadcast channels
+  bool broadcast_results = 22;
 }
 
 // # Job Result ID

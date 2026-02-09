@@ -69,6 +69,13 @@ pub struct JobQueueConfig {
     pub expire_job_result_seconds: u32,
     /// msec for periodic or run_after job
     pub fetch_interval: u32,
+    /// max number of messages each in-memory channel can hold (use Standalone mode only)
+    #[serde(alias = "channel_buffer_size", default = "default_channel_capacity")]
+    pub channel_capacity: usize,
+}
+
+fn default_channel_capacity() -> usize {
+    10_000
 }
 
 impl Default for JobQueueConfig {
@@ -76,7 +83,8 @@ impl Default for JobQueueConfig {
         tracing::info!("Use default JobQueueConfig.");
         Self {
             expire_job_result_seconds: 24 * 60 * 60, // 1day
-            fetch_interval: 1000,                    // 5sec
+            fetch_interval: 1000,                    // 1sec
+            channel_capacity: 10_000,
         }
     }
 }
@@ -151,6 +159,7 @@ pub mod test {
     pub static JOB_QUEUE_CONFIG: Lazy<JobQueueConfig> = Lazy::new(|| JobQueueConfig {
         expire_job_result_seconds: 60,
         fetch_interval: 1000,
+        channel_capacity: 10_000,
     });
 
     #[cfg(feature = "mysql")]

@@ -643,6 +643,7 @@ mod rdb_chan_cancellation_tests {
                 store_failure: false,
                 worker_name: "test_worker".to_string(),
                 using: None,
+                broadcast_results: false,
             };
 
             // Call complete_job() (which should call cleanup_job internally)
