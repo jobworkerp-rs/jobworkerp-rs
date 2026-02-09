@@ -51,9 +51,7 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             ..Default::default()
         };
         let result_data = Self::serialize_message(&job_result)?;
-        // TODO not publish if worker.broadcast_result is false
-        // (Currently we're preventing subscription by closing the receiving end(listen, listen_by_worker),
-        //  but it's no sense to publish when not needed)
+        // broadcast_results flag is now propagated via JobResultData and controls to_listen parameter
         let res = if to_listen {
             let channel_name = Self::job_result_pubsub_channel_name(jid);
             let ttl = Some(Duration::from_secs(
@@ -89,6 +87,7 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
         } else {
             Ok(false)
         };
+        // Worker ID channel: only send if subscribers exist (no channel creation for absent subscribers)
         let res2 = self
             .broadcast_chan_buf()
             .send_to_chan(
@@ -96,10 +95,11 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 result_data,
                 None,
                 None,
-                false,
+                true,
             )
             .await
-            .inspect_err(|e| tracing::warn!("send_to_chan_err:{:?}", e))?;
+            .inspect_err(|e| tracing::warn!("send_to_worker_chan error: {:?}", e))
+            .unwrap_or(false);
         res.map(|r| r || res2)
     }
 
@@ -342,6 +342,7 @@ mod test {
             job_queue_config: Arc::new(JobQueueConfig {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,
+                channel_capacity: 10000,
             }),
         };
         let job_id = JobId { value: 11 };
@@ -389,6 +390,7 @@ mod test {
             job_queue_config: Arc::new(JobQueueConfig {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,
+                channel_capacity: 10000,
             }),
         };
         let worker_id = WorkerId { value: 1 };
@@ -445,6 +447,7 @@ mod test {
             job_queue_config: Arc::new(JobQueueConfig {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,
+                channel_capacity: 10000,
             }),
         };
         let job_id = JobId { value: 999 };
@@ -558,6 +561,7 @@ mod test {
             job_queue_config: Arc::new(JobQueueConfig {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,
+                channel_capacity: 10000,
             }),
         };
         let job_id = JobId { value: 12345 };
@@ -640,6 +644,7 @@ mod test {
             job_queue_config: Arc::new(JobQueueConfig {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,
+                channel_capacity: 10000,
             }),
         };
         let job_id = JobId { value: 99999 };
@@ -718,6 +723,7 @@ mod test {
             job_queue_config: Arc::new(JobQueueConfig {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,
+                channel_capacity: 10000,
             }),
         };
         let job_id = JobId { value: 54321 };

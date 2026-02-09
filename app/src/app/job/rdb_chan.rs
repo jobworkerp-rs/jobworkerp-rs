@@ -736,7 +736,8 @@ impl JobApp for RdbChanJobAppImpl {
                 Ok(ResponseType::Direct) => {
                     let res = self
                         .job_result_pubsub_repository()
-                        .publish_result(id, data, true) // XXX to_listen = worker.broadcast_result (if possible)
+                        // Direct: always publish because the client blocks waiting for the result
+                        .publish_result(id, data, true)
                         .await;
                     // Start stream publishing as background task (non-blocking)
                     // This enables realtime streaming instead of batch delivery
@@ -778,7 +779,7 @@ impl JobApp for RdbChanJobAppImpl {
                     // the client to receive the stream response without waiting for stream completion.
                     let r = self
                         .job_result_pubsub_repository()
-                        .publish_result(id, data, true) // XXX to_listen = worker.broadcast_result (if possible)
+                        .publish_result(id, data, data.broadcast_results)
                         .await;
                     tracing::debug!(
                         "complete_job(other): result published, starting stream: {}",
@@ -1213,7 +1214,9 @@ where
                     // For timeout=0 (unlimited), uses expire_job_result_seconds from config
                     let job_ttl = self.calculate_job_ttl(job_data.timeout);
 
-                    self.set_cache(cache_key, job.clone(), job_ttl.as_ref())
+                    // Direct jobs exist only in cache (not in RDB), so wait for
+                    // stretto admission to complete before returning.
+                    self.set_and_wait_cache(cache_key, job.clone(), job_ttl.as_ref())
                         .await;
                     tracing::debug!(
                         "Cached Direct Response job {} with TTL {:?} for running job visibility",
@@ -1336,6 +1339,7 @@ mod tests {
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
+            channel_capacity: 10_000,
         });
         let worker_config = Arc::new(WorkerConfig {
             default_concurrency: 4,
@@ -1525,6 +1529,7 @@ mod tests {
                     store_success: false,
                     store_failure: false,
                     using: None,
+                    broadcast_results: false,
                 }),
                 ..Default::default()
             };
@@ -1647,6 +1652,7 @@ mod tests {
                     store_success: true,
                     store_failure: true,
                     using: None,
+                    broadcast_results: true,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1772,6 +1778,7 @@ mod tests {
                     store_success: true,
                     store_failure: false,
                     using: None,
+                    broadcast_results: false,
                 }),
                 metadata: (*metadata).clone(),
             };

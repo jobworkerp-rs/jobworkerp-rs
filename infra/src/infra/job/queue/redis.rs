@@ -543,6 +543,7 @@ mod test {
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
+            channel_capacity: 10000,
         });
         // clear queue before test
         redis_pool
@@ -607,6 +608,7 @@ mod test {
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
+            channel_capacity: 10000,
         });
         let job_result_pubsub_repository =
             RedisJobResultPubSubRepositoryImpl::new(redis_client, job_queue_config.clone());
@@ -659,6 +661,7 @@ mod test {
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
+            channel_capacity: 10000,
         });
         let job_result_pubsub_repository =
             RedisJobResultPubSubRepositoryImpl::new(redis_client, job_queue_config.clone());
