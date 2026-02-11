@@ -72,10 +72,18 @@ pub struct JobQueueConfig {
     /// max number of messages each in-memory channel can hold (use Standalone mode only)
     #[serde(alias = "channel_buffer_size", default = "default_channel_capacity")]
     pub channel_capacity: usize,
+    /// capacity for pubsub broadcast channels (result notification), kept small
+    /// since each channel typically sends only one message
+    #[serde(default = "default_pubsub_channel_capacity")]
+    pub pubsub_channel_capacity: usize,
 }
 
 fn default_channel_capacity() -> usize {
     10_000
+}
+
+fn default_pubsub_channel_capacity() -> usize {
+    128
 }
 
 impl Default for JobQueueConfig {
@@ -85,6 +93,7 @@ impl Default for JobQueueConfig {
             expire_job_result_seconds: 24 * 60 * 60, // 1day
             fetch_interval: 1000,                    // 1sec
             channel_capacity: 10_000,
+            pubsub_channel_capacity: 128,
         }
     }
 }
@@ -160,6 +169,7 @@ pub mod test {
         expire_job_result_seconds: 60,
         fetch_interval: 1000,
         channel_capacity: 10_000,
+        pubsub_channel_capacity: 128,
     });
 
     #[cfg(feature = "mysql")]

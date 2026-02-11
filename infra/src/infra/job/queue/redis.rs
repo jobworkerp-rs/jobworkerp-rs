@@ -544,6 +544,7 @@ mod test {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
             channel_capacity: 10000,
+            pubsub_channel_capacity: 128,
         });
         // clear queue before test
         redis_pool
@@ -609,6 +610,7 @@ mod test {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
             channel_capacity: 10000,
+            pubsub_channel_capacity: 128,
         });
         let job_result_pubsub_repository =
             RedisJobResultPubSubRepositoryImpl::new(redis_client, job_queue_config.clone());
@@ -662,6 +664,7 @@ mod test {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
             channel_capacity: 10000,
+            pubsub_channel_capacity: 128,
         });
         let job_result_pubsub_repository =
             RedisJobResultPubSubRepositoryImpl::new(redis_client, job_queue_config.clone());

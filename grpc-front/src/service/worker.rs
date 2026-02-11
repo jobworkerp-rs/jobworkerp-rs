@@ -477,6 +477,7 @@ mod tests {
         fetch_interval: 1000,
         expire_job_result_seconds: 1000,
         channel_capacity: 10_000,
+        pubsub_channel_capacity: 128,
     };
     static mut STORAGE_CONFIG: StorageConfig = StorageConfig {
         r#type: StorageType::Standalone,

@@ -1370,6 +1370,7 @@ pub mod tests {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
             channel_capacity: 10_000,
+            pubsub_channel_capacity: 128,
         });
         let worker_config = Arc::new(WorkerConfig {
             default_concurrency: 4,
