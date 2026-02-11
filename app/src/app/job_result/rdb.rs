@@ -11,10 +11,13 @@ use infra::infra::job_result::pubsub::JobResultSubscriber;
 use infra::infra::job_result::pubsub::chan::{
     ChanJobResultPubSubRepositoryImpl, UseChanJobResultPubSubRepository,
 };
-use infra::infra::job_result::rdb::{RdbJobResultRepository, UseRdbJobResultRepository};
+use infra::infra::job_result::rdb::{
+    RdbJobResultRepository, RdbJobResultRepositoryImpl, UseRdbJobResultRepository,
+};
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
+use jobworkerp_base::codec::UseProstCodec;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobId, JobResult, JobResultData, JobResultId, JobResultSortField, ResultOutputItem,
@@ -70,6 +73,13 @@ impl RdbJobResultAppImpl {
             ))
             .into());
         }
+        if !(wd.store_failure && wd.store_success) {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "Cannot listen result stream for worker without store_success and store_failure: {:?}",
+                &wd
+            ))
+            .into());
+        }
 
         // check job result (already finished or not)
         let res = self
@@ -93,6 +103,33 @@ impl RdbJobResultAppImpl {
             }
         }
     }
+    fn make_rdb_check(
+        rdb_repo: RdbJobResultRepositoryImpl,
+        job_id: JobId,
+    ) -> impl FnOnce()
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<u8>>> + Send>>
+    + Send {
+        move || {
+            Box::pin(async move {
+                match rdb_repo.find_latest_by_job_id(&job_id).await {
+                    Ok(Some(v))
+                        if v.data
+                            .as_ref()
+                            .is_some_and(|d| d.status != ResultStatus::ErrorAndRetry as i32) =>
+                    {
+                        let result = JobResult {
+                            id: v.id,
+                            data: v.data,
+                            ..Default::default()
+                        };
+                        Self::serialize_message(&result).ok()
+                    }
+                    _ => None,
+                }
+            })
+        }
+    }
+
     // same as hybrid implementation
     async fn subscribe_result_with_check(
         &self,
@@ -105,23 +142,25 @@ impl RdbJobResultAppImpl {
             // If we wait for result first (subscribe_result blocks until job completes),
             // the stream data may have already been published and missed.
             // Use tokio::join! to subscribe to both in parallel.
+            let rdb_check = Self::make_rdb_check(self.rdb_job_result_repository().clone(), *job_id);
             let result_future = self
                 .job_result_pubsub_repository()
-                .subscribe_result(job_id, timeout.copied());
+                .subscribe_result_with_fallback(job_id, timeout.copied(), rdb_check);
             let stream_future = self
                 .job_result_pubsub_repository()
                 .subscribe_result_stream(job_id, timeout.copied());
 
             let (result_res, stream_res) = tokio::join!(result_future, stream_future);
-            let res = result_res?;
-            let stream = stream_res.ok();
+            let (res, from_fallback) = result_res?;
+            let stream = if from_fallback { None } else { stream_res.ok() };
 
             Ok((res, stream))
         } else {
             // wait for result data (long polling with grpc (keep connection)))
-            let res = self
+            let rdb_check = Self::make_rdb_check(self.rdb_job_result_repository().clone(), *job_id);
+            let (res, _) = self
                 .job_result_pubsub_repository()
-                .subscribe_result(job_id, timeout.copied())
+                .subscribe_result_with_fallback(job_id, timeout.copied(), rdb_check)
                 .await?;
             Ok((res, None))
         }
