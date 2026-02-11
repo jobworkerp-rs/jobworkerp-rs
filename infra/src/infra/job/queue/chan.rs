@@ -58,7 +58,9 @@ pub trait ChanJobQueueRepository:
         {
             Ok(b) => {
                 if !b {
-                    // unexpected: not sent (should be error usually if dup key, but if just false, rollback)
+                    // send_to_chan returns false when all receivers have been dropped.
+                    // Roll back the shared_buffer entry to keep it consistent with
+                    // the actual channel state.
                     let mut shared_buffer = self.queue_list_buffer().lock().await;
                     if let Some(v) = shared_buffer.get_mut(&qn) {
                         v.retain(|x| x.id != job.id);
@@ -756,6 +758,7 @@ mod test {
             fetch_interval: 1000,
             channel_capacity: 10000,
             pubsub_channel_capacity: 128,
+            max_channels: 10_000,
         });
         let repo = ChanJobQueueRepositoryImpl {
             job_queue_config,
@@ -844,6 +847,7 @@ mod test {
             fetch_interval: 1000,
             channel_capacity: 10000,
             pubsub_channel_capacity: 128,
+            max_channels: 10_000,
         });
         let broadcast_chan_buf = BroadcastChan::new(100);
         let repo =

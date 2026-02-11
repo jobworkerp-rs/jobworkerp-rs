@@ -16,14 +16,6 @@ use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use memory_utils::chan::ChanBuffer;
 use memory_utils::chan::broadcast::BroadcastChan;
 
-/// Maximum number of named channels the ChanBuffer stretto cache can hold.
-/// This limits the number of concurrent broadcast/mpmc channels (e.g.,
-/// simultaneous DIRECT response jobs waiting for results). When this limit
-/// is reached, stretto may evict older channels, causing subscribers to
-/// miss results. Increase this value for high-concurrency DIRECT workloads.
-/// TODO: load from config (e.g., JOB_QUEUE_MAX_CHANNELS)
-const DEFAULT_MAX_CHANNELS: usize = 10_000;
-
 pub trait UseRdbChanRepositoryModule {
     fn rdb_repository_module(&self) -> &RdbChanRepositoryModule;
 }
@@ -97,7 +89,7 @@ impl RdbChanRepositoryModule {
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
                 ChanBuffer::new(
                     Some(job_queue_config.pubsub_channel_capacity),
-                    DEFAULT_MAX_CHANNELS,
+                    job_queue_config.max_channels,
                 ),
                 job_queue_config.clone(),
             ),
@@ -105,7 +97,7 @@ impl RdbChanRepositoryModule {
                 job_queue_config.clone(),
                 ChanBuffer::new(
                     Some(job_queue_config.channel_capacity),
-                    DEFAULT_MAX_CHANNELS,
+                    job_queue_config.max_channels,
                 ),
                 BroadcastChan::new(1000), // broadcast chan for cancellation. TODO from config
             ),
@@ -150,7 +142,7 @@ impl RdbChanRepositoryModule {
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
                 ChanBuffer::new(
                     Some(config_module.job_queue_config.pubsub_channel_capacity),
-                    DEFAULT_MAX_CHANNELS,
+                    config_module.job_queue_config.max_channels,
                 ),
                 config_module.job_queue_config.clone(),
             ),
@@ -158,7 +150,7 @@ impl RdbChanRepositoryModule {
                 config_module.job_queue_config.clone(),
                 ChanBuffer::new(
                     Some(config_module.job_queue_config.channel_capacity),
-                    DEFAULT_MAX_CHANNELS,
+                    config_module.job_queue_config.max_channels,
                 ),
                 BroadcastChan::new(1000), // broadcast chan for cancellation. TODO from config
             ),
