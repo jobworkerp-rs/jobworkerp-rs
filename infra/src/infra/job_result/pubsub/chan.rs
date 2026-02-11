@@ -322,6 +322,64 @@ impl ChanJobResultPubSubRepositoryImpl {
             job_queue_config,
         }
     }
+
+    /// Subscribe to job result with a fallback check executed after receiver registration.
+    /// Returns (JobResult, bool) where bool indicates if the result came from the fallback check.
+    pub async fn subscribe_result_with_fallback<F, Fut>(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        check: F,
+    ) -> Result<(JobResult, bool)>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Option<Vec<u8>>> + Send,
+    {
+        let from_fallback = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = from_fallback.clone();
+        let wrapped_check = move || async move {
+            let result = check().await;
+            if result.is_some() {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            // Wrap in ChanBufferItem format: (None, bytes)
+            result.map(|v| (None, v))
+        };
+
+        let cn = Self::job_result_pubsub_channel_name(job_id);
+        tracing::debug!(
+            "subscribe_result_with_fallback: job_id={}, ch={}",
+            &job_id.value,
+            &cn
+        );
+
+        let message = self
+            .broadcast_chan_buf()
+            .receive_from_chan_with_check(
+                cn.as_str(),
+                timeout.map(Duration::from_millis),
+                Some(&Duration::from_secs(
+                    self.job_queue_config().expire_job_result_seconds as u64,
+                )),
+                wrapped_check,
+            )
+            .await
+            .inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?;
+
+        if self.broadcast_chan_buf().receiver_count(cn.as_str()).await == 0 {
+            let _ = self
+                .broadcast_chan_buf()
+                .delete_chan(cn.as_str())
+                .await
+                .inspect_err(|e| tracing::warn!("failed to delete channel: {:?}", e));
+        }
+
+        let res = Self::deserialize_message::<JobResult>(&message)
+            .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
+        tracing::debug!("subscribe_result_received: result={:?}", &res.id);
+        let is_fallback = from_fallback.load(std::sync::atomic::Ordering::Relaxed);
+        Ok((res, is_fallback))
+    }
 }
 impl UseBroadcastChanBuffer for ChanJobResultPubSubRepositoryImpl {
     type Item = Vec<u8>;
