@@ -98,8 +98,10 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
         } else {
             Ok(false)
         };
-        // Worker ID channel: only send if subscribers exist (no channel creation for absent subscribers)
-        let res2 = self
+        // Worker ID channel: best-effort send for ListenByWorker subscribers.
+        // Errors here should not fail the primary result publish (job_id channel),
+        // as that would break DIRECT response delivery.
+        let res2 = match self
             .broadcast_chan_buf()
             .send_to_chan(
                 Self::job_result_by_worker_pubsub_channel_name(wid).as_str(),
@@ -109,8 +111,17 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 true,
             )
             .await
-            .inspect_err(|e| tracing::warn!("send_to_worker_chan error: {:?}", e))
-            .unwrap_or(false);
+        {
+            Ok(sent) => sent,
+            Err(e) => {
+                tracing::error!(
+                    "failed to send result to worker_id={} channel: {:?}",
+                    wid.value,
+                    e
+                );
+                false
+            }
+        };
         res.map(|r| r || res2)
     }
 
@@ -354,6 +365,7 @@ mod test {
                 channel_capacity: 10000,
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
             }),
         };
         let job_id = JobId { value: 11 };
@@ -404,6 +416,7 @@ mod test {
                 channel_capacity: 10000,
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
             }),
         };
         let worker_id = WorkerId { value: 1 };
@@ -463,6 +476,7 @@ mod test {
                 channel_capacity: 10000,
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
             }),
         };
         let job_id = JobId { value: 999 };
@@ -579,6 +593,7 @@ mod test {
                 channel_capacity: 10000,
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
             }),
         };
         let job_id = JobId { value: 12345 };
@@ -664,6 +679,7 @@ mod test {
                 channel_capacity: 10000,
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
             }),
         };
         let job_id = JobId { value: 99999 };
@@ -745,6 +761,7 @@ mod test {
                 channel_capacity: 10000,
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
             }),
         };
         let job_id = JobId { value: 54321 };

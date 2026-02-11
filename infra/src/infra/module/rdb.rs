@@ -99,7 +99,7 @@ impl RdbChanRepositoryModule {
                     Some(job_queue_config.channel_capacity),
                     job_queue_config.max_channels,
                 ),
-                BroadcastChan::new(1000), // broadcast chan for cancellation. TODO from config
+                BroadcastChan::new(job_queue_config.cancel_channel_capacity),
             ),
             function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
         }
@@ -152,7 +152,7 @@ impl RdbChanRepositoryModule {
                     Some(config_module.job_queue_config.channel_capacity),
                     config_module.job_queue_config.max_channels,
                 ),
-                BroadcastChan::new(1000), // broadcast chan for cancellation. TODO from config
+                BroadcastChan::new(config_module.job_queue_config.cancel_channel_capacity),
             ),
             function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
         }
