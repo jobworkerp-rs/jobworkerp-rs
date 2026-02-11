@@ -808,6 +808,160 @@ mod test {
         Ok(())
     }
 
+    /// Test subscribe_result_with_fallback: check returns Some (immediate result)
+    #[tokio::test]
+    async fn test_subscribe_result_with_fallback_check_returns_some() -> Result<()> {
+        let app = ChanJobResultPubSubRepositoryImpl {
+            broadcast_chan_buf: ChanBuffer::new(None, 10000),
+            job_queue_config: Arc::new(JobQueueConfig {
+                expire_job_result_seconds: 60,
+                fetch_interval: 1000,
+                channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
+            }),
+        };
+        let job_id = JobId { value: 20001 };
+        let job_result_id = JobResultId { value: 30001 };
+        let worker_id = WorkerId { value: 1 };
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(worker_id),
+            output: Some(ResultOutput {
+                items: b"fallback_hit".to_vec(),
+            }),
+            ..JobResultData::default()
+        };
+        let expected = JobResult {
+            id: Some(job_result_id),
+            data: Some(data.clone()),
+            metadata: HashMap::new(),
+        };
+        let serialized =
+            <ChanJobResultPubSubRepositoryImpl as UseProstCodec>::serialize_message(&expected)?;
+
+        let (result, from_fallback) = app
+            .subscribe_result_with_fallback(&job_id, Some(3000), || {
+                let s = serialized.clone();
+                async move { Some(s) }
+            })
+            .await?;
+
+        assert!(from_fallback);
+        assert_eq!(result.id, expected.id);
+        assert_eq!(result.data, expected.data);
+        Ok(())
+    }
+
+    /// Test subscribe_result_with_fallback: check returns None, receives via channel
+    #[tokio::test]
+    async fn test_subscribe_result_with_fallback_check_returns_none() -> Result<()> {
+        let app = ChanJobResultPubSubRepositoryImpl {
+            broadcast_chan_buf: ChanBuffer::new(None, 10000),
+            job_queue_config: Arc::new(JobQueueConfig {
+                expire_job_result_seconds: 60,
+                fetch_interval: 1000,
+                channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
+            }),
+        };
+        let job_id = JobId { value: 20002 };
+        let job_result_id = JobResultId { value: 30002 };
+        let worker_id = WorkerId { value: 1 };
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(worker_id),
+            output: Some(ResultOutput {
+                items: b"from_channel".to_vec(),
+            }),
+            ..JobResultData::default()
+        };
+        let expected = JobResult {
+            id: Some(job_result_id),
+            data: Some(data.clone()),
+            metadata: HashMap::new(),
+        };
+
+        let app_clone = app.clone();
+        let handle = tokio::spawn(async move {
+            app_clone
+                .subscribe_result_with_fallback(&job_id, Some(5000), || async { None })
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        app.publish_result(&job_result_id, &data, true).await?;
+
+        let (result, from_fallback) = handle.await.unwrap()?;
+        assert!(!from_fallback);
+        assert_eq!(result.id, expected.id);
+        assert_eq!(result.data, expected.data);
+        Ok(())
+    }
+
+    /// Test subscribe_result_with_fallback: publish during check execution (race condition reproduction)
+    #[tokio::test]
+    async fn test_subscribe_result_with_fallback_race_publish_during_check() -> Result<()> {
+        let app = ChanJobResultPubSubRepositoryImpl {
+            broadcast_chan_buf: ChanBuffer::new(None, 10000),
+            job_queue_config: Arc::new(JobQueueConfig {
+                expire_job_result_seconds: 60,
+                fetch_interval: 1000,
+                channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
+            }),
+        };
+        let job_id = JobId { value: 20003 };
+        let job_result_id = JobResultId { value: 30003 };
+        let worker_id = WorkerId { value: 1 };
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(worker_id),
+            output: Some(ResultOutput {
+                items: b"race_test".to_vec(),
+            }),
+            ..JobResultData::default()
+        };
+        let expected = JobResult {
+            id: Some(job_result_id),
+            data: Some(data.clone()),
+            metadata: HashMap::new(),
+        };
+
+        let check_started = Arc::new(tokio::sync::Notify::new());
+        let check_started_clone = check_started.clone();
+
+        let app_clone = app.clone();
+        let handle = tokio::spawn(async move {
+            app_clone
+                .subscribe_result_with_fallback(&job_id, Some(5000), || {
+                    let notify = check_started_clone;
+                    async move {
+                        notify.notify_one();
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        None
+                    }
+                })
+                .await
+        });
+
+        // Wait until check starts (receiver is already registered at this point)
+        check_started.notified().await;
+        // Publish while check is sleeping — the broadcast receiver should capture this
+        app.publish_result(&job_result_id, &data, true).await?;
+
+        let (result, from_fallback) = handle.await.unwrap()?;
+        assert!(!from_fallback);
+        assert_eq!(result.id, expected.id);
+        assert_eq!(result.data, expected.data);
+        Ok(())
+    }
+
     /// Control test: Verify that subscribe BEFORE publish works correctly
     #[tokio::test]
     async fn test_no_race_condition_subscribe_before_publish() -> Result<()> {
