@@ -54,20 +54,23 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
         // broadcast_results flag is now propagated via JobResultData and controls to_listen parameter
         let res = if to_listen {
             let channel_name = Self::job_result_pubsub_channel_name(jid);
-            let ttl = Some(Duration::from_secs(
-                self.job_queue_config().expire_job_result_seconds as u64,
-            ));
 
-            // Wait for subscriber if no receivers exist (race condition mitigation)
-            // BroadcastChan only delivers to subscribers who subscribed BEFORE publish
+            // Wait for a subscriber-created channel to appear (race condition mitigation).
+            // Subscribe side (DIRECT enqueue, listen_result, etc.) always creates the
+            // channel via receive_from_chan → get_or_create_chan BEFORE publish runs.
+            // For NO_RESULT with no external listener, the channel never appears and
+            // we skip sending — preventing stretto cache accumulation (memory leak).
             let max_wait_attempts = 10;
             let wait_interval = Duration::from_millis(10);
+            let mut has_channel = false;
             for attempt in 0..max_wait_attempts {
-                let receiver_count = self
+                if self
                     .broadcast_chan_buf()
-                    .receiver_count(channel_name.as_str())
-                    .await;
-                if receiver_count > 0 {
+                    .get_chan_if_exists(channel_name.as_str())
+                    .await
+                    .is_some()
+                {
+                    has_channel = true;
                     break;
                 }
                 if attempt < max_wait_attempts - 1 {
@@ -75,15 +78,23 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 }
             }
 
-            self.broadcast_chan_buf()
-                .send_to_chan(
-                    channel_name.as_str(),
-                    result_data.clone(),
-                    None,
-                    ttl.as_ref(),
-                    false,
-                )
-                .await
+            if has_channel {
+                self.broadcast_chan_buf()
+                    .send_to_chan(
+                        channel_name.as_str(),
+                        result_data.clone(),
+                        None,
+                        None,
+                        true, // never create channel from publish side
+                    )
+                    .await
+            } else {
+                tracing::debug!(
+                    "publish_result: no subscriber channel for job_id={}, skipping broadcast",
+                    &jid.value
+                );
+                Ok(false)
+            }
         } else {
             Ok(false)
         };
@@ -123,10 +134,8 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 cn.as_str(),
                 res_stream,
                 None,
-                Some(&Duration::from_secs(
-                    self.job_queue_config().expire_job_result_seconds as u64,
-                )),
-                false,
+                None,
+                true, // never create channel from publish side
             )
             .await
             .inspect_err(|e| tracing::error!("send_stream_to_chan_err:{:?}", e))?;
