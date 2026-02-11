@@ -343,6 +343,7 @@ mod test {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,
                 channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
             }),
         };
         let job_id = JobId { value: 11 };
@@ -391,6 +392,7 @@ mod test {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,
                 channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
             }),
         };
         let worker_id = WorkerId { value: 1 };
@@ -448,6 +450,7 @@ mod test {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,
                 channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
             }),
         };
         let job_id = JobId { value: 999 };
@@ -562,6 +565,7 @@ mod test {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,
                 channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
             }),
         };
         let job_id = JobId { value: 12345 };
@@ -645,6 +649,7 @@ mod test {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,
                 channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
             }),
         };
         let job_id = JobId { value: 99999 };
@@ -724,6 +729,7 @@ mod test {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,
                 channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
             }),
         };
         let job_id = JobId { value: 54321 };

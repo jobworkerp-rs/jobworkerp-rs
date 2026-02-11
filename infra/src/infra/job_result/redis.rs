@@ -248,6 +248,7 @@ async fn redis_test() -> Result<()> {
         expire_job_result_seconds: 60,
         fetch_interval: 1000,
         channel_capacity: 10000,
+        pubsub_channel_capacity: 128,
     });
 
     let repo = RedisJobResultRepositoryImpl {

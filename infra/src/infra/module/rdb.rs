@@ -96,7 +96,7 @@ impl RdbChanRepositoryModule {
             rdb_job_processing_status_index_repository,
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
                 ChanBuffer::new(
-                    Some(job_queue_config.channel_capacity),
+                    Some(job_queue_config.pubsub_channel_capacity),
                     DEFAULT_MAX_CHANNELS,
                 ),
                 job_queue_config.clone(),
@@ -149,7 +149,7 @@ impl RdbChanRepositoryModule {
             rdb_job_processing_status_index_repository,
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
                 ChanBuffer::new(
-                    Some(config_module.job_queue_config.channel_capacity),
+                    Some(config_module.job_queue_config.pubsub_channel_capacity),
                     DEFAULT_MAX_CHANNELS,
                 ),
                 config_module.job_queue_config.clone(),

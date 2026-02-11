@@ -755,6 +755,7 @@ mod test {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
             channel_capacity: 10000,
+            pubsub_channel_capacity: 128,
         });
         let repo = ChanJobQueueRepositoryImpl {
             job_queue_config,
@@ -842,6 +843,7 @@ mod test {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
             channel_capacity: 10000,
+            pubsub_channel_capacity: 128,
         });
         let broadcast_chan_buf = BroadcastChan::new(100);
         let repo =
