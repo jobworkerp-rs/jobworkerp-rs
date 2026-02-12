@@ -76,6 +76,15 @@ pub struct JobQueueConfig {
     /// since each channel typically sends only one message
     #[serde(default = "default_pubsub_channel_capacity")]
     pub pubsub_channel_capacity: usize,
+    /// max number of named channels the stretto cache can hold (Standalone mode only).
+    /// Limits concurrent broadcast/mpmc channels (e.g., simultaneous DIRECT response
+    /// jobs waiting for results). When exceeded, stretto may evict older channels.
+    #[serde(default = "default_max_channels")]
+    pub max_channels: usize,
+    /// capacity for the cancellation broadcast channel (Standalone mode only).
+    /// Must be large enough to buffer cancel signals until all workers consume them.
+    #[serde(default = "default_cancel_channel_capacity")]
+    pub cancel_channel_capacity: usize,
 }
 
 fn default_channel_capacity() -> usize {
@@ -86,6 +95,14 @@ fn default_pubsub_channel_capacity() -> usize {
     128
 }
 
+fn default_max_channels() -> usize {
+    10_000
+}
+
+fn default_cancel_channel_capacity() -> usize {
+    1_000
+}
+
 impl Default for JobQueueConfig {
     fn default() -> Self {
         tracing::info!("Use default JobQueueConfig.");
@@ -94,6 +111,8 @@ impl Default for JobQueueConfig {
             fetch_interval: 1000,                    // 1sec
             channel_capacity: 10_000,
             pubsub_channel_capacity: 128,
+            max_channels: 10_000,
+            cancel_channel_capacity: 1_000,
         }
     }
 }
@@ -170,6 +189,8 @@ pub mod test {
         fetch_interval: 1000,
         channel_capacity: 10_000,
         pubsub_channel_capacity: 128,
+        max_channels: 10_000,
+        cancel_channel_capacity: 1_000,
     });
 
     #[cfg(feature = "mysql")]

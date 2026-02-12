@@ -478,6 +478,8 @@ mod tests {
         expire_job_result_seconds: 1000,
         channel_capacity: 10_000,
         pubsub_channel_capacity: 128,
+        max_channels: 10_000,
+        cancel_channel_capacity: 1_000,
     };
     static mut STORAGE_CONFIG: StorageConfig = StorageConfig {
         r#type: StorageType::Standalone,
