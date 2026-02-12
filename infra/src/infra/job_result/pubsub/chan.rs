@@ -60,6 +60,12 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             // channel via receive_from_chan → get_or_create_chan BEFORE publish runs.
             // For NO_RESULT with no external listener, the channel never appears and
             // we skip sending — preventing stretto cache accumulation (memory leak).
+            //
+            // NOTE: This polling is the sole race-condition defense for callers using
+            // `subscribe_result` without fallback (e.g. hybrid impl). The RDB impl uses
+            // `subscribe_result_with_fallback` which registers the receiver first, making
+            // this polling redundant for that path — but both defenses are kept for
+            // robustness across all subscriber implementations.
             let max_wait_attempts = 10;
             let wait_interval = Duration::from_millis(10);
             let mut has_channel = false;
@@ -340,7 +346,7 @@ impl ChanJobResultPubSubRepositoryImpl {
         let wrapped_check = move || async move {
             let result = check().await;
             if result.is_some() {
-                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                flag.store(true, std::sync::atomic::Ordering::Release);
             }
             // Wrap in ChanBufferItem format: (None, bytes)
             result.map(|v| (None, v))
@@ -377,7 +383,7 @@ impl ChanJobResultPubSubRepositoryImpl {
         let res = Self::deserialize_message::<JobResult>(&message)
             .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
         tracing::debug!("subscribe_result_received: result={:?}", &res.id);
-        let is_fallback = from_fallback.load(std::sync::atomic::Ordering::Relaxed);
+        let is_fallback = from_fallback.load(std::sync::atomic::Ordering::Acquire);
         Ok((res, is_fallback))
     }
 }
