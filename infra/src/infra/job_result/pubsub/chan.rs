@@ -60,6 +60,12 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             // channel via receive_from_chan → get_or_create_chan BEFORE publish runs.
             // For NO_RESULT with no external listener, the channel never appears and
             // we skip sending — preventing stretto cache accumulation (memory leak).
+            //
+            // NOTE: This polling is the sole race-condition defense for callers using
+            // `subscribe_result` without fallback (e.g. hybrid impl). The RDB impl uses
+            // `subscribe_result_with_fallback` which registers the receiver first, making
+            // this polling redundant for that path — but both defenses are kept for
+            // robustness across all subscriber implementations.
             let max_wait_attempts = 10;
             let wait_interval = Duration::from_millis(10);
             let mut has_channel = false;
@@ -98,8 +104,10 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
         } else {
             Ok(false)
         };
-        // Worker ID channel: only send if subscribers exist (no channel creation for absent subscribers)
-        let res2 = self
+        // Worker ID channel: best-effort send for ListenByWorker subscribers.
+        // Errors here should not fail the primary result publish (job_id channel),
+        // as that would break DIRECT response delivery.
+        let res2 = match self
             .broadcast_chan_buf()
             .send_to_chan(
                 Self::job_result_by_worker_pubsub_channel_name(wid).as_str(),
@@ -109,8 +117,17 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 true,
             )
             .await
-            .inspect_err(|e| tracing::warn!("send_to_worker_chan error: {:?}", e))
-            .unwrap_or(false);
+        {
+            Ok(sent) => sent,
+            Err(e) => {
+                tracing::error!(
+                    "failed to send result to worker_id={} channel: {:?}",
+                    wid.value,
+                    e
+                );
+                false
+            }
+        };
         res.map(|r| r || res2)
     }
 
@@ -311,6 +328,64 @@ impl ChanJobResultPubSubRepositoryImpl {
             job_queue_config,
         }
     }
+
+    /// Subscribe to job result with a fallback check executed after receiver registration.
+    /// Returns (JobResult, bool) where bool indicates if the result came from the fallback check.
+    pub async fn subscribe_result_with_fallback<F, Fut>(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        check: F,
+    ) -> Result<(JobResult, bool)>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Option<Vec<u8>>> + Send,
+    {
+        let from_fallback = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = from_fallback.clone();
+        let wrapped_check = move || async move {
+            let result = check().await;
+            if result.is_some() {
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            }
+            // Wrap in ChanBufferItem format: (None, bytes)
+            result.map(|v| (None, v))
+        };
+
+        let cn = Self::job_result_pubsub_channel_name(job_id);
+        tracing::debug!(
+            "subscribe_result_with_fallback: job_id={}, ch={}",
+            &job_id.value,
+            &cn
+        );
+
+        let message = self
+            .broadcast_chan_buf()
+            .receive_from_chan_with_check(
+                cn.as_str(),
+                timeout.map(Duration::from_millis),
+                Some(&Duration::from_secs(
+                    self.job_queue_config().expire_job_result_seconds as u64,
+                )),
+                wrapped_check,
+            )
+            .await
+            .inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?;
+
+        if self.broadcast_chan_buf().receiver_count(cn.as_str()).await == 0 {
+            let _ = self
+                .broadcast_chan_buf()
+                .delete_chan(cn.as_str())
+                .await
+                .inspect_err(|e| tracing::warn!("failed to delete channel: {:?}", e));
+        }
+
+        let res = Self::deserialize_message::<JobResult>(&message)
+            .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
+        tracing::debug!("subscribe_result_received: result={:?}", &res.id);
+        let is_fallback = from_fallback.load(std::sync::atomic::Ordering::Acquire);
+        Ok((res, is_fallback))
+    }
 }
 impl UseBroadcastChanBuffer for ChanJobResultPubSubRepositoryImpl {
     type Item = Vec<u8>;
@@ -353,6 +428,8 @@ mod test {
                 fetch_interval: 1000,
                 channel_capacity: 10000,
                 pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
             }),
         };
         let job_id = JobId { value: 11 };
@@ -402,6 +479,8 @@ mod test {
                 fetch_interval: 1000,
                 channel_capacity: 10000,
                 pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
             }),
         };
         let worker_id = WorkerId { value: 1 };
@@ -460,6 +539,8 @@ mod test {
                 fetch_interval: 1000,
                 channel_capacity: 10000,
                 pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
             }),
         };
         let job_id = JobId { value: 999 };
@@ -575,6 +656,8 @@ mod test {
                 fetch_interval: 1000,
                 channel_capacity: 10000,
                 pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
             }),
         };
         let job_id = JobId { value: 12345 };
@@ -659,6 +742,8 @@ mod test {
                 fetch_interval: 1000,
                 channel_capacity: 10000,
                 pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
             }),
         };
         let job_id = JobId { value: 99999 };
@@ -729,6 +814,160 @@ mod test {
         Ok(())
     }
 
+    /// Test subscribe_result_with_fallback: check returns Some (immediate result)
+    #[tokio::test]
+    async fn test_subscribe_result_with_fallback_check_returns_some() -> Result<()> {
+        let app = ChanJobResultPubSubRepositoryImpl {
+            broadcast_chan_buf: ChanBuffer::new(None, 10000),
+            job_queue_config: Arc::new(JobQueueConfig {
+                expire_job_result_seconds: 60,
+                fetch_interval: 1000,
+                channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
+            }),
+        };
+        let job_id = JobId { value: 20001 };
+        let job_result_id = JobResultId { value: 30001 };
+        let worker_id = WorkerId { value: 1 };
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(worker_id),
+            output: Some(ResultOutput {
+                items: b"fallback_hit".to_vec(),
+            }),
+            ..JobResultData::default()
+        };
+        let expected = JobResult {
+            id: Some(job_result_id),
+            data: Some(data.clone()),
+            metadata: HashMap::new(),
+        };
+        let serialized =
+            <ChanJobResultPubSubRepositoryImpl as UseProstCodec>::serialize_message(&expected)?;
+
+        let (result, from_fallback) = app
+            .subscribe_result_with_fallback(&job_id, Some(3000), || {
+                let s = serialized.clone();
+                async move { Some(s) }
+            })
+            .await?;
+
+        assert!(from_fallback);
+        assert_eq!(result.id, expected.id);
+        assert_eq!(result.data, expected.data);
+        Ok(())
+    }
+
+    /// Test subscribe_result_with_fallback: check returns None, receives via channel
+    #[tokio::test]
+    async fn test_subscribe_result_with_fallback_check_returns_none() -> Result<()> {
+        let app = ChanJobResultPubSubRepositoryImpl {
+            broadcast_chan_buf: ChanBuffer::new(None, 10000),
+            job_queue_config: Arc::new(JobQueueConfig {
+                expire_job_result_seconds: 60,
+                fetch_interval: 1000,
+                channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
+            }),
+        };
+        let job_id = JobId { value: 20002 };
+        let job_result_id = JobResultId { value: 30002 };
+        let worker_id = WorkerId { value: 1 };
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(worker_id),
+            output: Some(ResultOutput {
+                items: b"from_channel".to_vec(),
+            }),
+            ..JobResultData::default()
+        };
+        let expected = JobResult {
+            id: Some(job_result_id),
+            data: Some(data.clone()),
+            metadata: HashMap::new(),
+        };
+
+        let app_clone = app.clone();
+        let handle = tokio::spawn(async move {
+            app_clone
+                .subscribe_result_with_fallback(&job_id, Some(5000), || async { None })
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        app.publish_result(&job_result_id, &data, true).await?;
+
+        let (result, from_fallback) = handle.await.unwrap()?;
+        assert!(!from_fallback);
+        assert_eq!(result.id, expected.id);
+        assert_eq!(result.data, expected.data);
+        Ok(())
+    }
+
+    /// Test subscribe_result_with_fallback: publish during check execution (race condition reproduction)
+    #[tokio::test]
+    async fn test_subscribe_result_with_fallback_race_publish_during_check() -> Result<()> {
+        let app = ChanJobResultPubSubRepositoryImpl {
+            broadcast_chan_buf: ChanBuffer::new(None, 10000),
+            job_queue_config: Arc::new(JobQueueConfig {
+                expire_job_result_seconds: 60,
+                fetch_interval: 1000,
+                channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
+            }),
+        };
+        let job_id = JobId { value: 20003 };
+        let job_result_id = JobResultId { value: 30003 };
+        let worker_id = WorkerId { value: 1 };
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(worker_id),
+            output: Some(ResultOutput {
+                items: b"race_test".to_vec(),
+            }),
+            ..JobResultData::default()
+        };
+        let expected = JobResult {
+            id: Some(job_result_id),
+            data: Some(data.clone()),
+            metadata: HashMap::new(),
+        };
+
+        let check_started = Arc::new(tokio::sync::Notify::new());
+        let check_started_clone = check_started.clone();
+
+        let app_clone = app.clone();
+        let handle = tokio::spawn(async move {
+            app_clone
+                .subscribe_result_with_fallback(&job_id, Some(5000), || {
+                    let notify = check_started_clone;
+                    async move {
+                        notify.notify_one();
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        None
+                    }
+                })
+                .await
+        });
+
+        // Wait until check starts (receiver is already registered at this point)
+        check_started.notified().await;
+        // Publish while check is sleeping — the broadcast receiver should capture this
+        app.publish_result(&job_result_id, &data, true).await?;
+
+        let (result, from_fallback) = handle.await.unwrap()?;
+        assert!(!from_fallback);
+        assert_eq!(result.id, expected.id);
+        assert_eq!(result.data, expected.data);
+        Ok(())
+    }
+
     /// Control test: Verify that subscribe BEFORE publish works correctly
     #[tokio::test]
     async fn test_no_race_condition_subscribe_before_publish() -> Result<()> {
@@ -739,6 +978,8 @@ mod test {
                 fetch_interval: 1000,
                 channel_capacity: 10000,
                 pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
             }),
         };
         let job_id = JobId { value: 54321 };

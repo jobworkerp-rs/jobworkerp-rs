@@ -232,6 +232,8 @@ async fn redis_test() -> Result<()> {
         fetch_interval: 1000,
         channel_capacity: 10000,
         pubsub_channel_capacity: 128,
+        max_channels: 10_000,
+        cancel_channel_capacity: 1_000,
     });
 
     let repo = RedisJobRepositoryImpl {
@@ -312,6 +314,8 @@ async fn redis_individual_ttl_test() -> Result<()> {
         fetch_interval: 1000,
         channel_capacity: 10000,
         pubsub_channel_capacity: 128,
+        max_channels: 10_000,
+        cancel_channel_capacity: 1_000,
     });
 
     let repo = RedisJobRepositoryImpl {
