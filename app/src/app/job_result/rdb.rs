@@ -293,16 +293,10 @@ impl JobResultApp for RdbJobResultAppImpl {
                 .listen_result_stream(job_id, worker_id, worker_name, timeout)
                 .await;
         }
+        // Non-streaming path: only require broadcast_results (aligned with hybrid.rs)
         if !wd.broadcast_results {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "Cannot listen result not broadcast worker: {:?}",
-                &wd
-            ))
-            .into());
-        }
-        if !(wd.store_failure && wd.store_success) {
-            return Err(JobWorkerError::InvalidParameter(format!(
-                "Cannot listen result not stored worker: {:?}",
                 &wd
             ))
             .into());
