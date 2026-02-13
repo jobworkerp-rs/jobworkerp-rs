@@ -50,10 +50,6 @@ impl ChanWorkerPubSubRepositoryImpl {
     }
 }
 
-pub trait UseChanWorkerPubSubRepository {
-    fn chan_worker_pubsub_repository(&self) -> &ChanWorkerPubSubRepositoryImpl;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
