@@ -78,7 +78,12 @@ impl WorkerApp for RdbWorkerAppImpl {
         tx.commit().await.map_err(JobWorkerError::DBError)?;
         // clear name cache (and list cache)
         self.clear_cache_by_name(&worker.name).await;
-        // not broadcast to runner (single instance for rdb only)
+        // notify worker change for runner pool release in standalone mode
+        let _ = self
+            .repositories
+            .chan_worker_pubsub_repository
+            .publish_worker_changed(&wid, worker)
+            .inspect_err(|e| tracing::warn!("failed to publish worker changed: {:?}", e));
         Ok(wid)
     }
 
@@ -126,6 +131,12 @@ impl WorkerApp for RdbWorkerAppImpl {
             // clear memory cache (XXX without limit offset cache)
             self.clear_cache(id).await;
             self.clear_cache_by_name(&w.name).await;
+            // notify worker change for runner pool release in standalone mode
+            let _ = self
+                .repositories
+                .chan_worker_pubsub_repository
+                .publish_worker_changed(id, w)
+                .inspect_err(|e| tracing::warn!("failed to publish worker changed: {:?}", e));
             Ok(true)
         } else {
             // empty data, only clear id cache
@@ -142,8 +153,13 @@ impl WorkerApp for RdbWorkerAppImpl {
         {
             self.rdb_worker_repository().delete(id).await?;
             self.clear_cache(id).await;
-            self.clear_cache(id).await;
             self.clear_cache_by_name(&wd.name).await;
+            // notify worker deletion for runner pool release in standalone mode
+            let _ = self
+                .repositories
+                .chan_worker_pubsub_repository
+                .publish_worker_deleted(id)
+                .inspect_err(|e| tracing::warn!("failed to publish worker deleted: {:?}", e));
             Ok(true)
         } else {
             Ok(false)
@@ -173,6 +189,12 @@ impl WorkerApp for RdbWorkerAppImpl {
     async fn delete_all(&self) -> Result<bool> {
         let res = self.rdb_worker_repository().delete_all().await?;
         self.clear_cache_all().await;
+        // notify all workers deleted for runner pool release in standalone mode
+        let _ = self
+            .repositories
+            .chan_worker_pubsub_repository
+            .publish_worker_all_deleted()
+            .inspect_err(|e| tracing::warn!("failed to publish worker all deleted: {:?}", e));
         Ok(res)
     }
     async fn find_data_by_name(&self, name: &str) -> Result<Option<WorkerData>>

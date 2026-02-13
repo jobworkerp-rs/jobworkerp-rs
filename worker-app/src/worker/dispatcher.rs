@@ -293,6 +293,7 @@ impl JobDispatcherFactory {
                         rdb_chan_repositories
                             .rdb_job_processing_status_index_repository
                             .clone(),
+                        rdb_chan_repositories.chan_worker_pubsub_repository.clone(),
                         app_module,
                         runner_factory,
                         runner_pool_map,
