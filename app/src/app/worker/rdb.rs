@@ -78,12 +78,14 @@ impl WorkerApp for RdbWorkerAppImpl {
         tx.commit().await.map_err(JobWorkerError::DBError)?;
         // clear name cache (and list cache)
         self.clear_cache_by_name(&worker.name).await;
-        // notify worker change for runner pool release in standalone mode
+        // Notify worker change for consistency with hybrid mode (HybridWorkerAppImpl).
+        // No runner pool exists yet at creation time, but subscribers also use this
+        // for cache invalidation and future extensibility.
         let _ = self
             .repositories
             .chan_worker_pubsub_repository
             .publish_worker_changed(&wid, worker)
-            .inspect_err(|e| tracing::warn!("failed to publish worker changed: {:?}", e));
+            .inspect_err(|e| tracing::error!("failed to publish worker changed: {:?}", e));
         Ok(wid)
     }
 
@@ -136,7 +138,7 @@ impl WorkerApp for RdbWorkerAppImpl {
                 .repositories
                 .chan_worker_pubsub_repository
                 .publish_worker_changed(id, w)
-                .inspect_err(|e| tracing::warn!("failed to publish worker changed: {:?}", e));
+                .inspect_err(|e| tracing::error!("failed to publish worker changed: {:?}", e));
             Ok(true)
         } else {
             // empty data, only clear id cache
@@ -159,7 +161,7 @@ impl WorkerApp for RdbWorkerAppImpl {
                 .repositories
                 .chan_worker_pubsub_repository
                 .publish_worker_deleted(id)
-                .inspect_err(|e| tracing::warn!("failed to publish worker deleted: {:?}", e));
+                .inspect_err(|e| tracing::error!("failed to publish worker deleted: {:?}", e));
             Ok(true)
         } else {
             Ok(false)
@@ -194,7 +196,7 @@ impl WorkerApp for RdbWorkerAppImpl {
             .repositories
             .chan_worker_pubsub_repository
             .publish_worker_all_deleted()
-            .inspect_err(|e| tracing::warn!("failed to publish worker all deleted: {:?}", e));
+            .inspect_err(|e| tracing::error!("failed to publish worker all deleted: {:?}", e));
         Ok(res)
     }
     async fn find_data_by_name(&self, name: &str) -> Result<Option<WorkerData>>
