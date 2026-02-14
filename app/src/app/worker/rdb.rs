@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use command_utils::text::TextUtil;
 use dashmap::DashMap;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
+use infra::infra::worker::pubsub::UseChanWorkerPubSubRepository;
 use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
@@ -78,7 +79,13 @@ impl WorkerApp for RdbWorkerAppImpl {
         tx.commit().await.map_err(JobWorkerError::DBError)?;
         // clear name cache (and list cache)
         self.clear_cache_by_name(&worker.name).await;
-        // not broadcast to runner (single instance for rdb only)
+        // Notify worker change for consistency with hybrid mode (HybridWorkerAppImpl).
+        // No runner pool exists yet at creation time, but subscribers also use this
+        // for cache invalidation and future extensibility.
+        let _ = self
+            .chan_worker_pubsub_repository()
+            .publish_worker_changed(&wid, worker)
+            .inspect_err(|e| tracing::error!("failed to publish worker changed: {:?}", e));
         Ok(wid)
     }
 
@@ -126,6 +133,11 @@ impl WorkerApp for RdbWorkerAppImpl {
             // clear memory cache (XXX without limit offset cache)
             self.clear_cache(id).await;
             self.clear_cache_by_name(&w.name).await;
+            // notify worker change for runner pool release in standalone mode
+            let _ = self
+                .chan_worker_pubsub_repository()
+                .publish_worker_changed(id, w)
+                .inspect_err(|e| tracing::error!("failed to publish worker changed: {:?}", e));
             Ok(true)
         } else {
             // empty data, only clear id cache
@@ -135,22 +147,30 @@ impl WorkerApp for RdbWorkerAppImpl {
     }
 
     async fn delete(&self, id: &WorkerId) -> Result<bool> {
-        if let Some(Worker {
+        let res = if let Some(Worker {
             id: _,
             data: Some(wd),
         }) = self.find(id).await?
         {
             self.rdb_worker_repository().delete(id).await?;
             self.clear_cache(id).await;
-            self.clear_cache(id).await;
             self.clear_cache_by_name(&wd.name).await;
             Ok(true)
         } else {
             Ok(false)
-        }
+        };
+        // notify worker deletion for runner pool release in standalone mode
+        // (sent regardless of worker existence; worker side checks whether action is needed)
+        let _ = self
+            .chan_worker_pubsub_repository()
+            .publish_worker_deleted(id)
+            .inspect_err(|e| tracing::error!("failed to publish worker deleted: {:?}", e));
+        res
     }
 
-    // Delete a temp worker from memory cache only (not from RDB)
+    // Delete a temp worker from memory cache only (not from RDB).
+    // No pubsub notification needed: temp workers have use_static=false,
+    // so no runner pool is created for them (see RunnerFactoryWithPoolMap::add_and_get_runner).
     async fn delete_temp(&self, id: &WorkerId) -> Result<bool> {
         // Remove from TTL-free temp_worker_cache
         let removed = self.temp_worker_cache.remove(&id.value);
@@ -173,6 +193,11 @@ impl WorkerApp for RdbWorkerAppImpl {
     async fn delete_all(&self) -> Result<bool> {
         let res = self.rdb_worker_repository().delete_all().await?;
         self.clear_cache_all().await;
+        // notify all workers deleted for runner pool release in standalone mode
+        let _ = self
+            .chan_worker_pubsub_repository()
+            .publish_worker_all_deleted()
+            .inspect_err(|e| tracing::error!("failed to publish worker all deleted: {:?}", e));
         Ok(res)
     }
     async fn find_data_by_name(&self, name: &str) -> Result<Option<WorkerData>>

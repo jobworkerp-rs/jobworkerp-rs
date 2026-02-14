@@ -9,6 +9,7 @@ use crate::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository;
 use crate::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::rdb::{RdbJobResultRepositoryImpl, UseRdbJobResultRepository};
 use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
+use crate::infra::worker::pubsub::{ChanWorkerPubSubRepositoryImpl, UseChanWorkerPubSubRepository};
 use crate::infra::worker::rdb::{RdbWorkerRepositoryImpl, UseRdbWorkerRepository};
 use crate::infra::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
 use jobworkerp_base::job_status_config::JobStatusConfig;
@@ -34,6 +35,11 @@ impl<T: UseRdbChanRepositoryModule> UseRdbJobResultRepository for T {
         &self.rdb_repository_module().job_result_repository
     }
 }
+impl<T: UseRdbChanRepositoryModule> UseChanWorkerPubSubRepository for T {
+    fn chan_worker_pubsub_repository(&self) -> &ChanWorkerPubSubRepositoryImpl {
+        &self.rdb_repository_module().chan_worker_pubsub_repository
+    }
+}
 impl UseJobQueueCancellationRepository for RdbChanRepositoryModule {
     fn job_queue_cancellation_repository(&self) -> Arc<dyn JobQueueCancellationRepository> {
         Arc::new(self.chan_job_queue_repository.clone())
@@ -50,6 +56,7 @@ pub struct RdbChanRepositoryModule {
     pub rdb_job_processing_status_index_repository:
         Option<Arc<RdbJobProcessingStatusIndexRepository>>,
     pub chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl,
+    pub chan_worker_pubsub_repository: ChanWorkerPubSubRepositoryImpl,
     pub chan_job_queue_repository: ChanJobQueueRepositoryImpl,
     pub function_set_repository: Arc<FunctionSetRepositoryImpl>,
 }
@@ -92,6 +99,9 @@ impl RdbChanRepositoryModule {
                     job_queue_config.max_channels,
                 ),
                 job_queue_config.clone(),
+            ),
+            chan_worker_pubsub_repository: ChanWorkerPubSubRepositoryImpl::new(
+                job_queue_config.pubsub_channel_capacity,
             ),
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 job_queue_config.clone(),
@@ -146,6 +156,9 @@ impl RdbChanRepositoryModule {
                 ),
                 config_module.job_queue_config.clone(),
             ),
+            chan_worker_pubsub_repository: ChanWorkerPubSubRepositoryImpl::new(
+                config_module.job_queue_config.pubsub_channel_capacity,
+            ),
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
                 ChanBuffer::new(
@@ -173,6 +186,7 @@ pub mod test {
     use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
     use crate::infra::module::test::TEST_PLUGIN_DIR;
     use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
+    use crate::infra::worker::pubsub::ChanWorkerPubSubRepositoryImpl;
     use crate::infra::{
         JobQueueConfig, job::status::memory::MemoryJobProcessingStatusRepository,
         job::status::rdb::RdbJobProcessingStatusIndexRepository,
@@ -253,6 +267,7 @@ pub mod test {
                 ChanBuffer::new(Some(10_000), 10000),
                 Arc::new(JobQueueConfig::default()),
             ),
+            chan_worker_pubsub_repository: ChanWorkerPubSubRepositoryImpl::new(128),
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 Arc::new(JobQueueConfig::default()),
                 ChanBuffer::new(Some(10_000), 10000),
