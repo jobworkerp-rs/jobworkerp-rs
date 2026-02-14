@@ -117,10 +117,10 @@ pub trait ChanJobDispatcher:
                         Ok(payload) => {
                             match ProstMessageCodec::deserialize_message::<Worker>(&payload) {
                                 Ok(worker) => {
-                                    tracing::info!("subscribe_worker_changed_chan: worker changed: {:?}", worker);
+                                    tracing::debug!("subscribe_worker_changed_chan: worker changed: id={:?}", worker.id);
                                     if let Some(wid) = worker.id.as_ref() {
                                         self.runner_pool_map().delete_runner(wid).await;
-                                    } else if worker.data.is_none() {
+                                    } else if worker.id.is_none() && worker.data.is_none() {
                                         // id=None, data=None means delete all
                                         self.runner_pool_map().clear().await;
                                     }
