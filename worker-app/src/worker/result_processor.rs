@@ -139,7 +139,8 @@ impl ResultProcessorImpl {
                 );
             };
 
-            // Delete temp worker if use_static is false (after all processing is done)
+            // Delete temp worker if use_static is false (after all processing is done).
+            // No runner pool release needed: non-static workers never have pooled runners.
             if !worker.use_static
                 && let Some(wid) = dat.worker_id.as_ref()
             {

@@ -168,7 +168,9 @@ impl WorkerApp for RdbWorkerAppImpl {
         }
     }
 
-    // Delete a temp worker from memory cache only (not from RDB)
+    // Delete a temp worker from memory cache only (not from RDB).
+    // No pubsub notification needed: temp workers have use_static=false,
+    // so no runner pool is created for them (see RunnerFactoryWithPoolMap::add_and_get_runner).
     async fn delete_temp(&self, id: &WorkerId) -> Result<bool> {
         // Remove from TTL-free temp_worker_cache
         let removed = self.temp_worker_cache.remove(&id.value);
