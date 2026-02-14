@@ -9,7 +9,7 @@ use crate::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository;
 use crate::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::rdb::{RdbJobResultRepositoryImpl, UseRdbJobResultRepository};
 use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
-use crate::infra::worker::pubsub::ChanWorkerPubSubRepositoryImpl;
+use crate::infra::worker::pubsub::{ChanWorkerPubSubRepositoryImpl, UseChanWorkerPubSubRepository};
 use crate::infra::worker::rdb::{RdbWorkerRepositoryImpl, UseRdbWorkerRepository};
 use crate::infra::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
 use jobworkerp_base::job_status_config::JobStatusConfig;
@@ -33,6 +33,11 @@ impl<T: UseRdbChanRepositoryModule> UseRdbChanJobRepository for T {
 impl<T: UseRdbChanRepositoryModule> UseRdbJobResultRepository for T {
     fn rdb_job_result_repository(&self) -> &RdbJobResultRepositoryImpl {
         &self.rdb_repository_module().job_result_repository
+    }
+}
+impl<T: UseRdbChanRepositoryModule> UseChanWorkerPubSubRepository for T {
+    fn chan_worker_pubsub_repository(&self) -> &ChanWorkerPubSubRepositoryImpl {
+        &self.rdb_repository_module().chan_worker_pubsub_repository
     }
 }
 impl UseJobQueueCancellationRepository for RdbChanRepositoryModule {

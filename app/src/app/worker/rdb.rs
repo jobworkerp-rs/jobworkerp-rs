@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use command_utils::text::TextUtil;
 use dashmap::DashMap;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
+use infra::infra::worker::pubsub::UseChanWorkerPubSubRepository;
 use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
@@ -82,8 +83,7 @@ impl WorkerApp for RdbWorkerAppImpl {
         // No runner pool exists yet at creation time, but subscribers also use this
         // for cache invalidation and future extensibility.
         let _ = self
-            .repositories
-            .chan_worker_pubsub_repository
+            .chan_worker_pubsub_repository()
             .publish_worker_changed(&wid, worker)
             .inspect_err(|e| tracing::error!("failed to publish worker changed: {:?}", e));
         Ok(wid)
@@ -135,8 +135,7 @@ impl WorkerApp for RdbWorkerAppImpl {
             self.clear_cache_by_name(&w.name).await;
             // notify worker change for runner pool release in standalone mode
             let _ = self
-                .repositories
-                .chan_worker_pubsub_repository
+                .chan_worker_pubsub_repository()
                 .publish_worker_changed(id, w)
                 .inspect_err(|e| tracing::error!("failed to publish worker changed: {:?}", e));
             Ok(true)
@@ -158,8 +157,7 @@ impl WorkerApp for RdbWorkerAppImpl {
             self.clear_cache_by_name(&wd.name).await;
             // notify worker deletion for runner pool release in standalone mode
             let _ = self
-                .repositories
-                .chan_worker_pubsub_repository
+                .chan_worker_pubsub_repository()
                 .publish_worker_deleted(id)
                 .inspect_err(|e| tracing::error!("failed to publish worker deleted: {:?}", e));
             Ok(true)
@@ -195,8 +193,7 @@ impl WorkerApp for RdbWorkerAppImpl {
         self.clear_cache_all().await;
         // notify all workers deleted for runner pool release in standalone mode
         let _ = self
-            .repositories
-            .chan_worker_pubsub_repository
+            .chan_worker_pubsub_repository()
             .publish_worker_all_deleted()
             .inspect_err(|e| tracing::error!("failed to publish worker all deleted: {:?}", e));
         Ok(res)
