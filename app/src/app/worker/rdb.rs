@@ -147,7 +147,7 @@ impl WorkerApp for RdbWorkerAppImpl {
     }
 
     async fn delete(&self, id: &WorkerId) -> Result<bool> {
-        if let Some(Worker {
+        let res = if let Some(Worker {
             id: _,
             data: Some(wd),
         }) = self.find(id).await?
@@ -155,15 +155,17 @@ impl WorkerApp for RdbWorkerAppImpl {
             self.rdb_worker_repository().delete(id).await?;
             self.clear_cache(id).await;
             self.clear_cache_by_name(&wd.name).await;
-            // notify worker deletion for runner pool release in standalone mode
-            let _ = self
-                .chan_worker_pubsub_repository()
-                .publish_worker_deleted(id)
-                .inspect_err(|e| tracing::error!("failed to publish worker deleted: {:?}", e));
             Ok(true)
         } else {
             Ok(false)
-        }
+        };
+        // notify worker deletion for runner pool release in standalone mode
+        // (sent regardless of worker existence; worker side checks whether action is needed)
+        let _ = self
+            .chan_worker_pubsub_repository()
+            .publish_worker_deleted(id)
+            .inspect_err(|e| tracing::error!("failed to publish worker deleted: {:?}", e));
+        res
     }
 
     // Delete a temp worker from memory cache only (not from RDB).
