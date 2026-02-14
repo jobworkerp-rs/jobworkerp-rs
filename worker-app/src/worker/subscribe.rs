@@ -45,11 +45,11 @@ pub trait UseSubscribeWorker:
                             .inspect_err(|e| tracing::error!("get_payload:{:?}", e))?;
                         let worker = Self::deserialize_message::<Worker>(&payload)
                             .inspect_err(|e| tracing::error!("deserialize_worker:{:?}", e))?;
-                        tracing::info!("subscribe_worker_changed: worker changed: {:?}", worker);
+                        tracing::debug!("subscribe_worker_changed: worker changed: id={:?}", worker.id);
                         if let Some(wid) = worker.id.as_ref() {
                             // TODO not delete for changing trivial condition?
                             self.runner_pool_map().delete_runner(wid).await;
-                        } else if worker.id.as_ref().is_none() && worker.data.is_none() { // delete all
+                        } else if worker.id.is_none() && worker.data.is_none() { // delete all
                             self.runner_pool_map().clear().await;
                         }
                         let _ = self.worker_app().clear_cache_by(worker.id.as_ref(), worker.data.as_ref().map(|d| &d.name)).await

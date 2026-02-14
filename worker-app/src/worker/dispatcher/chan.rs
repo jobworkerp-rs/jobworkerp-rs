@@ -21,7 +21,9 @@ use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job::status::memory::MemoryJobProcessingStatusRepository;
 use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
+use infra::infra::worker::pubsub::ChanWorkerPubSubRepositoryImpl;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
+use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobProcessingStatus, JobResult, Priority, QueueType, ResponseType, Worker,
@@ -49,16 +51,18 @@ pub trait ChanJobDispatcher:
     + infra::infra::job::status::rdb::UseRdbJobProcessingStatusIndexRepository
     + JobDispatcher
 {
+    fn chan_worker_pubsub_repository(&self) -> &ChanWorkerPubSubRepositoryImpl;
+
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
-        // TODO
-        // // create a tokio thread to subscribe update worker event and update worker map
-        // tokio::spawn(
-        //     self.subscribe_worker_changed()
-        //         .map_err(|e| tracing::error!("subscribe worker changed error: {:?}", e)),
-        // );
+        // subscribe worker change events for runner pool release in standalone mode
+        tokio::spawn(async move {
+            if let Err(e) = self.subscribe_worker_changed_chan().await {
+                tracing::error!("subscribe worker changed (chan) error: {:?}", e);
+            }
+        });
         // for shutdown notification (spmc broadcast)
         let (send, recv) = tokio::sync::watch::channel(false);
         // send msg on shutdown signal (SIGINT/SIGTERM) for shutdown notification in parallel
@@ -83,6 +87,77 @@ pub trait ChanJobDispatcher:
         lock.unlock();
         tracing::debug!("channel job dispatcher started");
         Ok(())
+    }
+
+    /// Subscribe to worker change events via BroadcastChan and release runner pools accordingly.
+    /// Mirrors the Redis-based `subscribe_worker_changed()` in `UseSubscribeWorker`.
+    async fn subscribe_worker_changed_chan(&'static self) -> Result<bool>
+    where
+        Self: Send + Sync + 'static,
+    {
+        let mut receiver = self.chan_worker_pubsub_repository().subscribe().await;
+
+        let (send, mut recv) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            command_utils::util::shutdown::shutdown_signal().await;
+            tracing::debug!("got shutdown signal (worker pubsub chan)");
+            if let Err(e) = send.send(true) {
+                tracing::debug!("failed to send shutdown notification: {:?}", e);
+            }
+        });
+
+        loop {
+            tokio::select! {
+                _ = recv.changed() => {
+                    tracing::debug!("got shutdown signal in subscribe_worker_changed_chan");
+                    break;
+                },
+                val = receiver.recv() => {
+                    match val {
+                        Ok(payload) => {
+                            match ProstMessageCodec::deserialize_message::<Worker>(&payload) {
+                                Ok(worker) => {
+                                    tracing::debug!("subscribe_worker_changed_chan: worker changed: id={:?}", worker.id);
+                                    if let Some(wid) = worker.id.as_ref() {
+                                        self.runner_pool_map().delete_runner(wid).await;
+                                    } else if worker.id.is_none() && worker.data.is_none() {
+                                        // id=None, data=None means delete all
+                                        self.runner_pool_map().clear().await;
+                                    }
+                                    let _ = self.worker_app()
+                                        .clear_cache_by(worker.id.as_ref(), worker.data.as_ref().map(|d| &d.name))
+                                        .await
+                                        .inspect_err(|e| tracing::error!("cache clear error: {:?}", e));
+                                }
+                                Err(e) => {
+                                    tracing::error!("deserialize worker in chan subscribe: {:?}", e);
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            // Lost messages may include worker deletions, so clear all pools
+                            // to prevent runner pool leaks from missed notifications.
+                            // Pools are lazily re-created by get_or_create_static_runner().
+                            tracing::warn!("worker pubsub chan lagged by {} messages, clearing all runner pools", n);
+                            self.runner_pool_map().clear().await;
+                            let _ = self.worker_app()
+                                .clear_cache_by(None, None)
+                                .await
+                                .inspect_err(|e| tracing::error!("cache clear error on lagged: {:?}", e));
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::info!("worker pubsub chan closed");
+                            break;
+                        }
+                    }
+                }
+            }
+            if *recv.borrow() {
+                break;
+            }
+        }
+        tracing::info!("subscribe_worker_changed_chan end");
+        Ok(true)
     }
 
     fn pop_and_execute(
@@ -380,6 +455,7 @@ pub struct ChanJobDispatcherImpl {
     job_processing_status_repository: Arc<MemoryJobProcessingStatusRepository>,
     rdb_job_processing_status_index_repository:
         Option<Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>>,
+    chan_worker_pubsub_repository: ChanWorkerPubSubRepositoryImpl,
     app_module: Arc<AppModule>,
     runner_factory: Arc<RunnerFactory>,
     runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
@@ -396,6 +472,7 @@ impl ChanJobDispatcherImpl {
         rdb_job_processing_status_index_repository: Option<
             Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>,
         >,
+        chan_worker_pubsub_repository: ChanWorkerPubSubRepositoryImpl,
         app_module: Arc<AppModule>,
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
@@ -407,6 +484,7 @@ impl ChanJobDispatcherImpl {
             rdb_job_repository,
             job_processing_status_repository,
             rdb_job_processing_status_index_repository,
+            chan_worker_pubsub_repository,
             app_module,
             runner_factory,
             runner_pool_map,
@@ -435,7 +513,6 @@ impl UseWorkerApp for ChanJobDispatcherImpl {
     }
 }
 
-// impl UseSubscribeWorker for ChanJobDispatcherImpl {}
 impl RunnerResultHandler for ChanJobDispatcherImpl {}
 impl UseRunnerPoolMap for ChanJobDispatcherImpl {
     fn runner_pool_map(&self) -> &RunnerFactoryWithPoolMap {
@@ -467,7 +544,11 @@ impl UseRunnerApp for ChanJobDispatcherImpl {
         self.app_module.runner_app.clone()
     }
 }
-impl ChanJobDispatcher for ChanJobDispatcherImpl {}
+impl ChanJobDispatcher for ChanJobDispatcherImpl {
+    fn chan_worker_pubsub_repository(&self) -> &ChanWorkerPubSubRepositoryImpl {
+        &self.chan_worker_pubsub_repository
+    }
+}
 impl UseRunnerFactory for ChanJobDispatcherImpl {
     fn runner_factory(&self) -> &RunnerFactory {
         &self.runner_factory
