@@ -272,7 +272,9 @@ impl WorkerApp for HybridWorkerAppImpl {
         res
     }
 
-    // Delete a temp worker from Redis and clear in-memory cache (not from RDB)
+    // Delete a temp worker from Redis and clear in-memory cache (not from RDB).
+    // No pubsub notification needed: temp workers have use_static=false,
+    // so no runner pool is created for them (see RunnerFactoryWithPoolMap::add_and_get_runner).
     async fn delete_temp(&self, id: &WorkerId) -> Result<bool> {
         // Find the worker first to get its name for cache clearing
         let worker_name = self.find(id).await?.and_then(|w| w.data.map(|d| d.name));

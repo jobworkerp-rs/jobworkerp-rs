@@ -13,7 +13,9 @@ use std::sync::Arc;
 use tokio::time::{Duration, sleep};
 use worker_app::worker::runner::map::RunnerFactoryWithPoolMap;
 
-/// Spawn a subscriber loop that mirrors `subscribe_worker_changed_chan` logic.
+/// Spawn a subscriber loop that mirrors `subscribe_worker_changed_chan` logic
+/// (in worker/dispatcher/chan.rs). Keep in sync if the subscriber logic changes.
+/// We duplicate the logic here because `subscribe_worker_changed_chan` requires `&'static self`.
 /// Returns a JoinHandle that can be aborted after test.
 async fn spawn_pool_release_subscriber(
     pubsub: &ChanWorkerPubSubRepositoryImpl,
@@ -28,7 +30,7 @@ async fn spawn_pool_release_subscriber(
                         Ok(worker) => {
                             if let Some(wid) = worker.id.as_ref() {
                                 pool_map.delete_runner(wid).await;
-                            } else if worker.data.is_none() {
+                            } else if worker.id.is_none() && worker.data.is_none() {
                                 // id=None, data=None means delete all
                                 pool_map.clear().await;
                             }
