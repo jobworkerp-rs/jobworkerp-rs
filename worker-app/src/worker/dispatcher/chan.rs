@@ -140,6 +140,10 @@ pub trait ChanJobDispatcher:
                             // Pools are lazily re-created by get_or_create_static_runner().
                             tracing::warn!("worker pubsub chan lagged by {} messages, clearing all runner pools", n);
                             self.runner_pool_map().clear().await;
+                            let _ = self.worker_app()
+                                .clear_cache_by(None, None)
+                                .await
+                                .inspect_err(|e| tracing::error!("cache clear error on lagged: {:?}", e));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             tracing::info!("worker pubsub chan closed");
