@@ -340,6 +340,7 @@ impl OllamaChatService {
 
         let tools = Arc::new(self.function_list(&args).await?);
         let messages = Arc::new(Mutex::new(messages));
+        let think = args.options.as_ref().map(|o| o.extract_reasoning_content());
 
         let res = Self::request_chat_internal_with_tracing(
             Arc::new(self.clone()),
@@ -351,6 +352,7 @@ impl OllamaChatService {
             metadata.clone(),
             args.json_schema,
             is_auto_calling,
+            think,
         )
         .await?;
 
@@ -530,9 +532,13 @@ impl OllamaChatService {
         metadata: Arc<HashMap<String, String>>,
         json_schema: Option<String>,
         is_auto_calling: bool,
+        think: Option<bool>,
     ) -> Result<ChatInternalResult> {
         let mut req = ChatMessageRequest::new(model.clone(), messages.lock().await.clone());
         req = req.options(options.clone());
+        if let Some(t) = think {
+            req = req.think(t);
+        }
 
         let mut schema_applied = false;
         if let Some(ref schema_str) = json_schema {
@@ -699,6 +705,7 @@ impl OllamaChatService {
                 metadata,
                 None, // json_schema is not used in recursive calls to avoid conflicts
                 is_auto_calling,
+                think,
             ))
             .await
         }
@@ -1006,6 +1013,9 @@ impl OllamaChatService {
 
         let mut req = ChatMessageRequest::new(model_name, messages);
         req = req.options(options);
+        if let Some(t) = args.options.as_ref().map(|o| o.extract_reasoning_content()) {
+            req = req.think(t);
+        }
 
         if let Some(system_prompt) = self.system_prompt.clone() {
             req = req.template(system_prompt);

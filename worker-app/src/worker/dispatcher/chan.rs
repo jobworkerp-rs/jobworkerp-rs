@@ -97,18 +97,18 @@ pub trait ChanJobDispatcher:
     {
         let mut receiver = self.chan_worker_pubsub_repository().subscribe().await;
 
-        let (send, mut recv) = tokio::sync::watch::channel(false);
+        let (shutdown_send, mut shutdown_recv) = tokio::sync::watch::channel(false);
         tokio::spawn(async move {
             command_utils::util::shutdown::shutdown_signal().await;
             tracing::debug!("got shutdown signal (worker pubsub chan)");
-            if let Err(e) = send.send(true) {
+            if let Err(e) = shutdown_send.send(true) {
                 tracing::debug!("failed to send shutdown notification: {:?}", e);
             }
         });
 
         loop {
             tokio::select! {
-                _ = recv.changed() => {
+                _ = shutdown_recv.changed() => {
                     tracing::debug!("got shutdown signal in subscribe_worker_changed_chan");
                     break;
                 },
@@ -152,7 +152,7 @@ pub trait ChanJobDispatcher:
                     }
                 }
             }
-            if *recv.borrow() {
+            if *shutdown_recv.borrow() {
                 break;
             }
         }
