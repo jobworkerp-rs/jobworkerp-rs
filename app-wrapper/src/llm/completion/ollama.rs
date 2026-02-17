@@ -120,6 +120,9 @@ impl OllamaService {
         };
         let mut request = GenerationRequest::new(model, args.prompt);
         request = request.options(options);
+        if let Some(t) = args.options.as_ref().map(|o| o.extract_reasoning_content()) {
+            request = request.think(t);
+        }
 
         request = Self::apply_json_schema_format(request, args.json_schema.as_deref());
 
@@ -232,8 +235,12 @@ impl OllamaService {
         _metadata: HashMap<String, String>,
     ) -> Result<LlmCompletionResult> {
         let options = Self::create_completion_options(&args);
+        let think = args.options.as_ref().map(|o| o.extract_reasoning_content());
         let mut request = GenerationRequest::new(self.model.clone(), args.prompt);
         request = request.options(options.clone());
+        if let Some(t) = think {
+            request = request.think(t);
+        }
 
         request = Self::apply_json_schema_format(request, args.json_schema.as_deref());
 
