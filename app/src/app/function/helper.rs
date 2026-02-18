@@ -288,9 +288,10 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                         })?;
                     tracing::debug!("job args (using: {:?}): {:#?}", using, &arguments);
                     let job_args = if let Some(desc) = args_descriptor {
-                        ProtobufDescriptor::json_value_to_message(desc, &arguments, true).map_err(
-                            |e| anyhow::anyhow!("Failed to parse job_args schema: {:#?}", e),
-                        )?
+                        ProtobufDescriptor::json_value_to_message(desc, &arguments, true, true)
+                            .map_err(|e| {
+                                anyhow::anyhow!("Failed to parse job_args schema: {:#?}", e)
+                            })?
                     } else {
                         serde_json::to_string(&arguments)
                             .map_err(|e| anyhow::anyhow!("Failed to serialize job_args: {:#?}", e))?
