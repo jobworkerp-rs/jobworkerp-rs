@@ -302,7 +302,7 @@ impl GrpcUnaryRunner {
             input_descriptor
         );
 
-        let bytes = ProtobufDescriptor::json_to_message(input_descriptor, json_str)?;
+        let bytes = ProtobufDescriptor::json_to_message(input_descriptor, json_str, true)?;
 
         tracing::debug!(
             "Converted JSON to protobuf message for {}: {} bytes",

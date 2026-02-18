@@ -311,7 +311,9 @@ pub trait UseJobExecutor:
                 let runner_settings = if let Some(ope_desc) = runner_settings_descriptor {
                     tracing::debug!("runner settings schema exists: {:#?}", &runner_settings);
                     runner_settings
-                        .map(|j| ProtobufDescriptor::json_value_to_message(ope_desc, &j, true))
+                        .map(|j| {
+                            ProtobufDescriptor::json_value_to_message(ope_desc, &j, true, true)
+                        })
                         .unwrap_or(Ok(vec![]))
                         .map_err(|e| {
                             anyhow::anyhow!("Failed to parse runner_settings schema: {:#?}", e)
@@ -612,7 +614,7 @@ pub trait UseJobExecutor:
             tracing::debug!("job args (using: {:?}): {:#?}", using, &job_args);
             if let Some(desc) = args_descriptor {
                 Ok(
-                    ProtobufDescriptor::json_value_to_message(desc, job_args, true).map_err(
+                    ProtobufDescriptor::json_value_to_message(desc, job_args, true, true).map_err(
                         |e| anyhow::anyhow!("Failed to parse job_args schema: {:#?}", e),
                     )?,
                 )
