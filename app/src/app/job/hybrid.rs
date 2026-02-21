@@ -7,6 +7,7 @@ use super::{JobApp, JobCacheKeys, RedisJobAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
+use futures::StreamExt;
 use futures::stream::BoxStream;
 use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::queue::redis::RedisJobQueueRepository;
@@ -26,7 +27,8 @@ use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, Priority,
-    QueueType, ResponseType, ResultOutputItem, StreamingType, Worker, WorkerData, WorkerId,
+    QueueType, ResponseType, ResultOutputItem, ResultStatus, StreamingType, Trailer, Worker,
+    WorkerData, WorkerId, result_output_item,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -876,6 +878,23 @@ impl JobApp for HybridJobAppImpl {
                                 );
                             }
                         });
+                    } else if data.streaming_type != StreamingType::None as i32
+                        && data.status != ResultStatus::Success as i32
+                    {
+                        // Error before stream creation: publish End marker to unblock any streaming subscribers
+                        let end_item = ResultOutputItem {
+                            item: Some(result_output_item::Item::End(Trailer {
+                                metadata: Default::default(),
+                            })),
+                        };
+                        let end_stream = futures::stream::once(async move { end_item }).boxed();
+                        let pubsub_repo = self.job_result_pubsub_repository().clone();
+                        let job_id_for_stream = *jid;
+                        tokio::spawn(async move {
+                            let _ = pubsub_repo
+                                .publish_result_stream_data(job_id_for_stream, end_stream)
+                                .await;
+                        });
                     }
 
                     // send result immediately (don't wait for stream to complete)
@@ -933,6 +952,23 @@ impl JobApp for HybridJobAppImpl {
                                     job_id_for_stream.value
                                 );
                             }
+                        });
+                    } else if data.streaming_type != StreamingType::None as i32
+                        && data.status != ResultStatus::Success as i32
+                    {
+                        // Error before stream creation: publish End marker to unblock any streaming subscribers
+                        let end_item = ResultOutputItem {
+                            item: Some(result_output_item::Item::End(Trailer {
+                                metadata: Default::default(),
+                            })),
+                        };
+                        let end_stream = futures::stream::once(async move { end_item }).boxed();
+                        let pubsub_repo = self.job_result_pubsub_repository().clone();
+                        let job_id_for_stream = *jid;
+                        tokio::spawn(async move {
+                            let _ = pubsub_repo
+                                .publish_result_stream_data(job_id_for_stream, end_stream)
+                                .await;
                         });
                     }
                     r

@@ -152,7 +152,16 @@ impl RdbJobResultAppImpl {
 
             let (result_res, stream_res) = tokio::join!(result_future, stream_future);
             let (res, from_fallback) = result_res?;
-            let stream = if from_fallback { None } else { stream_res.ok() };
+            let should_disable_stream = from_fallback
+                || res
+                    .data
+                    .as_ref()
+                    .is_some_and(|d| d.status != ResultStatus::Success as i32);
+            let stream = if should_disable_stream {
+                None
+            } else {
+                stream_res.ok()
+            };
 
             Ok((res, stream))
         } else {
