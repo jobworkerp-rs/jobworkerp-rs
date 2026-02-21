@@ -20,7 +20,9 @@ pub mod rdb_chan_indexing_integration_test;
 use super::JobBuilder;
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::StreamExt;
 use futures::stream::BoxStream;
+use infra::infra::job_result::pubsub::JobResultPublisher;
 use infra::infra::{
     UseJobQueueConfig,
     job::{
@@ -32,7 +34,8 @@ use infra::infra::{
 use proto::calculate_direct_response_timeout_ms;
 use proto::jobworkerp::data::{
     Job, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
-    ResponseType, ResultOutputItem, StreamingType, WorkerData, WorkerId,
+    ResponseType, ResultOutputItem, ResultStatus, StreamingType, Trailer, WorkerData, WorkerId,
+    result_output_item,
 };
 use std::{collections::HashMap, fmt, sync::Arc};
 
@@ -202,6 +205,40 @@ pub trait JobApp: fmt::Debug + Send + Sync {
 
 pub trait UseJobApp {
     fn job_app(&self) -> &Arc<dyn JobApp + 'static>;
+}
+
+/// Spawn a background task to publish an End marker stream when a streaming job
+/// failed before creating a stream (stream=None, status!=Success).
+/// This unblocks subscribers waiting on `subscribe_result_stream`.
+pub(crate) fn spawn_end_marker_if_needed<P: JobResultPublisher + Clone + Send + 'static>(
+    data: &JobResultData,
+    jid: &JobId,
+    pubsub_repo: &P,
+) {
+    if data.streaming_type != StreamingType::None as i32
+        && data.status != ResultStatus::Success as i32
+    {
+        let end_item = ResultOutputItem {
+            item: Some(result_output_item::Item::End(Trailer {
+                metadata: Default::default(),
+            })),
+        };
+        let end_stream = futures::stream::once(async move { end_item }).boxed();
+        let pubsub_repo = pubsub_repo.clone();
+        let job_id_for_stream = *jid;
+        tokio::spawn(async move {
+            if let Err(e) = pubsub_repo
+                .publish_result_stream_data(job_id_for_stream, end_stream)
+                .await
+            {
+                tracing::warn!(
+                    "complete_job: end marker publish error for job {}: {:?}",
+                    job_id_for_stream.value,
+                    e
+                );
+            }
+        });
+    }
 }
 
 #[async_trait]
