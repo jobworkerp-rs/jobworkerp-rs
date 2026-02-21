@@ -848,6 +848,21 @@ impl JobApp for HybridJobAppImpl {
         if let Some(jid) = data.job_id.as_ref() {
             let res = match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
+                    // send result immediately (don't wait for stream to complete)
+                    let res = self
+                        .redis_job_repository()
+                        .enqueue_result_direct(id, data)
+                        .await;
+                    // publish for listening result client
+                    // (XXX can receive response by listen_after, listen_by_worker for DIRECT response)
+                    let _ = self
+                        .job_result_pubsub_repository()
+                        // Direct: always publish because the client blocks waiting for the result
+                        .publish_result(id, data, true)
+                        .await
+                        .inspect_err(|e| {
+                            tracing::warn!("complete_job: pubsub publish error: {:?}", e)
+                        });
                     // Start stream publishing as background task (non-blocking).
                     // PR #126 ensures client subscribes before job execution via tokio::join!,
                     // so stream data won't be missed even if published after enqueue_result_direct.
@@ -876,23 +891,13 @@ impl JobApp for HybridJobAppImpl {
                                 );
                             }
                         });
+                    } else {
+                        super::spawn_end_marker_if_needed(
+                            data,
+                            jid,
+                            self.job_result_pubsub_repository(),
+                        );
                     }
-
-                    // send result immediately (don't wait for stream to complete)
-                    let res = self
-                        .redis_job_repository()
-                        .enqueue_result_direct(id, data)
-                        .await;
-                    // publish for listening result client
-                    // (XXX can receive response by listen_after, listen_by_worker for DIRECT response)
-                    let _ = self
-                        .job_result_pubsub_repository()
-                        // Direct: always publish because the client blocks waiting for the result
-                        .publish_result(id, data, true)
-                        .await
-                        .inspect_err(|e| {
-                            tracing::warn!("complete_job: pubsub publish error: {:?}", e)
-                        });
                     res
                 }
                 Ok(ResponseType::NoResult) => {
@@ -934,6 +939,12 @@ impl JobApp for HybridJobAppImpl {
                                 );
                             }
                         });
+                    } else {
+                        super::spawn_end_marker_if_needed(
+                            data,
+                            jid,
+                            self.job_result_pubsub_repository(),
+                        );
                     }
                     r
                 }

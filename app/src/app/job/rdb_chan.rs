@@ -27,7 +27,7 @@ use memory_utils::cache::stretto::{self as memory, MemoryCacheConfig, UseMemoryC
 use memory_utils::lock::RwLockWithKey;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
-    ResponseType, ResultOutputItem, StreamingType, Worker, WorkerData, WorkerId,
+    ResponseType, ResultOutputItem, ResultStatus, StreamingType, Worker, WorkerData, WorkerId,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -765,6 +765,12 @@ impl JobApp for RdbChanJobAppImpl {
                                 );
                             }
                         });
+                    } else {
+                        super::spawn_end_marker_if_needed(
+                            data,
+                            jid,
+                            self.job_result_pubsub_repository(),
+                        );
                     }
                     tracing::debug!(
                         "Deleted memory cache for Direct Response job: {}",
@@ -811,6 +817,12 @@ impl JobApp for RdbChanJobAppImpl {
                                 );
                             }
                         });
+                    } else {
+                        super::spawn_end_marker_if_needed(
+                            data,
+                            jid,
+                            self.job_result_pubsub_repository(),
+                        );
                     }
                     r
                 }
@@ -1274,7 +1286,24 @@ where
             let (res, stream) = futures::join!(fut, fut2);
             tracing::debug!("wait_job_for_direct_response: job={:?}", job_id);
             match (res, stream) {
-                (Ok(r), Ok(st)) => Ok((r, Some(st))),
+                (Ok(r), Ok(st)) => {
+                    // When status is not Success, stream was not created (error before stream generation).
+                    // Stream data will never arrive, so discard to prevent hang.
+                    // When status IS Success, stream contains intermediate results + error data + End marker.
+                    let should_disable_stream = r
+                        .data
+                        .as_ref()
+                        .is_some_and(|d| d.status != ResultStatus::Success as i32);
+                    if should_disable_stream {
+                        tracing::debug!(
+                            "wait_job_for_direct_response: disabling stream for error result, job_id={:?}",
+                            job_id,
+                        );
+                        Ok((r, None))
+                    } else {
+                        Ok((r, Some(st)))
+                    }
+                }
                 (Err(e), _) => Err(e),
                 (_, Err(e)) => Err(e),
             }
@@ -2025,4 +2054,213 @@ mod tests {
     //         std::env::remove_var("JOB_STATUS_RETENTION_HOURS");
     //     })
     // }
+
+    /// Verify that when a streaming job completes with error status and no stream (Layer 2),
+    /// complete_job publishes an End marker so subscribe_result_stream does not hang forever.
+    #[test]
+    fn test_streaming_error_complete_job_publishes_end_marker() -> Result<()> {
+        use infra::infra::job_result::pubsub::JobResultPublisher;
+        TEST_RUNTIME.block_on(async {
+            let (_app, subscriber) = create_test_app(true).await?;
+            let job_id = JobId { value: 99001 };
+
+            // Subscribe to both result and stream before publishing (simulates client behavior)
+            let jid = job_id;
+            let sub = subscriber.clone();
+            let jh = tokio::task::spawn(async move {
+                let (result, stream) = futures::join!(
+                    sub.subscribe_result(&jid, Some(5000)),
+                    sub.subscribe_result_stream(&jid, Some(5000)),
+                );
+                let result = result.unwrap();
+                assert_ne!(
+                    result.data.as_ref().unwrap().status,
+                    ResultStatus::Success as i32,
+                    "Status should not be Success for error case"
+                );
+                // Stream should have been unblocked by End marker
+                assert!(stream.is_ok(), "Stream subscription should succeed");
+            });
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // Simulate: publish result first, then End marker via spawn_end_marker_if_needed
+            let result_data = JobResultData {
+                job_id: Some(job_id),
+                worker_id: Some(WorkerId { value: 1 }),
+                worker_name: "test".to_string(),
+                args: vec![],
+                uniq_key: None,
+                status: ResultStatus::OtherError as i32,
+                output: None,
+                retried: 0,
+                max_retry: 0,
+                priority: 0,
+                timeout: 0,
+                streaming_type: StreamingType::Response as i32,
+                enqueue_time: datetime::now_millis(),
+                run_after_time: 0,
+                start_time: datetime::now_millis(),
+                end_time: datetime::now_millis(),
+                response_type: ResponseType::Direct as i32,
+                store_success: false,
+                store_failure: false,
+                using: None,
+                broadcast_results: false,
+            };
+            let rid = JobResultId { value: 99001 };
+            subscriber.publish_result(&rid, &result_data, true).await?;
+            // Layer 2: publish End marker for streaming error
+            super::super::spawn_end_marker_if_needed(&result_data, &job_id, &subscriber);
+            // Allow spawned task to complete
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            let join_result = tokio::time::timeout(Duration::from_secs(5), jh).await;
+            assert!(
+                join_result.is_ok(),
+                "subscribe_result_stream should not hang on error status"
+            );
+            join_result.unwrap()?;
+
+            Ok(())
+        })
+    }
+
+    /// Verify that _wait_job_for_direct_response (Layer 1) discards stream
+    /// when result status is not Success, preventing client hang.
+    #[test]
+    fn test_wait_job_direct_response_discards_stream_on_error() -> Result<()> {
+        use infra::infra::job_result::pubsub::JobResultPublisher;
+        TEST_RUNTIME.block_on(async {
+            let (app, subscriber) = create_test_app(true).await?;
+            let job_id = JobId { value: 99002 };
+
+            let app_clone = app.clone();
+            let jid = job_id;
+            // Start _wait_job_for_direct_response with streaming=true
+            let jh = tokio::task::spawn(async move {
+                let result = app_clone
+                    ._wait_job_for_direct_response(&jid, Some(5000), true)
+                    .await;
+                assert!(result.is_ok(), "Should succeed even with error status");
+                let (job_result, stream) = result.unwrap();
+                assert_ne!(
+                    job_result.data.as_ref().unwrap().status,
+                    ResultStatus::Success as i32,
+                );
+                // Layer 1: stream should be discarded (None) for non-Success status
+                assert!(
+                    stream.is_none(),
+                    "Stream should be None when result status is not Success"
+                );
+            });
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // Publish error result + End marker (simulating what complete_job does)
+            let result_data = JobResultData {
+                job_id: Some(job_id),
+                worker_id: Some(WorkerId { value: 1 }),
+                worker_name: "test".to_string(),
+                args: vec![],
+                uniq_key: None,
+                status: ResultStatus::OtherError as i32,
+                output: None,
+                retried: 0,
+                max_retry: 0,
+                priority: 0,
+                timeout: 0,
+                streaming_type: StreamingType::Response as i32,
+                enqueue_time: datetime::now_millis(),
+                run_after_time: 0,
+                start_time: datetime::now_millis(),
+                end_time: datetime::now_millis(),
+                response_type: ResponseType::Direct as i32,
+                store_success: false,
+                store_failure: false,
+                using: None,
+                broadcast_results: false,
+            };
+            let rid = JobResultId { value: 99002 };
+            subscriber.publish_result(&rid, &result_data, true).await?;
+            super::super::spawn_end_marker_if_needed(&result_data, &job_id, &subscriber);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            let join_result = tokio::time::timeout(Duration::from_secs(5), jh).await;
+            assert!(
+                join_result.is_ok(),
+                "_wait_job_for_direct_response should not hang on error status"
+            );
+            join_result.unwrap()?;
+
+            Ok(())
+        })
+    }
+
+    /// Verify that non-streaming jobs are not affected by the streaming error fix.
+    #[test]
+    fn test_non_streaming_job_unaffected() -> Result<()> {
+        use infra::infra::job_result::pubsub::JobResultPublisher;
+        TEST_RUNTIME.block_on(async {
+            let (app, subscriber) = create_test_app(true).await?;
+            let job_id = JobId { value: 99003 };
+
+            let app_clone = app.clone();
+            let jid = job_id;
+            // Start _wait_job_for_direct_response with streaming=false
+            let jh = tokio::task::spawn(async move {
+                let result = app_clone
+                    ._wait_job_for_direct_response(&jid, Some(5000), false)
+                    .await;
+                assert!(result.is_ok());
+                let (job_result, stream) = result.unwrap();
+                assert_eq!(
+                    job_result.data.as_ref().unwrap().status,
+                    ResultStatus::Success as i32,
+                );
+                // Non-streaming: stream should always be None
+                assert!(
+                    stream.is_none(),
+                    "Stream should be None for non-streaming jobs"
+                );
+            });
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            let result_data = JobResultData {
+                job_id: Some(job_id),
+                worker_id: Some(WorkerId { value: 1 }),
+                worker_name: "test".to_string(),
+                args: vec![],
+                uniq_key: None,
+                status: ResultStatus::Success as i32,
+                output: None,
+                retried: 0,
+                max_retry: 0,
+                priority: 0,
+                timeout: 0,
+                streaming_type: StreamingType::None as i32,
+                enqueue_time: datetime::now_millis(),
+                run_after_time: 0,
+                start_time: datetime::now_millis(),
+                end_time: datetime::now_millis(),
+                response_type: ResponseType::Direct as i32,
+                store_success: false,
+                store_failure: false,
+                using: None,
+                broadcast_results: false,
+            };
+            let rid = JobResultId { value: 99003 };
+            subscriber.publish_result(&rid, &result_data, true).await?;
+
+            let join_result = tokio::time::timeout(Duration::from_secs(5), jh).await;
+            assert!(
+                join_result.is_ok(),
+                "Non-streaming job should complete normally"
+            );
+            join_result.unwrap()?;
+
+            Ok(())
+        })
+    }
 }
