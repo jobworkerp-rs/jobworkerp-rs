@@ -7,7 +7,6 @@ use super::{JobApp, JobCacheKeys, RedisJobAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
-use futures::StreamExt;
 use futures::stream::BoxStream;
 use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::queue::redis::RedisJobQueueRepository;
@@ -27,8 +26,7 @@ use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, Priority,
-    QueueType, ResponseType, ResultOutputItem, ResultStatus, StreamingType, Trailer, Worker,
-    WorkerData, WorkerId, result_output_item,
+    QueueType, ResponseType, ResultOutputItem, StreamingType, Worker, WorkerData, WorkerId,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -850,6 +848,21 @@ impl JobApp for HybridJobAppImpl {
         if let Some(jid) = data.job_id.as_ref() {
             let res = match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
+                    // send result immediately (don't wait for stream to complete)
+                    let res = self
+                        .redis_job_repository()
+                        .enqueue_result_direct(id, data)
+                        .await;
+                    // publish for listening result client
+                    // (XXX can receive response by listen_after, listen_by_worker for DIRECT response)
+                    let _ = self
+                        .job_result_pubsub_repository()
+                        // Direct: always publish because the client blocks waiting for the result
+                        .publish_result(id, data, true)
+                        .await
+                        .inspect_err(|e| {
+                            tracing::warn!("complete_job: pubsub publish error: {:?}", e)
+                        });
                     // Start stream publishing as background task (non-blocking).
                     // PR #126 ensures client subscribes before job execution via tokio::join!,
                     // so stream data won't be missed even if published after enqueue_result_direct.
@@ -878,40 +891,13 @@ impl JobApp for HybridJobAppImpl {
                                 );
                             }
                         });
-                    } else if data.streaming_type != StreamingType::None as i32
-                        && data.status != ResultStatus::Success as i32
-                    {
-                        // Error before stream creation: publish End marker to unblock any streaming subscribers
-                        let end_item = ResultOutputItem {
-                            item: Some(result_output_item::Item::End(Trailer {
-                                metadata: Default::default(),
-                            })),
-                        };
-                        let end_stream = futures::stream::once(async move { end_item }).boxed();
-                        let pubsub_repo = self.job_result_pubsub_repository().clone();
-                        let job_id_for_stream = *jid;
-                        tokio::spawn(async move {
-                            let _ = pubsub_repo
-                                .publish_result_stream_data(job_id_for_stream, end_stream)
-                                .await;
-                        });
+                    } else {
+                        super::spawn_end_marker_if_needed(
+                            data,
+                            jid,
+                            self.job_result_pubsub_repository(),
+                        );
                     }
-
-                    // send result immediately (don't wait for stream to complete)
-                    let res = self
-                        .redis_job_repository()
-                        .enqueue_result_direct(id, data)
-                        .await;
-                    // publish for listening result client
-                    // (XXX can receive response by listen_after, listen_by_worker for DIRECT response)
-                    let _ = self
-                        .job_result_pubsub_repository()
-                        // Direct: always publish because the client blocks waiting for the result
-                        .publish_result(id, data, true)
-                        .await
-                        .inspect_err(|e| {
-                            tracing::warn!("complete_job: pubsub publish error: {:?}", e)
-                        });
                     res
                 }
                 Ok(ResponseType::NoResult) => {
@@ -953,23 +939,12 @@ impl JobApp for HybridJobAppImpl {
                                 );
                             }
                         });
-                    } else if data.streaming_type != StreamingType::None as i32
-                        && data.status != ResultStatus::Success as i32
-                    {
-                        // Error before stream creation: publish End marker to unblock any streaming subscribers
-                        let end_item = ResultOutputItem {
-                            item: Some(result_output_item::Item::End(Trailer {
-                                metadata: Default::default(),
-                            })),
-                        };
-                        let end_stream = futures::stream::once(async move { end_item }).boxed();
-                        let pubsub_repo = self.job_result_pubsub_repository().clone();
-                        let job_id_for_stream = *jid;
-                        tokio::spawn(async move {
-                            let _ = pubsub_repo
-                                .publish_result_stream_data(job_id_for_stream, end_stream)
-                                .await;
-                        });
+                    } else {
+                        super::spawn_end_marker_if_needed(
+                            data,
+                            jid,
+                            self.job_result_pubsub_repository(),
+                        );
                     }
                     r
                 }
