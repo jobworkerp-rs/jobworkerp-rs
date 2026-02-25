@@ -2,7 +2,6 @@
 // Moved from app-wrapper to resolve circular dependency (app -> app-wrapper -> app)
 
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, anyhow};
 use jobworkerp_runner::jobworkerp::runner::workflow_run_args::WorkflowSource;
@@ -57,18 +56,6 @@ static WORKFLOW_VALIDATOR: LazyLock<Option<jsonschema::Validator>> = LazyLock::n
         .ok()
 });
 
-// Flag to enable/disable full JSON Schema validation
-// Default: false (use lightweight validation only)
-// Set WORKFLOW_ENABLE_FULL_SCHEMA_VALIDATION=true to enable full validation
-static ENABLE_FULL_SCHEMA_VALIDATION: LazyLock<bool> = LazyLock::new(|| {
-    std::env::var("WORKFLOW_ENABLE_FULL_SCHEMA_VALIDATION")
-        .map(|v| v.to_lowercase() == "true" || v == "1")
-        .unwrap_or(false)
-});
-
-// Show security warning only once per process
-static VALIDATION_WARNING_SHOWN: AtomicBool = AtomicBool::new(false);
-
 impl WorkflowLoader {
     /// Create a WorkflowLoader with HTTP client for loading workflows from URLs
     pub fn new(http_client: ReqwestClient) -> Result<Self> {
@@ -121,38 +108,13 @@ impl WorkflowLoader {
             ));
         }
 
-        // Show warning only on first invocation (improved from original implementation)
-        if !VALIDATION_WARNING_SHOWN.swap(true, Ordering::SeqCst) {
-            tracing::warn!(
-                "⚠️  SECURITY WARNING: Full JSON Schema validation is disabled for performance. \
-                 Plugin developers MUST validate their inputs independently to prevent security issues. \
-                 Complex workflows may contain malicious inputs that bypass lightweight validation. \
-                 See documentation for input validation best practices. \
-                 (This warning is shown only once per process)"
-            );
-        }
-
         Ok(())
     }
 
-    /// Full JSON Schema validation (expensive, disabled by default)
+    /// Full JSON Schema validation
     async fn validate_schema(&self, instance: &serde_json::Value) -> Result<()> {
-        if !*ENABLE_FULL_SCHEMA_VALIDATION {
-            tracing::debug!(
-                "Full JSON Schema validation is disabled. \
-                 Set WORKFLOW_ENABLE_FULL_SCHEMA_VALIDATION=true to enable. \
-                 Using lightweight validation instead."
-            );
-            return Ok(());
-        }
-
-        // Perform full validation if enabled
+        // Perform full validation
         if let Some(validator) = &*WORKFLOW_VALIDATOR {
-            tracing::warn!(
-                "Full JSON Schema validation is ENABLED and may take significant time for complex workflows. \
-                 Consider disabling for production use."
-            );
-
             let mut error_details = Vec::new();
             for error in validator.iter_errors(instance) {
                 error_details.push(format!("Path: {}, Message: {}", error.instance_path, error));
