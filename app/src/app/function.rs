@@ -867,8 +867,20 @@ pub trait FunctionApp:
                         data: Some(rdata),
                         ..
                     },
-                    _tool_name_opt,
+                    tool_name_opt,
                 ))) => {
+                    let mut supports_streaming = true;
+                    if let Some(map) = &rdata.method_proto_map {
+                        let method_name =
+                            tool_name_opt.as_deref().unwrap_or(proto::DEFAULT_METHOD_NAME);
+                        if let Some(schema) = map.schemas.get(method_name)
+                            && schema.output_type
+                                == proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32
+                        {
+                            supports_streaming = false;
+                        }
+                    }
+
                     let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
                     let _runner = RunnerWithSchema {
                         id: Some(rid),
@@ -888,13 +900,13 @@ pub trait FunctionApp:
 
                     let stream = self.handle_runner_for_front(
                         meta,
-                        &rdata.name,
+                        name,
                         settings,
                         None,
                         args,
                         None,
                         timeout_sec,
-                        true, // streaming enabled
+                        supports_streaming, // streaming enabled
                     );
 
                     let mut stream = std::pin::pin!(stream);
@@ -902,8 +914,20 @@ pub trait FunctionApp:
                         yield result;
                     }
                 }
-                Ok(Some((runner, _tool_name_opt))) => {
+                Ok(Some((runner, tool_name_opt))) => {
                     if let Some(rdata) = &runner.data {
+                        let mut supports_streaming = true;
+                        if let Some(map) = &rdata.method_proto_map {
+                            let method_name =
+                                tool_name_opt.as_deref().unwrap_or(proto::DEFAULT_METHOD_NAME);
+                            if let Some(schema) = map.schemas.get(method_name)
+                                && schema.output_type
+                                    == proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32
+                            {
+                                supports_streaming = false;
+                            }
+                        }
+
                         let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
                         let (settings, args) = match Self::prepare_runner_call_arguments(
                             arguments.unwrap_or_default(),
@@ -917,13 +941,13 @@ pub trait FunctionApp:
 
                         let stream = self.handle_runner_for_front(
                             meta,
-                            &rdata.name,
+                            name,
                             settings,
                             None,
                             args,
                             None,
                             timeout_sec,
-                            true, // streaming enabled
+                            supports_streaming, // streaming enabled
                         );
 
                         let mut stream = std::pin::pin!(stream);

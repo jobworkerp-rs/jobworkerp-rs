@@ -78,8 +78,7 @@ redis = { version = "1.0.2", features = [
     "cluster-async",
 ] }
 reqwest = "0.12"
-#rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "9a771fb157056b4daa332626b2fa41b16a523756" }
-rmcp = { version = "0.14" }
+rmcp = { version = "0.15" }
 rs-snowflake = "0.6"
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
