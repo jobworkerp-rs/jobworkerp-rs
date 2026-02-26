@@ -948,7 +948,10 @@ pub trait FunctionApp:
                         args,
                         None,
                         timeout_sec,
-                        true, // streaming enabled
+                        // RunnerData is not available in the worker-based call path,
+                        // so streaming is enabled by default. The actual streaming behavior
+                        // is determined by the worker's job execution.
+                        true,
                     );
 
                     let mut stream = std::pin::pin!(stream);

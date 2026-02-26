@@ -7,7 +7,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Integration test for CREATE_WORKFLOW and REUSABLE_WORKFLOW with LLM Function calls
+/// Integration test for WORKFLOW runner with LLM Function calls
 /// Verify runner behavior through call_function_for_llm()
 #[ignore = "jobworkerp must be running locally (worker-app startup required)"]
 #[test]

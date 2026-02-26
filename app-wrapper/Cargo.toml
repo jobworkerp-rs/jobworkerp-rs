@@ -43,8 +43,7 @@ genai = "0.5"
 #genai = { git = "https://github.com/jeremychone/rust-genai", branch = "main" }
 indexmap = "2"
 itertools = { workspace = true }
-#jsonschema = "0.33"
-jsonschema = "0.42"
+jsonschema = { workspace = true }
 #kube-client = "0.86"
 libloading = { workspace = true }
 liquid = "0.26"
