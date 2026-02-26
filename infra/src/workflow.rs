@@ -30,15 +30,11 @@ pub struct WorkflowLoader {
 }
 
 // JSON Schema validator initialization
-// Benchmark results (see tests/workflow_schema_validation_benchmark.rs and actual_workflow_validation_benchmark.rs):
-// - Validator initialization: ~450ms (acceptable)
-// - Simple workflow validation: ~500ms (acceptable)
-// - Complex workflow validation: 55+ seconds (UNACCEPTABLE)
+// Benchmark results with jsonschema 0.42 (see app-wrapper/tests/workflow_schema_validation_benchmark.rs):
+// - Validator initialization: ~28ms
+// - Simple workflow validation: ~210μs
 //
-// Problem: jsonschema crate has exponential performance degradation with complex nested workflows
-// containing loops, conditionals, and dynamic expressions.
-//
-// Solution: Keep validator initialized and perform full schema validation by default.
+// Full schema validation is enabled by default.
 // Set WORKFLOW_SKIP_SCHEMA_VALIDATION=true to skip full schema validation (errors logged only).
 //
 // Security: Plugin developers MUST validate their inputs independently.
@@ -122,7 +118,11 @@ impl WorkflowLoader {
         if let Some(validator) = &*WORKFLOW_VALIDATOR {
             let mut error_details = Vec::new();
             for error in validator.iter_errors(instance) {
-                error_details.push(format!("Path: {}, Message: {}", error.instance_path, error));
+                error_details.push(format!(
+                    "Path: {}, Message: {}",
+                    error.instance_path(),
+                    error
+                ));
             }
             if error_details.is_empty() {
                 Ok(())
@@ -178,6 +178,10 @@ impl WorkflowLoader {
                         "Parsed as complete WorkflowSchema with name: {}",
                         wf.document.name.as_str()
                     );
+                    if validate && !*SKIP_SCHEMA_VALIDATION {
+                        let json = serde_json::to_value(&wf)?;
+                        self.validate_schema(&json).await?;
+                    }
                     Ok(wf)
                 }
                 Err(e) => {
