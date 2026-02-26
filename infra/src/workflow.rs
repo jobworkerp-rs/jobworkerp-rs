@@ -38,12 +38,17 @@ pub struct WorkflowLoader {
 // Problem: jsonschema crate has exponential performance degradation with complex nested workflows
 // containing loops, conditionals, and dynamic expressions.
 //
-// Solution: Keep validator initialized for future improvements in jsonschema crate,
-// but use lightweight validation by default. Full schema validation can be enabled
-// via environment variable for testing/debugging.
+// Solution: Keep validator initialized and perform full schema validation by default.
+// Set WORKFLOW_SKIP_SCHEMA_VALIDATION=true to skip full schema validation (errors logged only).
 //
 // Security: Plugin developers MUST validate their inputs independently.
 // See CLAUDE.md for security guidelines.
+static SKIP_SCHEMA_VALIDATION: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("WORKFLOW_SKIP_SCHEMA_VALIDATION")
+        .map(|v| v.to_lowercase() == "true" || v == "1")
+        .unwrap_or(false)
+});
+
 static WORKFLOW_VALIDATOR: LazyLock<Option<jsonschema::Validator>> = LazyLock::new(|| {
     let schema_content = include_str!("../../runner/schema/workflow.yaml");
     let schema = serde_yaml::from_str(schema_content)
@@ -149,9 +154,9 @@ impl WorkflowLoader {
                 .load_url_or_path::<serde_json::Value>(url_or_path)
                 .await?;
 
-            // validate schema
-            if validate {
-                let _ = self.validate_schema(&json).await;
+            // validate schema (skip if WORKFLOW_SKIP_SCHEMA_VALIDATION=true)
+            if validate && !*SKIP_SCHEMA_VALIDATION {
+                self.validate_schema(&json).await?;
             }
             // convert to workflow schema
             serde_json::from_value(json).map_err(|e| {

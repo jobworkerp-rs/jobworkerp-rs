@@ -16,6 +16,7 @@ use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::ProtobufHelper;
+use proto::jobworkerp::data::RunnerData;
 use proto::jobworkerp::data::{RunnerType, StreamingType, WorkerId};
 use proto::jobworkerp::function::data::{FunctionResult, FunctionSpecs, WorkerOptions};
 use serde_json::json;
@@ -869,17 +870,7 @@ pub trait FunctionApp:
                     },
                     tool_name_opt,
                 ))) => {
-                    let mut supports_streaming = true;
-                    if let Some(map) = &rdata.method_proto_map {
-                        let method_name =
-                            tool_name_opt.as_deref().unwrap_or(proto::DEFAULT_METHOD_NAME);
-                        if let Some(schema) = map.schemas.get(method_name)
-                            && schema.output_type
-                                == proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32
-                        {
-                            supports_streaming = false;
-                        }
-                    }
+                    let supports_streaming = check_method_supports_streaming(&rdata, tool_name_opt.as_deref());
 
                     let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
                     let _runner = RunnerWithSchema {
@@ -916,17 +907,7 @@ pub trait FunctionApp:
                 }
                 Ok(Some((runner, tool_name_opt))) => {
                     if let Some(rdata) = &runner.data {
-                        let mut supports_streaming = true;
-                        if let Some(map) = &rdata.method_proto_map {
-                            let method_name =
-                                tool_name_opt.as_deref().unwrap_or(proto::DEFAULT_METHOD_NAME);
-                            if let Some(schema) = map.schemas.get(method_name)
-                                && schema.output_type
-                                    == proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32
-                            {
-                                supports_streaming = false;
-                            }
-                        }
+                        let supports_streaming = check_method_supports_streaming(rdata, tool_name_opt.as_deref());
 
                         let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
                         let (settings, args) = match Self::prepare_runner_call_arguments(
@@ -982,6 +963,20 @@ pub trait FunctionApp:
             }
         })
     }
+}
+
+/// Check if the runner method supports streaming output.
+/// Returns false only when the method is explicitly marked as NonStreaming.
+/// Both, Streaming, and unknown/unset values default to true (streaming supported).
+fn check_method_supports_streaming(rdata: &RunnerData, tool_name_opt: Option<&str>) -> bool {
+    if let Some(map) = &rdata.method_proto_map {
+        let method_name = tool_name_opt.unwrap_or(proto::DEFAULT_METHOD_NAME);
+        if let Some(schema) = map.schemas.get(method_name) {
+            return schema.output_type
+                != proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32;
+        }
+    }
+    true
 }
 
 #[derive(Debug)]
