@@ -2,7 +2,6 @@
 // Moved from app-wrapper to resolve circular dependency (app -> app-wrapper -> app)
 
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, anyhow};
 use jobworkerp_runner::jobworkerp::runner::workflow_run_args::WorkflowSource;
@@ -31,20 +30,21 @@ pub struct WorkflowLoader {
 }
 
 // JSON Schema validator initialization
-// Benchmark results (see tests/workflow_schema_validation_benchmark.rs and actual_workflow_validation_benchmark.rs):
-// - Validator initialization: ~450ms (acceptable)
-// - Simple workflow validation: ~500ms (acceptable)
-// - Complex workflow validation: 55+ seconds (UNACCEPTABLE)
+// Benchmark results with jsonschema 0.42 (see app-wrapper/tests/workflow_schema_validation_benchmark.rs):
+// - Validator initialization: ~28ms
+// - Simple workflow validation: ~210μs
 //
-// Problem: jsonschema crate has exponential performance degradation with complex nested workflows
-// containing loops, conditionals, and dynamic expressions.
-//
-// Solution: Keep validator initialized for future improvements in jsonschema crate,
-// but use lightweight validation by default. Full schema validation can be enabled
-// via environment variable for testing/debugging.
+// Full schema validation is enabled by default.
+// Set WORKFLOW_SKIP_SCHEMA_VALIDATION=true to skip full schema validation (errors logged only).
 //
 // Security: Plugin developers MUST validate their inputs independently.
 // See CLAUDE.md for security guidelines.
+static SKIP_SCHEMA_VALIDATION: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("WORKFLOW_SKIP_SCHEMA_VALIDATION")
+        .map(|v| v.to_lowercase() == "true" || v == "1")
+        .unwrap_or(false)
+});
+
 static WORKFLOW_VALIDATOR: LazyLock<Option<jsonschema::Validator>> = LazyLock::new(|| {
     let schema_content = include_str!("../../runner/schema/workflow.yaml");
     let schema = serde_yaml::from_str(schema_content)
@@ -56,18 +56,6 @@ static WORKFLOW_VALIDATOR: LazyLock<Option<jsonschema::Validator>> = LazyLock::n
         .inspect_err(|e| tracing::warn!("Failed to create workflow schema validator: {:?}", e))
         .ok()
 });
-
-// Flag to enable/disable full JSON Schema validation
-// Default: false (use lightweight validation only)
-// Set WORKFLOW_ENABLE_FULL_SCHEMA_VALIDATION=true to enable full validation
-static ENABLE_FULL_SCHEMA_VALIDATION: LazyLock<bool> = LazyLock::new(|| {
-    std::env::var("WORKFLOW_ENABLE_FULL_SCHEMA_VALIDATION")
-        .map(|v| v.to_lowercase() == "true" || v == "1")
-        .unwrap_or(false)
-});
-
-// Show security warning only once per process
-static VALIDATION_WARNING_SHOWN: AtomicBool = AtomicBool::new(false);
 
 impl WorkflowLoader {
     /// Create a WorkflowLoader with HTTP client for loading workflows from URLs
@@ -121,41 +109,20 @@ impl WorkflowLoader {
             ));
         }
 
-        // Show warning only on first invocation (improved from original implementation)
-        if !VALIDATION_WARNING_SHOWN.swap(true, Ordering::SeqCst) {
-            tracing::warn!(
-                "⚠️  SECURITY WARNING: Full JSON Schema validation is disabled for performance. \
-                 Plugin developers MUST validate their inputs independently to prevent security issues. \
-                 Complex workflows may contain malicious inputs that bypass lightweight validation. \
-                 See documentation for input validation best practices. \
-                 (This warning is shown only once per process)"
-            );
-        }
-
         Ok(())
     }
 
-    /// Full JSON Schema validation (expensive, disabled by default)
+    /// Full JSON Schema validation
     async fn validate_schema(&self, instance: &serde_json::Value) -> Result<()> {
-        if !*ENABLE_FULL_SCHEMA_VALIDATION {
-            tracing::debug!(
-                "Full JSON Schema validation is disabled. \
-                 Set WORKFLOW_ENABLE_FULL_SCHEMA_VALIDATION=true to enable. \
-                 Using lightweight validation instead."
-            );
-            return Ok(());
-        }
-
-        // Perform full validation if enabled
+        // Perform full validation
         if let Some(validator) = &*WORKFLOW_VALIDATOR {
-            tracing::warn!(
-                "Full JSON Schema validation is ENABLED and may take significant time for complex workflows. \
-                 Consider disabling for production use."
-            );
-
             let mut error_details = Vec::new();
             for error in validator.iter_errors(instance) {
-                error_details.push(format!("Path: {}, Message: {}", error.instance_path, error));
+                error_details.push(format!(
+                    "Path: {}, Message: {}",
+                    error.instance_path(),
+                    error
+                ));
             }
             if error_details.is_empty() {
                 Ok(())
@@ -187,9 +154,9 @@ impl WorkflowLoader {
                 .load_url_or_path::<serde_json::Value>(url_or_path)
                 .await?;
 
-            // validate schema
-            if validate {
-                let _ = self.validate_schema(&json).await;
+            // validate schema (skip if WORKFLOW_SKIP_SCHEMA_VALIDATION=true)
+            if validate && !*SKIP_SCHEMA_VALIDATION {
+                self.validate_schema(&json).await?;
             }
             // convert to workflow schema
             serde_json::from_value(json).map_err(|e| {
@@ -211,6 +178,10 @@ impl WorkflowLoader {
                         "Parsed as complete WorkflowSchema with name: {}",
                         wf.document.name.as_str()
                     );
+                    if validate && !*SKIP_SCHEMA_VALIDATION {
+                        let json = serde_json::to_value(&wf)?;
+                        self.validate_schema(&json).await?;
+                    }
                     Ok(wf)
                 }
                 Err(e) => {

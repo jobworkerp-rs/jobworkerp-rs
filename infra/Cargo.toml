@@ -27,7 +27,7 @@ envy = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 itertools = { workspace = true }
-jsonschema = "0.33"
+jsonschema = { workspace = true }
 #kube-client = "0.86"
 libloading = { workspace = true }
 liquid = "0.26"
