@@ -39,12 +39,11 @@ dotenvy = { workspace = true }
 envy = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-genai = "0.5.1"
+genai = "0.5"
 #genai = { git = "https://github.com/jeremychone/rust-genai", branch = "main" }
 indexmap = "2"
 itertools = { workspace = true }
-#jsonschema = "0.33"
-jsonschema = "0.38"
+jsonschema = { workspace = true }
 #kube-client = "0.86"
 libloading = { workspace = true }
 liquid = "0.26"

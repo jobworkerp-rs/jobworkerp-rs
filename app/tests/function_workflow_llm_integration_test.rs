@@ -7,11 +7,11 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Integration test for CREATE_WORKFLOW and REUSABLE_WORKFLOW with LLM Function calls
+/// Integration test for WORKFLOW runner with LLM Function calls
 /// Verify runner behavior through call_function_for_llm()
 #[ignore = "jobworkerp must be running locally (worker-app startup required)"]
 #[test]
-fn test_create_workflow_via_llm_function_call() -> Result<()> {
+fn test_workflow_create_via_llm_function_call() -> Result<()> {
     // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     TEST_RUNTIME.block_on(async {
@@ -23,9 +23,9 @@ fn test_create_workflow_via_llm_function_call() -> Result<()> {
             "document": {
                 "dsl": "0.0.1",
                 "namespace": "llm-integration-test",
-                "name": "llm-create-workflow-test",
+                "name": "llm-workflow-create-test",
                 "version": "1.0.0",
-                "summary": "Workflow for CREATE_WORKFLOW test via LLM Function calls"
+                "summary": "Workflow for WORKFLOW.create test via LLM Function calls"
             },
             "input": {},
             "do": [
@@ -36,7 +36,7 @@ fn test_create_workflow_via_llm_function_call() -> Result<()> {
                                 "name": "COMMAND",
                                 "arguments": {
                                     "command": "echo",
-                                    "args": ["LLM CREATE_WORKFLOW test execution"]
+                                    "args": ["LLM WORKFLOW.create test execution"]
                                 }
                             }
                         }
@@ -72,7 +72,7 @@ fn test_create_workflow_via_llm_function_call() -> Result<()> {
             .function_app
             .call_function_for_llm(
                 meta,
-                "CREATE_WORKFLOW",
+                "WORKFLOW___create",
                 Some(arguments.as_object().unwrap().clone()),
                 3,
             )
@@ -80,7 +80,7 @@ fn test_create_workflow_via_llm_function_call() -> Result<()> {
 
         match result {
             Ok(response) => {
-                println!("✅ CREATE_WORKFLOW LLM Function call successful");
+                println!("✅ WORKFLOW.create LLM Function call successful");
                 println!("Response: {}", serde_json::to_string_pretty(&response)?);
 
                 assert!(
@@ -133,7 +133,7 @@ fn test_create_workflow_via_llm_function_call() -> Result<()> {
                 // println!("   - Response validation: PASSED");
             }
             Err(e) => {
-                println!("❌ CREATE_WORKFLOW LLM Function call failed: {e}");
+                println!("❌ WORKFLOW.create LLM Function call failed: {e}");
                 return Err(e);
             }
         }
@@ -142,6 +142,101 @@ fn test_create_workflow_via_llm_function_call() -> Result<()> {
     })
 }
 
+#[ignore = "jobworkerp must be running locally (worker-app startup required)"]
+#[test]
+fn test_workflow_create_via_llm_function_call_streaming_fallback() -> Result<()> {
+    use futures::StreamExt;
+
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+    TEST_RUNTIME.block_on(async {
+        // Initialize AppModule
+        let app = Arc::new(create_hybrid_test_app().await?);
+
+        // Prepare CREATE_WORKFLOW arguments
+        let workflow_def = json!({
+            "document": {
+                "dsl": "0.0.1",
+                "namespace": "llm-integration-test",
+                "name": "llm-workflow-create-test-streaming",
+                "version": "1.0.0",
+                "summary": "Workflow for WORKFLOW.create test via LLM streaming fallback"
+            },
+            "input": {},
+            "do": [
+                {
+                    "llm_test_step": {
+                        "run": {
+                            "runner": {
+                                "name": "COMMAND",
+                                "arguments": {
+                                    "command": "echo",
+                                    "args": ["LLM WORKFLOW.create streaming fallback test execution"]
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        });
+
+        let arguments = json!({
+            "arguments": workflow_def.to_string()
+        });
+
+        // Prepare metadata
+        let meta = Arc::new(HashMap::new());
+
+        // Execute call_function_for_llm_streaming()
+        let mut stream = app
+            .function_app
+            .call_function_for_llm_streaming(
+                meta,
+                "WORKFLOW___create",
+                Some(arguments.as_object().unwrap().clone()),
+                3,
+            );
+
+        let mut collected_responses = vec![];
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(response) => {
+                    collected_responses.push(response);
+                }
+                Err(e) => {
+                    println!("❌ WORKFLOW.create LLM streaming fallback call failed: {e}");
+                    return Err(e);
+                }
+            }
+        }
+
+        assert!(!collected_responses.is_empty(), "Stream should yield at least one result");
+
+        // Grab the last or only response to verify
+        let response = collected_responses.last().unwrap();
+        println!("✅ WORKFLOW.create LLM streaming fallback call successful");
+        println!("Response Output (Raw): {}", &response.output);
+
+        let output_json: serde_json::Value =
+            serde_json::from_str(&response.output).expect("Invalid JSON in FunctionResult output");
+
+        assert!(
+            output_json.get("workerId").is_some(),
+            "worker_id should be present"
+        );
+        let worker_id: i64 = output_json
+            .get("workerId")
+            .unwrap()
+            .get("value")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .parse()?;
+        assert!(worker_id > 0, "worker_id should be positive");
+
+        Ok(())
+    })
+}
 #[ignore = "jobworkerp must be running locally (worker-app startup required)"]
 #[test]
 fn test_reusable_workflow_via_llm_function_call() -> Result<()> {

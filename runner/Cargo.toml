@@ -33,7 +33,7 @@ futures = { workspace = true }
 futures-util = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }
-jsonschema = "0.37"
+jsonschema = { workspace = true }
 #kube-client = "0.86"
 libloading = { workspace = true }
 nix = { workspace = true, features = ["signal"] }
