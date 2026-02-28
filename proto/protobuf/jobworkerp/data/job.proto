@@ -80,3 +80,10 @@ message Job {
   JobData data = 2;
   map<string, string> metadata = 3;
 }
+
+// Internal transport message for feed data over Redis Pub/Sub.
+// Not part of the public gRPC API.
+message FeedDataTransport {
+  bytes data = 1;
+  bool is_final = 2;
+}

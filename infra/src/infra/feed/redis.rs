@@ -4,9 +4,10 @@ use debug_stub_derive::DebugStub;
 use futures::StreamExt;
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use jobworkerp_runner::runner::FeedData;
-use proto::jobworkerp::data::JobId;
+use prost::Message;
+use proto::jobworkerp::data::{FeedDataTransport, JobId};
 
-use super::{FeedMessage, FeedPublisher, job_feed_pubsub_channel_name};
+use super::{FeedPublisher, feed_data_from_transport, job_feed_pubsub_channel_name};
 
 /// Redis Pub/Sub based feed publisher for Scalable mode.
 /// Publishes feed data to `job_feed:{job_id}` channel.
@@ -32,8 +33,8 @@ impl UseRedisClient for RedisFeedPublisher {
 impl FeedPublisher for RedisFeedPublisher {
     async fn publish_feed(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
         let ch = job_feed_pubsub_channel_name(job_id);
-        let msg = FeedMessage { data, is_final };
-        let serialized = serde_json::to_vec(&msg)?;
+        let msg = FeedDataTransport { data, is_final };
+        let serialized = msg.encode_to_vec();
         self.publish_multi_if_listen(&[ch], &serialized).await?;
         Ok(())
     }
@@ -58,8 +59,8 @@ pub async fn subscribe_feed(
                 return None;
             }
         };
-        match serde_json::from_slice::<FeedMessage>(&payload) {
-            Ok(feed_msg) => Some(FeedData::from(feed_msg)),
+        match FeedDataTransport::decode(payload.as_slice()) {
+            Ok(feed_msg) => Some(feed_data_from_transport(feed_msg)),
             Err(e) => {
                 tracing::warn!("Failed to deserialize feed message: {:?}", e);
                 None
