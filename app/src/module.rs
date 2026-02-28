@@ -93,6 +93,8 @@ pub struct AppModule {
     pub function_app: Arc<FunctionAppImpl>,
     pub descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     pub workflow_loader: Arc<infra::workflow::WorkflowLoader>,
+    /// Shared ChanFeedSenderStore for Standalone mode (None in Scalable mode)
+    pub feed_sender_store: Option<Arc<infra::infra::feed::chan::ChanFeedSenderStore>>,
 }
 
 impl AppModule {
@@ -109,6 +111,7 @@ impl AppModule {
         function_app: Arc<FunctionAppImpl>,
         descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         workflow_loader: Arc<infra::workflow::WorkflowLoader>,
+        feed_sender_store: Option<Arc<infra::infra::feed::chan::ChanFeedSenderStore>>,
     ) -> Self {
         Self {
             config_module,
@@ -121,6 +124,7 @@ impl AppModule {
             function_app,
             descriptor_cache,
             workflow_loader,
+            feed_sender_store,
         }
     }
     pub async fn new_by_env(config_module: Arc<AppConfigModule>) -> Result<Self> {
@@ -183,8 +187,10 @@ impl AppModule {
                 let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
                     Arc::new(repositories.chan_job_queue_repository.clone());
 
-                let feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher> =
+                let feed_sender_store =
                     Arc::new(infra::infra::feed::chan::ChanFeedSenderStore::new());
+                let feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher> =
+                    feed_sender_store.clone();
                 let job_app = Arc::new(RdbChanJobAppImpl::new(
                     config_module.clone(),
                     id_generator.clone(),
@@ -228,6 +234,7 @@ impl AppModule {
                     function_app,
                     descriptor_cache,
                     workflow_loader,
+                    feed_sender_store: Some(feed_sender_store),
                 })
             }
             // TODO not used now (remove or implement later)
@@ -369,6 +376,7 @@ impl AppModule {
                     function_app,
                     descriptor_cache,
                     workflow_loader,
+                    feed_sender_store: None,
                 })
             }
         }
@@ -613,6 +621,7 @@ pub mod test {
             function_app,
             descriptor_cache,
             workflow_loader,
+            None, // Scalable mode: no shared ChanFeedSenderStore
         ))
     }
 
@@ -703,8 +712,8 @@ pub mod test {
             )),
         });
 
-        let feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher> =
-            Arc::new(infra::infra::feed::chan::ChanFeedSenderStore::new());
+        let feed_sender_store = Arc::new(infra::infra::feed::chan::ChanFeedSenderStore::new());
+        let feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher> = feed_sender_store.clone();
         let job_app = Arc::new(RdbChanJobAppImpl::new(
             config_module.clone(),
             id_generator.clone(),
@@ -770,6 +779,7 @@ pub mod test {
             function_app,
             descriptor_cache,
             workflow_loader,
+            Some(feed_sender_store),
         ))
     }
 

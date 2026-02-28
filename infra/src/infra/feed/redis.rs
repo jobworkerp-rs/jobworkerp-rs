@@ -41,8 +41,9 @@ impl FeedPublisher for RedisFeedPublisher {
 }
 
 /// Subscribe to feed data for a specific job via Redis Pub/Sub.
-/// Returns a stream of FeedData. The stream ends when is_final=true is received
-/// or the channel is closed.
+/// Returns an unbounded stream of FeedData. The caller is responsible for
+/// terminating consumption when `is_final == true` is received (e.g., via `break`
+/// or `take_while`); the stream itself does not auto-close on the final marker.
 pub async fn subscribe_feed(
     redis_client: &RedisClient,
     job_id: &JobId,

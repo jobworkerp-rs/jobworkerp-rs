@@ -191,7 +191,7 @@ message FeedToStreamResponse {
 
 ### Usage Flow
 
-```
+```text
 1. EnqueueForStream(worker_id, args) → job_id (from response header x-job-id-bin)
    ↓ (output stream starts)
 2. FeedToStream(job_id, data_chunk_1, is_final=false)

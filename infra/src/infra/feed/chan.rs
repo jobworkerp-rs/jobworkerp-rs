@@ -60,9 +60,15 @@ impl FeedPublisher for ChanFeedSenderStore {
         })?;
 
         let feed = FeedData { data, is_final };
-        sender.send(feed).await.map_err(|e| {
-            anyhow::anyhow!("Failed to send feed data to job {}: {:?}", job_id.value, e)
-        })?;
+        if let Err(e) = sender.send(feed).await {
+            // Receiver dropped: remove stale entry before returning error
+            self.remove(job_id.value);
+            return Err(anyhow::anyhow!(
+                "Failed to send feed data to job {}: {:?}",
+                job_id.value,
+                e
+            ));
+        }
 
         if is_final {
             self.remove(job_id.value);
@@ -128,5 +134,24 @@ mod tests {
         store.register(1, tx);
         assert!(store.remove(1).is_some());
         assert!(store.remove(1).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_publish_to_dropped_receiver_removes_stale_entry() {
+        let store = ChanFeedSenderStore::new();
+        let (tx, rx) = mpsc::channel::<FeedData>(16);
+
+        store.register(77, tx);
+        assert!(store.get(77).is_some());
+
+        // Drop receiver to simulate disconnected consumer
+        drop(rx);
+
+        let job_id = JobId { value: 77 };
+        let result = store.publish_feed(&job_id, b"data".to_vec(), false).await;
+        assert!(result.is_err());
+
+        // Stale entry should be removed
+        assert!(store.get(77).is_none());
     }
 }

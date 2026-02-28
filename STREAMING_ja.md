@@ -191,7 +191,7 @@ message FeedToStreamResponse {
 
 ### 利用フロー
 
-```
+```text
 1. EnqueueForStream(worker_id, args) → job_id（レスポンスヘッダー x-job-id-bin から取得）
    ↓（出力ストリーム開始）
 2. FeedToStream(job_id, data_chunk_1, is_final=false)
