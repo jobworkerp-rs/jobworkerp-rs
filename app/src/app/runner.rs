@@ -597,6 +597,7 @@ pub mod test {
                 result_proto: String::new(),
                 description: Some("Test runner method".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
 
@@ -623,7 +624,7 @@ pub mod test {
                         proto::jobworkerp::data::MethodJsonSchema {
                             args_schema: "arguments_schema".to_string(),
                             result_schema: Some("output_schema".to_string()),
-                            // Note: description removed - retrieve from method_proto_map instead
+                            feed_data_schema: None,
                         },
                     );
                     map
@@ -697,6 +698,7 @@ pub mod test {
                 result_proto: include_str!("../../../proto/protobuf/test_result.proto").to_string(),
                 description: Some("Default run method".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
 
@@ -722,6 +724,7 @@ pub mod test {
                 .to_string(),
                 description: Some("List files in directory".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
 
@@ -747,6 +750,7 @@ pub mod test {
                 .to_string(),
                 description: Some("Read file content".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
 
@@ -766,6 +770,7 @@ pub mod test {
                 result_proto: String::new(), // Empty result_proto
                 description: Some("Write file content".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
 
@@ -784,6 +789,7 @@ pub mod test {
                 result_proto: String::new(), // Empty result_proto
                 description: Some("Delete file".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
 

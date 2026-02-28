@@ -113,6 +113,7 @@ impl MultiMethodPluginRunner for TestPlugin {
                 result_proto: String::new(), // No result proto for this runner
                 description: Some("Test plugin for runner testing".to_string()),
                 output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
         schemas

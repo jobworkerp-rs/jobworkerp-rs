@@ -103,6 +103,7 @@ impl RunnerSpec for WorkflowUnifiedRunnerSpecImpl {
                         .to_string(),
                 ),
                 output_type: StreamingOutputType::Both as i32,
+                ..Default::default()
             },
         );
 
@@ -122,6 +123,7 @@ impl RunnerSpec for WorkflowUnifiedRunnerSpecImpl {
                     "Create WORKFLOW runner worker from workflow definition".to_string(),
                 ),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
 

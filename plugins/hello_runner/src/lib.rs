@@ -201,6 +201,7 @@ impl MultiMethodPluginRunner for HelloPlugin {
                 result_proto: include_str!("../protobuf/hello_result.proto").to_string(),
                 description: Some("Hello world plugin execution".to_string()),
                 output_type: proto::jobworkerp::data::StreamingOutputType::Both as i32,
+                ..Default::default()
             },
         );
         schemas

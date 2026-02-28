@@ -33,6 +33,7 @@ pub trait InlineWorkflowRunnerSpec: RunnerSpec {
                 .to_string(),
                 description: Some("Execute inline workflow (multi-job orchestration)".to_string()),
                 output_type: StreamingOutputType::Both as i32,
+                ..Default::default()
             },
         );
         schemas
@@ -46,6 +47,7 @@ pub trait InlineWorkflowRunnerSpec: RunnerSpec {
             super::MethodJsonSchema {
                 args_schema: include_str!("../../schema/WorkflowArgs.json").to_string(),
                 result_schema: schema_to_json_string_option!(WorkflowResult, "output_schema"),
+                feed_data_schema: None,
             },
         );
         schemas
@@ -210,6 +212,7 @@ pub trait ReusableWorkflowRunnerSpec: RunnerSpec {
                 .to_string(),
                 description: Some("Execute reusable workflow".to_string()),
                 output_type: StreamingOutputType::Both as i32,
+                ..Default::default()
             },
         );
         schemas

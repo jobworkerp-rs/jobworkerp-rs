@@ -182,6 +182,7 @@ impl RunnerSpec for PythonCommandRunner {
                 .to_string(),
                 description: Some("Execute Python script via uv".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
         schemas
@@ -195,6 +196,7 @@ impl RunnerSpec for PythonCommandRunner {
             super::MethodJsonSchema {
                 args_schema: include_str!("../../schema/PythonCommandArgs.json").to_string(),
                 result_schema: schema_to_json_string_option!(PythonCommandResult, "output_schema"),
+                feed_data_schema: None,
             },
         );
         schemas

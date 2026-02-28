@@ -7440,6 +7440,7 @@ dependencies = [
  "bytes",
  "chrono",
  "command-utils 0.1.0",
+ "dashmap",
  "deadpool",
  "debug_stub_derive",
  "envy",

@@ -1,10 +1,15 @@
 use super::pool::RunnerPoolManagerImpl;
+use dashmap::DashMap;
 use deadpool::managed::Object;
 use futures::Stream;
 use futures::stream::BoxStream;
+use jobworkerp_runner::runner::FeedData;
 use jobworkerp_runner::runner::cancellation_helper::CancelMonitoringHelper;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 /// Stream Wrapper with Pool Object (for use_static=true only)
 /// Automatically returns Pool Object when stream ends
@@ -104,6 +109,74 @@ impl<T> Drop for StreamWithCancelGuard<T> {
     }
 }
 
+/// Feed store cleanup info: (job_id, store_ref)
+type FeedStoreCleanup = (i64, Arc<DashMap<i64, mpsc::Sender<FeedData>>>);
+
+/// Stream wrapper that manages feed channel lifecycle for feed-enabled streaming jobs.
+/// When the inner stream ends or this guard is dropped, the feed bridge task is aborted
+/// and the feed sender is removed from the store.
+pub struct StreamWithFeedGuard<T> {
+    inner: BoxStream<'static, T>,
+    /// Feed bridge task handle (Redis→runner forwarding). Aborted on cleanup.
+    feed_bridge_handle: Option<JoinHandle<()>>,
+    /// (job_id, store_ref) for Standalone mode cleanup
+    feed_store_cleanup: Option<FeedStoreCleanup>,
+}
+
+impl<T> StreamWithFeedGuard<T> {
+    pub fn new(
+        inner: BoxStream<'static, T>,
+        feed_bridge_handle: Option<JoinHandle<()>>,
+        feed_store_cleanup: Option<FeedStoreCleanup>,
+    ) -> Self {
+        tracing::debug!(
+            "Created StreamWithFeedGuard - feed resources held until stream completion"
+        );
+        Self {
+            inner,
+            feed_bridge_handle,
+            feed_store_cleanup,
+        }
+    }
+
+    fn cleanup(&mut self) {
+        if let Some(handle) = self.feed_bridge_handle.take() {
+            handle.abort();
+            tracing::debug!("Feed bridge task aborted");
+        }
+        if let Some((job_id, store)) = self.feed_store_cleanup.take() {
+            store.remove(&job_id);
+            tracing::debug!("Feed sender removed from store for job {}", job_id);
+        }
+    }
+}
+
+impl<T> Stream for StreamWithFeedGuard<T> {
+    type Item = T;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let result = Pin::new(&mut self.inner).poll_next(cx);
+
+        if let Poll::Ready(None) = result {
+            self.cleanup();
+        }
+
+        result
+    }
+}
+
+impl<T> Drop for StreamWithFeedGuard<T> {
+    fn drop(&mut self) {
+        // Safety net: clean up if poll_next didn't reach None
+        if self.feed_bridge_handle.is_some() || self.feed_store_cleanup.is_some() {
+            tracing::debug!(
+                "StreamWithFeedGuard dropped with active feed resources - emergency cleanup"
+            );
+            self.cleanup();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::pool::RunnerFactoryWithPool;
@@ -147,6 +220,61 @@ mod tests {
             }),
         )
         .await
+    }
+
+    #[test]
+    fn test_stream_with_feed_guard_normal_completion() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let store: Arc<DashMap<i64, mpsc::Sender<FeedData>>> = Arc::new(DashMap::new());
+            let (tx, _rx) = mpsc::channel(1);
+            let job_id = 42i64;
+            store.insert(job_id, tx);
+
+            // Simulate a bridge task that runs until aborted
+            let bridge_handle = tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            });
+
+            let test_stream = Box::pin(stream::iter(vec![1, 2, 3]));
+            let guard = StreamWithFeedGuard::new(
+                test_stream,
+                Some(bridge_handle),
+                Some((job_id, store.clone())),
+            );
+
+            let items: Vec<i32> = guard.collect().await;
+            assert_eq!(items, vec![1, 2, 3]);
+
+            // After stream completion, store entry should be removed
+            assert!(!store.contains_key(&job_id));
+        });
+    }
+
+    #[test]
+    fn test_stream_with_feed_guard_early_drop() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let store: Arc<DashMap<i64, mpsc::Sender<FeedData>>> = Arc::new(DashMap::new());
+            let (tx, _rx) = mpsc::channel(1);
+            let job_id = 99i64;
+            store.insert(job_id, tx);
+
+            let bridge_handle = tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            });
+
+            let test_stream = Box::pin(stream::iter(vec![1, 2, 3]));
+            let guard = StreamWithFeedGuard::new(
+                test_stream,
+                Some(bridge_handle),
+                Some((job_id, store.clone())),
+            );
+
+            // Drop without consuming the stream
+            drop(guard);
+
+            // After early drop, store entry should be cleaned up
+            assert!(!store.contains_key(&job_id));
+        });
     }
 
     #[test]

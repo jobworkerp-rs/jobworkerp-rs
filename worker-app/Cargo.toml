@@ -22,6 +22,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 bollard = { workspace = true }
 chrono = { workspace = true }
+dashmap = { workspace = true }
 deadpool = { workspace = true }
 debug_stub_derive = { workspace = true }
 envy = { workspace = true }
