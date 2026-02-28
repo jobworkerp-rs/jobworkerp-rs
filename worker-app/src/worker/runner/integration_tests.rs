@@ -11,11 +11,11 @@ mod streaming_pool_guard_tests {
     use jobworkerp_runner::jobworkerp::runner::CommandArgs;
     use jobworkerp_runner::runner::cancellation::CancellableRunner;
     use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
-    use proto::jobworkerp::data::{RunnerData, RunnerType, WorkerData};
+    use proto::jobworkerp::data::{RunnerData, RunnerType, WorkerData, result_output_item};
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    async fn create_test_pool() -> Result<RunnerFactoryWithPool> {
+    async fn create_runner_factory() -> Result<Arc<RunnerFactory>> {
         let app_module = Arc::new(create_hybrid_test_app().await?);
         let app_wrapper_module = Arc::new(
             app_wrapper::modules::test::create_test_app_wrapper_module(app_module.clone()),
@@ -26,6 +26,11 @@ mod streaming_pool_guard_tests {
             Arc::new(McpServerFactory::default()),
         );
         runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
+        Ok(Arc::new(runner_factory))
+    }
+
+    async fn create_test_pool() -> Result<RunnerFactoryWithPool> {
+        let runner_factory = create_runner_factory().await?;
 
         RunnerFactoryWithPool::new(
             Arc::new(RunnerData {
@@ -38,7 +43,7 @@ mod streaming_pool_guard_tests {
                 use_static: true, // Enable pool usage for resource efficiency
                 ..Default::default()
             }),
-            Arc::new(runner_factory),
+            runner_factory,
             Arc::new(WorkerConfig {
                 default_concurrency: 1,
                 ..WorkerConfig::default()
@@ -354,6 +359,165 @@ mod streaming_pool_guard_tests {
             assert!(!pool_object2.lock().await.name().is_empty());
 
             tracing::debug!("✅ Stream guard early drop test completed");
+            Ok(())
+        })
+    }
+
+    /// Encode a string as HelloArgs protobuf (field 1, string)
+    fn encode_hello_args(s: &str) -> Vec<u8> {
+        let bytes = s.as_bytes();
+        let mut buf = Vec::with_capacity(2 + bytes.len());
+        // field 1, wire type 2 (length-delimited) = tag 0x0a
+        buf.push(0x0a);
+        buf.push(bytes.len() as u8);
+        buf.extend_from_slice(bytes);
+        buf
+    }
+
+    /// Decode HelloRunnerResult protobuf (field 1, string) to String
+    fn decode_hello_result(data: &[u8]) -> String {
+        if data.len() > 2 && data[0] == 0x0a {
+            let len = data[1] as usize;
+            if data.len() >= 2 + len {
+                return String::from_utf8_lossy(&data[2..2 + len]).to_string();
+            }
+        }
+        String::new()
+    }
+
+    /// Verify that feed data injected during streaming is reflected in the output.
+    /// Uses HelloPlugin's "feed_hello" method which supports feed channels.
+    #[test]
+    fn test_feed_to_stream_with_hello_plugin() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let runner_factory = create_runner_factory().await?;
+
+            let pool = RunnerFactoryWithPool::new(
+                Arc::new(RunnerData {
+                    name: "HelloPlugin".to_string(),
+                    ..Default::default()
+                }),
+                Arc::new(WorkerData {
+                    runner_settings: Vec::new(),
+                    channel: None,
+                    use_static: true,
+                    ..Default::default()
+                }),
+                runner_factory,
+                Arc::new(WorkerConfig {
+                    default_concurrency: 1,
+                    ..WorkerConfig::default()
+                }),
+            )
+            .await?;
+
+            let pool_object = pool.get().await?;
+            let mut runner = pool_object.lock().await;
+
+            // Verify feed support
+            assert!(
+                runner.supports_feed(Some("feed_hello")),
+                "HelloPlugin should support feed for 'feed_hello' method"
+            );
+            assert!(
+                !runner.supports_feed(Some("run")),
+                "HelloPlugin should not support feed for 'run' method"
+            );
+            assert!(
+                !runner.supports_feed(None),
+                "HelloPlugin should not support feed for None method"
+            );
+
+            // Set up feed channel
+            let feed_sender = runner
+                .setup_feed_channel(Some("feed_hello"))
+                .expect("setup_feed_channel should return a sender for feed_hello");
+
+            // Encode HelloArgs { arg: "Test" } as protobuf manually
+            // (the HelloArgs type is only available in the plugin crate)
+            let hello_arg = encode_hello_args("Test");
+
+            let stream = runner
+                .run_stream(&hello_arg, HashMap::new(), Some("feed_hello"))
+                .await?;
+
+            drop(runner);
+
+            // Send feed data in a background task
+            use jobworkerp_runner::runner::FeedData;
+            let feed_sender_clone = feed_sender.clone();
+            tokio::spawn(async move {
+                // Small delay to let stream start processing
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                feed_sender_clone
+                    .send(FeedData {
+                        data: encode_hello_args("World"),
+                        is_final: false,
+                    })
+                    .await
+                    .expect("send feed data should succeed");
+
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                feed_sender_clone
+                    .send(FeedData {
+                        data: encode_hello_args("!"),
+                        is_final: true,
+                    })
+                    .await
+                    .expect("send final feed data should succeed");
+            });
+
+            // Collect stream output
+            let guard_stream = StreamWithPoolGuard::new(stream, pool_object);
+            let items: Vec<_> = guard_stream.collect().await;
+
+            // Extract data items and decode HelloRunnerResult text
+            let mut collected_text = String::new();
+            for item in &items {
+                if let Some(result_output_item::Item::Data(data)) = &item.item {
+                    collected_text.push_str(&decode_hello_result(data));
+                }
+            }
+
+            assert!(
+                collected_text.contains("Hello Test! "),
+                "Output should contain greeting. Got: {}",
+                collected_text
+            );
+            assert!(
+                collected_text.contains("World"),
+                "Output should contain fed data 'World'. Got: {}",
+                collected_text
+            );
+            assert!(
+                collected_text.contains("!"),
+                "Output should contain fed data '!'. Got: {}",
+                collected_text
+            );
+
+            // Verify we got at least 3 data items + 1 End trailer
+            let data_count = items
+                .iter()
+                .filter(|i| matches!(&i.item, Some(result_output_item::Item::Data(_))))
+                .count();
+            assert!(
+                data_count >= 3,
+                "Should have at least 3 data items (greeting + 2 feed). Got: {}",
+                data_count
+            );
+
+            let end_count = items
+                .iter()
+                .filter(|i| matches!(&i.item, Some(result_output_item::Item::End(_))))
+                .count();
+            assert_eq!(end_count, 1, "Should have exactly 1 End trailer");
+
+            tracing::debug!(
+                "Feed-to-stream test completed. Collected text: {}",
+                collected_text
+            );
             Ok(())
         })
     }
