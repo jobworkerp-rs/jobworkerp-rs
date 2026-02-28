@@ -548,7 +548,22 @@ impl UseRunnerPoolMap for RedisJobDispatcherImpl {
     }
 }
 impl Tracing for RedisJobDispatcherImpl {}
-impl JobRunner for RedisJobDispatcherImpl {}
+impl JobRunner for RedisJobDispatcherImpl {
+    fn register_feed_sender(
+        &self,
+        job_id: i64,
+        sender: tokio::sync::mpsc::Sender<jobworkerp_runner::runner::FeedData>,
+    ) -> Option<super::super::runner::FeedRegistration> {
+        // Scalable mode: spawn Redis feed bridge to forward Pub/Sub messages to the runner
+        let job_id_proto = proto::jobworkerp::data::JobId { value: job_id };
+        let handle = crate::worker::runner::feed_bridge::spawn_redis_feed_bridge(
+            &self.redis_client,
+            &job_id_proto,
+            sender,
+        );
+        Some((Some(handle), None))
+    }
+}
 
 impl UseIdGenerator for RedisJobDispatcherImpl {
     fn id_generator(&self) -> &IdGeneratorWrapper {

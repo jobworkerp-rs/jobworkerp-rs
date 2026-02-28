@@ -465,6 +465,7 @@ impl RunnerSpec for DockerExecRunner {
                     .to_string(),
                 description: Some("Execute command in Docker container (exec mode)".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
         schemas
@@ -790,6 +791,7 @@ impl RunnerSpec for DockerRunner {
                     .to_string(),
                 description: Some("Execute command in Docker container (run mode)".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
         schemas

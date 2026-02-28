@@ -42,7 +42,15 @@ use std::pin::Pin;
 use anyhow::Result;
 use futures::stream::BoxStream;
 use proto::jobworkerp::data::ResultOutputItem;
+use tokio::sync::mpsc;
 use tonic::async_trait;
+
+/// Feed data sent from client to a running streaming job
+#[derive(Debug, Clone)]
+pub struct FeedData {
+    pub data: Vec<u8>,
+    pub is_final: bool,
+}
 
 /// Type alias for the boxed future returned by `collect_stream`.
 /// This reduces type complexity and improves readability.
@@ -113,6 +121,8 @@ pub struct MethodJsonSchema {
     pub args_schema: String,
     /// JSON Schema for method result (None for unstructured output)
     pub result_schema: Option<String>,
+    /// JSON Schema for feed data (None when feed is not supported)
+    pub feed_data_schema: Option<String>,
 }
 
 impl MethodJsonSchema {
@@ -124,6 +134,7 @@ impl MethodJsonSchema {
         proto::jobworkerp::data::MethodJsonSchema {
             args_schema: self.args_schema.clone(),
             result_schema: self.result_schema.clone(),
+            feed_data_schema: self.feed_data_schema.clone(),
         }
     }
 
@@ -205,11 +216,43 @@ impl MethodJsonSchema {
                     }
                 };
 
+                // feed_data_proto → feed_data JSON Schema
+                let feed_data_schema = if !proto_schema.need_feed {
+                    None
+                } else {
+                    proto_schema.feed_data_proto.as_ref().and_then(|fdp| {
+                        if fdp.is_empty() {
+                            None
+                        } else {
+                            match ProtobufDescriptor::new(fdp) {
+                                Ok(descriptor) => {
+                                    descriptor.get_messages().first().and_then(|msg_desc| {
+                                        let json_schema =
+                                            ProtobufDescriptor::message_descriptor_to_json_schema(
+                                                msg_desc,
+                                            );
+                                        serde_json::to_string(&json_schema).ok()
+                                    })
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to convert feed_data_proto to JSON Schema for method '{}': {:?}",
+                                        method_name,
+                                        e
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                    })
+                };
+
                 Some((
                     method_name,
                     MethodJsonSchema {
                         args_schema,
                         result_schema,
+                        feed_data_schema,
                     },
                 ))
             })
@@ -352,6 +395,17 @@ pub trait RunnerTrait: RunnerSpec + Send + Sync {
         metadata: HashMap<String, String>,
         using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>>;
+
+    /// Whether this runner supports feed data for the given method
+    fn supports_feed(&self, _using: Option<&str>) -> bool {
+        false
+    }
+
+    /// Set up a feed channel for receiving data during streaming execution.
+    /// Returns a Sender that the infrastructure layer will use to deliver feed data.
+    fn setup_feed_channel(&mut self, _using: Option<&str>) -> Option<mpsc::Sender<FeedData>> {
+        None
+    }
 }
 
 // NOTE: UsingRunner trait has been removed.

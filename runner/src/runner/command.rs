@@ -186,6 +186,7 @@ impl RunnerSpec for CommandRunnerImpl {
                     .to_string(),
                 description: Some("Execute shell command".to_string()),
                 output_type: StreamingOutputType::Both as i32,
+                ..Default::default()
             },
         );
         schemas

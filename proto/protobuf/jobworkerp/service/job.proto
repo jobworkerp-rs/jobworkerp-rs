@@ -39,12 +39,39 @@ message JobRequest {
   optional string using = 8;
 }
 
+// # FeedToStream Request
+// Send feed data to a running streaming job
+message FeedToStreamRequest {
+  // Target job ID
+  jobworkerp.data.JobId job_id = 1;
+  // Feed data payload (protobuf serialized if feed_data_proto is defined)
+  bytes data = 2;
+  // Signal that this is the final feed data chunk
+  bool is_final = 3;
+}
+
+// # FeedToStream Response
+// Acknowledgement for feed data delivery
+// NOTE: accepted is always true on success; errors are returned via gRPC Status.
+// Retained for proto3 cost-free extensibility.
+message FeedToStreamResponse { bool accepted = 1; }
+
 service JobService {
   rpc Enqueue(JobRequest) returns (CreateJobResponse);
   // Direct response only, JobResult on metadata header of grpc response
   // TODO Now support only for worker with storage_type: Scalable
   rpc EnqueueForStream(JobRequest)
       returns (stream jobworkerp.data.ResultOutputItem);
+
+  // Send feed data to a running streaming job
+  //
+  // Prerequisites:
+  // - Job must be in RUNNING status
+  // - Worker must have streaming_type != NONE
+  // - Worker must have use_static = true
+  // - Runner method must have need_feed = true
+  // - Channel concurrency must be 1
+  rpc FeedToStream(FeedToStreamRequest) returns (FeedToStreamResponse);
 
   // Delete/Cancel job
   //

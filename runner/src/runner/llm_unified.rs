@@ -97,6 +97,7 @@ impl RunnerSpec for LLMUnifiedRunnerSpecImpl {
                 .to_string(),
                 description: Some("Generate text completion using LLM".to_string()),
                 output_type: StreamingOutputType::Both as i32,
+                ..Default::default()
             },
         );
 
@@ -114,6 +115,7 @@ impl RunnerSpec for LLMUnifiedRunnerSpecImpl {
                     "Generate chat response using LLM with conversation history".to_string(),
                 ),
                 output_type: StreamingOutputType::Both as i32,
+                ..Default::default()
             },
         );
 

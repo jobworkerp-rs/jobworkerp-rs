@@ -1,3 +1,4 @@
+pub mod feed_bridge;
 pub mod map;
 pub mod pool;
 pub mod result;
@@ -8,17 +9,19 @@ mod integration_tests;
 
 use self::map::UseRunnerPoolMap;
 use self::result::RunnerResultHandler;
-use self::stream_guard::{StreamWithCancelGuard, StreamWithPoolGuard};
+use self::stream_guard::{StreamWithCancelGuard, StreamWithFeedGuard, StreamWithPoolGuard};
 use anyhow::Result;
 use anyhow::anyhow;
 use app_wrapper::runner::UseRunnerFactory;
 use async_trait::async_trait;
 use command_utils::trace::Tracing;
 use command_utils::util::datetime;
+use dashmap::DashMap;
 use futures::{future::FutureExt, stream::BoxStream};
 use infra::infra::UseIdGenerator;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_runner::runner::FeedData;
 use jobworkerp_runner::runner::cancellation::CancellableRunner;
 use proto::jobworkerp::data::JobResult;
 use proto::jobworkerp::data::JobResultId;
@@ -28,8 +31,17 @@ use proto::jobworkerp::data::{
 };
 use result::ResultOutputEnum;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::{panic::AssertUnwindSafe, time::Duration};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tracing;
+
+/// Feed registration result: (bridge_handle, store_cleanup_info)
+pub type FeedRegistration = (
+    Option<JoinHandle<()>>,
+    Option<(i64, Arc<DashMap<i64, mpsc::Sender<FeedData>>>)>,
+);
 
 // execute runner
 #[async_trait]
@@ -43,6 +55,18 @@ pub trait JobRunner:
     + Send
     + Sync
 {
+    /// Register a feed sender for a running job.
+    /// Returns (bridge_handle, store_cleanup) for StreamWithFeedGuard.
+    /// Default: no-op (returns None). Dispatchers override to register in
+    /// ChanFeedSenderStore (Standalone) or spawn Redis bridge (Scalable).
+    fn register_feed_sender(
+        &self,
+        _job_id: i64,
+        _sender: mpsc::Sender<FeedData>,
+    ) -> Option<FeedRegistration> {
+        None
+    }
+
     //#[tracing::instrument(name = "JobRunner", skip(self))]
     #[inline]
     async fn run_job(
@@ -79,14 +103,62 @@ pub trait JobRunner:
                         // Streaming: Keep Pool Object for later return
                         let mut r = runner.lock().await;
                         tracing::debug!("static runner found (streaming): {:?}", r.name());
+
+                        // Check feed support and set up feed channel
+                        let using = job.data.as_ref().and_then(|d| d.using.clone());
+                        let using_ref = using.as_deref();
+                        let feed_sender = if r.supports_feed(using_ref) {
+                            r.setup_feed_channel(using_ref)
+                        } else {
+                            None
+                        };
+
+                        let job_id_value = job.id.as_ref().map(|id| id.value);
+
+                        // Register feed sender before run_job_inner to avoid race condition
+                        // where the client subscribes via FeedToStream before registration.
+                        let feed_registration = match (feed_sender, job_id_value) {
+                            (Some(sender), Some(id)) => self.register_feed_sender(id, sender),
+                            (Some(_), None) => {
+                                tracing::warn!(
+                                    "Feed sender available but job has no ID; skipping feed registration"
+                                );
+                                None
+                            }
+                            _ => None,
+                        };
+
                         let (job_result, stream) =
                             self.run_job_inner(worker_data, job, &mut r).await;
                         drop(r); // unlock
 
-                        let final_stream = stream.map(|stream| {
-                            Box::pin(StreamWithPoolGuard::new(stream, runner))
-                                as BoxStream<'static, _>
-                        });
+                        let final_stream = match (stream, feed_registration) {
+                            (Some(stream), Some((bridge_handle, store_cleanup))) => {
+                                let pool_stream = Box::pin(StreamWithPoolGuard::new(stream, runner))
+                                    as BoxStream<'static, _>;
+                                Some(Box::pin(StreamWithFeedGuard::new(
+                                    pool_stream,
+                                    bridge_handle,
+                                    store_cleanup,
+                                )) as BoxStream<'static, _>)
+                            }
+                            (Some(stream), None) => {
+                                Some(Box::pin(StreamWithPoolGuard::new(stream, runner))
+                                    as BoxStream<'static, _>)
+                            }
+                            (None, Some((bridge_handle, store_cleanup))) => {
+                                // Stream creation failed but feed resources were registered:
+                                // clean up to avoid resource leaks.
+                                if let Some(handle) = bridge_handle {
+                                    handle.abort();
+                                }
+                                if let Some((job_id, store)) = store_cleanup {
+                                    store.remove(&job_id);
+                                }
+                                None
+                            }
+                            (None, None) => None,
+                        };
 
                         (job_result, final_stream)
                     } else {

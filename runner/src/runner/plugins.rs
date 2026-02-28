@@ -316,6 +316,25 @@ pub trait MultiMethodPluginRunner: Send + Sync {
         schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
     }
 
+    /// Whether this plugin supports feed data for the given method
+    fn supports_feed(&self, _using: Option<&str>) -> bool {
+        false
+    }
+
+    /// Proto definition for feed data of the given method
+    fn feed_data_proto(&self, _using: Option<&str>) -> Option<String> {
+        None
+    }
+
+    /// Set up a feed channel for receiving raw bytes during streaming execution.
+    /// The wrapper layer bridges this to FeedData by spawning an adapter task.
+    fn setup_feed_channel(
+        &mut self,
+        _using: Option<&str>,
+    ) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
+        None
+    }
+
     /// Collect streaming output into a single result
     ///
     /// Default implementation: keeps only the last data chunk

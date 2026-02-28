@@ -460,6 +460,7 @@ pub struct ChanJobDispatcherImpl {
     runner_factory: Arc<RunnerFactory>,
     runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
+    feed_sender_store: Arc<infra::infra::feed::chan::ChanFeedSenderStore>,
 }
 
 impl ChanJobDispatcherImpl {
@@ -477,6 +478,7 @@ impl ChanJobDispatcherImpl {
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
+        feed_sender_store: Arc<infra::infra::feed::chan::ChanFeedSenderStore>,
     ) -> Self {
         Self {
             id_generator,
@@ -489,7 +491,13 @@ impl ChanJobDispatcherImpl {
             runner_factory,
             runner_pool_map,
             result_processor,
+            feed_sender_store,
         }
+    }
+
+    /// Get the feed sender store for external access (e.g., from gRPC handler).
+    pub fn feed_sender_store(&self) -> &Arc<infra::infra::feed::chan::ChanFeedSenderStore> {
+        &self.feed_sender_store
     }
 }
 
@@ -520,7 +528,17 @@ impl UseRunnerPoolMap for ChanJobDispatcherImpl {
     }
 }
 impl Tracing for ChanJobDispatcherImpl {}
-impl JobRunner for ChanJobDispatcherImpl {}
+impl JobRunner for ChanJobDispatcherImpl {
+    fn register_feed_sender(
+        &self,
+        job_id: i64,
+        sender: tokio::sync::mpsc::Sender<jobworkerp_runner::runner::FeedData>,
+    ) -> Option<super::super::runner::FeedRegistration> {
+        // Standalone mode: register sender directly in feed store
+        self.feed_sender_store.register(job_id, sender);
+        Some((None, Some((job_id, self.feed_sender_store.store().clone()))))
+    }
+}
 
 impl UseIdGenerator for ChanJobDispatcherImpl {
     fn id_generator(&self) -> &IdGeneratorWrapper {

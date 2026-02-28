@@ -2,9 +2,9 @@ use crate::proto::jobworkerp::data::{Priority, ResultOutputItem};
 use crate::proto::jobworkerp::service::job_request::Worker;
 use crate::proto::jobworkerp::service::job_service_server::JobService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, CreateJobResponse, FindListRequest,
-    FindListWithProcessingStatusRequest, FindQueueListRequest, JobAndStatus, JobRequest,
-    OptionalJobResponse, SuccessResponse,
+    CountCondition, CountResponse, CreateJobResponse, FeedToStreamRequest, FeedToStreamResponse,
+    FindListRequest, FindListWithProcessingStatusRequest, FindQueueListRequest, JobAndStatus,
+    JobRequest, OptionalJobResponse, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::job::JobApp;
@@ -493,6 +493,35 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         let _s = Self::trace_request("job", "count", &request);
         match self.app().count().await {
             Ok(res) => Ok(Response::new(CountResponse { total: res })),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "feed_to_stream"))]
+    async fn feed_to_stream(
+        &self,
+        request: tonic::Request<FeedToStreamRequest>,
+    ) -> Result<tonic::Response<FeedToStreamResponse>, tonic::Status> {
+        let _s = Self::trace_request("job", "feed_to_stream", &request);
+        let req = request.into_inner();
+
+        let job_id = req
+            .job_id
+            .ok_or_else(|| tonic::Status::invalid_argument("job_id is required"))?;
+
+        if req.data.is_empty() && !req.is_final {
+            return Err(tonic::Status::invalid_argument(
+                "data must not be empty unless is_final is true",
+            ));
+        }
+
+        match self
+            .app()
+            .feed_to_stream(&job_id, req.data, req.is_final)
+            .await
+        {
+            Ok(()) => Ok(Response::new(FeedToStreamResponse { accepted: true })),
             Err(e) => Err(handle_error(&e)),
         }
     }

@@ -318,6 +318,7 @@ impl RunnerSpec for McpServerRunnerImpl {
                         result_proto: info.result_proto_schema.clone(),
                         description: info.description.clone(),
                         output_type: StreamingOutputType::Both as i32,
+                        ..Default::default()
                     },
                 )
             })
@@ -340,7 +341,7 @@ impl RunnerSpec for McpServerRunnerImpl {
                             McpServerResult,
                             "mcp_server_output_schema"
                         ),
-                        // Note: description is not cached - retrieve from method_proto_map instead
+                        feed_data_schema: None,
                     },
                 )
             })

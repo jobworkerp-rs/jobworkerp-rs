@@ -7,6 +7,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use futures::stream::BoxStream;
+use infra::infra::feed::FeedPublisher;
 use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::queue::chan::{
     ChanJobQueueRepository, ChanJobQueueRepositoryImpl, UseChanJobQueueRepository,
@@ -48,6 +49,7 @@ pub struct RdbChanJobAppImpl {
     job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
     // RDBインデックス専用Repository（独立、Option型でデフォルト無効）
     job_status_index_repository: Option<Arc<RdbJobProcessingStatusIndexRepository>>,
+    feed_publisher: Arc<dyn FeedPublisher>,
 }
 
 impl std::fmt::Debug for RdbChanJobAppImpl {
@@ -72,6 +74,7 @@ impl std::fmt::Debug for RdbChanJobAppImpl {
                     .map(|_| "Some(Arc<RdbJobProcessingStatusIndexRepository>)")
                     .unwrap_or("None"),
             )
+            .field("feed_publisher", &self.feed_publisher)
             .finish()
     }
 }
@@ -92,6 +95,7 @@ impl RdbChanJobAppImpl {
         worker_app: Arc<dyn WorkerApp + 'static>,
         job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
         job_status_index_repository: Option<Arc<RdbJobProcessingStatusIndexRepository>>,
+        feed_publisher: Arc<dyn FeedPublisher>,
     ) -> Self {
         Self {
             app_config_module,
@@ -107,6 +111,7 @@ impl RdbChanJobAppImpl {
             job_cache_ttl: Self::JOB_DEFAULT_TTL,
             job_queue_cancellation_repository,
             job_status_index_repository,
+            feed_publisher,
         }
     }
 
@@ -1110,6 +1115,27 @@ impl JobApp for RdbChanJobAppImpl {
         }
     }
 
+    async fn feed_to_stream(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
+        let job = self.find_job(job_id).await?.ok_or_else(|| {
+            JobWorkerError::NotFound(format!("job not found: id={}", job_id.value))
+        })?;
+        let status = self
+            .job_processing_status_repository()
+            .find_status(job_id)
+            .await?;
+        super::validate_and_publish_feed(
+            &job,
+            status,
+            self.worker_app().as_ref(),
+            self.worker_config(),
+            self.feed_publisher.as_ref(),
+            job_id,
+            data,
+            is_final,
+        )
+        .await
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -1415,6 +1441,8 @@ mod tests {
         let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
             Arc::new(repositories.chan_job_queue_repository.clone());
 
+        let feed_publisher: Arc<dyn FeedPublisher> =
+            Arc::new(infra::infra::feed::chan::ChanFeedSenderStore::new());
         Ok((
             RdbChanJobAppImpl::new(
                 config_module,
@@ -1423,6 +1451,7 @@ mod tests {
                 Arc::new(worker_app),
                 job_queue_cancellation_repository,
                 None, // RDB indexing disabled for test
+                feed_publisher,
             ),
             subscrber,
         ))

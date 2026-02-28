@@ -112,6 +112,7 @@ impl RunnerSpec for RequestRunner {
                 .to_string(),
                 description: Some("Execute HTTP request".to_string()),
                 output_type: StreamingOutputType::Both as i32,
+                ..Default::default()
             },
         );
         schemas

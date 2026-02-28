@@ -44,6 +44,7 @@ pub trait CreateWorkflowRunnerSpec {
                 .to_string(),
                 description: Some("Create and register new workflow definition".to_string()),
                 output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
         schemas
