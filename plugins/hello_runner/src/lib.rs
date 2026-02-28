@@ -34,6 +34,10 @@ pub struct HelloPlugin {
     running: Arc<Mutex<bool>>,
     stream: Arc<Mutex<BoxStream<'static, Vec<u8>>>>,
     args: HelloArgs,
+    // Feed support fields for "feed_hello" method
+    feed_rx: Option<mpsc::Receiver<Vec<u8>>>,
+    feed_greeting_sent: bool,
+    feed_using: bool,
 }
 
 impl Default for HelloPlugin {
@@ -53,6 +57,9 @@ impl HelloPlugin {
             args: HelloArgs {
                 arg: "".to_string(),
             },
+            feed_rx: None,
+            feed_greeting_sent: false,
+            feed_using: false,
         }
     }
     pub async fn hello(&self, arg: &[u8]) -> Result<Vec<u8>> {
@@ -79,6 +86,38 @@ impl HelloPlugin {
         }
         .encode_to_vec())
     }
+    /// Receive stream chunks for feed_hello method.
+    /// First call emits greeting, subsequent calls forward feed channel data.
+    fn receive_feed_stream(&mut self) -> Result<Option<Vec<u8>>> {
+        if !self.feed_greeting_sent {
+            self.feed_greeting_sent = true;
+            let greeting = format!("Hello {}! ", self.args.arg);
+            return Ok(Some(HelloRunnerResult { data: greeting }.encode_to_vec()));
+        }
+        // Read from feed channel
+        self.rt.block_on(async {
+            if let Some(rx) = &mut self.feed_rx {
+                match rx.recv().await {
+                    Some(data) => {
+                        let args = HelloArgs::decode(data.as_slice()).unwrap_or(HelloArgs {
+                            arg: String::from_utf8_lossy(&data).to_string(),
+                        });
+                        Ok(Some(HelloRunnerResult { data: args.arg }.encode_to_vec()))
+                    }
+                    None => {
+                        // Channel closed, end stream
+                        self.feed_using = false;
+                        self.feed_rx = None;
+                        Ok(None)
+                    }
+                }
+            } else {
+                // No feed channel, end stream
+                Ok(None)
+            }
+        })
+    }
+
     pub async fn async_run(hello_name: String) -> Result<BoxStream<'static, Vec<u8>>> {
         let (tx, rx) = mpsc::channel(100);
         // heavy task
@@ -142,10 +181,17 @@ impl MultiMethodPluginRunner for HelloPlugin {
         &mut self,
         arg: Vec<u8>,
         _metadata: HashMap<String, String>,
-        _using: Option<&str>,
+        using: Option<&str>,
     ) -> Result<()> {
         // decode the arguments
         self.args = HelloArgs::decode(arg.as_slice())?;
+        if using == Some("feed_hello") {
+            // For feed_hello, just save args and reset greeting flag
+            self.feed_using = true;
+            self.feed_greeting_sent = false;
+            return Ok(());
+        }
+        self.feed_using = false;
         // process the arguments (dummy)
         self.rt
             .block_on(async { tokio::time::sleep(Duration::from_millis(200)).await });
@@ -155,6 +201,9 @@ impl MultiMethodPluginRunner for HelloPlugin {
     where
         Self: Send + 'static,
     {
+        if self.feed_using {
+            return self.receive_feed_stream();
+        }
         self.rt.block_on(async {
             {
                 // setup running stream if not running
@@ -176,6 +225,28 @@ impl MultiMethodPluginRunner for HelloPlugin {
             Ok(res)
         })
     }
+    fn supports_feed(&self, using: Option<&str>) -> bool {
+        using == Some("feed_hello")
+    }
+
+    fn feed_data_proto(&self, using: Option<&str>) -> Option<String> {
+        if using == Some("feed_hello") {
+            Some(include_str!("../protobuf/hello_job_args.proto").to_string())
+        } else {
+            None
+        }
+    }
+
+    fn setup_feed_channel(&mut self, using: Option<&str>) -> Option<mpsc::Sender<Vec<u8>>> {
+        if using != Some("feed_hello") {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel(32);
+        self.feed_rx = Some(rx);
+        self.feed_greeting_sent = false;
+        Some(tx)
+    }
+
     fn cancel(&mut self) -> bool {
         // cancel the running task
         // *self.running.lock().unwrap() = false;
@@ -202,6 +273,17 @@ impl MultiMethodPluginRunner for HelloPlugin {
                 description: Some("Hello world plugin execution".to_string()),
                 output_type: proto::jobworkerp::data::StreamingOutputType::Both as i32,
                 ..Default::default()
+            },
+        );
+        schemas.insert(
+            "feed_hello".to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../protobuf/hello_job_args.proto").to_string(),
+                result_proto: include_str!("../protobuf/hello_result.proto").to_string(),
+                description: Some("Hello with feed support".to_string()),
+                output_type: proto::jobworkerp::data::StreamingOutputType::Both as i32,
+                need_feed: true,
+                feed_data_proto: Some(include_str!("../protobuf/hello_job_args.proto").to_string()),
             },
         );
         schemas
