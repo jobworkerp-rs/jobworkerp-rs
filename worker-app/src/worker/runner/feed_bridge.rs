@@ -1,4 +1,5 @@
 use futures::StreamExt;
+use infra_utils::infra::redis::RedisClient;
 use jobworkerp_runner::runner::FeedData;
 use proto::jobworkerp::data::JobId;
 use tokio::sync::mpsc;
@@ -16,7 +17,7 @@ const INITIAL_RETRY_DELAY_MS: u64 = 100;
 ///
 /// Returns a JoinHandle that can be aborted when the stream ends.
 pub fn spawn_redis_feed_bridge(
-    redis_client: &redis::Client,
+    redis_client: &RedisClient,
     job_id: &JobId,
     feed_sender: mpsc::Sender<FeedData>,
 ) -> tokio::task::JoinHandle<()> {
