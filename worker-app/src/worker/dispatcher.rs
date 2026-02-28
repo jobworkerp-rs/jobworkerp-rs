@@ -273,6 +273,11 @@ impl JobDispatcherFactory {
             // }
             (StorageType::Standalone, Some(rdb_chan_repositories), _) => {
                 let rdb_job_repository = Arc::new(rdb_chan_repositories.job_repository.clone());
+                // Use the shared ChanFeedSenderStore from AppModule so that
+                // gRPC handler (publish) and runner (register) operate on the same instance.
+                let feed_store = app_module.feed_sender_store.clone().unwrap_or_else(|| {
+                    Arc::new(infra::infra::feed::chan::ChanFeedSenderStore::new())
+                });
                 Box::new(RdbChanJobDispatcherImpl {
                     rdb_job_dispatcher: RdbJobDispatcherImpl::new(
                         id_generator.clone(),
@@ -282,6 +287,7 @@ impl JobDispatcherFactory {
                         runner_factory.clone(),
                         runner_pool_map.clone(),
                         result_processor.clone(),
+                        feed_store.clone(),
                     ),
                     chan_job_dispatcher: ChanJobDispatcherImpl::new(
                         id_generator,
@@ -298,6 +304,7 @@ impl JobDispatcherFactory {
                         runner_factory,
                         runner_pool_map,
                         result_processor,
+                        feed_store,
                     ),
                 })
             }
@@ -311,6 +318,13 @@ impl JobDispatcherFactory {
                         runner_factory.clone(),
                         runner_pool_map.clone(),
                         result_processor.clone(),
+                        // TODO: In Scalable mode, ChanFeedSenderStore is in-process only and
+                        // won't receive feed data from gRPC handlers using RedisFeedPublisher.
+                        // If a periodic/RDB-dispatched job uses feed, the ChanFeedSenderStore
+                        // will have no registered senders from the gRPC side, causing publish_feed
+                        // to return "No feed channel registered" errors. To fix this, RDB dispatcher
+                        // should use RedisJobDispatcherImpl's Redis-based feed bridge instead.
+                        Arc::new(infra::infra::feed::chan::ChanFeedSenderStore::new()),
                     ),
                     redis_job_dispatcher: RedisJobDispatcherImpl::new(
                         id_generator,

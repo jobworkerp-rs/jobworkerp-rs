@@ -368,6 +368,88 @@ impl MultiMethodPluginRunner for MyPlugin {
 }
 ```
 
+## Feed サポート (FeedToStream)
+
+プラグインは `FeedToStream` gRPC RPC を通じて、ストリーミング実行中にクライアントから追加データを受け取ることができます。リアルタイム音声処理など、クライアントが音声チャンクを送信しながら Runner が処理・結果を返すようなシナリオで有用です。
+
+### 前提条件
+
+プラグインで feed を使用するには以下の条件が必要です：
+
+- Worker が `use_static=true` であること（Runner インスタンスがプールされる）
+- Worker のチャネル concurrency が 1 であること
+- プラグインの `MethodSchema` で `need_feed=true` が設定されていること
+
+### 実装方法
+
+`MultiMethodPluginRunner` の以下のメソッドをオーバーライドします：
+
+```rust
+impl MultiMethodPluginRunner for MyFeedPlugin {
+    fn supports_feed(&self, _using: Option<&str>) -> bool {
+        true
+    }
+
+    fn feed_data_proto(&self, _using: Option<&str>) -> Option<String> {
+        // 任意: feed データ用の protobuf スキーマ
+        // None を返すと feed データは生バイト列として扱われます
+        Some(r#"syntax = "proto3"; message AudioChunk { bytes pcm = 1; }"#.to_string())
+    }
+
+    fn setup_feed_channel(
+        &mut self,
+        _using: Option<&str>,
+    ) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        self.feed_rx = Some(rx);
+        Some(tx)
+    }
+
+    fn method_proto_map(&self) -> HashMap<String, MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert("run".to_string(), MethodSchema {
+            args_proto: "...".to_string(),
+            result_proto: "...".to_string(),
+            description: Some("Feed対応ストリーミングメソッド".to_string()),
+            output_type: Some(StreamingOutputType::Streaming as i32),
+            need_feed: Some(true),        // FeedToStream RPC を有効化
+            feed_data_proto: Some("...".to_string()), // 任意のスキーマ
+        });
+        schemas
+    }
+
+    // receive_stream() 内で feed データを非ブロッキングで読み取り:
+    fn receive_stream(&mut self) -> Result<Option<Vec<u8>>> {
+        let rt = self.rt.as_ref().unwrap();
+        rt.block_on(async {
+            // feed データを確認
+            if let Some(ref mut rx) = self.feed_rx {
+                while let Ok(data) = rx.try_recv() {
+                    self.buffer.extend_from_slice(&data);
+                }
+            }
+            // バッファのデータを処理して出力を返す
+            // ストリーム完了時は None を返す
+            Ok(self.process_buffer())
+        })
+    }
+    // ...
+}
+```
+
+### 動作の仕組み
+
+1. `begin_stream()` の前に `setup_feed_channel()` が呼ばれ、プラグインは `Receiver` を保持します
+2. クライアントが `job_id` を指定して `FeedToStream` RPC で feed データを送信します
+3. データはプラグインの `mpsc::Receiver` に到達します（直接チャネルまたは Redis ブリッジ経由）
+4. プラグインは `receive_stream()` 内で `try_recv()` を使い非ブロッキングで受信します
+5. `is_final=true` が送信されると、チャネルの `Sender` が drop され、`try_recv()` が `Disconnected` を返します
+
+> [!IMPORTANT]
+> Feed データは `Vec<u8>` として配信されます（`FeedData` ではありません）。`is_final` フラグはブリッジ層で処理され、`is_final=true` 時に `Sender` が drop されることで feed の終了をプラグインに通知します。
+
+詳細な仕様は `docs/feed-stream-spec.md` を参照してください。
+
 ## ビルド
 
 リリースモードでビルドします：

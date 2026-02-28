@@ -221,6 +221,7 @@ async fn redis_test() -> Result<()> {
                         result_proto: "hoge7".to_string(),
                         description: Some("test method".to_string()),
                         output_type: StreamingOutputType::NonStreaming as i32,
+                        ..Default::default()
                     },
                 );
                 map
@@ -256,6 +257,7 @@ async fn redis_test() -> Result<()> {
                     result_proto: "hoge7".to_string(),
                     description: Some("test method".to_string()),
                     output_type: StreamingOutputType::NonStreaming as i32,
+                    ..Default::default()
                 },
             );
             map

@@ -156,6 +156,68 @@ When using `use_static=true` on workers (e.g., for local LLMs), the runner insta
 
 This ensures that heavy resources like local LLM models are not re-initialized for each job.
 
+## FeedToStream: Sending Data to Running Streaming Jobs
+
+The `FeedToStream` RPC allows clients to send additional data to a running streaming job. This enables interactive streaming scenarios such as real-time audio processing, where the client feeds audio chunks while the runner processes and returns results.
+
+### Prerequisites
+
+For a job to accept feed data, all of the following must be true:
+
+| Condition | Reason |
+|-----------|--------|
+| Job is in `Running` status | Feed is only meaningful during execution |
+| `streaming_type != None` | Runner must be using `run_stream()` |
+| Worker has `use_static=true` | Runner instance must be pooled and persistent |
+| Channel concurrency = 1 | Feed target runner must be unambiguous |
+| Runner method has `need_feed=true` | Runner must explicitly support feed |
+
+### Protocol
+
+```protobuf
+// In JobService
+rpc FeedToStream(FeedToStreamRequest) returns (FeedToStreamResponse);
+
+message FeedToStreamRequest {
+  jobworkerp.data.JobId job_id = 1;  // Target job (from EnqueueForStream response header)
+  bytes data = 2;                     // Feed data payload
+  bool is_final = 3;                  // Signal end of feed
+}
+
+message FeedToStreamResponse {
+  bool accepted = 1;
+}
+```
+
+### Usage Flow
+
+```text
+1. EnqueueForStream(worker_id, args) → job_id (from response header x-job-id-bin)
+   ↓ (output stream starts)
+2. FeedToStream(job_id, data_chunk_1, is_final=false)
+3. FeedToStream(job_id, data_chunk_2, is_final=false)
+4. FeedToStream(job_id, last_chunk, is_final=true)
+   ↓ (runner processes final data, output stream ends)
+5. Client receives remaining output and End trailer
+```
+
+### Data Transport
+
+- **Scalable mode (Redis)**: Feed data is published via Redis Pub/Sub (`job_feed:{job_id}`), and a bridge task on the worker subscribes and forwards to the runner's `mpsc` channel.
+- **Standalone mode (Channel)**: Feed data is sent directly via an in-process `mpsc` channel stored in `ChanFeedSenderStore`.
+
+### Error Cases
+
+| Case | gRPC Status |
+|------|-------------|
+| Job not found | `NOT_FOUND` |
+| Job not running | `FAILED_PRECONDITION` |
+| Job not streaming | `FAILED_PRECONDITION` |
+| Runner method lacks `need_feed=true` | `FAILED_PRECONDITION` |
+| Feed channel unavailable (job completed) | `INTERNAL` |
+
+For detailed specification, see `docs/feed-stream-spec.md`.
+
 ## Implementation Notes
 
 ### Race Condition Prevention

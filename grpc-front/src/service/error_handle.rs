@@ -66,6 +66,10 @@ fn map_jobworker_error(err: &JobWorkerError) -> tonic::Status {
             tracing::debug!("invalid parameter: {}", msg);
             tonic::Status::invalid_argument(msg)
         }
+        JobWorkerError::FailedPrecondition(msg) => {
+            tracing::debug!("failed precondition: {}", msg);
+            tonic::Status::failed_precondition(msg)
+        }
         JobWorkerError::TimeoutError(msg) => {
             tracing::debug!("timeout: {}", msg);
             tonic::Status::deadline_exceeded(msg)

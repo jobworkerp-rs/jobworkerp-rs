@@ -93,6 +93,8 @@ pub struct AppModule {
     pub function_app: Arc<FunctionAppImpl>,
     pub descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     pub workflow_loader: Arc<infra::workflow::WorkflowLoader>,
+    /// Shared ChanFeedSenderStore for Standalone mode (None in Scalable mode)
+    pub feed_sender_store: Option<Arc<infra::infra::feed::chan::ChanFeedSenderStore>>,
 }
 
 impl AppModule {
@@ -109,6 +111,7 @@ impl AppModule {
         function_app: Arc<FunctionAppImpl>,
         descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         workflow_loader: Arc<infra::workflow::WorkflowLoader>,
+        feed_sender_store: Option<Arc<infra::infra::feed::chan::ChanFeedSenderStore>>,
     ) -> Self {
         Self {
             config_module,
@@ -121,6 +124,7 @@ impl AppModule {
             function_app,
             descriptor_cache,
             workflow_loader,
+            feed_sender_store,
         }
     }
     pub async fn new_by_env(config_module: Arc<AppConfigModule>) -> Result<Self> {
@@ -183,6 +187,10 @@ impl AppModule {
                 let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
                     Arc::new(repositories.chan_job_queue_repository.clone());
 
+                let feed_sender_store =
+                    Arc::new(infra::infra::feed::chan::ChanFeedSenderStore::new());
+                let feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher> =
+                    feed_sender_store.clone();
                 let job_app = Arc::new(RdbChanJobAppImpl::new(
                     config_module.clone(),
                     id_generator.clone(),
@@ -192,6 +200,7 @@ impl AppModule {
                     repositories
                         .rdb_job_processing_status_index_repository
                         .clone(),
+                    feed_publisher,
                 ));
                 let workflow_loader = Arc::new(create_workflow_loader()?);
                 let function_app = Arc::new(FunctionAppImpl::new(
@@ -225,6 +234,7 @@ impl AppModule {
                     function_app,
                     descriptor_cache,
                     workflow_loader,
+                    feed_sender_store: Some(feed_sender_store),
                 })
             }
             // TODO not used now (remove or implement later)
@@ -311,6 +321,10 @@ impl AppModule {
                     .rdb_job_processing_status_index_repository
                     .clone();
 
+                let feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher> =
+                    Arc::new(infra::infra::feed::redis::RedisFeedPublisher::new(
+                        repositories.redis_module.redis_client.clone(),
+                    ));
                 let job_app = Arc::new(HybridJobAppImpl::new(
                     config_module.clone(),
                     id_generator.clone(),
@@ -322,6 +336,7 @@ impl AppModule {
                     }),
                     job_queue_cancellation_repository,
                     job_status_index_repository,
+                    feed_publisher,
                 ));
                 let job_result_app = Arc::new(HybridJobResultAppImpl::new(
                     config_module.storage_config.clone(),
@@ -361,6 +376,7 @@ impl AppModule {
                     function_app,
                     descriptor_cache,
                     workflow_loader,
+                    feed_sender_store: None,
                 })
             }
         }
@@ -551,6 +567,10 @@ pub mod test {
             .rdb_job_processing_status_index_repository
             .clone();
 
+        let feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher> =
+            Arc::new(infra::infra::feed::redis::RedisFeedPublisher::new(
+                repositories.redis_module.redis_client.clone(),
+            ));
         let job_app = Arc::new(HybridJobAppImpl::new(
             app_config.clone(),
             id_generator.clone(),
@@ -559,6 +579,7 @@ pub mod test {
             job_memory_cache,
             job_queue_cancellation_repository,
             job_status_index_repository,
+            feed_publisher,
         ));
 
         let job_result_app = Arc::new(HybridJobResultAppImpl::new(
@@ -600,6 +621,7 @@ pub mod test {
             function_app,
             descriptor_cache,
             workflow_loader,
+            None, // Scalable mode: no shared ChanFeedSenderStore
         ))
     }
 
@@ -690,6 +712,8 @@ pub mod test {
             )),
         });
 
+        let feed_sender_store = Arc::new(infra::infra::feed::chan::ChanFeedSenderStore::new());
+        let feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher> = feed_sender_store.clone();
         let job_app = Arc::new(RdbChanJobAppImpl::new(
             config_module.clone(),
             id_generator.clone(),
@@ -697,6 +721,7 @@ pub mod test {
             worker_app.clone(),
             job_queue_cancellation_repository,
             job_status_index_repository,
+            feed_publisher,
         ));
 
         let job_result_app = Arc::new(RdbJobResultAppImpl::new(
@@ -754,6 +779,7 @@ pub mod test {
             function_app,
             descriptor_cache,
             workflow_loader,
+            Some(feed_sender_store),
         ))
     }
 

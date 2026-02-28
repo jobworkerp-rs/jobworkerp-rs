@@ -96,11 +96,25 @@ pub trait MethodJsonSchemaConverter {
                     .ok()
                 };
 
+                // feed_data_proto → feed_data JSON Schema
+                let feed_data_schema = if !proto_schema.need_feed {
+                    None
+                } else {
+                    proto_schema
+                        .feed_data_proto
+                        .as_deref()
+                        .filter(|fdp| !fdp.is_empty())
+                        .and_then(|fdp| {
+                            Self::proto_string_to_json_schema(fdp, method_name, "feed_data").ok()
+                        })
+                };
+
                 Some((
                     method_name.clone(),
                     MethodJsonSchema {
                         args_schema,
                         result_schema,
+                        feed_data_schema,
                     },
                 ))
             })
@@ -198,6 +212,7 @@ message TestResult {
                 .to_string(),
                 description: Some("Test method".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
 
@@ -237,6 +252,7 @@ message TestResult {
                 result_proto: "".to_string(),
                 description: None,
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
 
@@ -263,6 +279,7 @@ message FetchArgs {
                 result_proto: "".to_string(),
                 description: Some("Fetches content from URL".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
 
