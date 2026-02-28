@@ -214,7 +214,7 @@ message FeedToStreamResponse {
 | ジョブが実行中でない | `FAILED_PRECONDITION` |
 | ジョブがストリーミングでない | `FAILED_PRECONDITION` |
 | Runner メソッドに `need_feed=true` がない | `FAILED_PRECONDITION` |
-| feed チャネルが利用不可（ジョブ完了済み） | `UNAVAILABLE` |
+| feed チャネルが利用不可（ジョブ完了済み） | `INTERNAL` |
 
 詳細な仕様は `docs/feed-stream-spec.md` を参照してください。
 

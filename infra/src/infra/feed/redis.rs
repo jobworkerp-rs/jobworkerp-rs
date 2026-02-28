@@ -2,10 +2,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
 use futures::StreamExt;
-use infra_utils::infra::redis::{RedisClient, UseRedisClient};
+use infra_utils::infra::redis::RedisClient;
 use jobworkerp_runner::runner::FeedData;
 use prost::Message;
 use proto::jobworkerp::data::{FeedDataTransport, JobId};
+use redis::AsyncCommands;
 
 use super::{FeedPublisher, feed_data_from_transport, job_feed_pubsub_channel_name};
 
@@ -23,19 +24,17 @@ impl RedisFeedPublisher {
     }
 }
 
-impl UseRedisClient for RedisFeedPublisher {
-    fn redis_client(&self) -> &RedisClient {
-        &self.redis_client
-    }
-}
-
 #[async_trait]
 impl FeedPublisher for RedisFeedPublisher {
     async fn publish_feed(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
         let ch = job_feed_pubsub_channel_name(job_id);
         let msg = FeedDataTransport { data, is_final };
         let serialized = msg.encode_to_vec();
-        self.publish_multi_if_listen(&[ch], &serialized).await?;
+        // Use direct PUBLISH instead of publish_multi_if_listen to avoid
+        // race condition where subscriber count is 0 during bridge startup.
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        conn.publish::<&str, &Vec<u8>, ()>(ch.as_str(), &serialized)
+            .await?;
         Ok(())
     }
 }

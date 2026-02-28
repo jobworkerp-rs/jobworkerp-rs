@@ -279,7 +279,7 @@ pub(crate) async fn validate_and_publish_feed(
     // 4. Check channel concurrency == 1
     let concurrency = worker_config
         .get_concurrency(worker_data.channel.as_ref())
-        .unwrap_or(1);
+        .unwrap_or(worker_config.default_concurrency);
     if concurrency != 1 {
         return Err(JobWorkerError::FailedPrecondition(format!(
             "channel concurrency must be 1 for feed: channel={}, concurrency={}",

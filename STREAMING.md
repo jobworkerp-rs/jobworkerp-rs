@@ -214,7 +214,7 @@ message FeedToStreamResponse {
 | Job not running | `FAILED_PRECONDITION` |
 | Job not streaming | `FAILED_PRECONDITION` |
 | Runner method lacks `need_feed=true` | `FAILED_PRECONDITION` |
-| Feed channel unavailable (job completed) | `UNAVAILABLE` |
+| Feed channel unavailable (job completed) | `INTERNAL` |
 
 For detailed specification, see `docs/feed-stream-spec.md`.
 

@@ -320,7 +320,10 @@ impl JobDispatcherFactory {
                         result_processor.clone(),
                         // TODO: In Scalable mode, ChanFeedSenderStore is in-process only and
                         // won't receive feed data from gRPC handlers using RedisFeedPublisher.
-                        // Periodic/RDB jobs needing feed should use Redis Pub/Sub instead.
+                        // If a periodic/RDB-dispatched job uses feed, the ChanFeedSenderStore
+                        // will have no registered senders from the gRPC side, causing publish_feed
+                        // to return "No feed channel registered" errors. To fix this, RDB dispatcher
+                        // should use RedisJobDispatcherImpl's Redis-based feed bridge instead.
                         Arc::new(infra::infra::feed::chan::ChanFeedSenderStore::new()),
                     ),
                     redis_job_dispatcher: RedisJobDispatcherImpl::new(
