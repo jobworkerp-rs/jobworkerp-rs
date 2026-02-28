@@ -16,12 +16,17 @@ pub mod process_deque_job_cleanup_test;
 pub mod rdb_chan_cancellation_test;
 #[cfg(test)]
 pub mod rdb_chan_indexing_integration_test;
+#[cfg(test)]
+pub mod validate_feed_test;
 
 use super::JobBuilder;
+use super::worker::WorkerApp;
+use crate::app::WorkerConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use infra::infra::feed::FeedPublisher;
 use infra::infra::job_result::pubsub::JobResultPublisher;
 use infra::infra::{
     UseJobQueueConfig,
@@ -31,6 +36,7 @@ use infra::infra::{
         status::UseJobProcessingStatusRepository,
     },
 };
+use jobworkerp_base::error::JobWorkerError;
 use proto::calculate_direct_response_timeout_ms;
 use proto::jobworkerp::data::{
     Job, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
@@ -199,12 +205,129 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         limit: Option<&i32>,
     ) -> Result<Vec<Job>>;
 
+    /// Send feed data to a running streaming job
+    ///
+    /// Validates that the job is in the correct state for receiving feed data,
+    /// then publishes the data through the appropriate feed channel.
+    async fn feed_to_stream(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()>;
+
     /// Downcast to concrete type for testing internal methods
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
 pub trait UseJobApp {
     fn job_app(&self) -> &Arc<dyn JobApp + 'static>;
+}
+
+/// Validate feed preconditions and publish feed data to a running streaming job.
+///
+/// Shared implementation for `HybridJobAppImpl` and `RdbChanJobAppImpl`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn validate_and_publish_feed(
+    job: &Job,
+    job_status: Option<JobProcessingStatus>,
+    worker_app: &dyn WorkerApp,
+    worker_config: &WorkerConfig,
+    feed_publisher: &dyn FeedPublisher,
+    job_id: &JobId,
+    data: Vec<u8>,
+    is_final: bool,
+) -> Result<()> {
+    let job_data = job.data.as_ref().ok_or_else(|| {
+        JobWorkerError::InvalidParameter(format!("job has no data: id={}", job_id.value))
+    })?;
+
+    // 1. Check job is Running
+    if job_status != Some(JobProcessingStatus::Running) {
+        return Err(JobWorkerError::FailedPrecondition(format!(
+            "job is not in Running state: id={}, status={:?}",
+            job_id.value, job_status
+        ))
+        .into());
+    }
+
+    // 2. Check streaming_type != None
+    let streaming_type =
+        StreamingType::try_from(job_data.streaming_type).unwrap_or(StreamingType::None);
+    if streaming_type == StreamingType::None {
+        return Err(JobWorkerError::FailedPrecondition(format!(
+            "job is not a streaming job: id={}",
+            job_id.value
+        ))
+        .into());
+    }
+
+    // 3. Check worker's use_static == true
+    let worker_id = job_data.worker_id.as_ref().ok_or_else(|| {
+        JobWorkerError::InvalidParameter(format!("job has no worker_id: id={}", job_id.value))
+    })?;
+    let worker_data = worker_app
+        .find_data_by_opt(Some(worker_id))
+        .await?
+        .ok_or_else(|| {
+            JobWorkerError::NotFound(format!("worker not found: id={}", worker_id.value))
+        })?;
+
+    if !worker_data.use_static {
+        return Err(JobWorkerError::FailedPrecondition(format!(
+            "worker must have use_static=true for feed: worker_id={}",
+            worker_id.value
+        ))
+        .into());
+    }
+
+    // 4. Check channel concurrency == 1
+    let concurrency = worker_config
+        .get_concurrency(worker_data.channel.as_ref())
+        .unwrap_or(1);
+    if concurrency != 1 {
+        return Err(JobWorkerError::FailedPrecondition(format!(
+            "channel concurrency must be 1 for feed: channel={}, concurrency={}",
+            worker_data.channel.as_deref().unwrap_or("default"),
+            concurrency
+        ))
+        .into());
+    }
+
+    // 5. Check runner's need_feed
+    let runner_id = worker_data.runner_id.as_ref().ok_or_else(|| {
+        JobWorkerError::InvalidParameter(format!(
+            "worker has no runner_id: worker_id={}",
+            worker_id.value
+        ))
+    })?;
+    let runner_schema = worker_app
+        .runner_app()
+        .find_runner(runner_id)
+        .await?
+        .ok_or_else(|| {
+            JobWorkerError::NotFound(format!("runner not found: id={}", runner_id.value))
+        })?;
+    let runner_data = runner_schema.data.as_ref().ok_or_else(|| {
+        JobWorkerError::NotFound(format!("runner has no data: id={}", runner_id.value))
+    })?;
+
+    let method_name = job_data
+        .using
+        .as_deref()
+        .unwrap_or(proto::DEFAULT_METHOD_NAME);
+    let need_feed = runner_data
+        .method_proto_map
+        .as_ref()
+        .and_then(|m| m.schemas.get(method_name))
+        .map(|s| s.need_feed)
+        .unwrap_or(false);
+
+    if !need_feed {
+        return Err(JobWorkerError::FailedPrecondition(format!(
+            "runner method does not support feed: runner_id={}, method={}",
+            runner_id.value, method_name
+        ))
+        .into());
+    }
+
+    // All validations passed, publish feed data
+    feed_publisher.publish_feed(job_id, data, is_final).await
 }
 
 /// Spawn a background task to publish an End marker stream when a streaming job

@@ -366,6 +366,88 @@ impl MultiMethodPluginRunner for MyPlugin {
 }
 ```
 
+## Feed Support (FeedToStream)
+
+Plugins can accept additional data from clients during streaming execution via the `FeedToStream` gRPC RPC. This is useful for scenarios such as real-time audio processing where the client sends audio chunks while the runner processes and returns results.
+
+### Prerequisites
+
+For a plugin to support feed:
+
+- The worker must have `use_static=true` (runner instances are pooled)
+- The worker's channel concurrency must be 1
+- The plugin's `MethodSchema` must have `need_feed=true`
+
+### Implementation
+
+Override the following methods in `MultiMethodPluginRunner`:
+
+```rust
+impl MultiMethodPluginRunner for MyFeedPlugin {
+    fn supports_feed(&self, _using: Option<&str>) -> bool {
+        true
+    }
+
+    fn feed_data_proto(&self, _using: Option<&str>) -> Option<String> {
+        // Optional: protobuf schema for feed data
+        // Return None to treat feed data as raw bytes
+        Some(r#"syntax = "proto3"; message AudioChunk { bytes pcm = 1; }"#.to_string())
+    }
+
+    fn setup_feed_channel(
+        &mut self,
+        _using: Option<&str>,
+    ) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        self.feed_rx = Some(rx);
+        Some(tx)
+    }
+
+    fn method_proto_map(&self) -> HashMap<String, MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert("run".to_string(), MethodSchema {
+            args_proto: "...".to_string(),
+            result_proto: "...".to_string(),
+            description: Some("Feed-capable streaming method".to_string()),
+            output_type: Some(StreamingOutputType::Streaming as i32),
+            need_feed: Some(true),        // Enables FeedToStream RPC
+            feed_data_proto: Some("...".to_string()), // Optional schema
+        });
+        schemas
+    }
+
+    // In receive_stream(), read feed data non-blockingly:
+    fn receive_stream(&mut self) -> Result<Option<Vec<u8>>> {
+        let rt = self.rt.as_ref().unwrap();
+        rt.block_on(async {
+            // Check for feed data
+            if let Some(ref mut rx) = self.feed_rx {
+                while let Ok(data) = rx.try_recv() {
+                    self.buffer.extend_from_slice(&data);
+                }
+            }
+            // Process buffered data and return output
+            // Return None when stream is complete
+            Ok(self.process_buffer())
+        })
+    }
+    // ...
+}
+```
+
+### How It Works
+
+1. `setup_feed_channel()` is called before `begin_stream()` — the plugin stores the `Receiver`
+2. Client sends feed data via `FeedToStream` RPC with the `job_id`
+3. Data arrives at the plugin's `mpsc::Receiver` (via direct channel or Redis bridge)
+4. Plugin reads from the receiver in `receive_stream()` using `try_recv()` (non-blocking)
+5. When `is_final=true` is sent, the channel's `Sender` is dropped, and `try_recv()` returns `Disconnected`
+
+> [!IMPORTANT]
+> Feed data is delivered as `Vec<u8>` (not `FeedData`). The `is_final` flag is handled by the bridge layer — when `is_final=true`, the `Sender` is dropped, signaling end-of-feed to the plugin.
+
+For detailed specification, see `docs/feed-stream-spec.md`.
+
 ## Building
 
 Build your plugin in release mode:

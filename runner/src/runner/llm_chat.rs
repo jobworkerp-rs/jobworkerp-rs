@@ -45,6 +45,7 @@ pub trait LLMChatRunnerSpec {
                     "Generate chat response using LLM with conversation history".to_string(),
                 ),
                 output_type: proto::jobworkerp::data::StreamingOutputType::Both as i32,
+                ..Default::default()
             },
         );
         schemas

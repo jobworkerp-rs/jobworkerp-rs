@@ -43,6 +43,7 @@ pub trait LLMCompletionRunnerSpec {
                 .to_string(),
                 description: Some("Generate text completion using LLM".to_string()),
                 output_type: proto::jobworkerp::data::StreamingOutputType::Both as i32,
+                ..Default::default()
             },
         );
         schemas
@@ -58,6 +59,7 @@ pub trait LLMCompletionRunnerSpec {
                 result_schema: Some(
                     include_str!("../../schema/llm/LLMCompletionResult.json").to_string(),
                 ),
+                feed_data_schema: None,
             },
         );
         schemas

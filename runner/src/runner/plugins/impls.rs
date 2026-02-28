@@ -1,3 +1,4 @@
+use crate::runner::FeedData;
 use crate::runner::RunnerSpec;
 use crate::runner::RunnerTrait;
 use std::collections::HashMap;
@@ -13,6 +14,7 @@ use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::Trailer;
 use proto::jobworkerp::data::result_output_item;
 use tokio::sync::RwLock;
+use tokio::sync::mpsc;
 
 use super::super::cancellation::CancelMonitoring;
 use super::super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
@@ -100,6 +102,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                         result_proto: plugin.result_output_proto().unwrap_or_default(),
                         description: Some(plugin.description()),
                         output_type: plugin.output_type() as i32,
+                        ..Default::default()
                     },
                 );
                 tracing::debug!(
@@ -124,6 +127,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                     crate::runner::MethodJsonSchema {
                         args_schema: plugin.arguments_schema(),
                         result_schema: plugin.output_json_schema(),
+                        feed_data_schema: None,
                     },
                 );
                 tracing::debug!(
@@ -394,6 +398,38 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         }
         .boxed();
         Ok(st)
+    }
+
+    fn supports_feed(&self, using: Option<&str>) -> bool {
+        let guard = block_on(self.variant.read());
+        match &*guard {
+            PluginRunnerVariant::Legacy(_) => false,
+            PluginRunnerVariant::MultiMethod(plugin) => plugin.supports_feed(using),
+        }
+    }
+
+    fn setup_feed_channel(&mut self, using: Option<&str>) -> Option<mpsc::Sender<FeedData>> {
+        let mut guard = block_on(self.variant.write());
+        match &mut *guard {
+            PluginRunnerVariant::Legacy(_) => None,
+            PluginRunnerVariant::MultiMethod(plugin) => {
+                // Plugin provides Sender<Vec<u8>>, bridge to Sender<FeedData>
+                plugin.setup_feed_channel(using).map(|raw_tx| {
+                    let (feed_tx, mut feed_rx) = mpsc::channel::<FeedData>(32);
+                    tokio::spawn(async move {
+                        while let Some(feed) = feed_rx.recv().await {
+                            if raw_tx.send(feed.data).await.is_err() {
+                                break;
+                            }
+                            if feed.is_final {
+                                break;
+                            }
+                        }
+                    });
+                    feed_tx
+                })
+            }
+        }
     }
 }
 

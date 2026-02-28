@@ -40,6 +40,8 @@ pub enum JobWorkerError {
     ReqwestError(reqwest::Error),
     // #[error("kube error({0:?})")]
     // KubeClientError(kube_client::error::Error),
+    #[error("FailedPrecondition({0})")]
+    FailedPrecondition(String),
     #[error("RuntimeError({0})")]
     RuntimeError(String),
     #[error("CancelledError({0})")]
@@ -58,6 +60,7 @@ impl JobWorkerError {
         matches!(
             self,
             JobWorkerError::InvalidParameter(_)
+                | JobWorkerError::FailedPrecondition(_)
                 | JobWorkerError::NotFound(_)
                 | JobWorkerError::WorkerNotFound(_)
                 | JobWorkerError::CodecError(_)
@@ -119,6 +122,10 @@ mod tests {
         assert!(
             JobWorkerError::ParseError("test".to_string()).should_delete_job_status(),
             "ParseError should trigger status deletion"
+        );
+        assert!(
+            JobWorkerError::FailedPrecondition("test".to_string()).should_delete_job_status(),
+            "FailedPrecondition should trigger status deletion"
         );
     }
 

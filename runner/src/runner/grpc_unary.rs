@@ -401,6 +401,7 @@ impl RunnerSpec for GrpcUnaryRunner {
                 .to_string(),
                 description: Some("Execute gRPC unary request with reflection".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
         schemas

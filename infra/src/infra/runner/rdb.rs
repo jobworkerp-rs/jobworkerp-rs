@@ -741,6 +741,7 @@ mod test {
                             .to_string(),
                             description: Some("Hello runner test".to_string()),
                             output_type: StreamingOutputType::Both as i32,
+                            ..Default::default()
                         },
                     );
                     map

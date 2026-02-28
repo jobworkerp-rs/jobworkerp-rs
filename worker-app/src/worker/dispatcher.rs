@@ -273,6 +273,7 @@ impl JobDispatcherFactory {
             // }
             (StorageType::Standalone, Some(rdb_chan_repositories), _) => {
                 let rdb_job_repository = Arc::new(rdb_chan_repositories.job_repository.clone());
+                let feed_store = Arc::new(infra::infra::feed::chan::ChanFeedSenderStore::new());
                 Box::new(RdbChanJobDispatcherImpl {
                     rdb_job_dispatcher: RdbJobDispatcherImpl::new(
                         id_generator.clone(),
@@ -282,6 +283,7 @@ impl JobDispatcherFactory {
                         runner_factory.clone(),
                         runner_pool_map.clone(),
                         result_processor.clone(),
+                        feed_store.clone(),
                     ),
                     chan_job_dispatcher: ChanJobDispatcherImpl::new(
                         id_generator,
@@ -298,6 +300,7 @@ impl JobDispatcherFactory {
                         runner_factory,
                         runner_pool_map,
                         result_processor,
+                        feed_store,
                     ),
                 })
             }
@@ -311,6 +314,7 @@ impl JobDispatcherFactory {
                         runner_factory.clone(),
                         runner_pool_map.clone(),
                         result_processor.clone(),
+                        Arc::new(infra::infra::feed::chan::ChanFeedSenderStore::new()),
                     ),
                     redis_job_dispatcher: RedisJobDispatcherImpl::new(
                         id_generator,

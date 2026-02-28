@@ -177,6 +177,10 @@ pub trait RunnerResultHandler {
                 ResultStatus::OtherError,
                 Some(format!("invalid parameter: {e:?}")),
             ),
+            Some(JobWorkerError::FailedPrecondition(e)) => (
+                ResultStatus::OtherError,
+                Some(format!("failed precondition: {e:?}")),
+            ),
             Some(JobWorkerError::WorkerNotFound(e)) => (
                 ResultStatus::OtherError,
                 Some(format!("worker not found: {e:?}")),

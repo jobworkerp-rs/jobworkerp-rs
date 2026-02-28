@@ -242,9 +242,11 @@ pub struct RdbJobDispatcherImpl {
     runner_factory: Arc<RunnerFactory>,
     runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
+    feed_sender_store: Arc<infra::infra::feed::chan::ChanFeedSenderStore>,
 }
 
 impl RdbJobDispatcherImpl {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id_generator: Arc<IdGeneratorWrapper>,
         config_module: Arc<AppConfigModule>,
@@ -253,6 +255,7 @@ impl RdbJobDispatcherImpl {
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
+        feed_sender_store: Arc<infra::infra::feed::chan::ChanFeedSenderStore>,
     ) -> Self {
         Self {
             id_generator,
@@ -262,6 +265,7 @@ impl RdbJobDispatcherImpl {
             runner_factory,
             runner_pool_map,
             result_processor,
+            feed_sender_store,
         }
     }
 }
@@ -303,7 +307,17 @@ impl UseRunnerPoolMap for RdbJobDispatcherImpl {
     }
 }
 impl Tracing for RdbJobDispatcherImpl {}
-impl JobRunner for RdbJobDispatcherImpl {}
+impl JobRunner for RdbJobDispatcherImpl {
+    fn register_feed_sender(
+        &self,
+        job_id: i64,
+        sender: tokio::sync::mpsc::Sender<jobworkerp_runner::runner::FeedData>,
+    ) -> Option<super::super::runner::FeedRegistration> {
+        // Standalone RDB mode: register sender directly in feed store
+        self.feed_sender_store.register(job_id, sender);
+        Some((None, Some((job_id, self.feed_sender_store.store().clone()))))
+    }
+}
 
 impl UseWorkerConfig for RdbJobDispatcherImpl {
     fn worker_config(&self) -> &WorkerConfig {

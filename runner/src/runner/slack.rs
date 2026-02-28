@@ -88,6 +88,7 @@ impl RunnerSpec for SlackPostMessageRunner {
                     .to_string(),
                 description: Some("Post message to Slack channel".to_string()),
                 output_type: StreamingOutputType::NonStreaming as i32,
+                ..Default::default()
             },
         );
         schemas

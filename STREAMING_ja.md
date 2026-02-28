@@ -156,6 +156,68 @@ Workerで`use_static=true`を使用する場合（例：ローカルLLM向け）
 
 これにより、ローカルLLMモデルなどの重いリソースがジョブごとに再初期化されることを防ぎます。
 
+## FeedToStream: 実行中ストリーミングジョブへのデータ送信
+
+`FeedToStream` RPC を使用すると、実行中のストリーミングジョブに対してクライアントから追加データを送信できます。リアルタイム音声処理など、クライアントが音声チャンクを送信しながら Runner が処理・結果を返すインタラクティブなストリーミングシナリオが可能になります。
+
+### 前提条件
+
+ジョブが feed データを受け取るには、以下の条件すべてを満たす必要があります：
+
+| 条件 | 理由 |
+|------|------|
+| ジョブが `Running` 状態 | feed は実行中にのみ有効 |
+| `streaming_type != None` | Runner が `run_stream()` を使用している必要がある |
+| Worker が `use_static=true` | Runner インスタンスがプールされ永続化される必要がある |
+| チャネル concurrency = 1 | feed 先の Runner が一意に特定される必要がある |
+| Runner メソッドが `need_feed=true` | Runner が明示的に feed をサポートしている必要がある |
+
+### プロトコル
+
+```protobuf
+// JobService 内
+rpc FeedToStream(FeedToStreamRequest) returns (FeedToStreamResponse);
+
+message FeedToStreamRequest {
+  jobworkerp.data.JobId job_id = 1;  // 対象ジョブ（EnqueueForStream レスポンスヘッダーから取得）
+  bytes data = 2;                     // feed データペイロード
+  bool is_final = 3;                  // feed の終了を通知
+}
+
+message FeedToStreamResponse {
+  bool accepted = 1;
+}
+```
+
+### 利用フロー
+
+```
+1. EnqueueForStream(worker_id, args) → job_id（レスポンスヘッダー x-job-id-bin から取得）
+   ↓（出力ストリーム開始）
+2. FeedToStream(job_id, data_chunk_1, is_final=false)
+3. FeedToStream(job_id, data_chunk_2, is_final=false)
+4. FeedToStream(job_id, last_chunk, is_final=true)
+   ↓（Runner が最終データを処理し、出力ストリーム終了）
+5. クライアントが残りの出力と End トレーラーを受信
+```
+
+### データ転送メカニズム
+
+- **Scalable モード (Redis)**: feed データは Redis Pub/Sub (`job_feed:{job_id}`) で publish され、Worker 側のブリッジタスクが subscribe して Runner の `mpsc` チャネルに転送します。
+- **Standalone モード (Channel)**: feed データは `ChanFeedSenderStore` に保持されたプロセス内 `mpsc` チャネルを通じて直接送信されます。
+
+### エラーケース
+
+| ケース | gRPC ステータス |
+|--------|----------------|
+| ジョブが存在しない | `NOT_FOUND` |
+| ジョブが実行中でない | `FAILED_PRECONDITION` |
+| ジョブがストリーミングでない | `FAILED_PRECONDITION` |
+| Runner メソッドに `need_feed=true` がない | `FAILED_PRECONDITION` |
+| feed チャネルが利用不可（ジョブ完了済み） | `UNAVAILABLE` |
+
+詳細な仕様は `docs/feed-stream-spec.md` を参照してください。
+
 ## 実装上の注意
 
 ### レースコンディションの防止

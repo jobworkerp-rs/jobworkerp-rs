@@ -70,6 +70,7 @@ fn test_parse_job_args_valid_method() {
             result_proto: valid_command_result_proto(),
             description: Some("Test method".to_string()),
             output_type: StreamingOutputType::Both as i32,
+            ..Default::default()
         },
     );
 
@@ -104,6 +105,7 @@ fn test_parse_job_args_method_not_found() {
             result_proto: valid_command_result_proto(),
             description: None,
             output_type: StreamingOutputType::Both as i32,
+            ..Default::default()
         },
     );
 
@@ -139,6 +141,7 @@ fn test_parse_job_args_empty_proto() {
             result_proto: valid_command_result_proto(),
             description: None,
             output_type: StreamingOutputType::Both as i32,
+            ..Default::default()
         },
     );
 
@@ -168,6 +171,7 @@ fn test_parse_job_args_invalid_proto() {
             result_proto: valid_command_result_proto(),
             description: None,
             output_type: StreamingOutputType::Both as i32,
+            ..Default::default()
         },
     );
 
@@ -198,6 +202,7 @@ fn test_parse_job_args_malformed_proto() {
             result_proto: valid_command_result_proto(),
             description: None,
             output_type: StreamingOutputType::Both as i32,
+            ..Default::default()
         },
     );
 
@@ -257,6 +262,7 @@ fn test_parse_job_result_valid_method() {
             result_proto: valid_command_result_proto(),
             description: Some("Test method".to_string()),
             output_type: StreamingOutputType::Both as i32,
+            ..Default::default()
         },
     );
 
@@ -291,6 +297,7 @@ fn test_parse_job_result_method_not_found() {
             result_proto: valid_command_result_proto(),
             description: None,
             output_type: StreamingOutputType::Both as i32,
+            ..Default::default()
         },
     );
 
@@ -322,6 +329,7 @@ fn test_parse_job_result_empty_proto() {
             result_proto: String::new(), // Empty proto
             description: None,
             output_type: StreamingOutputType::Both as i32,
+            ..Default::default()
         },
     );
 
@@ -351,6 +359,7 @@ fn test_parse_job_result_invalid_proto() {
             result_proto: invalid_proto_schema(),
             description: None,
             output_type: StreamingOutputType::Both as i32,
+            ..Default::default()
         },
     );
 
@@ -381,6 +390,7 @@ fn test_parse_job_result_malformed_proto() {
             result_proto: "invalid proto syntax {{{".to_string(),
             description: None,
             output_type: StreamingOutputType::Both as i32,
+            ..Default::default()
         },
     );
 
@@ -457,6 +467,7 @@ message FetchHtmlResult {
             .to_string(),
             description: Some("Fetch HTML from URL".to_string()),
             output_type: StreamingOutputType::Both as i32,
+            ..Default::default()
         },
     );
 
@@ -482,6 +493,7 @@ message GetTimeResult {
             .to_string(),
             description: Some("Get current time".to_string()),
             output_type: StreamingOutputType::NonStreaming as i32,
+            ..Default::default()
         },
     );
 
