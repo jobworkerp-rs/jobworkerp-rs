@@ -416,22 +416,44 @@ impl MultiMethodPluginRunner for MyFeedPlugin {
         schemas
     }
 
-    // In receive_stream(), read feed data non-blockingly:
-    fn receive_stream(&mut self) -> Result<Option<Vec<u8>>> {
-        let rt = self.rt.as_ref().unwrap();
-        rt.block_on(async {
-            // Check for feed data
-            if let Some(ref mut rx) = self.feed_rx {
-                while let Ok(data) = rx.try_recv() {
-                    self.buffer.extend_from_slice(&data);
-                }
-            }
-            // Process buffered data and return output
-            // Return None when stream is complete
-            Ok(self.process_buffer())
-        })
-    }
     // ...
+}
+```
+
+There are two patterns for reading feed data in `receive_stream()`:
+
+**Pattern A: Non-blocking (`try_recv`)** — Use when the plugin has its own processing loop and checks for feed data periodically (e.g., audio processing with its own sample buffer):
+
+```rust
+fn receive_stream(&mut self) -> Result<Option<Vec<u8>>> {
+    let rt = self.rt.as_ref().unwrap();
+    rt.block_on(async {
+        if let Some(ref mut rx) = self.feed_rx {
+            while let Ok(data) = rx.try_recv() {
+                self.buffer.extend_from_slice(&data);
+            }
+        }
+        // Process buffered data and return output
+        // Return None when stream is complete
+        Ok(self.process_buffer())
+    })
+}
+```
+
+**Pattern B: Blocking (`recv().await`)** — Use when the plugin wants to wait for feed data before producing output (e.g., echo/relay style plugins like HelloPlugin's `feed_hello` method):
+
+```rust
+fn receive_stream(&mut self) -> Result<Option<Vec<u8>>> {
+    self.rt.block_on(async {
+        if let Some(ref mut rx) = self.feed_rx {
+            match rx.recv().await {
+                Some(data) => Ok(Some(process(data))),
+                None => Ok(None), // Channel closed (is_final was sent)
+            }
+        } else {
+            Ok(None)
+        }
+    })
 }
 ```
 
@@ -440,8 +462,8 @@ impl MultiMethodPluginRunner for MyFeedPlugin {
 1. `setup_feed_channel()` is called before `begin_stream()` — the plugin stores the `Receiver`
 2. Client sends feed data via `FeedToStream` RPC with the `job_id`
 3. Data arrives at the plugin's `mpsc::Receiver` (via direct channel or Redis bridge)
-4. Plugin reads from the receiver in `receive_stream()` using `try_recv()` (non-blocking)
-5. When `is_final=true` is sent, the channel's `Sender` is dropped, and `try_recv()` returns `Disconnected`
+4. Plugin reads from the receiver in `receive_stream()` using either `try_recv()` (non-blocking) or `recv().await` (blocking)
+5. When `is_final=true` is sent, the channel's `Sender` is dropped, and `recv()` returns `None` / `try_recv()` returns `Disconnected`
 
 > [!IMPORTANT]
 > Feed data is delivered as `Vec<u8>` (not `FeedData`). The `is_final` flag is handled by the bridge layer — when `is_final=true`, the `Sender` is dropped, signaling end-of-feed to the plugin.

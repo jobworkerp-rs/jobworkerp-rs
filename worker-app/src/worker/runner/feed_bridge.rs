@@ -3,13 +3,14 @@ use jobworkerp_runner::runner::FeedData;
 use proto::jobworkerp::data::JobId;
 use tokio::sync::mpsc;
 
-const MAX_SUBSCRIBE_RETRIES: u32 = 3;
+/// Total number of subscribe attempts (1 initial + retries)
+const MAX_SUBSCRIBE_ATTEMPTS: u32 = 4;
 const INITIAL_RETRY_DELAY_MS: u64 = 100;
 
 /// Spawn a background task that subscribes to feed data from Redis Pub/Sub
 /// and forwards it to the runner's feed channel (Scalable mode).
 ///
-/// Retries subscription up to `MAX_SUBSCRIBE_RETRIES` times with exponential
+/// Tries subscription up to `MAX_SUBSCRIBE_ATTEMPTS` times with exponential
 /// backoff. On final failure, `feed_sender` is dropped so the runner's
 /// receive channel closes and it can detect the disconnect.
 ///
@@ -24,7 +25,7 @@ pub fn spawn_redis_feed_bridge(
 
     tokio::spawn(async move {
         let mut last_err = None;
-        for attempt in 0..=MAX_SUBSCRIBE_RETRIES {
+        for attempt in 0..MAX_SUBSCRIBE_ATTEMPTS {
             if feed_sender.is_closed() {
                 tracing::debug!(
                     "Feed bridge: sender closed before subscribe for job {}",
@@ -58,13 +59,13 @@ pub fn spawn_redis_feed_bridge(
                 }
                 Err(e) => {
                     last_err = Some(e);
-                    if attempt < MAX_SUBSCRIBE_RETRIES {
+                    if attempt + 1 < MAX_SUBSCRIBE_ATTEMPTS {
                         let delay_ms = INITIAL_RETRY_DELAY_MS * 2u64.pow(attempt);
                         tracing::warn!(
                             "Feed bridge: subscribe failed for job {} (attempt {}/{}), retrying in {}ms",
                             job_id.value,
                             attempt + 1,
-                            MAX_SUBSCRIBE_RETRIES,
+                            MAX_SUBSCRIBE_ATTEMPTS,
                             delay_ms
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
@@ -73,11 +74,11 @@ pub fn spawn_redis_feed_bridge(
             }
         }
 
-        // All retries exhausted; drop feed_sender so runner detects disconnect
+        // All attempts exhausted; drop feed_sender so runner detects disconnect
         tracing::error!(
-            "Feed bridge: failed to subscribe to feed for job {} after {} retries: {:?}",
+            "Feed bridge: failed to subscribe to feed for job {} after {} attempts: {:?}",
             job_id.value,
-            MAX_SUBSCRIBE_RETRIES,
+            MAX_SUBSCRIBE_ATTEMPTS,
             last_err
         );
         drop(feed_sender);

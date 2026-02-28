@@ -363,23 +363,31 @@ mod streaming_pool_guard_tests {
         })
     }
 
-    /// Encode a string as HelloArgs protobuf (field 1, string)
+    /// Encode a string as HelloArgs protobuf (field 1, string).
+    /// Uses prost for proper varint length encoding.
     fn encode_hello_args(s: &str) -> Vec<u8> {
+        use prost::encoding::{WireType, encode_key, encode_varint};
         let bytes = s.as_bytes();
-        let mut buf = Vec::with_capacity(2 + bytes.len());
-        // field 1, wire type 2 (length-delimited) = tag 0x0a
-        buf.push(0x0a);
-        buf.push(bytes.len() as u8);
+        let mut buf = Vec::new();
+        encode_key(1, WireType::LengthDelimited, &mut buf);
+        encode_varint(bytes.len() as u64, &mut buf);
         buf.extend_from_slice(bytes);
         buf
     }
 
-    /// Decode HelloRunnerResult protobuf (field 1, string) to String
+    /// Decode HelloRunnerResult protobuf (field 1, string) to String.
+    /// Uses prost for proper varint length decoding.
     fn decode_hello_result(data: &[u8]) -> String {
-        if data.len() > 2 && data[0] == 0x0a {
-            let len = data[1] as usize;
-            if data.len() >= 2 + len {
-                return String::from_utf8_lossy(&data[2..2 + len]).to_string();
+        use prost::encoding::{WireType, decode_key, decode_varint};
+        let mut buf = data;
+        let key = decode_key(&mut buf);
+        if !matches!(key, Ok((1, WireType::LengthDelimited))) {
+            return String::new();
+        }
+        if let Ok(len) = decode_varint(&mut buf) {
+            let len = len as usize;
+            if buf.len() >= len {
+                return String::from_utf8_lossy(&buf[..len]).to_string();
             }
         }
         String::new()

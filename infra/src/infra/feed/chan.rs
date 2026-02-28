@@ -56,7 +56,10 @@ impl Default for ChanFeedSenderStore {
 impl FeedPublisher for ChanFeedSenderStore {
     async fn publish_feed(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
         let sender: mpsc::Sender<FeedData> = self.get(job_id.value).ok_or_else(|| {
-            anyhow::anyhow!("No feed channel registered for job {}", job_id.value)
+            anyhow::anyhow!(
+                "No feed channel registered for job {} (not registered, already finalized, or stream completed)",
+                job_id.value
+            )
         })?;
 
         let feed = FeedData { data, is_final };
