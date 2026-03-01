@@ -349,33 +349,62 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
             None
         };
 
+        // Use spawn_blocking to avoid blocking the tokio worker thread,
+        // since receive_stream() is a synchronous FFI call that may block
+        // waiting for feed data (e.g. WhisperPlugin uses rt.block_on(rx.recv())).
         let st = async_stream::stream! {
             loop {
-                let mut guard = variant_clone.write().await;
-
-                let receive_future = async {
-                    match &mut *guard {
-                        super::PluginRunnerVariant::Legacy(plugin) => plugin.receive_stream(),
-                        super::PluginRunnerVariant::MultiMethod(plugin) => plugin.receive_stream(),
-                    }
-                };
-
-                let maybe_v = if let Some(ref token) = cancel_token {
+                let vc = variant_clone.clone();
+                let blocking_result = if let Some(ref token) = cancel_token {
                     tokio::select! {
-                        result = receive_future => result,
+                        result = tokio::task::spawn_blocking(move || {
+                            let mut guard = block_on(vc.write());
+                            let maybe_v = match &mut *guard {
+                                super::PluginRunnerVariant::Legacy(plugin) => plugin.receive_stream(),
+                                super::PluginRunnerVariant::MultiMethod(plugin) => plugin.receive_stream(),
+                            };
+                            let is_cancelled = match &*guard {
+                                super::PluginRunnerVariant::Legacy(plugin) => plugin.is_canceled(),
+                                super::PluginRunnerVariant::MultiMethod(plugin) => plugin.is_canceled(),
+                            };
+                            (maybe_v, is_cancelled)
+                        }) => {
+                            match result {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::warn!("spawn_blocking panicked: {:?}", e);
+                                    (Err(anyhow!("spawn_blocking panicked: {:?}", e)), false)
+                                }
+                            }
+                        },
                         _ = token.cancelled() => {
                             tracing::info!("Plugin stream cancelled by token");
                             break;
                         }
                     }
                 } else {
-                    receive_future.await
+                    let result = tokio::task::spawn_blocking(move || {
+                        let mut guard = block_on(vc.write());
+                        let maybe_v = match &mut *guard {
+                            super::PluginRunnerVariant::Legacy(plugin) => plugin.receive_stream(),
+                            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.receive_stream(),
+                        };
+                        let is_cancelled = match &*guard {
+                            super::PluginRunnerVariant::Legacy(plugin) => plugin.is_canceled(),
+                            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.is_canceled(),
+                        };
+                        (maybe_v, is_cancelled)
+                    }).await;
+                    match result {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!("spawn_blocking panicked: {:?}", e);
+                            (Err(anyhow!("spawn_blocking panicked: {:?}", e)), false)
+                        }
+                    }
                 };
 
-                let is_cancelled = match &*guard {
-                    super::PluginRunnerVariant::Legacy(plugin) => plugin.is_canceled(),
-                    super::PluginRunnerVariant::MultiMethod(plugin) => plugin.is_canceled(),
-                };
+                let (maybe_v, is_cancelled) = blocking_result;
 
                 match maybe_v {
                     Ok(Some(v)) => {
