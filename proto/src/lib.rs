@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use command_utils::protobuf::ProtobufDescriptor;
 use jobworkerp::data::RunnerData;
@@ -28,6 +30,117 @@ tonic::include_proto!("_");
 /// - HashMap key for method_descriptors lookups
 /// - method_proto_map initialization for built-in runners
 pub const DEFAULT_METHOD_NAME: &str = "run";
+
+impl jobworkerp::data::MethodJsonSchema {
+    /// Convert Protobuf MethodSchema to JSON Schema
+    ///
+    /// This is the common conversion logic used by both RunnerSpec and PluginRunnerWrapperImpl
+    #[allow(clippy::unnecessary_filter_map)]
+    pub fn from_proto_map(
+        proto_map: HashMap<String, jobworkerp::data::MethodSchema>,
+    ) -> HashMap<String, jobworkerp::data::MethodJsonSchema> {
+        proto_map
+            .into_iter()
+            .filter_map(|(method_name, proto_schema)| {
+                use command_utils::protobuf::ProtobufDescriptor;
+
+                // args_proto → args JSON Schema
+                let args_schema = if proto_schema.args_proto.is_empty() {
+                    "{}".to_string()
+                } else {
+                    match ProtobufDescriptor::new(&proto_schema.args_proto) {
+                        Ok(descriptor) => {
+                            if let Some(msg_desc) = descriptor.get_messages().first() {
+                                let json_schema =
+                                    ProtobufDescriptor::message_descriptor_to_json_schema(msg_desc);
+                                serde_json::to_string(&json_schema)
+                                    .unwrap_or_else(|_| "{}".to_string())
+                            } else {
+                                "{}".to_string()
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to convert args_proto to JSON Schema for method '{}': {:?}",
+                                method_name,
+                                e
+                            );
+                            "{}".to_string()
+                        }
+                    }
+                };
+
+                // result_proto → result JSON Schema
+                let result_schema = if proto_schema.result_proto.is_empty() {
+                    None
+                } else {
+                    match ProtobufDescriptor::new(&proto_schema.result_proto) {
+                        Ok(descriptor) => {
+                            if let Some(msg_desc) = descriptor.get_messages().first() {
+                                let json_schema =
+                                    ProtobufDescriptor::message_descriptor_to_json_schema(msg_desc);
+                                Some(
+                                    serde_json::to_string(&json_schema)
+                                        .unwrap_or_else(|_| "{}".to_string()),
+                                )
+                            } else {
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to convert result_proto to JSON Schema for method '{}': {:?}",
+                                method_name,
+                                e
+                            );
+                            None
+                        }
+                    }
+                };
+
+                // feed_data_proto → feed_data JSON Schema
+                let feed_data_schema = if !proto_schema.need_feed {
+                    None
+                } else {
+                    proto_schema.feed_data_proto.as_ref().and_then(|fdp| {
+                        if fdp.is_empty() {
+                            None
+                        } else {
+                            match ProtobufDescriptor::new(fdp) {
+                                Ok(descriptor) => {
+                                    descriptor.get_messages().first().and_then(|msg_desc| {
+                                        let json_schema =
+                                            ProtobufDescriptor::message_descriptor_to_json_schema(
+                                                msg_desc,
+                                            );
+                                        serde_json::to_string(&json_schema).ok()
+                                    })
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to convert feed_data_proto to JSON Schema for method '{}': {:?}",
+                                        method_name,
+                                        e
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                    })
+                };
+
+                Some((
+                    method_name,
+                    jobworkerp::data::MethodJsonSchema {
+                        args_schema,
+                        result_schema,
+                        feed_data_schema,
+                    },
+                ))
+            })
+            .collect()
+    }
+}
 
 pub trait ProtobufHelper {
     fn parse_job_args_schema_descriptor(

@@ -116,7 +116,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         }
     }
 
-    fn method_json_schema_map(&self) -> HashMap<String, crate::runner::MethodJsonSchema> {
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
         let guard = block_on(self.variant.read());
         match &*guard {
             super::PluginRunnerVariant::Legacy(plugin) => {
@@ -124,7 +124,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                 let mut map = HashMap::new();
                 map.insert(
                     proto::DEFAULT_METHOD_NAME.to_string(),
-                    crate::runner::MethodJsonSchema {
+                    proto::jobworkerp::data::MethodJsonSchema {
                         args_schema: plugin.arguments_schema(),
                         result_schema: plugin.output_json_schema(),
                         feed_data_schema: None,
@@ -142,7 +142,9 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                     custom_schemas
                 } else {
                     // Fall back to automatic Protobuf→JSON Schema conversion
-                    crate::runner::MethodJsonSchema::from_proto_map(self.method_proto_map())
+                    proto::jobworkerp::data::MethodJsonSchema::from_proto_map(
+                        self.method_proto_map(),
+                    )
                 }
             }
         }

@@ -189,11 +189,11 @@ impl RunnerSpec for PythonCommandRunner {
     }
 
     // Reason: Protobuf oneof fields require oneOf constraints in JSON Schema for mutual exclusivity
-    fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
             DEFAULT_METHOD_NAME.to_string(),
-            super::MethodJsonSchema {
+            proto::jobworkerp::data::MethodJsonSchema {
                 args_schema: include_str!("../../schema/PythonCommandArgs.json").to_string(),
                 result_schema: schema_to_json_string_option!(PythonCommandResult, "output_schema"),
                 feed_data_schema: None,

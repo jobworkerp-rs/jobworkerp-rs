@@ -326,13 +326,13 @@ impl RunnerSpec for McpServerRunnerImpl {
     }
 
     // Uses existing JSON Schema from available_tools
-    fn method_json_schema_map(&self) -> HashMap<String, crate::runner::MethodJsonSchema> {
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
         self.available_tools
             .iter()
             .map(|(name, info)| {
                 (
                     name.clone(),
-                    crate::runner::MethodJsonSchema {
+                    proto::jobworkerp::data::MethodJsonSchema {
                         // MCP tool's JSON Schema (already available)
                         args_schema: serde_json::to_string(&info.input_schema)
                             .unwrap_or_else(|_| "{}".to_string()),
