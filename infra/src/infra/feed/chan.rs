@@ -11,6 +11,11 @@ use super::FeedPublisher;
 /// In-process feed sender store for Standalone mode.
 /// Workers register a channel sender when starting a feed-enabled streaming job;
 /// the gRPC handler looks it up to deliver feed data directly.
+///
+/// Registration invariant: entries are only inserted by `run_job()` for jobs that
+/// satisfy all feed preconditions (Running state, streaming_type != None, use_static,
+/// concurrency == 1, need_feed). Therefore, `has_active_feed` returning `true`
+/// implies the job is in a valid state for feed delivery.
 #[derive(Clone, Debug)]
 pub struct ChanFeedSenderStore {
     senders: Arc<DashMap<i64, mpsc::Sender<FeedData>>>,
@@ -54,6 +59,10 @@ impl Default for ChanFeedSenderStore {
 
 #[async_trait]
 impl FeedPublisher for ChanFeedSenderStore {
+    fn has_active_feed(&self, job_id: &JobId) -> Option<bool> {
+        Some(self.senders.contains_key(&job_id.value))
+    }
+
     async fn publish_feed(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
         let sender: mpsc::Sender<FeedData> = self.get(job_id.value).ok_or_else(|| {
             anyhow::anyhow!(
@@ -137,6 +146,25 @@ mod tests {
         store.register(1, tx);
         assert!(store.remove(1).is_some());
         assert!(store.remove(1).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_has_active_feed_lifecycle() {
+        let store = ChanFeedSenderStore::new();
+        let job_id = JobId { value: 55 };
+
+        // No sender registered
+        assert_eq!(store.has_active_feed(&job_id), Some(false));
+
+        let (tx, _rx) = mpsc::channel::<FeedData>(16);
+        store.register(55, tx);
+
+        // Sender registered
+        assert_eq!(store.has_active_feed(&job_id), Some(true));
+
+        // After removal
+        store.remove(55);
+        assert_eq!(store.has_active_feed(&job_id), Some(false));
     }
 
     #[tokio::test]

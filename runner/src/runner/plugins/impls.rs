@@ -116,7 +116,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         }
     }
 
-    fn method_json_schema_map(&self) -> HashMap<String, crate::runner::MethodJsonSchema> {
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
         let guard = block_on(self.variant.read());
         match &*guard {
             super::PluginRunnerVariant::Legacy(plugin) => {
@@ -124,7 +124,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                 let mut map = HashMap::new();
                 map.insert(
                     proto::DEFAULT_METHOD_NAME.to_string(),
-                    crate::runner::MethodJsonSchema {
+                    proto::jobworkerp::data::MethodJsonSchema {
                         args_schema: plugin.arguments_schema(),
                         result_schema: plugin.output_json_schema(),
                         feed_data_schema: None,
@@ -142,7 +142,9 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                     custom_schemas
                 } else {
                     // Fall back to automatic Protobuf→JSON Schema conversion
-                    crate::runner::MethodJsonSchema::from_proto_map(self.method_proto_map())
+                    proto::jobworkerp::data::MethodJsonSchema::from_proto_map(
+                        self.method_proto_map(),
+                    )
                 }
             }
         }
@@ -347,29 +349,22 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
             None
         };
 
-        let st = async_stream::stream! {
+        // Run the entire receive loop in a single spawn_blocking task to minimize
+        // latency between receive_stream() calls. Each per-iteration spawn_blocking
+        // added ~30ms overhead (thread scheduling + RwLock acquisition), causing feed
+        // data to accumulate in the plugin's internal buffer and multiple chunks to be
+        // processed in a single receive_stream() call. This broke streaming plugins
+        // (e.g. WhisperPlugin) that expect 1 chunk per call for correct incremental output.
+        let (result_tx, mut result_rx) = mpsc::channel::<ResultOutputItem>(16);
+        let metadata_for_blocking = metadata.clone();
+
+        let blocking_handle = tokio::task::spawn_blocking(move || {
+            let mut guard = block_on(variant_clone.write());
             loop {
-                let mut guard = variant_clone.write().await;
-
-                let receive_future = async {
-                    match &mut *guard {
-                        super::PluginRunnerVariant::Legacy(plugin) => plugin.receive_stream(),
-                        super::PluginRunnerVariant::MultiMethod(plugin) => plugin.receive_stream(),
-                    }
+                let maybe_v = match &mut *guard {
+                    super::PluginRunnerVariant::Legacy(plugin) => plugin.receive_stream(),
+                    super::PluginRunnerVariant::MultiMethod(plugin) => plugin.receive_stream(),
                 };
-
-                let maybe_v = if let Some(ref token) = cancel_token {
-                    tokio::select! {
-                        result = receive_future => result,
-                        _ = token.cancelled() => {
-                            tracing::info!("Plugin stream cancelled by token");
-                            break;
-                        }
-                    }
-                } else {
-                    receive_future.await
-                };
-
                 let is_cancelled = match &*guard {
                     super::PluginRunnerVariant::Legacy(plugin) => plugin.is_canceled(),
                     super::PluginRunnerVariant::MultiMethod(plugin) => plugin.is_canceled(),
@@ -377,24 +372,74 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
 
                 match maybe_v {
                     Ok(Some(v)) => {
-                        yield ResultOutputItem { item: Some(result_output_item::Item::Data(v)) }
-                    },
+                        let item = ResultOutputItem {
+                            item: Some(result_output_item::Item::Data(v)),
+                        };
+                        if block_on(result_tx.send(item)).is_err() {
+                            // Receiver dropped (consumer cancelled)
+                            break;
+                        }
+                    }
                     Ok(None) => {
-                        yield ResultOutputItem { item: Some(result_output_item::Item::End(Trailer{
-                            metadata
-                        })) };
-                        break
-                    },
+                        let _ = block_on(result_tx.send(ResultOutputItem {
+                            item: Some(result_output_item::Item::End(Trailer {
+                                metadata: metadata_for_blocking,
+                            })),
+                        }));
+                        break;
+                    }
                     Err(e) => {
                         tracing::warn!("Error occurred: {:}", e);
-                        yield ResultOutputItem { item: Some(result_output_item::Item::End(Trailer{metadata})) };
-                        break
-                    },
+                        let _ = block_on(result_tx.send(ResultOutputItem {
+                            item: Some(result_output_item::Item::End(Trailer {
+                                metadata: metadata_for_blocking,
+                            })),
+                        }));
+                        break;
+                    }
                 }
                 if is_cancelled {
                     break;
                 }
             }
+        });
+
+        let st = async_stream::stream! {
+            loop {
+                let item = if let Some(ref token) = cancel_token {
+                    tokio::select! {
+                        result = result_rx.recv() => result,
+                        _ = token.cancelled() => {
+                            tracing::info!("Plugin stream cancelled by token");
+                            break;
+                        }
+                    }
+                } else {
+                    result_rx.recv().await
+                };
+
+                match item {
+                    Some(output_item) => {
+                        let is_end = matches!(
+                            output_item.item,
+                            Some(result_output_item::Item::End(_))
+                        );
+                        yield output_item;
+                        if is_end {
+                            break;
+                        }
+                    }
+                    None => {
+                        // Channel closed without End marker (abnormal termination)
+                        yield ResultOutputItem {
+                            item: Some(result_output_item::Item::End(Trailer { metadata })),
+                        };
+                        break;
+                    }
+                }
+            }
+            // Ensure the blocking task is cleaned up
+            drop(blocking_handle);
         }
         .boxed();
         Ok(st)
