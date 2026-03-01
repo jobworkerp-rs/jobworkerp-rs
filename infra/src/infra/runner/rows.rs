@@ -39,10 +39,8 @@ impl RunnerRow {
         // CRITICAL: Call runner.method_json_schema_map() instead of auto-converting
         // Reason: Runners like InlineWorkflowRunnerSpec provide hand-crafted JSON Schema
         //         with oneOf constraints that would be lost in auto-conversion
-        use jobworkerp_runner::runner::MethodJsonSchema;
-        let json_schema_map = MethodJsonSchema::map_to_proto(runner.method_json_schema_map());
         let method_json_schema_map = Some(proto::jobworkerp::data::MethodJsonSchemaMap {
-            schemas: json_schema_map,
+            schemas: runner.method_json_schema_map(),
         });
 
         let settings_schema = runner.settings_schema();

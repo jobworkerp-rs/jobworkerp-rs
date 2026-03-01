@@ -13,7 +13,7 @@
 
 use super::llm::{LLMCompletionRunnerSpec, LLMCompletionRunnerSpecImpl};
 use super::llm_chat::LLMChatRunnerSpecImpl;
-use super::{CollectStreamFuture, MethodJsonSchema, RunnerSpec};
+use super::{CollectStreamFuture, RunnerSpec};
 use anyhow::{Result, anyhow};
 use futures::stream::BoxStream;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
@@ -122,7 +122,7 @@ impl RunnerSpec for LLMUnifiedRunnerSpecImpl {
         schemas
     }
 
-    fn method_json_schema_map(&self) -> HashMap<String, MethodJsonSchema> {
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
         let mut schemas = HashMap::new();
 
         // Get schemas from underlying implementations

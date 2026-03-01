@@ -37,7 +37,7 @@ use jobworkerp_runner::runner::cancellation_helper::{
 use jobworkerp_runner::runner::workflow_unified::{
     METHOD_CREATE, METHOD_RUN, WorkflowUnifiedRunnerSpecImpl,
 };
-use jobworkerp_runner::runner::{MethodJsonSchema, RunnerSpec, RunnerTrait};
+use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
 use proto::jobworkerp::data::{JobData, JobId, JobResult, ResultOutputItem, RunnerType};
@@ -343,7 +343,7 @@ impl RunnerSpec for WorkflowUnifiedRunnerImpl {
         self.spec.method_proto_map()
     }
 
-    fn method_json_schema_map(&self) -> HashMap<String, MethodJsonSchema> {
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
         self.spec.method_json_schema_map()
     }
 

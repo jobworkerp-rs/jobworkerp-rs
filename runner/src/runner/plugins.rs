@@ -308,7 +308,9 @@ pub trait MultiMethodPluginRunner: Send + Sync {
 
     /// Optional: Provide custom JSON schemas
     /// If None, automatic conversion from method_proto_map() will be used
-    fn method_json_schema_map(&self) -> Option<HashMap<String, crate::runner::MethodJsonSchema>> {
+    fn method_json_schema_map(
+        &self,
+    ) -> Option<HashMap<String, proto::jobworkerp::data::MethodJsonSchema>> {
         None
     }
 
@@ -358,11 +360,14 @@ pub trait MultiMethodPluginRunner: Send + Sync {
                     Some(result_output_item::Item::Data(data)) => {
                         last_data = Some(data);
                     }
+                    Some(result_output_item::Item::FinalCollected(data)) => {
+                        last_data = Some(data);
+                    }
                     Some(result_output_item::Item::End(trailer)) => {
                         metadata = trailer.metadata;
                         break;
                     }
-                    Some(result_output_item::Item::FinalCollected(_)) | None => {}
+                    None => {}
                 }
             }
             Ok((last_data.unwrap_or_default(), metadata))
