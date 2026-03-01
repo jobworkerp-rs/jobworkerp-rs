@@ -1259,7 +1259,10 @@ impl JobApp for HybridJobAppImpl {
         // satisfy all preconditions (Running state, streaming_type != None, use_static,
         // concurrency == 1, need_feed). So has_active_feed == true implies valid state.
         if let Some(true) = self.feed_publisher.has_active_feed(job_id) {
-            tracing::trace!("feed_to_stream fast path: active feed found for job {}", job_id.value);
+            tracing::trace!(
+                "feed_to_stream fast path: active feed found for job {}",
+                job_id.value
+            );
             return self
                 .feed_publisher
                 .publish_feed(job_id, data, is_final)

@@ -426,9 +426,7 @@ mod tests {
             assert_eq!(store.has_active_feed(&job_id), Some(true));
 
             // Publish via fast path (no job record needed)
-            let result = store
-                .publish_feed(&job_id, vec![1, 2, 3], false)
-                .await;
+            let result = store.publish_feed(&job_id, vec![1, 2, 3], false).await;
             assert!(result.is_ok());
 
             // Verify data was received correctly
@@ -437,9 +435,7 @@ mod tests {
             assert!(!feed.is_final);
 
             // Publish final message
-            let result = store
-                .publish_feed(&job_id, vec![4, 5], true)
-                .await;
+            let result = store.publish_feed(&job_id, vec![4, 5], true).await;
             assert!(result.is_ok());
 
             let feed = rx.recv().await.unwrap();
@@ -473,9 +469,7 @@ mod tests {
             assert_eq!(store.has_active_feed(&job_id), Some(false));
 
             // publish_feed should return error, not panic
-            let result = store
-                .publish_feed(&job_id, vec![1], false)
-                .await;
+            let result = store.publish_feed(&job_id, vec![1], false).await;
             assert!(result.is_err());
         });
     }
