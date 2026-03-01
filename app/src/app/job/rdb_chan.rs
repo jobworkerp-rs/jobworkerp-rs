@@ -1118,7 +1118,12 @@ impl JobApp for RdbChanJobAppImpl {
     async fn feed_to_stream(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
         // Fast path: when FeedPublisher confirms active feed sender exists,
         // bypass job/status record lookup to avoid race with cleanup_job().
+        //
+        // Safety invariant: a feed sender is only registered in run_job() for jobs that
+        // satisfy all preconditions (Running state, streaming_type != None, use_static,
+        // concurrency == 1, need_feed). So has_active_feed == true implies valid state.
         if let Some(true) = self.feed_publisher.has_active_feed(job_id) {
+            tracing::trace!("feed_to_stream fast path: active feed found for job {}", job_id.value);
             return self
                 .feed_publisher
                 .publish_feed(job_id, data, is_final)

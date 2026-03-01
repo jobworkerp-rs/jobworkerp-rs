@@ -404,6 +404,82 @@ mod tests {
         });
     }
 
+    /// Verifies that the fast path works correctly when a feed sender is registered
+    /// in ChanFeedSenderStore but no job record exists.
+    /// This simulates the race condition where cleanup_job() deletes the job record
+    /// while the feed sender is still active.
+    #[test]
+    fn test_fast_path_feed_without_job_record() {
+        use infra::infra::feed::chan::ChanFeedSenderStore;
+        use jobworkerp_runner::runner::FeedData;
+        use tokio::sync::mpsc;
+
+        TEST_RUNTIME.block_on(async {
+            let store = ChanFeedSenderStore::new();
+            let job_id = JobId { value: 42 };
+
+            // Register a feed sender directly (simulating run_job() registration)
+            let (tx, mut rx) = mpsc::channel::<FeedData>(16);
+            store.register(job_id.value, tx);
+
+            // Verify has_active_feed returns Some(true)
+            assert_eq!(store.has_active_feed(&job_id), Some(true));
+
+            // Publish via fast path (no job record needed)
+            let result = store
+                .publish_feed(&job_id, vec![1, 2, 3], false)
+                .await;
+            assert!(result.is_ok());
+
+            // Verify data was received correctly
+            let feed = rx.recv().await.unwrap();
+            assert_eq!(feed.data, vec![1, 2, 3]);
+            assert!(!feed.is_final);
+
+            // Publish final message
+            let result = store
+                .publish_feed(&job_id, vec![4, 5], true)
+                .await;
+            assert!(result.is_ok());
+
+            let feed = rx.recv().await.unwrap();
+            assert_eq!(feed.data, vec![4, 5]);
+            assert!(feed.is_final);
+
+            // After final, sender is removed
+            assert_eq!(store.has_active_feed(&job_id), Some(false));
+        });
+    }
+
+    /// Verifies that when has_active_feed returns Some(false) (sender removed between
+    /// has_active_feed and publish_feed due to TOCTOU), publish_feed returns an error
+    /// rather than panicking.
+    #[test]
+    fn test_fast_path_toctou_safety() {
+        use infra::infra::feed::chan::ChanFeedSenderStore;
+        use jobworkerp_runner::runner::FeedData;
+        use tokio::sync::mpsc;
+
+        TEST_RUNTIME.block_on(async {
+            let store = ChanFeedSenderStore::new();
+            let job_id = JobId { value: 99 };
+
+            // Register then immediately remove (simulating concurrent cleanup)
+            let (tx, _rx) = mpsc::channel::<FeedData>(16);
+            store.register(job_id.value, tx);
+            store.remove(job_id.value);
+
+            // has_active_feed now returns false
+            assert_eq!(store.has_active_feed(&job_id), Some(false));
+
+            // publish_feed should return error, not panic
+            let result = store
+                .publish_feed(&job_id, vec![1], false)
+                .await;
+            assert!(result.is_err());
+        });
+    }
+
     #[test]
     fn test_validate_feed_success() {
         TEST_RUNTIME.block_on(async {
