@@ -11,6 +11,11 @@ use super::FeedPublisher;
 /// In-process feed sender store for Standalone mode.
 /// Workers register a channel sender when starting a feed-enabled streaming job;
 /// the gRPC handler looks it up to deliver feed data directly.
+///
+/// Registration invariant: entries are only inserted by `run_job()` for jobs that
+/// satisfy all feed preconditions (Running state, streaming_type != None, use_static,
+/// concurrency == 1, need_feed). Therefore, `has_active_feed` returning `true`
+/// implies the job is in a valid state for feed delivery.
 #[derive(Clone, Debug)]
 pub struct ChanFeedSenderStore {
     senders: Arc<DashMap<i64, mpsc::Sender<FeedData>>>,
