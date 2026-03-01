@@ -142,8 +142,60 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             &job_id.value,
             &cn
         );
-        let res_stream = stream
-            .filter_map(|item| async move { ProstMessageCodec::serialize_message(&item).ok() });
+
+        // Wait for subscriber to create the stream channel (same pattern as publish_result).
+        // Without this polling, stream items may be silently discarded when
+        // only_if_exists=true and the subscriber hasn't created the channel yet.
+        let max_wait_attempts = 10;
+        let wait_interval = Duration::from_millis(10);
+        for attempt in 0..max_wait_attempts {
+            if self
+                .broadcast_chan_buf()
+                .get_chan_if_exists(cn.as_str())
+                .await
+                .is_some()
+            {
+                break;
+            }
+            if attempt < max_wait_attempts - 1 {
+                tokio::time::sleep(wait_interval).await;
+            } else {
+                tracing::warn!(
+                    "publish_result_stream_data: no subscriber channel for job_id={} after {}ms, stream data may be lost",
+                    &job_id.value,
+                    max_wait_attempts * 10
+                );
+            }
+        }
+
+        let item_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let item_count_clone = item_count.clone();
+        let job_id_value = job_id.value;
+        let res_stream = stream.filter_map(move |item| {
+            let count = item_count_clone.clone();
+            async move {
+                let idx = count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                match ProstMessageCodec::serialize_message(&item) {
+                    Ok(data) => {
+                        tracing::trace!(
+                            "publish_result_stream_data: serialized item {} for job {}",
+                            idx,
+                            job_id_value
+                        );
+                        Some(data)
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "publish_result_stream_data: serialize error for item {} of job {}: {:?}",
+                            idx,
+                            job_id_value,
+                            e
+                        );
+                        None
+                    }
+                }
+            }
+        });
 
         let res = self
             .broadcast_chan_buf()
@@ -156,6 +208,12 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             )
             .await
             .inspect_err(|e| tracing::error!("send_stream_to_chan_err:{:?}", e))?;
+        tracing::debug!(
+            "publish_result_stream_data: completed for job {}, sent={}, items={}",
+            &job_id.value,
+            res,
+            item_count.load(std::sync::atomic::Ordering::Relaxed)
+        );
         Ok(res)
     }
 }
