@@ -40,11 +40,11 @@ pub trait InlineWorkflowRunnerSpec: RunnerSpec {
     }
 
     // Reason: Protobuf oneof field workflow_source requires oneOf constraint
-    fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
             DEFAULT_METHOD_NAME.to_string(),
-            super::MethodJsonSchema {
+            proto::jobworkerp::data::MethodJsonSchema {
                 args_schema: include_str!("../../schema/WorkflowArgs.json").to_string(),
                 result_schema: schema_to_json_string_option!(WorkflowResult, "output_schema"),
                 feed_data_schema: None,
@@ -87,7 +87,7 @@ impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
         InlineWorkflowRunnerSpec::method_proto_map(self)
     }
 
-    fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
         InlineWorkflowRunnerSpec::method_json_schema_map(self)
     }
 

@@ -50,11 +50,11 @@ pub trait LLMCompletionRunnerSpec {
     }
 
     // Reason: Protobuf oneof fields in GenerationContext require oneOf constraints
-    fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
             DEFAULT_METHOD_NAME.to_string(),
-            super::MethodJsonSchema {
+            proto::jobworkerp::data::MethodJsonSchema {
                 args_schema: include_str!("../../schema/llm/LLMCompletionArgs.json").to_string(),
                 result_schema: Some(
                     include_str!("../../schema/llm/LLMCompletionResult.json").to_string(),
@@ -87,7 +87,7 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
         LLMCompletionRunnerSpec::method_proto_map(self)
     }
 
-    fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
         LLMCompletionRunnerSpec::method_json_schema_map(self)
     }
 

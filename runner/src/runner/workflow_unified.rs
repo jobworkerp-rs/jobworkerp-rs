@@ -18,7 +18,7 @@
 
 use super::create_workflow::CreateWorkflowRunnerSpecImpl;
 use super::workflow::ReusableWorkflowRunnerSpecImpl;
-use super::{CollectStreamFuture, MethodJsonSchema, RunnerSpec};
+use super::{CollectStreamFuture, RunnerSpec};
 use crate::schema_to_json_string;
 use anyhow::{Result, anyhow};
 use futures::stream::BoxStream;
@@ -130,8 +130,8 @@ impl RunnerSpec for WorkflowUnifiedRunnerSpecImpl {
         schemas
     }
 
-    fn method_json_schema_map(&self) -> HashMap<String, MethodJsonSchema> {
-        MethodJsonSchema::from_proto_map(self.method_proto_map())
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
+        proto::jobworkerp::data::MethodJsonSchema::from_proto_map(self.method_proto_map())
     }
 
     fn settings_schema(&self) -> String {
