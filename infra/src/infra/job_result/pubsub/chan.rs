@@ -168,31 +168,17 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             }
         }
 
-        let item_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let item_count_clone = item_count.clone();
         let job_id_value = job_id.value;
-        let res_stream = stream.filter_map(move |item| {
-            let count = item_count_clone.clone();
-            async move {
-                let idx = count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                match ProstMessageCodec::serialize_message(&item) {
-                    Ok(data) => {
-                        tracing::trace!(
-                            "publish_result_stream_data: serialized item {} for job {}",
-                            idx,
-                            job_id_value
-                        );
-                        Some(data)
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "publish_result_stream_data: serialize error for item {} of job {}: {:?}",
-                            idx,
-                            job_id_value,
-                            e
-                        );
-                        None
-                    }
+        let res_stream = stream.filter_map(move |item| async move {
+            match ProstMessageCodec::serialize_message(&item) {
+                Ok(data) => Some(data),
+                Err(e) => {
+                    tracing::error!(
+                        "publish_result_stream_data: serialize error for job {}: {:?}",
+                        job_id_value,
+                        e
+                    );
+                    None
                 }
             }
         });
@@ -209,10 +195,9 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             .await
             .inspect_err(|e| tracing::error!("send_stream_to_chan_err:{:?}", e))?;
         tracing::debug!(
-            "publish_result_stream_data: completed for job {}, sent={}, items={}",
+            "publish_result_stream_data: completed for job {}, sent={}",
             &job_id.value,
             res,
-            item_count.load(std::sync::atomic::Ordering::Relaxed)
         );
         Ok(res)
     }

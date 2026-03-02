@@ -358,8 +358,17 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         //
         // Cancellation constraint: if receive_stream() blocks for a long time, cancel
         // latency equals that blocking duration. Current plugins (Hello, Whisper) use
-        // rt.block_on(rx.recv().await) which returns promptly when the feed channel closes.
+        // rt.block_on(rx.recv()) which returns promptly when the feed channel closes.
+        // Plugin implementations MUST ensure receive_stream() does not block indefinitely
+        // (see PluginRunner::receive_stream() doc for the contract).
+        //
+        // Uses futures::executor::block_on (lightweight, no tokio runtime re-entry risk)
+        // rather than tokio's Handle::block_on, so there is no thread starvation concern
+        // from runtime re-entry. spawn_blocking thread pool saturation is bounded by
+        // the number of active plugin instances (typically 1-3).
         let (result_tx, mut result_rx) = mpsc::channel::<ResultOutputItem>(16);
+        // Clone metadata for the blocking task (End marker trailer).
+        // The original `metadata` is kept for the async stream's abnormal-termination fallback.
         let metadata_for_blocking = metadata.clone();
 
         let blocking_handle = tokio::task::spawn_blocking(move || {
