@@ -1127,10 +1127,34 @@ impl JobApp for RdbChanJobAppImpl {
                 "feed_to_stream fast path: active feed found for job {}",
                 job_id.value
             );
-            return self
+            // Clone data before fast path attempt so slow path fallback can use it
+            let data_backup = data.clone();
+            match self
                 .feed_publisher
                 .publish_feed(job_id, data, is_final)
-                .await;
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    // TOCTOU: feed sender removed between has_active_feed and publish_feed
+                    tracing::warn!("fast path failed, falling back to slow path: {:?}", e);
+                    return super::validate_and_publish_feed(
+                        &self.find_job(job_id).await?.ok_or_else(|| {
+                            JobWorkerError::NotFound(format!("job not found: id={}", job_id.value))
+                        })?,
+                        self.job_processing_status_repository()
+                            .find_status(job_id)
+                            .await?,
+                        self.worker_app().as_ref(),
+                        self.worker_config(),
+                        self.feed_publisher.as_ref(),
+                        job_id,
+                        data_backup,
+                        is_final,
+                    )
+                    .await;
+                }
+            }
         }
 
         // Slow path: full validation via job record + status lookup
