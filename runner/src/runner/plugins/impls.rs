@@ -418,6 +418,12 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                     }
                 }
                 if is_cancelled {
+                    // Send End marker before breaking to avoid relying on async stream fallback
+                    let _ = block_on(result_tx.send(ResultOutputItem {
+                        item: Some(result_output_item::Item::End(Trailer {
+                            metadata: metadata_for_blocking.clone(),
+                        })),
+                    }));
                     break;
                 }
             }
