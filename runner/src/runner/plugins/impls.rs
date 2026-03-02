@@ -355,6 +355,10 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         // data to accumulate in the plugin's internal buffer and multiple chunks to be
         // processed in a single receive_stream() call. This broke streaming plugins
         // (e.g. WhisperPlugin) that expect 1 chunk per call for correct incremental output.
+        //
+        // Cancellation constraint: if receive_stream() blocks for a long time, cancel
+        // latency equals that blocking duration. Current plugins (Hello, Whisper) use
+        // rt.block_on(rx.recv().await) which returns promptly when the feed channel closes.
         let (result_tx, mut result_rx) = mpsc::channel::<ResultOutputItem>(16);
         let metadata_for_blocking = metadata.clone();
 
@@ -438,8 +442,13 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                     }
                 }
             }
-            // Ensure the blocking task is cleaned up
-            drop(blocking_handle);
+            // Await the blocking task to detect panics (e.g. from FFI boundary)
+            match blocking_handle.await {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::error!("Plugin blocking task failed: {:?}", e);
+                }
+            }
         }
         .boxed();
         Ok(st)

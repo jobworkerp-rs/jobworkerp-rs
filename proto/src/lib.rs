@@ -35,13 +35,12 @@ impl jobworkerp::data::MethodJsonSchema {
     /// Convert Protobuf MethodSchema to JSON Schema
     ///
     /// This is the common conversion logic used by both RunnerSpec and PluginRunnerWrapperImpl
-    #[allow(clippy::unnecessary_filter_map)]
     pub fn from_proto_map(
         proto_map: HashMap<String, jobworkerp::data::MethodSchema>,
     ) -> HashMap<String, jobworkerp::data::MethodJsonSchema> {
         proto_map
             .into_iter()
-            .filter_map(|(method_name, proto_schema)| {
+            .map(|(method_name, proto_schema)| {
                 use command_utils::protobuf::ProtobufDescriptor;
 
                 // args_proto → args JSON Schema
@@ -129,14 +128,14 @@ impl jobworkerp::data::MethodJsonSchema {
                     })
                 };
 
-                Some((
+                (
                     method_name,
                     jobworkerp::data::MethodJsonSchema {
                         args_schema,
                         result_schema,
                         feed_data_schema,
                     },
-                ))
+                )
             })
             .collect()
     }
