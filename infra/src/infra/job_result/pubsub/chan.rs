@@ -163,7 +163,7 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 tracing::warn!(
                     "publish_result_stream_data: no subscriber channel for job_id={} after {}ms, stream data may be lost",
                     &job_id.value,
-                    max_wait_attempts * 10
+                    (max_wait_attempts - 1) as u64 * wait_interval.as_millis() as u64
                 );
             }
         }

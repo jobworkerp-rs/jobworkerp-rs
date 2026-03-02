@@ -373,6 +373,8 @@ pub trait MultiMethodPluginRunner: Send + Sync {
             let mut last_data: Option<Vec<u8>> = None;
             let mut metadata = HashMap::new();
             let mut stream = stream;
+            // Separate variable for FinalCollected to avoid being overwritten by late Data chunks
+            let mut final_collected: Option<Vec<u8>> = None;
 
             while let Some(item) = stream.next().await {
                 match item.item {
@@ -380,7 +382,7 @@ pub trait MultiMethodPluginRunner: Send + Sync {
                         last_data = Some(data);
                     }
                     Some(result_output_item::Item::FinalCollected(data)) => {
-                        last_data = Some(data);
+                        final_collected = Some(data);
                     }
                     Some(result_output_item::Item::End(trailer)) => {
                         metadata = trailer.metadata;
@@ -389,7 +391,7 @@ pub trait MultiMethodPluginRunner: Send + Sync {
                     None => {}
                 }
             }
-            Ok((last_data.unwrap_or_default(), metadata))
+            Ok((final_collected.or(last_data).unwrap_or_default(), metadata))
         })
     }
 }

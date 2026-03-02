@@ -372,15 +372,21 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         let metadata_for_blocking = metadata.clone();
 
         let blocking_handle = tokio::task::spawn_blocking(move || {
-            let mut guard = block_on(variant_clone.write());
             loop {
-                let maybe_v = match &mut *guard {
-                    super::PluginRunnerVariant::Legacy(plugin) => plugin.receive_stream(),
-                    super::PluginRunnerVariant::MultiMethod(plugin) => plugin.receive_stream(),
-                };
-                let is_cancelled = match &*guard {
-                    super::PluginRunnerVariant::Legacy(plugin) => plugin.is_canceled(),
-                    super::PluginRunnerVariant::MultiMethod(plugin) => plugin.is_canceled(),
+                // Acquire lock per iteration so request_cancellation can call plugin.cancel()
+                // between iterations. Lock is released before send() to avoid blocking the sender.
+                let (maybe_v, is_cancelled) = {
+                    let mut guard = block_on(variant_clone.write());
+                    let v = match &mut *guard {
+                        super::PluginRunnerVariant::Legacy(plugin) => plugin.receive_stream(),
+                        super::PluginRunnerVariant::MultiMethod(plugin) => plugin.receive_stream(),
+                    };
+                    let c = match &*guard {
+                        super::PluginRunnerVariant::Legacy(plugin) => plugin.is_canceled(),
+                        super::PluginRunnerVariant::MultiMethod(plugin) => plugin.is_canceled(),
+                    };
+                    (v, c)
+                    // guard dropped here
                 };
 
                 match maybe_v {
@@ -451,6 +457,10 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                     }
                 }
             }
+            // Close receiver so any pending send() in spawn_blocking returns Err,
+            // preventing deadlock when blocking_handle.await waits for task completion.
+            result_rx.close();
+            while result_rx.recv().await.is_some() {}
             // Await the blocking task to detect panics (e.g. from FFI boundary)
             match blocking_handle.await {
                 Ok(()) => {}
