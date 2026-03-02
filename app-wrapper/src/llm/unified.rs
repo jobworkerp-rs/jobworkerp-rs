@@ -16,7 +16,7 @@ use jobworkerp_runner::runner::cancellation_helper::{
 use jobworkerp_runner::runner::llm_unified::{
     LLMUnifiedRunnerSpecImpl, METHOD_CHAT, METHOD_COMPLETION,
 };
-use jobworkerp_runner::runner::{MethodJsonSchema, RunnerSpec, RunnerTrait};
+use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use proto::jobworkerp::data::{JobData, JobId, JobResult, ResultOutputItem};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -79,7 +79,7 @@ impl RunnerSpec for LLMUnifiedRunnerImpl {
         self.spec.method_proto_map()
     }
 
-    fn method_json_schema_map(&self) -> HashMap<String, MethodJsonSchema> {
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
         self.spec.method_json_schema_map()
     }
 

@@ -110,156 +110,6 @@ macro_rules! schema_to_json_string_option {
     }};
 }
 
-/// JSON Schema definition for a single method/tool in a runner's method_json_schema_map().
-///
-/// NOTE: description is NOT included here - it should be retrieved from
-/// MethodSchema.description in method_proto_map instead.
-/// Reason: Caching description is redundant as it's not converted (just copied).
-#[derive(Debug, Clone)]
-pub struct MethodJsonSchema {
-    /// JSON Schema for method arguments
-    pub args_schema: String,
-    /// JSON Schema for method result (None for unstructured output)
-    pub result_schema: Option<String>,
-    /// JSON Schema for feed data (None when feed is not supported)
-    pub feed_data_schema: Option<String>,
-}
-
-impl MethodJsonSchema {
-    /// Convert to proto::MethodJsonSchema
-    ///
-    /// This method converts runner::MethodJsonSchema to proto::jobworkerp::data::MethodJsonSchema
-    /// for use in RunnerWithSchema caching.
-    pub fn to_proto(&self) -> proto::jobworkerp::data::MethodJsonSchema {
-        proto::jobworkerp::data::MethodJsonSchema {
-            args_schema: self.args_schema.clone(),
-            result_schema: self.result_schema.clone(),
-            feed_data_schema: self.feed_data_schema.clone(),
-        }
-    }
-
-    /// Convert a HashMap of MethodJsonSchema to proto format
-    ///
-    /// This is a convenience method for converting the entire method_json_schema_map
-    /// returned by RunnerSpec::method_json_schema_map() to proto format.
-    pub fn map_to_proto(
-        map: HashMap<String, MethodJsonSchema>,
-    ) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
-        map.into_iter()
-            .map(|(method_name, schema)| (method_name, schema.to_proto()))
-            .collect()
-    }
-
-    /// Convert Protobuf MethodSchema to JSON Schema
-    ///
-    /// This is the common conversion logic used by both RunnerSpec and PluginRunnerWrapperImpl
-    #[allow(clippy::unnecessary_filter_map)] // filter_map is intentional to handle conversion errors gracefully
-    pub fn from_proto_map(
-        proto_map: HashMap<String, proto::jobworkerp::data::MethodSchema>,
-    ) -> HashMap<String, MethodJsonSchema> {
-        proto_map
-            .into_iter()
-            .filter_map(|(method_name, proto_schema)| {
-                use command_utils::protobuf::ProtobufDescriptor;
-
-                // args_proto → args JSON Schema
-                let args_schema = if proto_schema.args_proto.is_empty() {
-                    "{}".to_string()
-                } else {
-                    match ProtobufDescriptor::new(&proto_schema.args_proto) {
-                        Ok(descriptor) => {
-                            if let Some(msg_desc) = descriptor.get_messages().first() {
-                                let json_schema =
-                                    ProtobufDescriptor::message_descriptor_to_json_schema(msg_desc);
-                                serde_json::to_string(&json_schema)
-                                    .unwrap_or_else(|_| "{}".to_string())
-                            } else {
-                                "{}".to_string()
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to convert args_proto to JSON Schema for method '{}': {:?}",
-                                method_name,
-                                e
-                            );
-                            "{}".to_string()
-                        }
-                    }
-                };
-
-                // result_proto → result JSON Schema
-                let result_schema = if proto_schema.result_proto.is_empty() {
-                    None
-                } else {
-                    match ProtobufDescriptor::new(&proto_schema.result_proto) {
-                        Ok(descriptor) => {
-                            if let Some(msg_desc) = descriptor.get_messages().first() {
-                                let json_schema =
-                                    ProtobufDescriptor::message_descriptor_to_json_schema(msg_desc);
-                                Some(
-                                    serde_json::to_string(&json_schema)
-                                        .unwrap_or_else(|_| "{}".to_string()),
-                                )
-                            } else {
-                                None
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to convert result_proto to JSON Schema for method '{}': {:?}",
-                                method_name,
-                                e
-                            );
-                            None
-                        }
-                    }
-                };
-
-                // feed_data_proto → feed_data JSON Schema
-                let feed_data_schema = if !proto_schema.need_feed {
-                    None
-                } else {
-                    proto_schema.feed_data_proto.as_ref().and_then(|fdp| {
-                        if fdp.is_empty() {
-                            None
-                        } else {
-                            match ProtobufDescriptor::new(fdp) {
-                                Ok(descriptor) => {
-                                    descriptor.get_messages().first().and_then(|msg_desc| {
-                                        let json_schema =
-                                            ProtobufDescriptor::message_descriptor_to_json_schema(
-                                                msg_desc,
-                                            );
-                                        serde_json::to_string(&json_schema).ok()
-                                    })
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to convert feed_data_proto to JSON Schema for method '{}': {:?}",
-                                        method_name,
-                                        e
-                                    );
-                                    None
-                                }
-                            }
-                        }
-                    })
-                };
-
-                Some((
-                    method_name,
-                    MethodJsonSchema {
-                        args_schema,
-                        result_schema,
-                        feed_data_schema,
-                    },
-                ))
-            })
-            .collect()
-    }
-}
-
 pub trait RunnerSpec: Send + Sync + Any {
     fn name(&self) -> String;
     // only implement for stream runner (output_as_stream() == true)
@@ -284,9 +134,9 @@ pub trait RunnerSpec: Send + Sync + Any {
     /// **Explicit implementation required for**:
     /// - MCP Server: Use existing JSON Schema from tools
     /// - Runners with custom JSON Schema optimization
-    fn method_json_schema_map(&self) -> HashMap<String, MethodJsonSchema> {
+    fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
         // Default implementation: Convert method_proto_map() to JSON Schema
-        MethodJsonSchema::from_proto_map(self.method_proto_map())
+        proto::jobworkerp::data::MethodJsonSchema::from_proto_map(self.method_proto_map())
     }
 
     /// JSON schema methods for Workflow API validation

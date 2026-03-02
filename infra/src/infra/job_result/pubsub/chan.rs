@@ -142,8 +142,46 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             &job_id.value,
             &cn
         );
-        let res_stream = stream
-            .filter_map(|item| async move { ProstMessageCodec::serialize_message(&item).ok() });
+
+        // Wait for subscriber to create the stream channel (same pattern as publish_result).
+        // Without this polling, stream items may be silently discarded when
+        // only_if_exists=true and the subscriber hasn't created the channel yet.
+        let max_wait_attempts = 10;
+        let wait_interval = Duration::from_millis(10);
+        for attempt in 0..max_wait_attempts {
+            if self
+                .broadcast_chan_buf()
+                .get_chan_if_exists(cn.as_str())
+                .await
+                .is_some()
+            {
+                break;
+            }
+            if attempt < max_wait_attempts - 1 {
+                tokio::time::sleep(wait_interval).await;
+            } else {
+                tracing::warn!(
+                    "publish_result_stream_data: no subscriber channel for job_id={} after {}ms, stream data may be lost",
+                    &job_id.value,
+                    (max_wait_attempts - 1) as u64 * wait_interval.as_millis() as u64
+                );
+            }
+        }
+
+        let job_id_value = job_id.value;
+        let res_stream = stream.filter_map(move |item| async move {
+            match ProstMessageCodec::serialize_message(&item) {
+                Ok(data) => Some(data),
+                Err(e) => {
+                    tracing::error!(
+                        "publish_result_stream_data: serialize error for job {}: {:?}",
+                        job_id_value,
+                        e
+                    );
+                    None
+                }
+            }
+        });
 
         let res = self
             .broadcast_chan_buf()
@@ -156,6 +194,11 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             )
             .await
             .inspect_err(|e| tracing::error!("send_stream_to_chan_err:{:?}", e))?;
+        tracing::debug!(
+            "publish_result_stream_data: completed for job {}, sent={}",
+            &job_id.value,
+            res,
+        );
         Ok(res)
     }
 }

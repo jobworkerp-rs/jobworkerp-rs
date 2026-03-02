@@ -4134,8 +4134,10 @@ dependencies = [
  "prost-types",
  "schemars 1.2.1",
  "serde",
+ "serde_json",
  "tonic",
  "tonic-prost-build",
+ "tracing",
 ]
 
 [[package]]

@@ -12,6 +12,13 @@ use proto::jobworkerp::data::{FeedDataTransport, JobId};
 #[async_trait]
 pub trait FeedPublisher: Send + Sync + std::fmt::Debug {
     async fn publish_feed(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()>;
+
+    /// Check if an active feed channel exists for the given job.
+    /// Returns Some(true/false) for definitive answer, None if unknown (falls back to job record lookup).
+    fn has_active_feed(&self, job_id: &JobId) -> Option<bool> {
+        let _ = job_id;
+        None
+    }
 }
 
 /// Channel name for Redis Pub/Sub feed delivery

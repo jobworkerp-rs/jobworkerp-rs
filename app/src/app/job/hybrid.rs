@@ -1252,22 +1252,16 @@ impl JobApp for HybridJobAppImpl {
     }
 
     async fn feed_to_stream(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
-        let job = self.find_job(job_id).await?.ok_or_else(|| {
-            JobWorkerError::NotFound(format!("job not found: id={}", job_id.value))
-        })?;
-        let status = self
-            .job_processing_status_repository()
-            .find_status(job_id)
-            .await?;
-        super::validate_and_publish_feed(
-            &job,
-            status,
-            self.worker_app().as_ref(),
-            self.worker_config(),
+        let status_repo = self.job_processing_status_repository();
+        super::feed_to_stream_with_fast_path(
             self.feed_publisher.as_ref(),
             job_id,
             data,
             is_final,
+            self.find_job(job_id),
+            status_repo.find_status(job_id),
+            self.worker_app().as_ref(),
+            self.worker_config(),
         )
         .await
     }
