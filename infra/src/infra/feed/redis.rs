@@ -24,6 +24,11 @@ impl RedisFeedPublisher {
     }
 }
 
+// NOTE: RedisFeedPublisher intentionally uses the default `has_active_feed` (returns None),
+// so the fast path in `feed_to_stream_with_fast_path` is never taken for Redis/Scalable mode.
+// In Scalable mode, feed senders live on remote worker processes, so the local process
+// cannot know whether a feed channel is active. Full validation via job/status lookup
+// is always required.
 #[async_trait]
 impl FeedPublisher for RedisFeedPublisher {
     async fn publish_feed(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {

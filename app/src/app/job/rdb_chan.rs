@@ -1116,64 +1116,16 @@ impl JobApp for RdbChanJobAppImpl {
     }
 
     async fn feed_to_stream(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
-        // Fast path: when FeedPublisher confirms active feed sender exists,
-        // bypass job/status record lookup to avoid race with cleanup_job().
-        //
-        // Safety invariant: a feed sender is only registered in run_job() for jobs that
-        // satisfy all preconditions (Running state, streaming_type != None, use_static,
-        // concurrency == 1, need_feed). So has_active_feed == true implies valid state.
-        if let Some(true) = self.feed_publisher.has_active_feed(job_id) {
-            tracing::trace!(
-                "feed_to_stream fast path: active feed found for job {}",
-                job_id.value
-            );
-            // Clone data before fast path attempt so slow path fallback can use it
-            let data_backup = data.clone();
-            match self
-                .feed_publisher
-                .publish_feed(job_id, data, is_final)
-                .await
-            {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    // TOCTOU: feed sender removed between has_active_feed and publish_feed
-                    tracing::warn!("fast path failed, falling back to slow path: {:?}", e);
-                    return super::validate_and_publish_feed(
-                        &self.find_job(job_id).await?.ok_or_else(|| {
-                            JobWorkerError::NotFound(format!("job not found: id={}", job_id.value))
-                        })?,
-                        self.job_processing_status_repository()
-                            .find_status(job_id)
-                            .await?,
-                        self.worker_app().as_ref(),
-                        self.worker_config(),
-                        self.feed_publisher.as_ref(),
-                        job_id,
-                        data_backup,
-                        is_final,
-                    )
-                    .await;
-                }
-            }
-        }
-
-        // Slow path: full validation via job record + status lookup
-        let job = self.find_job(job_id).await?.ok_or_else(|| {
-            JobWorkerError::NotFound(format!("job not found: id={}", job_id.value))
-        })?;
-        let status = self
-            .job_processing_status_repository()
-            .find_status(job_id)
-            .await?;
-        super::validate_and_publish_feed(
-            &job,
-            status,
-            self.worker_app().as_ref(),
-            self.worker_config(),
+        let status_repo = self.job_processing_status_repository();
+        super::feed_to_stream_with_fast_path(
             self.feed_publisher.as_ref(),
             job_id,
             data,
             is_final,
+            self.find_job(job_id),
+            status_repo.find_status(job_id),
+            self.worker_app().as_ref(),
+            self.worker_config(),
         )
         .await
     }

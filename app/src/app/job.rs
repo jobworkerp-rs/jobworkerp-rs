@@ -330,6 +330,75 @@ pub(crate) async fn validate_and_publish_feed(
     feed_publisher.publish_feed(job_id, data, is_final).await
 }
 
+/// Feed-to-stream with fast path optimization.
+///
+/// Shared implementation for `HybridJobAppImpl` and `RdbChanJobAppImpl`.
+/// Uses `has_active_feed` as a fast path to bypass job/status record lookup,
+/// falling back to full validation via `validate_and_publish_feed` when needed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn feed_to_stream_with_fast_path(
+    feed_publisher: &dyn FeedPublisher,
+    job_id: &JobId,
+    data: Vec<u8>,
+    is_final: bool,
+    find_job: impl std::future::Future<Output = Result<Option<Job>>>,
+    find_status: impl std::future::Future<Output = Result<Option<JobProcessingStatus>>>,
+    worker_app: &dyn WorkerApp,
+    worker_config: &WorkerConfig,
+) -> Result<()> {
+    // Fast path: when FeedPublisher confirms active feed sender exists,
+    // bypass job/status record lookup to avoid race with cleanup_job().
+    //
+    // Safety invariant: a feed sender is only registered in run_job() for jobs that
+    // satisfy all preconditions (Running state, streaming_type != None, use_static,
+    // concurrency == 1, need_feed). So has_active_feed == true implies valid state.
+    if let Some(true) = feed_publisher.has_active_feed(job_id) {
+        tracing::trace!(
+            "feed_to_stream fast path: active feed found for job {}",
+            job_id.value
+        );
+        // Clone data before fast path attempt so slow path fallback can use it
+        let data_backup = data.clone();
+        match feed_publisher.publish_feed(job_id, data, is_final).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                // TOCTOU: feed sender removed between has_active_feed and publish_feed
+                tracing::warn!("fast path failed, falling back to slow path: {:?}", e);
+                return validate_and_publish_feed(
+                    &find_job.await?.ok_or_else(|| {
+                        JobWorkerError::NotFound(format!("job not found: id={}", job_id.value))
+                    })?,
+                    find_status.await?,
+                    worker_app,
+                    worker_config,
+                    feed_publisher,
+                    job_id,
+                    data_backup,
+                    is_final,
+                )
+                .await;
+            }
+        }
+    }
+
+    // Slow path: full validation via job record + status lookup
+    let job = find_job
+        .await?
+        .ok_or_else(|| JobWorkerError::NotFound(format!("job not found: id={}", job_id.value)))?;
+    let status = find_status.await?;
+    validate_and_publish_feed(
+        &job,
+        status,
+        worker_app,
+        worker_config,
+        feed_publisher,
+        job_id,
+        data,
+        is_final,
+    )
+    .await
+}
+
 /// Spawn a background task to publish an End marker stream when a streaming job
 /// failed before creating a stream (stream=None, status!=Success).
 /// This unblocks subscribers waiting on `subscribe_result_stream`.
