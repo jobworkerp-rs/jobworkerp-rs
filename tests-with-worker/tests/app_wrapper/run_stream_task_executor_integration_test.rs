@@ -167,6 +167,7 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
                 Err(e) => {
                     eprintln!("Execution failed: {:?}", e);
                     let _ = app_module.worker_app.delete(&worker_id).await;
+                    worker_handle.shutdown().await;
                     return Err(anyhow::anyhow!("RunStreamTaskExecutor failed: {:?}", e));
                 }
             }
@@ -292,6 +293,7 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
                 }
                 Err(e) => {
                     eprintln!("Execution failed: {:?}", e);
+                    worker_handle.shutdown().await;
                     return Err(anyhow::anyhow!("RunStreamTaskExecutor failed: {:?}", e));
                 }
             }
@@ -428,6 +430,7 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
                 Err(e) => {
                     eprintln!("Execution failed: {:?}", e);
                     let _ = app_module.worker_app.delete(&worker_id).await;
+                    worker_handle.shutdown().await;
                     return Err(anyhow::anyhow!("RunStreamTaskExecutor failed: {:?}", e));
                 }
             }
