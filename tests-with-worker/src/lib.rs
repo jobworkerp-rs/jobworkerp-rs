@@ -18,11 +18,21 @@ use worker_app::worker::dispatcher::JobDispatcher;
 /// Handle to a running test worker. Keeps the worker alive until dropped.
 pub struct TestWorkerHandle {
     _lock: shutdown::ShutdownLock,
+    _wait: shutdown::ShutdownWait,
 }
 
 impl TestWorkerHandle {
-    pub fn shutdown(self) {
+    /// Signal shutdown and wait for background tasks (with timeout).
+    pub async fn shutdown(mut self) {
         self._lock.unlock();
+        // Dispatcher tasks listen to OS signals, not lock state.
+        // Use a short timeout to avoid hanging in tests.
+        tokio::select! {
+            _ = self._wait.wait() => {},
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                tracing::debug!("test worker shutdown timeout - proceeding");
+            },
+        }
     }
 }
 
@@ -36,7 +46,7 @@ impl TestWorkerHandle {
 /// `config_module` has correct `StorageType` and `WorkerConfig`.
 /// `create_hybrid_test_app()` satisfies this requirement.
 pub async fn start_test_worker(app_module: Arc<AppModule>) -> Result<TestWorkerHandle> {
-    let (lock, _wait) = shutdown::create_lock_and_wait();
+    let (lock, wait) = shutdown::create_lock_and_wait();
 
     let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
     let mcp_clients = Arc::new(McpServerFactory::default());
@@ -52,18 +62,15 @@ pub async fn start_test_worker(app_module: Arc<AppModule>) -> Result<TestWorkerH
     let wm = WorkerModules::new(config_module, id_generator, app_module, runner_factory);
 
     // dispatch_jobs requires &'static self, so leak the dispatcher.
-    // Acceptable in tests: the process is short-lived.
+    // WARNING: Each call leaks memory. Tests must run with --test-threads=1
+    // to minimize accumulation. Background tasks also persist because
+    // dispatchers listen to OS signals (not ShutdownLock) for termination.
+    // TODO: Refactor dispatch_jobs to use Arc<Self> to enable proper cleanup.
     let dispatcher: &'static dyn JobDispatcher = Box::leak(wm.job_dispatcher);
     dispatcher.dispatch_jobs(lock.clone())?;
 
-    Ok(TestWorkerHandle { _lock: lock })
-}
-
-/// Create a hybrid test app with a running backend worker.
-///
-/// Convenience wrapper combining `create_hybrid_test_app` + `start_test_worker`.
-pub async fn create_hybrid_test_app_with_worker() -> Result<(Arc<AppModule>, TestWorkerHandle)> {
-    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-    let handle = start_test_worker(app_module.clone()).await?;
-    Ok((app_module, handle))
+    Ok(TestWorkerHandle {
+        _lock: lock,
+        _wait: wait,
+    })
 }

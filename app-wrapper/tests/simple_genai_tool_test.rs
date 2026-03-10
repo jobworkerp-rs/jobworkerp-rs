@@ -21,7 +21,7 @@ use tokio::time::{Duration, timeout};
 
 /// Test configuration
 const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
-const TEST_MODEL: &str = "qwen3.5:9b"; // Use qwen3:30b model via Ollama
+const TEST_MODEL: &str = "qwen3.5:9b"; // Use qwen3.5:9b model via Ollama
 const OTLP_ADDR: &str = "http://otel-collector.default.svc.cluster.local:4317";
 const TEST_TIMEOUT: Duration = Duration::from_secs(300);
 

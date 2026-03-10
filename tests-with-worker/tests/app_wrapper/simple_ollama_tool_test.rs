@@ -43,7 +43,7 @@ async fn create_test_service() -> Result<(OllamaChatService, tests_with_worker::
         pull_model: Some(true),
     };
 
-    let _result = app_module
+    match app_module
         .function_set_app
         .create_function_set(&FunctionSetData {
             name: "ollama_tool_test".to_string(),
@@ -56,7 +56,12 @@ async fn create_test_service() -> Result<(OllamaChatService, tests_with_worker::
                 using: None,
             }],
         })
-        .await;
+        .await
+    {
+        Ok(_) => {}
+        Err(e) if e.to_string().to_lowercase().contains("unique") => {}
+        Err(e) => return Err(e),
+    }
     let service = OllamaChatService::new(
         app_module.function_app.clone(),
         app_module.function_set_app.clone(),

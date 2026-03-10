@@ -293,7 +293,6 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
 }
 
 /// Test: RunStreamTaskExecutor correctly collects stream using RunnerSpec::collect_stream
-/// TODO cannot pass the test...
 #[test]
 fn test_run_stream_task_executor_collect_stream() -> Result<()> {
     TEST_RUNTIME.block_on(async {
@@ -439,8 +438,8 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
                 "Output should contain 'Line' (stdout) or 'exit_code' (result): got {}",
                 output_str
             );
-            // TODO: Define expected output format and use more specific assertions
-            // For now, verify the output is non-empty and contains some expected data
+            // TODO(#): Add assertions for specific output fields once COMMAND runner
+            // stream collection format is stabilized
         } else {
             return Err(anyhow::anyhow!("Final context should be set"));
         }
