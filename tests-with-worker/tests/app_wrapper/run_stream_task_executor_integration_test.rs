@@ -58,7 +58,7 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     TEST_RUNTIME.block_on(async {
         let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-        let _worker_handle = start_test_worker(app_module.clone()).await?;
+        let worker_handle = start_test_worker(app_module.clone()).await?;
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module.clone()));
 
         // Create a worker for the test
@@ -73,7 +73,14 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
         // Load a workflow for context
         let loader = WorkflowLoader::new_local_only();
         let flow = loader
-            .load_workflow(Some("../app-wrapper/test-files/ls-test.yaml"), None, false)
+            .load_workflow(
+                Some(&format!(
+                    "{}/../app-wrapper/test-files/ls-test.yaml",
+                    env!("CARGO_MANIFEST_DIR")
+                )),
+                None,
+                false,
+            )
             .await?;
 
         let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
@@ -174,6 +181,7 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
         eprintln!("Execution succeeded!");
 
         eprintln!("test_run_stream_task_executor_worker_config passed");
+        worker_handle.shutdown().await;
         Ok(())
     })
 }
@@ -183,13 +191,20 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
 fn test_run_stream_task_executor_runner_config() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-        let _worker_handle = start_test_worker(app_module.clone()).await?;
+        let worker_handle = start_test_worker(app_module.clone()).await?;
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module.clone()));
 
         // Load a workflow for context
         let loader = WorkflowLoader::new_local_only();
         let flow = loader
-            .load_workflow(Some("../app-wrapper/test-files/ls-test.yaml"), None, false)
+            .load_workflow(
+                Some(&format!(
+                    "{}/../app-wrapper/test-files/ls-test.yaml",
+                    env!("CARGO_MANIFEST_DIR")
+                )),
+                None,
+                false,
+            )
             .await?;
 
         let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
@@ -288,6 +303,7 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
         eprintln!("Execution succeeded!");
 
         eprintln!("test_run_stream_task_executor_runner_config passed");
+        worker_handle.shutdown().await;
         Ok(())
     })
 }
@@ -297,7 +313,7 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
 fn test_run_stream_task_executor_collect_stream() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-        let _worker_handle = start_test_worker(app_module.clone()).await?;
+        let worker_handle = start_test_worker(app_module.clone()).await?;
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module.clone()));
 
         // Create a worker that outputs multiple lines (to test stream collection)
@@ -312,7 +328,14 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
         // Load a workflow for context
         let loader = WorkflowLoader::new_local_only();
         let flow = loader
-            .load_workflow(Some("../app-wrapper/test-files/ls-test.yaml"), None, false)
+            .load_workflow(
+                Some(&format!(
+                    "{}/../app-wrapper/test-files/ls-test.yaml",
+                    env!("CARGO_MANIFEST_DIR")
+                )),
+                None,
+                false,
+            )
             .await?;
 
         let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
@@ -438,13 +461,14 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
                 "Output should contain 'Line' (stdout) or 'exit_code' (result): got {}",
                 output_str
             );
-            // TODO(#): Add assertions for specific output fields once COMMAND runner
+            // TODO: Add assertions for specific output fields once COMMAND runner
             // stream collection format is stabilized
         } else {
             return Err(anyhow::anyhow!("Final context should be set"));
         }
 
         eprintln!("test_run_stream_task_executor_collect_stream passed");
+        worker_handle.shutdown().await;
         Ok(())
     })
 }

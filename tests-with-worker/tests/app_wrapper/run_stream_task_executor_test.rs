@@ -69,7 +69,7 @@ async fn create_command_worker_with_response_type(
 fn test_listen_stream_rejects_non_broadcast_worker() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-        let _worker_handle = start_test_worker(app_module.clone()).await?;
+        let worker_handle = start_test_worker(app_module.clone()).await?;
 
         // Create a worker with broadcast_results=false
         let worker_name = "test-non-broadcast-worker";
@@ -113,6 +113,7 @@ fn test_listen_stream_rejects_non_broadcast_worker() -> Result<()> {
         );
 
         eprintln!("test_listen_stream_rejects_non_broadcast_worker passed");
+        worker_handle.shutdown().await;
         Ok(())
     })
 }
@@ -122,7 +123,7 @@ fn test_listen_stream_rejects_non_broadcast_worker() -> Result<()> {
 fn test_listen_stream_receives_job_results() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-        let _worker_handle = start_test_worker(app_module.clone()).await?;
+        let worker_handle = start_test_worker(app_module.clone()).await?;
 
         // Create a worker with broadcast_results=true and NoResult response type
         let worker_name = "test-broadcast-stream-worker";
@@ -207,17 +208,22 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
                     }
                     Err(e) => {
                         eprintln!("Failed to receive broadcast result: {:?}", e);
+                        let _ = app_module.worker_app.delete(&worker_id).await;
+                        worker_handle.shutdown().await;
+                        return Err(e);
                     }
                 }
             }
             Err(e) => {
                 eprintln!("Failed to enqueue job: {:?}", e);
+                worker_handle.shutdown().await;
                 return Err(e);
             }
         }
 
         // Cleanup
         let _ = app_module.worker_app.delete(&worker_id).await;
+        worker_handle.shutdown().await;
         eprintln!("test_listen_stream_receives_job_results completed");
         Ok(())
     })
@@ -231,7 +237,7 @@ fn test_listen_stream_streaming_results() -> Result<()> {
 
     TEST_RUNTIME.block_on(async {
         let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-        let _worker_handle = start_test_worker(app_module.clone()).await?;
+        let worker_handle = start_test_worker(app_module.clone()).await?;
 
         // Create a worker with broadcast_results=true
         let worker_name = "test-streaming-result-worker";
@@ -326,11 +332,15 @@ fn test_listen_stream_streaming_results() -> Result<()> {
             }
             Err(e) => {
                 eprintln!("Failed to listen: {:?}", e);
+                let _ = app_module.worker_app.delete(&worker_id).await;
+                worker_handle.shutdown().await;
+                return Err(e);
             }
         }
 
         // Cleanup
         let _ = app_module.worker_app.delete(&worker_id).await;
+        worker_handle.shutdown().await;
         eprintln!("test_listen_stream_streaming_results completed");
         Ok(())
     })
@@ -341,7 +351,7 @@ fn test_listen_stream_streaming_results() -> Result<()> {
 fn test_listen_stream_allows_broadcast_worker() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-        let _worker_handle = start_test_worker(app_module.clone()).await?;
+        let worker_handle = start_test_worker(app_module.clone()).await?;
 
         // Create a worker with broadcast_results=true
         let worker_name = "test-broadcast-worker";
@@ -387,6 +397,7 @@ fn test_listen_stream_allows_broadcast_worker() -> Result<()> {
         }
 
         eprintln!("test_listen_stream_allows_broadcast_worker passed");
+        worker_handle.shutdown().await;
         Ok(())
     })
 }
