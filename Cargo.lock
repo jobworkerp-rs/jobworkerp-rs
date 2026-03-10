@@ -5774,6 +5774,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tests-with-worker"
+version = "0.22.0"
+dependencies = [
+ "anyhow",
+ "app",
+ "app-wrapper",
+ "command-utils 0.1.0",
+ "futures",
+ "infra",
+ "infra-utils",
+ "jobworkerp-base",
+ "jobworkerp-runner",
+ "memory-utils 0.1.0",
+ "opentelemetry 0.31.0",
+ "proto",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "worker-app",
+]
+
+[[package]]
 name = "thirtyfour"
 version = "0.36.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

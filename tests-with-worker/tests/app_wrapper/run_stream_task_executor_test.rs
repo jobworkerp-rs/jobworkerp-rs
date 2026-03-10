@@ -4,15 +4,13 @@
 /// 1. ListenStream correctly rejects non-broadcast workers
 /// 2. ListenStream receives streaming results when broadcast_results=true
 ///
-/// Run with: cargo test --package app-wrapper --test run_stream_task_executor_test -- --ignored --test-threads=1 --nocapture
+/// Run with: cargo test --package tests-with-worker --test app_wrapper -- run_stream_task_executor_test --test-threads=1 --nocapture
 ///
 /// Prerequisites:
 /// - Redis must be accessible (for pubsub in Scalable mode)
-/// - Worker process must be running to execute jobs
-/// - Test and worker process must use the same RDB (SQLite/MySQL) for worker lookup
+/// - Backend worker is started automatically by `start_test_worker`
 use anyhow::Result;
 use app::app::job::execute::{JobExecutorWrapper, UseJobExecutor};
-use app::module::test::create_hybrid_test_app;
 use infra_utils::infra::test::TEST_RUNTIME;
 use proto::DEFAULT_METHOD_NAME;
 use proto::jobworkerp::data::{
@@ -21,6 +19,7 @@ use proto::jobworkerp::data::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tests_with_worker::start_test_worker;
 
 /// Helper to create a COMMAND worker with broadcast_results setting
 async fn create_command_worker(
@@ -67,16 +66,16 @@ async fn create_command_worker_with_response_type(
 
 /// Test: ListenStream returns error for worker without broadcast_results
 #[test]
-#[ignore = "Requires Redis for Scalable mode and same RDB as worker process"]
 fn test_listen_stream_rejects_non_broadcast_worker() -> Result<()> {
     TEST_RUNTIME.block_on(async {
-        let app_module = Arc::new(create_hybrid_test_app().await?);
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+        let worker_handle = start_test_worker(app_module.clone()).await?;
 
         // Create a worker with broadcast_results=false
         let worker_name = "test-non-broadcast-worker";
         let worker_id = create_command_worker(&app_module, worker_name, false).await?;
         eprintln!(
-            "✅ Created worker '{}' with broadcast_results=false: {:?}",
+            "Created worker '{}' with broadcast_results=false: {:?}",
             worker_name, worker_id
         );
 
@@ -113,31 +112,20 @@ fn test_listen_stream_rejects_non_broadcast_worker() -> Result<()> {
             err_msg
         );
 
-        eprintln!("✅ test_listen_stream_rejects_non_broadcast_worker passed");
+        eprintln!("test_listen_stream_rejects_non_broadcast_worker passed");
+        worker_handle.shutdown().await;
         Ok(())
     })
 }
 
 /// Test: Streaming job returns results via listen_result (NoResult + broadcast)
-///
-/// This test:
-/// 1. Creates a COMMAND worker with broadcast_results=true and response_type=NoResult
-/// 2. Waits for worker to be registered in backend
-/// 3. Reserves a job ID and starts listening in background BEFORE enqueuing
-/// 4. Enqueues a job (will be executed by running worker process)
-/// 5. Receives results via listen_result
-///
-/// Prerequisites:
-/// - Backend worker process must be running
-/// - Worker process must detect newly created workers
 #[test]
-#[ignore = "Requires Redis, running worker process, and same RDB as worker process"]
 fn test_listen_stream_receives_job_results() -> Result<()> {
     TEST_RUNTIME.block_on(async {
-        let app_module = Arc::new(create_hybrid_test_app().await?);
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+        let worker_handle = start_test_worker(app_module.clone()).await?;
 
         // Create a worker with broadcast_results=true and NoResult response type
-        // NoResult with broadcast_results=true: job is queued, results are broadcast via pubsub
         let worker_name = "test-broadcast-stream-worker";
         let worker_id = create_command_worker_with_response_type(
             &app_module,
@@ -147,12 +135,12 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
         )
         .await?;
         eprintln!(
-            "✅ Created worker '{}' with broadcast_results=true, response_type=NoResult: {:?}",
+            "Created worker '{}' with broadcast_results=true, response_type=NoResult: {:?}",
             worker_name, worker_id
         );
 
-        // Wait for worker to be registered in backend worker process
-        eprintln!("⏳ Waiting for worker registration to propagate (2s)...");
+        // Wait for worker to pick up the new worker definition
+        eprintln!("Waiting for worker registration to propagate (2s)...");
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module.clone()));
@@ -163,7 +151,7 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
             "args": ["hello", "from", "broadcast", "stream", "test"]
         });
 
-        eprintln!("\n📤 Enqueuing job (streaming=false, will be executed by worker process)...");
+        eprintln!("Enqueuing job (streaming=false, will be executed by worker)...");
         let metadata = Arc::new(HashMap::new());
         let enqueue_result = job_executors
             .enqueue_with_worker_name(
@@ -179,12 +167,11 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
 
         match enqueue_result {
             Ok((job_id, result_opt, stream_opt)) => {
-                eprintln!("✅ Enqueued job: {:?}", job_id);
+                eprintln!("Enqueued job: {:?}", job_id);
                 eprintln!("   Immediate result: {:?}", result_opt.is_some());
                 eprintln!("   Stream from enqueue: {:?}", stream_opt.is_some());
 
-                // For NoResult type, we need to listen for broadcast results
-                eprintln!("\n📡 Listening for broadcast result (30s timeout)...");
+                eprintln!("Listening for broadcast result (30s timeout)...");
                 let listen_result = app_module
                     .job_result_app
                     .listen_result(
@@ -199,7 +186,7 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
 
                 match listen_result {
                     Ok((result, stream_opt)) => {
-                        eprintln!("\n📋 Received Broadcast Result:");
+                        eprintln!("Received Broadcast Result:");
                         eprintln!("   ID: {:?}", result.id);
                         if let Some(data) = &result.data {
                             eprintln!("   Status: {:?}", data.status);
@@ -217,49 +204,40 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
                         }
                         eprintln!("   Metadata: {:?}", result.metadata);
                         eprintln!("   Stream available: {:?}", stream_opt.is_some());
-                        eprintln!("\n✅ Successfully received broadcast result!");
+                        eprintln!("Successfully received broadcast result!");
                     }
                     Err(e) => {
-                        eprintln!("\n❌ Failed to receive broadcast result: {:?}", e);
-                        eprintln!("   This may indicate the worker process is not running");
-                        eprintln!("   or did not pick up the newly created worker.");
-                        eprintln!(
-                            "\n   NOTE: This test requires a running jobworkerp worker process."
-                        );
-                        eprintln!(
-                            "   The worker must be started AFTER the worker definition is created,"
-                        );
-                        eprintln!(
-                            "   or the running worker must detect and reload newly created workers."
-                        );
+                        eprintln!("Failed to receive broadcast result: {:?}", e);
+                        let _ = app_module.worker_app.delete(&worker_id).await;
+                        worker_handle.shutdown().await;
+                        return Err(e);
                     }
                 }
             }
             Err(e) => {
-                eprintln!("❌ Failed to enqueue job: {:?}", e);
+                eprintln!("Failed to enqueue job: {:?}", e);
+                worker_handle.shutdown().await;
                 return Err(e);
             }
         }
 
         // Cleanup
         let _ = app_module.worker_app.delete(&worker_id).await;
-        eprintln!("\n✅ test_listen_stream_receives_job_results completed");
+        worker_handle.shutdown().await;
+        eprintln!("test_listen_stream_receives_job_results completed");
         Ok(())
     })
 }
 
 /// Test: Listen with subscribe_result_stream for streaming results
-///
-/// This test verifies that listen_result with request_streaming=true
-/// returns a stream of ResultOutputItem that can be consumed.
 #[test]
-#[ignore = "Requires Redis, running worker process with streaming support, and same RDB"]
 fn test_listen_stream_streaming_results() -> Result<()> {
     use futures::StreamExt;
     use proto::jobworkerp::data::result_output_item;
 
     TEST_RUNTIME.block_on(async {
-        let app_module = Arc::new(create_hybrid_test_app().await?);
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+        let worker_handle = start_test_worker(app_module.clone()).await?;
 
         // Create a worker with broadcast_results=true
         let worker_name = "test-streaming-result-worker";
@@ -271,12 +249,12 @@ fn test_listen_stream_streaming_results() -> Result<()> {
         )
         .await?;
         eprintln!(
-            "✅ Created worker '{}' with broadcast_results=true: {:?}",
+            "Created worker '{}' with broadcast_results=true: {:?}",
             worker_name, worker_id
         );
 
         // Wait for worker registration
-        eprintln!("⏳ Waiting for worker registration (2s)...");
+        eprintln!("Waiting for worker registration (2s)...");
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module.clone()));
@@ -287,7 +265,7 @@ fn test_listen_stream_streaming_results() -> Result<()> {
             "args": ["streaming", "output", "test"]
         });
 
-        eprintln!("\n📤 Enqueuing job...");
+        eprintln!("Enqueuing job...");
         let (job_id, _, _) = job_executors
             .enqueue_with_worker_name(
                 Arc::new(HashMap::new()),
@@ -299,10 +277,10 @@ fn test_listen_stream_streaming_results() -> Result<()> {
                 None,
             )
             .await?;
-        eprintln!("✅ Enqueued job: {:?}", job_id);
+        eprintln!("Enqueued job: {:?}", job_id);
 
         // Listen for streaming results
-        eprintln!("\n📡 Listening for streaming result (30s timeout)...");
+        eprintln!("Listening for streaming result (30s timeout)...");
         let listen_result = app_module
             .job_result_app
             .listen_result(
@@ -317,7 +295,7 @@ fn test_listen_stream_streaming_results() -> Result<()> {
 
         match listen_result {
             Ok((initial_result, stream_opt)) => {
-                eprintln!("\n📋 Initial Result: {:?}", initial_result.id);
+                eprintln!("Initial Result: {:?}", initial_result.id);
                 if let Some(data) = &initial_result.data {
                     eprintln!("   Status: {:?}", data.status);
                     if let Some(output) = &data.output {
@@ -326,7 +304,7 @@ fn test_listen_stream_streaming_results() -> Result<()> {
                 }
 
                 if let Some(mut stream) = stream_opt {
-                    eprintln!("\n📦 Stream Items:");
+                    eprintln!("Stream Items:");
                     let mut count = 0;
                     while let Some(item) = stream.next().await {
                         count += 1;
@@ -347,36 +325,39 @@ fn test_listen_stream_streaming_results() -> Result<()> {
                             }
                         }
                     }
-                    eprintln!("\n✅ Received {} stream items", count);
+                    eprintln!("Received {} stream items", count);
                 } else {
-                    eprintln!("\n📦 No stream available (result was immediate)");
+                    eprintln!("No stream available (result was immediate)");
                 }
             }
             Err(e) => {
-                eprintln!("\n❌ Failed to listen: {:?}", e);
-                eprintln!("   Worker process may not be running or streaming not supported.");
+                eprintln!("Failed to listen: {:?}", e);
+                let _ = app_module.worker_app.delete(&worker_id).await;
+                worker_handle.shutdown().await;
+                return Err(e);
             }
         }
 
         // Cleanup
         let _ = app_module.worker_app.delete(&worker_id).await;
-        eprintln!("\n✅ test_listen_stream_streaming_results completed");
+        worker_handle.shutdown().await;
+        eprintln!("test_listen_stream_streaming_results completed");
         Ok(())
     })
 }
 
 /// Test: ListenStream allows subscription for broadcast worker (timeout expected)
 #[test]
-#[ignore = "Requires Redis for Scalable mode and same RDB as worker process"]
 fn test_listen_stream_allows_broadcast_worker() -> Result<()> {
     TEST_RUNTIME.block_on(async {
-        let app_module = Arc::new(create_hybrid_test_app().await?);
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+        let worker_handle = start_test_worker(app_module.clone()).await?;
 
         // Create a worker with broadcast_results=true
         let worker_name = "test-broadcast-worker";
         let worker_id = create_command_worker(&app_module, worker_name, true).await?;
         eprintln!(
-            "✅ Created worker '{}' with broadcast_results=true: {:?}",
+            "Created worker '{}' with broadcast_results=true: {:?}",
             worker_name, worker_id
         );
 
@@ -401,7 +382,7 @@ fn test_listen_stream_allows_broadcast_worker() -> Result<()> {
 
         match result {
             Ok(_) => {
-                eprintln!("✅ listen_result succeeded (unexpected but valid)");
+                eprintln!("listen_result succeeded (unexpected but valid)");
             }
             Err(e) => {
                 let err_msg = format!("{:?}", e);
@@ -411,11 +392,12 @@ fn test_listen_stream_allows_broadcast_worker() -> Result<()> {
                     "Error should be timeout, not broadcast restriction: {}",
                     err_msg
                 );
-                eprintln!("✅ listen_result timed out as expected");
+                eprintln!("listen_result timed out as expected");
             }
         }
 
-        eprintln!("✅ test_listen_stream_allows_broadcast_worker passed");
+        eprintln!("test_listen_stream_allows_broadcast_worker passed");
+        worker_handle.shutdown().await;
         Ok(())
     })
 }
