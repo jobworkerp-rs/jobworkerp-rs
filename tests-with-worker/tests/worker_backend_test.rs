@@ -25,7 +25,7 @@ async fn test_worker_executes_command_via_function() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Create a function set targeting the COMMAND runner (runner_id=1)
-    let _result = app_module
+    match app_module
         .function_set_app
         .create_function_set(&FunctionSetData {
             name: "worker_backend_test".to_string(),
@@ -38,7 +38,12 @@ async fn test_worker_executes_command_via_function() -> Result<()> {
                 using: None,
             }],
         })
-        .await;
+        .await
+    {
+        Ok(_) => {}
+        Err(e) if e.to_string().to_lowercase().contains("unique") => {}
+        Err(e) => return Err(e),
+    }
 
     // Call function_for_llm directly - this enqueues a job and waits for the result
     let metadata = Arc::new(HashMap::new());
