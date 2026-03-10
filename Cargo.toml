@@ -17,6 +17,7 @@ members = [
     "worker-main",
     "mcp-server",
     "ag-ui-front",
+    "tests-with-worker",
 ]
 
 resolver = "3"

@@ -3,14 +3,13 @@
 /// These tests verify that RunStreamTaskExecutor correctly executes jobs
 /// with streaming support using various configurations (Worker, Runner, Function).
 ///
-/// Run with: cargo test --package app-wrapper --test run_stream_task_executor_integration_test -- --ignored --test-threads=1 --nocapture
+/// Run with: cargo test --package tests-with-worker --test app_wrapper -- run_stream_task_executor_integration_test --test-threads=1 --nocapture
 ///
 /// Prerequisites:
 /// - Redis must be accessible (for Hybrid/Scalable mode)
-/// - Worker process must be running to execute jobs
+/// - Backend worker is started automatically by `start_test_worker`
 use anyhow::Result;
 use app::app::job::execute::JobExecutorWrapper;
-use app::module::test::create_hybrid_test_app;
 use app_wrapper::workflow::{
     definition::{
         WorkflowLoader,
@@ -27,6 +26,7 @@ use proto::jobworkerp::data::{QueueType, ResponseType, RunnerId, WorkerData};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tests_with_worker::start_test_worker;
 use tokio::sync::{Mutex, RwLock};
 
 /// Helper to create a COMMAND worker for testing
@@ -53,40 +53,27 @@ async fn create_command_worker(
 }
 
 /// Test: RunStreamTaskExecutor executes Worker configuration with streaming
-///
-/// This test verifies that RunStreamTaskExecutor can execute a job using
-/// Worker configuration (pre-registered worker) and collect streaming results.
-///
-/// NOTE: This test requires a FRESH worker process restart before running.
-/// The worker process caches runner information by worker ID. If a worker ID
-/// was previously used by a different runner (e.g., CREATE_WORKFLOW), the
-/// cached runner info will be used instead of the new worker's runner,
-/// causing test failures.
-///
-/// Prerequisites:
-/// 1. Restart the worker process (to clear runner cache)
-/// 2. Ensure no existing worker with ID 1 in the database, or use a fresh test DB
 #[test]
-#[ignore = "Requires fresh worker process restart, Redis, and same RDB as worker process"]
 fn test_run_stream_task_executor_worker_config() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     TEST_RUNTIME.block_on(async {
-        let app_module = Arc::new(create_hybrid_test_app().await?);
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+        let _worker_handle = start_test_worker(app_module.clone()).await?;
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module.clone()));
 
         // Create a worker for the test
         let worker_name = "test-stream-executor-worker";
         let worker_id = create_command_worker(&app_module, worker_name).await?;
-        eprintln!("✅ Created worker '{}': {:?}", worker_name, worker_id);
+        eprintln!("Created worker '{}': {:?}", worker_name, worker_id);
 
         // Wait for worker registration
-        eprintln!("⏳ Waiting for worker registration (2s)...");
+        eprintln!("Waiting for worker registration (2s)...");
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Load a workflow for context
         let loader = WorkflowLoader::new_local_only();
         let flow = loader
-            .load_workflow(Some("test-files/ls-test.yaml"), None, false)
+            .load_workflow(Some("../app-wrapper/test-files/ls-test.yaml"), None, false)
             .await?;
 
         let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
@@ -139,7 +126,7 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
             Arc::new(Mutex::new(Default::default())),
         );
 
-        eprintln!("\n📤 Executing RunStreamTaskExecutor with Worker config...");
+        eprintln!("Executing RunStreamTaskExecutor with Worker config...");
         let cx = Arc::new(opentelemetry::Context::new());
         let stream =
             executor.execute_stream(cx, Arc::new("test_worker_config".to_string()), task_context);
@@ -153,14 +140,14 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
             match event_result {
                 Ok(WorkflowStreamEvent::StreamingJobStarted { event: ev }) => {
                     eprintln!(
-                        "📥 StreamingJobStarted: job_id={}",
+                        "StreamingJobStarted: job_id={}",
                         ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
                     );
                     started = true;
                 }
                 Ok(WorkflowStreamEvent::StreamingJobCompleted { event: ev, context }) => {
                     eprintln!(
-                        "📥 StreamingJobCompleted: job_id={}",
+                        "StreamingJobCompleted: job_id={}",
                         ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
                     );
                     eprintln!("   Output: {:?}", context.raw_output);
@@ -168,10 +155,10 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
                     final_context = Some(context);
                 }
                 Ok(other) => {
-                    eprintln!("📥 Other event: {:?}", other);
+                    eprintln!("Other event: {:?}", other);
                 }
                 Err(e) => {
-                    eprintln!("❌ Execution failed: {:?}", e);
+                    eprintln!("Execution failed: {:?}", e);
                     let _ = app_module.worker_app.delete(&worker_id).await;
                     return Err(anyhow::anyhow!("RunStreamTaskExecutor failed: {:?}", e));
                 }
@@ -184,28 +171,25 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
         assert!(started, "StreamingJobStarted event should be emitted");
         assert!(completed, "StreamingJobCompleted event should be emitted");
         assert!(final_context.is_some(), "Final context should be set");
-        eprintln!("✅ Execution succeeded!");
+        eprintln!("Execution succeeded!");
 
-        eprintln!("\n✅ test_run_stream_task_executor_worker_config passed");
+        eprintln!("test_run_stream_task_executor_worker_config passed");
         Ok(())
     })
 }
 
 /// Test: RunStreamTaskExecutor executes Runner configuration with streaming
-///
-/// This test verifies that RunStreamTaskExecutor can execute a job using
-/// Runner configuration (direct runner invocation) and collect streaming results.
 #[test]
-#[ignore = "Requires Redis, running worker process, and same RDB as worker process"]
 fn test_run_stream_task_executor_runner_config() -> Result<()> {
     TEST_RUNTIME.block_on(async {
-        let app_module = Arc::new(create_hybrid_test_app().await?);
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+        let _worker_handle = start_test_worker(app_module.clone()).await?;
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module.clone()));
 
         // Load a workflow for context
         let loader = WorkflowLoader::new_local_only();
         let flow = loader
-            .load_workflow(Some("test-files/ls-test.yaml"), None, false)
+            .load_workflow(Some("../app-wrapper/test-files/ls-test.yaml"), None, false)
             .await?;
 
         let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
@@ -260,7 +244,7 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
             Arc::new(Mutex::new(Default::default())),
         );
 
-        eprintln!("\n📤 Executing RunStreamTaskExecutor with Runner config...");
+        eprintln!("Executing RunStreamTaskExecutor with Runner config...");
         let cx = Arc::new(opentelemetry::Context::new());
         let stream =
             executor.execute_stream(cx, Arc::new("test_runner_config".to_string()), task_context);
@@ -274,14 +258,14 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
             match event_result {
                 Ok(WorkflowStreamEvent::StreamingJobStarted { event: ev }) => {
                     eprintln!(
-                        "📥 StreamingJobStarted: job_id={}",
+                        "StreamingJobStarted: job_id={}",
                         ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
                     );
                     started = true;
                 }
                 Ok(WorkflowStreamEvent::StreamingJobCompleted { event: ev, context }) => {
                     eprintln!(
-                        "📥 StreamingJobCompleted: job_id={}",
+                        "StreamingJobCompleted: job_id={}",
                         ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
                     );
                     eprintln!("   Output: {:?}", context.raw_output);
@@ -289,10 +273,10 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
                     final_context = Some(context);
                 }
                 Ok(other) => {
-                    eprintln!("📥 Other event: {:?}", other);
+                    eprintln!("Other event: {:?}", other);
                 }
                 Err(e) => {
-                    eprintln!("❌ Execution failed: {:?}", e);
+                    eprintln!("Execution failed: {:?}", e);
                     return Err(anyhow::anyhow!("RunStreamTaskExecutor failed: {:?}", e));
                 }
             }
@@ -301,38 +285,35 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
         assert!(started, "StreamingJobStarted event should be emitted");
         assert!(completed, "StreamingJobCompleted event should be emitted");
         assert!(final_context.is_some(), "Final context should be set");
-        eprintln!("✅ Execution succeeded!");
+        eprintln!("Execution succeeded!");
 
-        eprintln!("\n✅ test_run_stream_task_executor_runner_config passed");
+        eprintln!("test_run_stream_task_executor_runner_config passed");
         Ok(())
     })
 }
 
 /// Test: RunStreamTaskExecutor correctly collects stream using RunnerSpec::collect_stream
-///
-/// This test verifies that the streaming results are properly collected
-/// using the collect_stream mechanism moved to RunnerSpec trait.
 /// TODO cannot pass the test...
 #[test]
-#[ignore = "Requires Redis, running worker process, and same RDB as worker process"]
 fn test_run_stream_task_executor_collect_stream() -> Result<()> {
     TEST_RUNTIME.block_on(async {
-        let app_module = Arc::new(create_hybrid_test_app().await?);
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+        let _worker_handle = start_test_worker(app_module.clone()).await?;
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module.clone()));
 
         // Create a worker that outputs multiple lines (to test stream collection)
         let worker_name = "test-stream-collect-worker";
         let worker_id = create_command_worker(&app_module, worker_name).await?;
-        eprintln!("✅ Created worker '{}': {:?}", worker_name, worker_id);
+        eprintln!("Created worker '{}': {:?}", worker_name, worker_id);
 
         // Wait for worker registration
-        eprintln!("⏳ Waiting for worker registration (2s)...");
+        eprintln!("Waiting for worker registration (2s)...");
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Load a workflow for context
         let loader = WorkflowLoader::new_local_only();
         let flow = loader
-            .load_workflow(Some("test-files/ls-test.yaml"), None, false)
+            .load_workflow(Some("../app-wrapper/test-files/ls-test.yaml"), None, false)
             .await?;
 
         let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
@@ -352,8 +333,6 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
                     name: worker_name.to_string(),
                     arguments: {
                         let mut args = serde_json::Map::new();
-                        // Use sleep to give time for subscribe to connect before job completes
-                        // This avoids race condition where publish happens before subscribe
                         args.insert("command".to_string(), serde_json::json!("sh"));
                         args.insert(
                             "args".to_string(),
@@ -390,7 +369,7 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
             Arc::new(Mutex::new(Default::default())),
         );
 
-        eprintln!("\n📤 Executing RunStreamTaskExecutor with multi-line output...");
+        eprintln!("Executing RunStreamTaskExecutor with multi-line output...");
         let cx = Arc::new(opentelemetry::Context::new());
         let stream = executor.execute_stream(
             cx,
@@ -407,14 +386,14 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
             match event_result {
                 Ok(WorkflowStreamEvent::StreamingJobStarted { event: ev }) => {
                     eprintln!(
-                        "📥 StreamingJobStarted: job_id={}",
+                        "StreamingJobStarted: job_id={}",
                         ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
                     );
                     started = true;
                 }
                 Ok(WorkflowStreamEvent::StreamingJobCompleted { event: ev, context }) => {
                     eprintln!(
-                        "📥 StreamingJobCompleted: job_id={}",
+                        "StreamingJobCompleted: job_id={}",
                         ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
                     );
                     eprintln!("   Output: {:?}", context.raw_output);
@@ -422,10 +401,10 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
                     final_context = Some(context);
                 }
                 Ok(other) => {
-                    eprintln!("📥 Other event: {:?}", other);
+                    eprintln!("Other event: {:?}", other);
                 }
                 Err(e) => {
-                    eprintln!("❌ Execution failed: {:?}", e);
+                    eprintln!("Execution failed: {:?}", e);
                     let _ = app_module.worker_app.delete(&worker_id).await;
                     return Err(anyhow::anyhow!("RunStreamTaskExecutor failed: {:?}", e));
                 }
@@ -439,9 +418,8 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
         assert!(completed, "StreamingJobCompleted event should be emitted");
 
         if let Some(task_context) = final_context {
-            eprintln!("✅ Execution succeeded!");
+            eprintln!("Execution succeeded!");
             eprintln!("   Output: {:?}", task_context.raw_output);
-
             // // Verify output contains all lines (collected from stream)
             // let output_str = task_context.raw_output.to_string();
             // eprintln!("   Output string: {}", output_str);
@@ -455,19 +433,19 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
             // Verify output contains expected data from stream collection
             let output_str = task_context.raw_output.to_string();
             eprintln!("   Output string: {}", output_str);
-            // TODO: Define expected output format and use more specific assertions
-            // For now, verify the output is non-empty and contains some expected data
             assert!(!output_str.is_empty(), "Output should not be empty");
             assert!(
                 output_str.contains("Line") || output_str.contains("exit_code"),
                 "Output should contain 'Line' (stdout) or 'exit_code' (result): got {}",
                 output_str
             );
+            // TODO: Define expected output format and use more specific assertions
+            // For now, verify the output is non-empty and contains some expected data
         } else {
             return Err(anyhow::anyhow!("Final context should be set"));
         }
 
-        eprintln!("\n✅ test_run_stream_task_executor_collect_stream passed");
+        eprintln!("test_run_stream_task_executor_collect_stream passed");
         Ok(())
     })
 }

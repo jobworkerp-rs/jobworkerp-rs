@@ -530,8 +530,22 @@ pub mod test {
             num_counters: 10,
             ttl: Some(Duration::from_secs(AppModule::DEFAULT_CACHE_TTL_SEC)),
         };
-        // let worker_config = Arc::new(load_worker_config());
-        let app_config = Arc::new(AppConfigModule::new_by_env(runner_factory.clone()));
+        // Build AppConfigModule with the same StorageType::Scalable used for
+        // repository construction, and a small concurrency to avoid exhausting
+        // the shared redis blocking pool in tests.
+        let worker_config = Arc::new(WorkerConfig {
+            default_concurrency: 2,
+            channels: vec![],
+            channel_concurrencies: vec![],
+        });
+        let app_config = Arc::new(AppConfigModule {
+            storage_config: storage_config.clone(),
+            worker_config,
+            job_queue_config: Arc::new(
+                infra::infra::load_job_queue_config_from_env().unwrap_or_default(),
+            ),
+            runner_factory: runner_factory.clone(),
+        });
         let descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>> =
             Arc::new(MokaCacheImpl::new(&moka_config));
 
