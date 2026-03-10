@@ -109,7 +109,7 @@ fn create_chat_args_with_tools(message: &str) -> LlmChatArgs {
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_basic_date_command() -> Result<()> {
     // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-    let (service, _worker_handle) = create_test_service().await?;
+    let (service, worker_handle) = create_test_service().await?;
 
     let args = create_chat_args_with_tools(
         "I need to know the current date and time. Please use the function calling to execute the date command now.",
@@ -147,6 +147,7 @@ async fn test_basic_date_command() -> Result<()> {
                 );
             }
 
+    worker_handle.shutdown().await;
     Ok(())
 }
 
@@ -155,7 +156,7 @@ async fn test_basic_date_command() -> Result<()> {
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_echo_command() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-    let (service, _worker_handle) = create_test_service().await?;
+    let (service, worker_handle) = create_test_service().await?;
 
     let args = create_chat_args_with_tools(
         "I need you to test the echo command. Please run: echo 'Testing 123'",
@@ -180,6 +181,7 @@ async fn test_echo_command() -> Result<()> {
                 );
             }
 
+    worker_handle.shutdown().await;
     Ok(())
 }
 
@@ -187,7 +189,7 @@ async fn test_echo_command() -> Result<()> {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_chat_without_tools() -> Result<()> {
-    let (service, _worker_handle) = create_test_service().await?;
+    let (service, worker_handle) = create_test_service().await?;
 
     let args = LlmChatArgs {
         messages: vec![ChatMessage {
@@ -233,6 +235,7 @@ async fn test_chat_without_tools() -> Result<()> {
                 );
             }
 
+    worker_handle.shutdown().await;
     Ok(())
 }
 
@@ -240,7 +243,7 @@ async fn test_chat_without_tools() -> Result<()> {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_invalid_command() -> Result<()> {
-    let (service, _worker_handle) = create_test_service().await?;
+    let (service, worker_handle) = create_test_service().await?;
 
     let args =
         create_chat_args_with_tools("Please run the command 'this_command_does_not_exist_xyz123'.");
@@ -264,5 +267,6 @@ async fn test_invalid_command() -> Result<()> {
                 );
             }
 
+    worker_handle.shutdown().await;
     Ok(())
 }

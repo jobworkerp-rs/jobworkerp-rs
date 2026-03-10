@@ -19,7 +19,7 @@ async fn test_worker_executes_command_via_function() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-    let _worker_handle = start_test_worker(app_module.clone()).await?;
+    let worker_handle = start_test_worker(app_module.clone()).await?;
 
     // Wait briefly for dispatcher to be ready
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -70,5 +70,6 @@ async fn test_worker_executes_command_via_function() -> Result<()> {
     );
 
     println!("test_worker_executes_command_via_function passed");
+    worker_handle.shutdown().await;
     Ok(())
 }
