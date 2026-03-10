@@ -6,7 +6,6 @@
 
 use anyhow::Result;
 use app::app::function::function_set::FunctionSetApp;
-use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::chat::ollama::OllamaChatService;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, LlmOptions};
@@ -17,19 +16,22 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunne
 use proto::jobworkerp::data::RunnerId;
 use proto::jobworkerp::function::data::{FunctionId, FunctionSetData, FunctionUsing, function_id};
 use std::collections::HashMap;
+use std::sync::Arc;
+use tests_with_worker::start_test_worker;
 use tokio::time::{Duration, timeout};
 
 /// Test configuration
 const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
-const TEST_MODEL: &str = "qwen3:30b"; // Use qwen3:30b model
+const TEST_MODEL: &str = "qwen3.5:9b"; // Use qwen3.5:9b model
 const OTLP_ADDR: &str = "http://otel-collector.default.svc.cluster.local:4317";
-const TEST_TIMEOUT: Duration = Duration::from_secs(300);
+const TEST_TIMEOUT: Duration = Duration::from_secs(100);
 
-/// Create Ollama chat service for testing
-async fn create_test_service() -> Result<OllamaChatService> {
+/// Create Ollama chat service for testing (with backend worker)
+async fn create_test_service() -> Result<(OllamaChatService, tests_with_worker::TestWorkerHandle)> {
     // SAFETY: called in test setup before spawning threads
     unsafe { std::env::set_var("OTLP_ADDR", OTLP_ADDR) };
-    let app_module = create_hybrid_test_app().await?;
+    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+    let worker_handle = start_test_worker(app_module.clone()).await?;
 
     let settings = OllamaRunnerSettings {
         model: TEST_MODEL.to_string(),
@@ -38,12 +40,9 @@ async fn create_test_service() -> Result<OllamaChatService> {
             "You are a helpful assistant. When asked to run commands, you MUST use the available tools to execute them. Always call the runTask function when users ask for command execution. Do not explain or think - just execute the function call immediately."
                 .to_string(),
         ),
-        pull_model: Some(true), // Automatically pull model if needed
+        pull_model: Some(true),
     };
-    // Try to delete existing function set if it exists to avoid unique constraint error
-    // Note: delete_function_set requires FunctionSetId, so we'll handle the error if it already exists
 
-    // If it already exists, ignore the error and continue
     let _result = app_module
         .function_set_app
         .create_function_set(&FunctionSetData {
@@ -63,7 +62,7 @@ async fn create_test_service() -> Result<OllamaChatService> {
         app_module.function_set_app.clone(),
         settings,
     )?;
-    Ok(service)
+    Ok((service, worker_handle))
 }
 
 /// Create test chat arguments with tool calling enabled
@@ -94,7 +93,7 @@ fn create_chat_args_with_tools(message: &str) -> LlmChatArgs {
             use_runners_as_function: Some(false),
             use_workers_as_function: Some(false),
             function_set_name: Some("ollama_tool_test".to_string()),
-            is_auto_calling: Some(true), // auto mode for existing tests
+            is_auto_calling: Some(true),
         }),
         json_schema: None,
     }
@@ -104,8 +103,8 @@ fn create_chat_args_with_tools(message: &str) -> LlmChatArgs {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_basic_date_command() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-    let service = create_test_service().await?;
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    let (service, _worker_handle) = create_test_service().await?;
 
     let args = create_chat_args_with_tools(
         "I need to know the current date and time. Please use the function calling to execute the date command now.",
@@ -125,11 +124,11 @@ async fn test_basic_date_command() -> Result<()> {
             && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Date test response: {}", text);
 
-                // Should contain date information
                 assert!(
                     text.to_lowercase().contains("date")
                     || text.to_lowercase().contains("time")
                     || text.contains("2025")
+                    || text.contains("2026")
                     || text.contains("Jan")
                     || text.contains("Mon")
                     || text.contains("Tue")
@@ -150,7 +149,8 @@ async fn test_basic_date_command() -> Result<()> {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_echo_command() -> Result<()> {
-    let service = create_test_service().await?;
+    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    let (service, _worker_handle) = create_test_service().await?;
 
     let args = create_chat_args_with_tools(
         "I need you to test the echo command. Please run: echo 'Testing 123'",
@@ -168,7 +168,6 @@ async fn test_echo_command() -> Result<()> {
             && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Echo test response: {}", text);
 
-                // Should contain the echo output
                 assert!(
                     text.contains("Testing 123") || text.contains("testing") || text.contains("123"),
                     "Response should contain echo output 'Testing 123': {}",
@@ -183,7 +182,7 @@ async fn test_echo_command() -> Result<()> {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_chat_without_tools() -> Result<()> {
-    let service = create_test_service().await?;
+    let (service, _worker_handle) = create_test_service().await?;
 
     let args = LlmChatArgs {
         messages: vec![ChatMessage {
@@ -206,7 +205,7 @@ async fn test_chat_without_tools() -> Result<()> {
             extract_reasoning_content: Some(false),
         }),
         model: Some(TEST_MODEL.to_string()),
-        function_options: None, // No function calling
+        function_options: None,
         json_schema: None,
     };
 
@@ -222,7 +221,6 @@ async fn test_chat_without_tools() -> Result<()> {
             && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Regular chat response: {}", text);
 
-                // Should get a conversational response
                 assert!(
                     text.len() > 5,
                     "Response should contain conversational content: {}",
@@ -237,7 +235,7 @@ async fn test_chat_without_tools() -> Result<()> {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_invalid_command() -> Result<()> {
-    let service = create_test_service().await?;
+    let (service, _worker_handle) = create_test_service().await?;
 
     let args =
         create_chat_args_with_tools("Please run the command 'this_command_does_not_exist_xyz123'.");
@@ -254,38 +252,12 @@ async fn test_invalid_command() -> Result<()> {
             && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Invalid command response: {}", text);
 
-                // Should handle the error gracefully
                 assert!(
                     text.len() > 5,
                     "Response should handle invalid command: {}",
                     text
                 );
             }
-
-    Ok(())
-}
-
-/// Run a comprehensive test suite
-#[tokio::test]
-#[ignore = "Comprehensive test requiring Ollama server"]
-async fn test_ollama_tool_call_suite() -> Result<()> {
-    println!("Starting Ollama tool call test suite...");
-
-    // Test basic functionality first
-    test_chat_without_tools()?;
-    println!("✓ Basic chat without tools");
-
-    // Test tool calling
-    test_basic_date_command()?;
-    println!("✓ Date command tool call");
-
-    test_echo_command()?;
-    println!("✓ Echo command tool call");
-
-    test_invalid_command()?;
-    println!("✓ Invalid command handling");
-
-    println!("All tests passed successfully!");
 
     Ok(())
 }

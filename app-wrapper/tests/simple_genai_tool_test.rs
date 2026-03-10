@@ -21,7 +21,7 @@ use tokio::time::{Duration, timeout};
 
 /// Test configuration
 const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
-const TEST_MODEL: &str = "qwen3:30b"; // Use qwen3:30b model via Ollama
+const TEST_MODEL: &str = "qwen3.5:9b"; // Use qwen3:30b model via Ollama
 const OTLP_ADDR: &str = "http://otel-collector.default.svc.cluster.local:4317";
 const TEST_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -106,7 +106,7 @@ fn create_chat_args_with_tools(message: &str) -> LlmChatArgs {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_basic_date_command() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    command_utils::util::tracing::tracing_init_test(tracing::Level::INFO);
     let service = create_test_service().await?;
 
     let args = create_chat_args_with_tools(
