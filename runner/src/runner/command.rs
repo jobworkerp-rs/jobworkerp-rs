@@ -2043,6 +2043,27 @@ mod tests {
         let (cmd, args) = parse_command_with_args("", &[]);
         assert_eq!(cmd, "");
         assert!(args.is_empty());
+
+        // quoted path with spaces is treated as a single executable
+        let (cmd, args) = parse_command_with_args("'/opt/My App/bin/tool'", &[]);
+        assert_eq!(cmd, "/opt/My App/bin/tool");
+        assert!(args.is_empty());
+
+        // quoted path with spaces and arguments
+        let (cmd, args) = parse_command_with_args("'/opt/My App/bin/tool' --flag value", &[]);
+        assert_eq!(cmd, "/opt/My App/bin/tool");
+        assert_eq!(args, vec!["--flag", "value"]);
+
+        // unquoted path with spaces is split (expected POSIX behavior)
+        let (cmd, args) = parse_command_with_args("/opt/My App/bin/tool", &[]);
+        assert_eq!(cmd, "/opt/My");
+        assert_eq!(args, vec!["App/bin/tool"]);
+
+        // path with spaces via args field is preserved as-is
+        let (cmd, args) =
+            parse_command_with_args("/opt/My App/bin/tool", &["--flag".to_string()]);
+        assert_eq!(cmd, "/opt/My App/bin/tool");
+        assert_eq!(args, vec!["--flag"]);
     }
 
     #[tokio::test]
