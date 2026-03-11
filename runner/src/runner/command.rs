@@ -46,7 +46,15 @@ fn parse_command_with_args(command: &str, args: &[String]) -> (String, Vec<Strin
             let parsed_args = parts[1..].to_vec();
             (cmd, parsed_args)
         }
-        _ => (command.to_string(), vec![]),
+        _ => {
+            if !command.is_empty() {
+                tracing::warn!(
+                    "Failed to parse command string with shlex, using as-is: {:?}",
+                    command
+                );
+            }
+            (command.to_string(), vec![])
+        }
     }
 }
 
@@ -346,7 +354,8 @@ impl RunnerTrait for CommandRunnerImpl {
         let should_monitor_memory = data.with_memory_monitoring;
 
         tracing::info!(
-            "run command: {}, args: {:?}, monitor_memory: {}, treat_nonzero_as_error: {}, success_exit_codes: {:?}, started_at: {}",
+            "run command: {} (original: {}), args: {:?}, monitor_memory: {}, treat_nonzero_as_error: {}, success_exit_codes: {:?}, started_at: {}",
+            &cmd_name,
             &data.command,
             args,
             should_monitor_memory,
@@ -2092,6 +2101,65 @@ mod tests {
         let stdout = result.stdout.unwrap_or_default();
         assert!(stdout.contains("Hello World"));
         assert_eq!(result.exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_run_stream_with_args_in_command() {
+        let mut runner = CommandRunnerImpl::new();
+        let arg = CommandArgs {
+            command: "/bin/echo Stream auto-split test".to_string(),
+            args: vec![],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
+            working_dir: "".to_string(),
+        };
+
+        let stream_result = runner
+            .run_stream(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+                None,
+            )
+            .await;
+
+        assert!(stream_result.is_ok());
+        let mut stream = stream_result.unwrap();
+
+        let mut found_stdout_data = false;
+        let mut found_final_result = false;
+        let mut found_end = false;
+
+        while let Some(item) = stream.next().await {
+            match item.item {
+                Some(Item::Data(data)) => {
+                    let result =
+                        ProstMessageCodec::deserialize_message::<CommandResult>(&data).unwrap();
+                    if let Some(stdout) = result.stdout {
+                        if stdout.contains("Stream auto-split test") {
+                            found_stdout_data = true;
+                        }
+                    } else if result.exit_code.is_some() && result.execution_time_ms.is_some() {
+                        found_final_result = true;
+                    }
+                }
+                Some(Item::End(_)) => {
+                    found_end = true;
+                    break;
+                }
+                Some(Item::FinalCollected(_)) | None => {}
+            }
+        }
+
+        assert!(
+            found_stdout_data,
+            "Stream should produce CommandResult with stdout containing auto-split args"
+        );
+        assert!(
+            found_final_result,
+            "Stream should produce a final CommandResult with exit code and execution time"
+        );
+        assert!(found_end, "Stream should produce an end marker");
     }
 }
 
