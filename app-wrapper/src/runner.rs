@@ -1,5 +1,6 @@
 pub mod cancellation;
 
+use crate::function_set_selector::FunctionSetSelectorImpl;
 use crate::llm::chat::LLMChatRunnerImpl;
 use crate::llm::unified::LLMUnifiedRunnerImpl;
 use crate::modules::AppWrapperModule;
@@ -100,6 +101,13 @@ impl RunnerFactory {
                 as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::SlackPostMessage) => Some(Box::new(
                 SlackPostMessageRunner::new_with_cancel_monitoring(create_cancel_helper()),
+            )
+                as Box<dyn CancellableRunner + Send + Sync>),
+            Some(RunnerType::FunctionSetSelector) => Some(Box::new(
+                FunctionSetSelectorImpl::new_with_cancel_monitoring(
+                    self.app_module.clone(),
+                    create_cancel_helper(),
+                ),
             )
                 as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::InlineWorkflow) => {
