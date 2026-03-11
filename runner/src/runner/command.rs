@@ -34,6 +34,22 @@ use super::cancellation::CancelMonitoring;
 use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 
+/// When args is empty, split the command string into command name and arguments
+/// using POSIX shell quoting rules (e.g. "echo 'hello world'" -> ["echo", "hello world"]).
+fn parse_command_with_args(command: &str, args: &[String]) -> (String, Vec<String>) {
+    if !args.is_empty() {
+        return (command.to_string(), args.to_vec());
+    }
+    match shlex::split(command) {
+        Some(parts) if !parts.is_empty() => {
+            let cmd = parts[0].clone();
+            let parsed_args = parts[1..].to_vec();
+            (cmd, parsed_args)
+        }
+        _ => (command.to_string(), vec![]),
+    }
+}
+
 /**
  * CommandRunner
  * - command: command to run
@@ -307,11 +323,12 @@ impl RunnerTrait for CommandRunnerImpl {
         let res = async {
         let data =
             ProstMessageCodec::deserialize_message::<CommandArgs>(args).context("on run job")?;
-        let mut command = Command::new(data.command.as_str());
+        let (cmd_name, parsed_args) = parse_command_with_args(&data.command, &data.args);
+        let mut command = Command::new(cmd_name.as_str());
         if !data.working_dir.is_empty() {
             command.current_dir(&data.working_dir);
         }
-        let args: &Vec<String> = &data.args;
+        let args = &parsed_args;
         let mut stdout_messages = Vec::<String>::new();
         let mut stderr_messages = Vec::<String>::new();
 
@@ -606,8 +623,7 @@ impl RunnerTrait for CommandRunnerImpl {
 
         let data = ProstMessageCodec::deserialize_message::<CommandArgs>(args)
             .context("on run_stream job")?;
-        let command_str = data.command.clone();
-        let args_vec = data.args.clone(); // Clone the args to own them
+        let (command_str, args_vec) = parse_command_with_args(&data.command, &data.args);
         let should_monitor_memory = data.with_memory_monitoring;
         let treat_nonzero_as_error = data.treat_nonzero_as_error;
         let success_exit_codes = data.success_exit_codes.clone();
@@ -1985,6 +2001,97 @@ mod tests {
 
         let stdout = result.stdout.unwrap_or_default();
         assert!(stdout.trim().eq("/tmp") || stdout.trim().ends_with("/tmp"));
+    }
+
+    #[test]
+    fn test_parse_command_with_args_unit() {
+        // args non-empty: command is not split
+        let (cmd, args) = parse_command_with_args("echo hello", &["world".to_string()]);
+        assert_eq!(cmd, "echo hello");
+        assert_eq!(args, vec!["world"]);
+
+        // args empty, simple command with arguments
+        let (cmd, args) = parse_command_with_args("/bin/echo Hello World", &[]);
+        assert_eq!(cmd, "/bin/echo");
+        assert_eq!(args, vec!["Hello", "World"]);
+
+        // args empty, quoted arguments
+        let (cmd, args) = parse_command_with_args("/bin/echo 'Hello World'", &[]);
+        assert_eq!(cmd, "/bin/echo");
+        assert_eq!(args, vec!["Hello World"]);
+
+        // args empty, double-quoted arguments
+        let (cmd, args) = parse_command_with_args("/bin/echo \"Hello World\"", &[]);
+        assert_eq!(cmd, "/bin/echo");
+        assert_eq!(args, vec!["Hello World"]);
+
+        // args empty, command only (no arguments)
+        let (cmd, args) = parse_command_with_args("/bin/echo", &[]);
+        assert_eq!(cmd, "/bin/echo");
+        assert!(args.is_empty());
+
+        // args empty, empty command string
+        let (cmd, args) = parse_command_with_args("", &[]);
+        assert_eq!(cmd, "");
+        assert!(args.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_run_with_args_in_command() {
+        let mut runner = CommandRunnerImpl::new();
+        let arg = CommandArgs {
+            command: "/bin/echo Hello World".to_string(),
+            args: vec![],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
+            working_dir: "".to_string(),
+        };
+
+        let res = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+                None,
+            )
+            .await;
+
+        assert!(res.0.is_ok());
+        let result_bytes = res.0.unwrap();
+        let result =
+            ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
+        let stdout = result.stdout.unwrap_or_default();
+        assert!(stdout.contains("Hello World"));
+        assert_eq!(result.exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_run_with_quoted_args_in_command() {
+        let mut runner = CommandRunnerImpl::new();
+        let arg = CommandArgs {
+            command: "/bin/echo 'Hello World'".to_string(),
+            args: vec![],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
+            working_dir: "".to_string(),
+        };
+
+        let res = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+                None,
+            )
+            .await;
+
+        assert!(res.0.is_ok());
+        let result_bytes = res.0.unwrap();
+        let result =
+            ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
+        let stdout = result.stdout.unwrap_or_default();
+        assert!(stdout.contains("Hello World"));
+        assert_eq!(result.exit_code, Some(0));
     }
 }
 

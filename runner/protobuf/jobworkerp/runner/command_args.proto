@@ -5,8 +5,10 @@ package jobworkerp.runner;
 // # shell command arguments
 message CommandArgs {
   // # linux shell command name (e.g. "echo")
+  // # when args is empty, this field may contain arguments as well (e.g. "echo 'hello world'"),
+  // # which will be split using POSIX shell quoting rules.
   string command = 1;
-  // # list of arguments
+  // # list of arguments (when empty, arguments may be parsed from the command field)
   repeated string args = 2;
   // # whether to monitor memory usage
   bool with_memory_monitoring = 3;
