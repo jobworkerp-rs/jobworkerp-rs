@@ -25,5 +25,8 @@ pub mod jobworkerp {
         pub mod llm {
             tonic::include_proto!("jobworkerp.runner.llm");
         }
+        pub mod function_set_selector {
+            tonic::include_proto!("jobworkerp.runner.function_set_selector");
+        }
     }
 }

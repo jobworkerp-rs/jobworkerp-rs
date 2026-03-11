@@ -62,6 +62,11 @@ enum RunnerType {
   // Executes tools of MCP servers
   MCP_SERVER = 7;
 
+  // # FunctionSet Selector Runner
+  // Lists available FunctionSets with tool summaries for LLM tool selection.
+  // Used as a meta-tool to help LLM discover and select appropriate FunctionSets.
+  FUNCTION_SET_SELECTOR = 8;
+
   // ============================================================
   // Multi-method Runners (32768+)
   // These runners support multiple methods via 'using' parameter

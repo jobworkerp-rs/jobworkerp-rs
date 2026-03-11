@@ -63,6 +63,7 @@ pub mod command;
 pub mod create_workflow;
 pub mod docker;
 pub mod factory;
+pub mod function_set_selector;
 pub mod grpc_unary;
 pub mod k8s_job;
 pub mod llm;

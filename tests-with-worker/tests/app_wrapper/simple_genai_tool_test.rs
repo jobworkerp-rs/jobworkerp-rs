@@ -1,12 +1,12 @@
 //! Simple integration test for GenAI tool call functionality
-//! This test uses Ollama infrastructure with qwen3:30b model
+//! This test uses Ollama infrastructure with qwen3.5:9b model via GenAI client.
+//! Requires an Ollama server and a backend worker for tool execution.
 
 #![allow(clippy::uninlined_format_args)]
 #![allow(clippy::collapsible_match)]
 
 use anyhow::Result;
 use app::app::function::function_set::FunctionSetApp;
-use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::chat::genai::GenaiChatService;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, LlmOptions};
@@ -17,6 +17,8 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunner
 use proto::jobworkerp::data::RunnerId;
 use proto::jobworkerp::function::data::{FunctionId, FunctionSetData, FunctionUsing, function_id};
 use std::collections::HashMap;
+use std::sync::Arc;
+use tests_with_worker::start_test_worker;
 use tokio::time::{Duration, timeout};
 
 /// Test configuration
@@ -25,26 +27,23 @@ const TEST_MODEL: &str = "qwen3.5:9b"; // Use qwen3.5:9b model via Ollama
 const OTLP_ADDR: &str = "http://otel-collector.default.svc.cluster.local:4317";
 const TEST_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Create GenAI chat service for testing using Ollama infrastructure
-async fn create_test_service() -> Result<GenaiChatService> {
+/// Create GenAI chat service for testing using Ollama infrastructure (with backend worker)
+async fn create_test_service() -> Result<(GenaiChatService, tests_with_worker::TestWorkerHandle)> {
     // SAFETY: called in test setup before spawning threads
     unsafe { std::env::set_var("OTLP_ADDR", OTLP_ADDR) };
-    let app_module = create_hybrid_test_app().await?;
+    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+    let worker_handle = start_test_worker(app_module.clone()).await?;
 
     let settings = GenaiRunnerSettings {
         model: TEST_MODEL.to_string(),
-        base_url: Some(OLLAMA_HOST.to_string()), // Use Ollama host
+        base_url: Some(OLLAMA_HOST.to_string()),
         system_prompt: Some(
             "You are a helpful assistant. When asked to run commands, you MUST use the available tools to execute them. Always call the function when users ask for command execution. Do not explain or think - just execute the function call immediately."
                 .to_string(),
         ),
     };
 
-    // Try to delete existing function set if it exists to avoid unique constraint error
-    // Note: delete_function_set requires FunctionSetId, so we'll handle the error if it already exists
-
-    // If it already exists, ignore the error and continue
-    let _result = app_module
+    match app_module
         .function_set_app
         .create_function_set(&FunctionSetData {
             name: "genai_tool_test".to_string(),
@@ -57,7 +56,12 @@ async fn create_test_service() -> Result<GenaiChatService> {
                 using: None,
             }],
         })
-        .await;
+        .await
+    {
+        Ok(_) => {}
+        Err(e) if e.to_string().to_lowercase().contains("unique") => {}
+        Err(e) => return Err(e),
+    }
 
     let service = GenaiChatService::new(
         app_module.function_app.clone(),
@@ -65,7 +69,7 @@ async fn create_test_service() -> Result<GenaiChatService> {
         settings,
     )
     .await?;
-    Ok(service)
+    Ok((service, worker_handle))
 }
 
 /// Create test chat arguments with tool calling enabled
@@ -87,7 +91,7 @@ fn create_chat_args_with_tools(message: &str) -> LlmChatArgs {
             top_p: None,
             repeat_penalty: None,
             repeat_last_n: None,
-            seed: Some(42),
+            seed: Some(41),
             extract_reasoning_content: Some(false),
         }),
         model: Some(TEST_MODEL.to_string()),
@@ -96,7 +100,8 @@ fn create_chat_args_with_tools(message: &str) -> LlmChatArgs {
             use_runners_as_function: Some(false),
             use_workers_as_function: Some(false),
             function_set_name: Some("genai_tool_test".to_string()),
-            is_auto_calling: Some(true), // auto mode for existing tests
+            is_auto_calling: Some(true),
+            auto_select_function_set: None,
         }),
         json_schema: None,
     }
@@ -107,7 +112,7 @@ fn create_chat_args_with_tools(message: &str) -> LlmChatArgs {
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_basic_date_command() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::INFO);
-    let service = create_test_service().await?;
+    let (service, worker_handle) = create_test_service().await?;
 
     let args = create_chat_args_with_tools(
         "I need to know the current date and time. Please use the function calling to execute the date command now.",
@@ -127,11 +132,11 @@ async fn test_basic_date_command() -> Result<()> {
             && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Date test response: {}", text);
 
-                // Should contain date information
                 assert!(
                     text.to_lowercase().contains("date")
                     || text.to_lowercase().contains("time")
                     || text.contains("2025")
+                    || text.contains("2026")
                     || text.contains("Jan")
                     || text.contains("Mon")
                     || text.contains("Tue")
@@ -145,6 +150,7 @@ async fn test_basic_date_command() -> Result<()> {
                 );
             }
 
+    worker_handle.shutdown().await;
     Ok(())
 }
 
@@ -152,7 +158,7 @@ async fn test_basic_date_command() -> Result<()> {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_echo_command() -> Result<()> {
-    let service = create_test_service().await?;
+    let (service, worker_handle) = create_test_service().await?;
 
     let args = create_chat_args_with_tools(
         "I need you to test the echo command. Please run: echo 'Testing GenAI 123'",
@@ -170,7 +176,6 @@ async fn test_echo_command() -> Result<()> {
             && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Echo test response: {}", text);
 
-                // Should contain the echo output
                 assert!(
                     text.contains("Testing GenAI 123") || text.contains("testing") || text.contains("123"),
                     "Response should contain echo output 'Testing GenAI 123': {}",
@@ -178,6 +183,7 @@ async fn test_echo_command() -> Result<()> {
                 );
             }
 
+    worker_handle.shutdown().await;
     Ok(())
 }
 
@@ -185,7 +191,7 @@ async fn test_echo_command() -> Result<()> {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_chat_without_tools() -> Result<()> {
-    let service = create_test_service().await?;
+    let (service, worker_handle) = create_test_service().await?;
 
     let args = LlmChatArgs {
         messages: vec![ChatMessage {
@@ -224,7 +230,6 @@ async fn test_chat_without_tools() -> Result<()> {
             && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Regular chat response: {}", text);
 
-                // Should get a conversational response
                 assert!(
                     text.len() > 5,
                     "Response should contain conversational content: {}",
@@ -232,6 +237,7 @@ async fn test_chat_without_tools() -> Result<()> {
                 );
             }
 
+    worker_handle.shutdown().await;
     Ok(())
 }
 
@@ -239,7 +245,7 @@ async fn test_chat_without_tools() -> Result<()> {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_invalid_command() -> Result<()> {
-    let service = create_test_service().await?;
+    let (service, worker_handle) = create_test_service().await?;
 
     let args =
         create_chat_args_with_tools("Please run the command 'this_command_does_not_exist_xyz123'.");
@@ -256,7 +262,6 @@ async fn test_invalid_command() -> Result<()> {
             && let jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) = text_content {
                 println!("Invalid command response: {}", text);
 
-                // Should handle the error gracefully
                 assert!(
                     text.len() > 5,
                     "Response should handle invalid command: {}",
@@ -264,5 +269,6 @@ async fn test_invalid_command() -> Result<()> {
                 );
             }
 
+    worker_handle.shutdown().await;
     Ok(())
 }

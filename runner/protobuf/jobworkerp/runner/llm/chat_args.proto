@@ -40,6 +40,12 @@ message LLMChatArgs {
     // automatically execute tool calls (default: false = manual mode)
     // When false, tool calls are returned to the client for approval before execution
     optional bool is_auto_calling = 5;
+    // When true, automatically inject FunctionSet selector tools to enable
+    // LLM-driven FunctionSet selection. Requires use_function_calling = true.
+    // Lower priority than function_set_name: ignored when function_set_name is set.
+    // When function_set_name is not specified, LLM discovers and selects
+    // appropriate FunctionSets dynamically via pseudo-tool calls.
+    optional bool auto_select_function_set = 6;
   }
 
   enum ChatRole {

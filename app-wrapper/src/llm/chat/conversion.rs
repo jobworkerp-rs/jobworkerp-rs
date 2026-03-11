@@ -152,6 +152,128 @@ impl ToolConverter {
             })
             .collect()
     }
+
+    /// Regex for validating FunctionSet names used as tool names in auto-select mode.
+    fn is_valid_function_set_name(name: &str) -> bool {
+        if name.is_empty() {
+            return false;
+        }
+        // Must not contain triple underscore (McpNameConverter::DELIMITER collision)
+        if name.contains("___") {
+            tracing::warn!(
+                "FunctionSet name '{}' contains '___' (McpNameConverter delimiter), skipping",
+                name
+            );
+            return false;
+        }
+        // Recommended pattern for LLM provider compatibility
+        let valid = name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        if !valid {
+            tracing::warn!(
+                "FunctionSet name '{}' contains characters outside [a-zA-Z0-9_-], skipping",
+                name
+            );
+        }
+        valid
+    }
+
+    /// Prefix added to FunctionSet names when used as pseudo-tool names in auto-select mode.
+    pub const SELECTOR_TOOL_PREFIX: &'static str = "select_toolset_";
+
+    /// Convert a FunctionSet to a pseudo-tool for auto-select mode.
+    /// The tool name is prefixed with `select_toolset_` to make it clearly
+    /// identifiable as a selection action rather than a direct tool invocation.
+    pub fn convert_function_set_to_selector_tool(
+        set_name: &str,
+        set_description: &str,
+        tool_summaries: &[(String, String)],
+    ) -> Option<Tool> {
+        if !Self::is_valid_function_set_name(set_name) {
+            return None;
+        }
+
+        let tools_list = tool_summaries
+            .iter()
+            .map(|(name, desc)| format!("- {name}: {desc}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let description = if tools_list.is_empty() {
+            format!(
+                "Activate the '{set_name}' toolset. {set_description}. \
+                 Call this function to load its tools so you can use them."
+            )
+        } else {
+            format!(
+                "Activate the '{set_name}' toolset. {set_description}. \
+                 Call this function to load the following tools:\n{tools_list}"
+            )
+        };
+
+        // Empty input schema (no arguments needed to select a FunctionSet)
+        let schema = serde_json::Map::from_iter([
+            (
+                "type".to_string(),
+                serde_json::Value::String("object".to_string()),
+            ),
+            (
+                "properties".to_string(),
+                serde_json::Value::Object(serde_json::Map::new()),
+            ),
+        ]);
+
+        let tool_name = format!("{}{}", Self::SELECTOR_TOOL_PREFIX, set_name);
+        Some(Tool::new(tool_name, description, schema))
+    }
+
+    /// Convert FunctionSet selector tools to Ollama ToolInfo list.
+    pub fn convert_function_set_selector_tools_to_ollama(
+        selector_tools: &[Tool],
+    ) -> Vec<ollama_rs::generation::tools::ToolInfo> {
+        selector_tools
+            .iter()
+            .filter_map(Self::mcp_tool_to_ollama)
+            .collect()
+    }
+
+    /// Convert FunctionSet selector tools to GenAI Tool list.
+    pub fn convert_function_set_selector_tools_to_genai(
+        selector_tools: &[Tool],
+    ) -> Vec<genai::chat::Tool> {
+        selector_tools.iter().map(Self::mcp_tool_to_genai).collect()
+    }
+
+    /// Extract tool name/description summaries from FunctionSpecs.
+    /// Shared by genai, ollama, and function_set_selector.
+    pub fn get_tool_summaries(specs: &[FunctionSpecs]) -> Vec<(String, String)> {
+        specs
+            .iter()
+            .flat_map(|spec| {
+                if let Some(methods) = &spec.methods {
+                    methods
+                        .schemas
+                        .iter()
+                        .map(|(method_name, method_schema)| {
+                            let tool_name = if method_name == proto::DEFAULT_METHOD_NAME {
+                                spec.name.clone()
+                            } else {
+                                Self::combine_names(&spec.name, method_name)
+                            };
+                            let desc = method_schema
+                                .description
+                                .clone()
+                                .unwrap_or_else(|| spec.description.clone());
+                            (tool_name, desc)
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![(spec.name.clone(), spec.description.clone())]
+                }
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -1206,5 +1328,86 @@ mod tests {
             Some("integer"),
             "param_b should have type integer"
         );
+    }
+
+    #[test]
+    fn test_function_set_name_validation() {
+        assert!(ToolConverter::is_valid_function_set_name("web-tools"));
+        assert!(ToolConverter::is_valid_function_set_name("data_processing"));
+        assert!(ToolConverter::is_valid_function_set_name("CodeExec123"));
+        assert!(!ToolConverter::is_valid_function_set_name("bad___name"));
+        assert!(!ToolConverter::is_valid_function_set_name("has spaces"));
+        assert!(!ToolConverter::is_valid_function_set_name("has.dots"));
+    }
+
+    #[test]
+    fn test_convert_function_set_to_selector_tool() {
+        let tool = ToolConverter::convert_function_set_to_selector_tool(
+            "web-tools",
+            "Tools for web scraping",
+            &[
+                ("fetch_html".to_string(), "Fetch HTML from URL".to_string()),
+                ("screenshot".to_string(), "Take screenshot".to_string()),
+            ],
+        );
+        assert!(tool.is_some());
+        let tool = tool.unwrap();
+        assert_eq!(tool.name, "select_toolset_web-tools");
+        let desc = tool.description.as_ref().unwrap();
+        assert!(desc.contains("web-tools"), "Should contain set name");
+        assert!(
+            desc.contains("Tools for web scraping"),
+            "Should contain description"
+        );
+        assert!(desc.contains("fetch_html"), "Should list tools");
+        assert!(desc.contains("screenshot"), "Should list tools");
+        assert!(
+            desc.contains("Activate") || desc.contains("Call this"),
+            "Should instruct LLM to call this function"
+        );
+
+        // Should have empty properties schema
+        let props = tool.input_schema.get("properties").unwrap();
+        assert!(props.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_convert_function_set_to_selector_tool_no_tools() {
+        let tool =
+            ToolConverter::convert_function_set_to_selector_tool("empty-set", "An empty set", &[]);
+        assert!(tool.is_some());
+        let tool = tool.unwrap();
+        assert_eq!(tool.name, "select_toolset_empty-set");
+        let desc = tool.description.as_ref().unwrap();
+        assert!(
+            desc.contains("Activate") || desc.contains("Call this"),
+            "Should instruct LLM to call this function even with no tools"
+        );
+    }
+
+    #[test]
+    fn test_convert_function_set_to_selector_tool_invalid_name() {
+        let tool = ToolConverter::convert_function_set_to_selector_tool("bad___name", "desc", &[]);
+        assert!(tool.is_none());
+    }
+
+    #[test]
+    fn test_convert_function_set_selector_tools_to_providers() {
+        let tools = vec![
+            ToolConverter::convert_function_set_to_selector_tool(
+                "set-a",
+                "Description A",
+                &[("tool1".to_string(), "desc1".to_string())],
+            )
+            .unwrap(),
+        ];
+
+        let ollama_tools = ToolConverter::convert_function_set_selector_tools_to_ollama(&tools);
+        assert_eq!(ollama_tools.len(), 1);
+        assert_eq!(ollama_tools[0].function.name, "select_toolset_set-a");
+
+        let genai_tools = ToolConverter::convert_function_set_selector_tools_to_genai(&tools);
+        assert_eq!(genai_tools.len(), 1);
+        assert_eq!(genai_tools[0].name, "select_toolset_set-a");
     }
 }

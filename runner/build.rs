@@ -47,6 +47,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "protobuf/jobworkerp/runner/create_workflow_result.proto",
                 "protobuf/jobworkerp/runner/workflow_runner_settings.proto",
                 "protobuf/jobworkerp/runner/workflow_run_args.proto",
+                "protobuf/jobworkerp/runner/function_set_selector_settings.proto",
+                "protobuf/jobworkerp/runner/function_set_selector_args.proto",
+                "protobuf/jobworkerp/runner/function_set_selector_result.proto",
             ],
             &["../proto/protobuf/", "protobuf"],
         )
