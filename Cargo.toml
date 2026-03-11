@@ -89,6 +89,7 @@ rustls = { version = "0.23", default-features = false, features = [
     "tls12",
 ] }
 schemars = { version = "1.2", features = ["chrono04"] }
+shlex = "1"
 #schemars = { version = "0.8", features = ["chrono"] }
 serde = "1.0"
 serde_json = "1.0"
