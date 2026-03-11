@@ -13,7 +13,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent as GenaiMessageContent,
-    Tool,
+    Tool, ToolResponse,
 };
 use genai::resolver::{Endpoint, ServiceTargetResolver};
 use genai::{Client, ServiceTarget};
@@ -33,6 +33,9 @@ use tokio::sync::Mutex;
 
 // Default timeout for tool calls in seconds
 const DEFAULT_TIMEOUT_SEC: u32 = 300;
+
+// Maximum number of recursive tool call rounds before aborting
+const MAX_TOOL_CALL_DEPTH: u32 = 10;
 
 /// Internal result type for chat operations
 enum ChatInternalResult {
@@ -222,32 +225,94 @@ impl GenaiChatService {
             })
             .collect()
     }
-    async fn function_list(&self, args: &LlmChatArgs) -> Result<Vec<Tool>> {
+    async fn function_list(
+        &self,
+        args: &LlmChatArgs,
+    ) -> Result<(Vec<Tool>, std::collections::HashSet<String>)> {
+        let mut auto_select_names = std::collections::HashSet::new();
+
         if let Some(function_options) = &args.function_options {
             if function_options.use_function_calling {
-                let list_future =
-                    if let Some(set_name) = function_options.function_set_name.as_ref() {
-                        self.function_set_app.find_functions_by_set(set_name)
-                    } else {
-                        self.function_app.find_functions(
+                if let Some(set_name) = function_options.function_set_name.as_ref() {
+                    // Specific FunctionSet selected
+                    match self.function_set_app.find_functions_by_set(set_name).await {
+                        Ok(functions) => Ok((
+                            ToolConverter::convert_functions_to_genai_tools(functions),
+                            auto_select_names,
+                        )),
+                        Err(e) => {
+                            tracing::error!("Error finding functions by set: {}", e);
+                            Err(e)
+                        }
+                    }
+                } else if function_options.auto_select_function_set.unwrap_or(false) {
+                    // Auto-select mode: inject FunctionSet pseudo-tools
+                    match self.function_set_app.find_function_set_all_list(None).await {
+                        Ok(function_sets) => {
+                            let mut selector_tools = Vec::new();
+                            for fs in &function_sets {
+                                if let Some(data) = &fs.data {
+                                    let tool_summaries =
+                                        self.get_tool_summaries_for_set(&data.name).await;
+                                    if let Some(tool) =
+                                        ToolConverter::convert_function_set_to_selector_tool(
+                                            &data.name,
+                                            &data.description,
+                                            &tool_summaries,
+                                        )
+                                    {
+                                        auto_select_names.insert(tool.name.to_string());
+                                        selector_tools.push(tool);
+                                    }
+                                }
+                            }
+                            Ok((
+                                ToolConverter::convert_function_set_selector_tools_to_genai(
+                                    &selector_tools,
+                                ),
+                                auto_select_names,
+                            ))
+                        }
+                        Err(e) => {
+                            tracing::error!("Error finding function sets for auto-select: {}", e);
+                            Err(e)
+                        }
+                    }
+                } else {
+                    // Default: all functions with runner/worker filter
+                    match self
+                        .function_app
+                        .find_functions(
                             !function_options.use_runners_as_function(),
                             !function_options.use_workers_as_function(),
                         )
-                    };
-                match list_future.await {
-                    Ok(functions) => Ok(ToolConverter::convert_functions_to_genai_tools(
-                        functions.clone(),
-                    )),
-                    Err(e) => {
-                        tracing::error!("Error finding functions: {}", e);
-                        Ok(vec![])
+                        .await
+                    {
+                        Ok(functions) => Ok((
+                            ToolConverter::convert_functions_to_genai_tools(functions),
+                            auto_select_names,
+                        )),
+                        Err(e) => {
+                            tracing::error!("Error finding functions: {}", e);
+                            Err(e)
+                        }
                     }
                 }
             } else {
-                Ok(vec![])
+                Ok((vec![], auto_select_names))
             }
         } else {
-            Ok(vec![])
+            Ok((vec![], auto_select_names))
+        }
+    }
+
+    async fn get_tool_summaries_for_set(&self, set_name: &str) -> Vec<(String, String)> {
+        match self.function_set_app.find_functions_by_set(set_name).await {
+            Ok(specs) => ToolConverter::get_tool_summaries(&specs),
+            Err(e) => {
+                tracing::warn!("Failed to get tool summaries for set '{}': {}", set_name, e);
+                vec![]
+            }
         }
     }
 
@@ -274,8 +339,15 @@ impl GenaiChatService {
             .unwrap_or(false);
 
         let options = self.options(&args);
-        let tools = Arc::new(self.function_list(&args).await?);
+        let (tools_vec, auto_select_names) = self.function_list(&args).await?;
+        let is_auto_select = !auto_select_names.is_empty();
+        let tools = Arc::new(tools_vec);
         let model = args.model.clone().unwrap_or_else(|| self.model.clone());
+        let original_args = if is_auto_select {
+            Some(args.clone())
+        } else {
+            None
+        };
         let mut messages = self.trans_messages(args);
 
         if let Some(system_prompt) = self.system_prompt.clone() {
@@ -292,6 +364,9 @@ impl GenaiChatService {
 
         let messages = Arc::new(Mutex::new(messages));
 
+        // For auto-select, force manual mode for the 1st call to intercept the tool call
+        let effective_auto_calling = !is_auto_select && is_auto_calling;
+
         let res = Self::request_chat_internal_with_tracing(
             Arc::new(self.clone()),
             model,
@@ -300,7 +375,8 @@ impl GenaiChatService {
             tools,
             Some(cx.clone()),
             metadata.clone(),
-            is_auto_calling,
+            effective_auto_calling,
+            0,
         )
         .await?;
 
@@ -328,6 +404,65 @@ impl GenaiChatService {
                 })
             }
             ChatInternalResult::PendingTools { tool_calls } => {
+                // Auto-select mode: intercept pseudo tool call and execute 2nd request_chat
+                if is_auto_select
+                    && let Some(selected) = tool_calls
+                        .iter()
+                        .find(|tc| auto_select_names.contains(&tc.fn_name))
+                {
+                    // Strip the selector prefix to recover the original FunctionSet name
+                    let selected_set_name = selected
+                        .fn_name
+                        .strip_prefix(ToolConverter::SELECTOR_TOOL_PREFIX)
+                        .unwrap_or(&selected.fn_name)
+                        .to_string();
+                    tracing::info!(
+                        function_set = %selected_set_name,
+                        "Auto-select: LLM selected FunctionSet"
+                    );
+
+                    let extra_selectors: Vec<&str> = tool_calls
+                        .iter()
+                        .filter(|tc| {
+                            auto_select_names.contains(&tc.fn_name)
+                                && tc.fn_name != selected.fn_name
+                        })
+                        .map(|tc| tc.fn_name.as_str())
+                        .collect();
+                    if !extra_selectors.is_empty() {
+                        tracing::warn!(
+                            selected = %selected.fn_name,
+                            ?extra_selectors,
+                            "Auto-select: LLM called multiple selector tools, using the first one"
+                        );
+                    }
+
+                    // INVARIANT: original_args is Some when is_auto_select is true
+                    let mut second_args = original_args
+                        .expect("original_args must be Some when is_auto_select is true");
+                    if let Some(ref mut fo) = second_args.function_options {
+                        fo.function_set_name = Some(selected_set_name);
+                        fo.auto_select_function_set = Some(false);
+                    }
+
+                    return Box::pin(self.request_chat(second_args, cx, (*metadata).clone())).await;
+                }
+
+                // Auto-select mode but no selector tool was called — LLM hallucinated
+                if is_auto_select {
+                    let attempted_names: Vec<&str> =
+                        tool_calls.iter().map(|tc| tc.fn_name.as_str()).collect();
+                    tracing::warn!(
+                        ?attempted_names,
+                        "Auto-select: LLM did not call any selector tool, returning error"
+                    );
+                    return Err(JobWorkerError::OtherError(format!(
+                        "Auto-select failed: LLM called {:?} instead of selector tools",
+                        attempted_names
+                    ))
+                    .into());
+                }
+
                 // Return tool calls for client approval (manual mode)
                 let pending_calls: Vec<ToolCallRequest> = tool_calls
                     .iter()
@@ -478,7 +613,13 @@ impl GenaiChatService {
         parent_context: Option<opentelemetry::Context>,
         metadata: Arc<HashMap<String, String>>,
         is_auto_calling: bool,
+        tool_call_depth: u32,
     ) -> Result<ChatInternalResult> {
+        if tool_call_depth >= MAX_TOOL_CALL_DEPTH {
+            return Err(anyhow::anyhow!(
+                "Maximum tool call depth ({MAX_TOOL_CALL_DEPTH}) exceeded. Aborting to prevent infinite recursion."
+            ));
+        }
         let current_messages = messages.lock().await.clone();
 
         // Execute with tracing using generic_tracing_helper approach
@@ -572,6 +713,12 @@ impl GenaiChatService {
             }
 
             // Auto mode: process tool calls automatically
+            // Add assistant message with tool calls to conversation history
+            messages
+                .lock()
+                .await
+                .push(ChatMessage::from(tool_calls.clone()));
+
             let updated_context = if GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
                 self.process_tool_calls_with_tracing(
                     messages.clone(),
@@ -591,6 +738,9 @@ impl GenaiChatService {
             };
 
             // Recursive call with updated context
+            tracing::debug!(
+                "Recursing into request_chat_internal_with_tracing after tool execution"
+            );
             return Box::pin(self.request_chat_internal_with_tracing(
                 model,
                 options,
@@ -599,6 +749,7 @@ impl GenaiChatService {
                 Some(updated_context),
                 metadata,
                 is_auto_calling,
+                tool_call_depth + 1,
             ))
             .await;
         }
@@ -650,15 +801,24 @@ impl GenaiChatService {
                     serde_json::Map::new()
                 });
 
-                function_app
+                // Execute tool and convert any error to a string result for LLM to handle
+                let result = function_app
                     .call_function_for_llm(
                         metadata_clone,
                         &function_name,
                         Some(arguments_obj),
                         DEFAULT_TIMEOUT_SEC,
                     )
-                    .await
-                    .map_err(|e| JobWorkerError::OtherError(format!("Tool execution error: {e}")))
+                    .await;
+
+                let tool_result = match result {
+                    Ok(success_result) => success_result,
+                    Err(error) => serde_json::Value::String(format!(
+                        "Error executing tool '{function_name}': {error}"
+                    )),
+                };
+
+                Ok(tool_result) // Always return Ok so processing continues
             };
 
             // Execute individual tool call as child span and get updated context
@@ -683,11 +843,9 @@ impl GenaiChatService {
 
             tracing::debug!("Tool response: {}", &tool_result);
 
-            messages.lock().await.push(ChatMessage {
-                role: genai::chat::ChatRole::Tool,
-                content: GenaiMessageContent::from_text(tool_result.to_string()),
-                options: None,
-            });
+            // Use ToolResponse with call_id so LLM can match response to request
+            let tool_response = ToolResponse::new(&call.call_id, tool_result.to_string());
+            messages.lock().await.push(ChatMessage::from(tool_response));
 
             // Update context for next tool call
             current_context = updated_context;
@@ -716,7 +874,8 @@ impl GenaiChatService {
                 serde_json::Map::new()
             });
 
-            let tool_result = self
+            // Execute tool and convert any error to a string result for LLM to handle
+            let result = self
                 .function_app
                 .call_function_for_llm(
                     metadata.clone(),
@@ -724,15 +883,21 @@ impl GenaiChatService {
                     Some(arguments_obj),
                     DEFAULT_TIMEOUT_SEC,
                 )
-                .await?;
+                .await;
+
+            let tool_result = match result {
+                Ok(success_result) => success_result,
+                Err(error) => serde_json::Value::String(format!(
+                    "Error executing tool '{}': {error}",
+                    call.fn_name
+                )),
+            };
 
             tracing::debug!("Tool response: {}", &tool_result);
 
-            messages.lock().await.push(ChatMessage {
-                role: genai::chat::ChatRole::Tool,
-                content: GenaiMessageContent::from_text(tool_result.to_string()),
-                options: None,
-            });
+            // Use ToolResponse with call_id so LLM can match response to request
+            let tool_response = ToolResponse::new(&call.call_id, tool_result.to_string());
+            messages.lock().await.push(ChatMessage::from(tool_response));
         }
 
         Ok(())
@@ -743,6 +908,18 @@ impl GenaiChatService {
         args: LlmChatArgs,
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // auto-select is not supported in streaming mode
+        if args
+            .function_options
+            .as_ref()
+            .is_some_and(|fo| fo.auto_select_function_set.unwrap_or(false))
+        {
+            return Err(JobWorkerError::InvalidParameter(
+                "auto_select_function_set is not supported in streaming mode".to_string(),
+            )
+            .into());
+        }
+
         let metadata_arc = Arc::new(metadata.clone());
 
         // Check for tool execution requests in messages (manual mode continuation)
@@ -881,7 +1058,7 @@ impl GenaiChatService {
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let options = self.options(&args);
-        let tools = self.function_list(&args).await?;
+        let (tools, _auto_select_names) = self.function_list(&args).await?;
         let messages = self.trans_messages(args);
         let chat_req = if tools.is_empty() {
             ChatRequest::new(messages)

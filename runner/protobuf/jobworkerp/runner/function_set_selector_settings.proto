@@ -1,0 +1,23 @@
+syntax = "proto3";
+package jobworkerp.runner.function_set_selector;
+
+// # FunctionSet Selector Runner Settings
+// Configuration for formatting FunctionSet listings for LLM consumption.
+// Uses standard Liquid template syntax ({{ variable }}).
+message FunctionSetSelectorSettings {
+  // Prompt template for formatting each FunctionSet entry.
+  // Available variables: {{ name }}, {{ description }}, {{ category }},
+  //   {{ tools }}, {{ tool_count }}
+  // Default: "## {{ name }}\n{{ description }}\n\nAvailable tools ({{ tool_count }}):\n{{ tools }}"
+  optional string entry_template = 1;
+
+  // Prompt template for the overall result wrapping all entries.
+  // Available variables: {{ entries }}, {{ total_count }}
+  // Default: "The following FunctionSets are available. Select the most appropriate one for the user's task by name.\n\n{{ entries }}"
+  optional string result_template = 2;
+
+  // Template for formatting individual tool entries within a FunctionSet.
+  // Available variables: {{ tool_name }}, {{ tool_description }}
+  // Default: "- {{ tool_name }}: {{ tool_description }}"
+  optional string tool_entry_template = 3;
+}

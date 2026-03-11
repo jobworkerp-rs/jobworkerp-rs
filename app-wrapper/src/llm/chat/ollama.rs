@@ -30,6 +30,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 // use tokio::sync::Mutex;
 
+// Maximum number of recursive tool call rounds before aborting
+const MAX_TOOL_CALL_DEPTH: u32 = 10;
+
 #[derive(Debug, Clone)]
 pub struct OllamaChatService {
     pub function_app: Arc<FunctionAppImpl>,
@@ -178,57 +181,118 @@ impl OllamaChatService {
         }
     }
 
-    async fn function_list(&self, args: &LlmChatArgs) -> Result<Vec<ToolInfo>> {
+    async fn function_list(
+        &self,
+        args: &LlmChatArgs,
+    ) -> Result<(Vec<ToolInfo>, std::collections::HashSet<String>)> {
+        let mut auto_select_names = std::collections::HashSet::new();
+
         if let Some(function_options) = &args.function_options {
             if function_options.use_function_calling {
-                let list_future =
-                    if let Some(set_name) = function_options.function_set_name.as_ref() {
-                        tracing::debug!("Use functions by set: {}", set_name);
-                        self.function_set_app.find_functions_by_set(set_name)
-                    } else {
-                        tracing::debug!(
-                            "Use all functions from {}",
-                            if function_options.use_runners_as_function()
-                                && function_options.use_workers_as_function()
-                            {
-                                "all"
-                            } else if function_options.use_workers_as_function() {
-                                "workers"
-                            } else if function_options.use_runners_as_function() {
-                                "runners"
-                            } else {
-                                "none"
+                if let Some(set_name) = function_options.function_set_name.as_ref() {
+                    tracing::debug!("Use functions by set: {}", set_name);
+                    match self.function_set_app.find_functions_by_set(set_name).await {
+                        Ok(functions) => {
+                            tracing::debug!("Functions found: {}", functions.len());
+                            let converted =
+                                ToolConverter::convert_functions_to_ollama_tools(functions);
+                            Ok((converted, auto_select_names))
+                        }
+                        Err(e) => {
+                            tracing::error!("Error finding functions by set: {}", e);
+                            Err(e)
+                        }
+                    }
+                } else if function_options.auto_select_function_set.unwrap_or(false) {
+                    // Auto-select mode: inject FunctionSet pseudo-tools
+                    match self.function_set_app.find_function_set_all_list(None).await {
+                        Ok(function_sets) => {
+                            let mut selector_tools = Vec::new();
+                            for fs in &function_sets {
+                                if let Some(data) = &fs.data {
+                                    let tool_summaries =
+                                        self.get_tool_summaries_for_set(&data.name).await;
+                                    if let Some(tool) =
+                                        ToolConverter::convert_function_set_to_selector_tool(
+                                            &data.name,
+                                            &data.description,
+                                            &tool_summaries,
+                                        )
+                                    {
+                                        auto_select_names.insert(tool.name.to_string());
+                                        selector_tools.push(tool);
+                                    }
+                                }
                             }
-                        );
-                        self.function_app.find_functions(
+                            Ok((
+                                ToolConverter::convert_function_set_selector_tools_to_ollama(
+                                    &selector_tools,
+                                ),
+                                auto_select_names,
+                            ))
+                        }
+                        Err(e) => {
+                            tracing::error!("Error finding function sets for auto-select: {}", e);
+                            Err(e)
+                        }
+                    }
+                } else {
+                    tracing::debug!(
+                        "Use all functions from {}",
+                        if function_options.use_runners_as_function()
+                            && function_options.use_workers_as_function()
+                        {
+                            "all"
+                        } else if function_options.use_workers_as_function() {
+                            "workers"
+                        } else if function_options.use_runners_as_function() {
+                            "runners"
+                        } else {
+                            "none"
+                        }
+                    );
+                    match self
+                        .function_app
+                        .find_functions(
                             !function_options.use_runners_as_function(),
                             !function_options.use_workers_as_function(),
                         )
-                    };
-                match list_future.await {
-                    Ok(functions) => {
-                        tracing::debug!("Functions found: {}", &functions.len());
-                        let converted =
-                            ToolConverter::convert_functions_to_ollama_tools(functions.clone());
-                        tracing::debug!(
-                            "Converted functions: {:?}",
-                            &converted
-                                .iter()
-                                .map(|f| f.function.name.as_str())
-                                .collect::<Vec<&str>>()
-                        );
-                        Ok(converted)
-                    }
-                    Err(e) => {
-                        tracing::error!("Error finding functions: {}", e);
-                        Ok(vec![])
+                        .await
+                    {
+                        Ok(functions) => {
+                            tracing::debug!("Functions found: {}", functions.len());
+                            let converted =
+                                ToolConverter::convert_functions_to_ollama_tools(functions);
+                            tracing::debug!(
+                                "Converted functions: {:?}",
+                                converted
+                                    .iter()
+                                    .map(|f| f.function.name.as_str())
+                                    .collect::<Vec<&str>>()
+                            );
+                            Ok((converted, auto_select_names))
+                        }
+                        Err(e) => {
+                            tracing::error!("Error finding functions: {}", e);
+                            Err(e)
+                        }
                     }
                 }
             } else {
-                Ok(vec![])
+                Ok((vec![], auto_select_names))
             }
         } else {
-            Ok(vec![])
+            Ok((vec![], auto_select_names))
+        }
+    }
+
+    async fn get_tool_summaries_for_set(&self, set_name: &str) -> Vec<(String, String)> {
+        match self.function_set_app.find_functions_by_set(set_name).await {
+            Ok(specs) => ToolConverter::get_tool_summaries(&specs),
+            Err(e) => {
+                tracing::warn!("Failed to get tool summaries for set '{}': {}", set_name, e);
+                vec![]
+            }
         }
     }
 
@@ -338,9 +402,19 @@ impl OllamaChatService {
             messages.insert(0, ChatMessage::new(MessageRole::System, system_prompt));
         }
 
-        let tools = Arc::new(self.function_list(&args).await?);
+        let (tools_vec, auto_select_names) = self.function_list(&args).await?;
+        let is_auto_select = !auto_select_names.is_empty();
+        let original_args = if is_auto_select {
+            Some(args.clone())
+        } else {
+            None
+        };
+        let tools = Arc::new(tools_vec);
         let messages = Arc::new(Mutex::new(messages));
         let think = args.options.as_ref().map(|o| o.extract_reasoning_content());
+
+        // For auto-select, force manual mode for the 1st call to intercept the tool call
+        let effective_auto_calling = !is_auto_select && is_auto_calling;
 
         let res = Self::request_chat_internal_with_tracing(
             Arc::new(self.clone()),
@@ -351,8 +425,9 @@ impl OllamaChatService {
             Some(cx.clone()),
             metadata.clone(),
             args.json_schema,
-            is_auto_calling,
+            effective_auto_calling,
             think,
+            0,
         )
         .await?;
 
@@ -382,6 +457,68 @@ impl OllamaChatService {
                 })
             }
             ChatInternalResult::PendingTools { tool_calls } => {
+                // Auto-select mode: intercept pseudo tool call and execute 2nd request_chat
+                if is_auto_select
+                    && let Some(selected) = tool_calls
+                        .iter()
+                        .find(|tc| auto_select_names.contains(&tc.function.name))
+                {
+                    // Strip the selector prefix to recover the original FunctionSet name
+                    let selected_set_name = selected
+                        .function
+                        .name
+                        .strip_prefix(ToolConverter::SELECTOR_TOOL_PREFIX)
+                        .unwrap_or(&selected.function.name)
+                        .to_string();
+                    tracing::info!(
+                        function_set = %selected_set_name,
+                        "Auto-select: LLM selected FunctionSet"
+                    );
+
+                    let extra_selectors: Vec<&str> = tool_calls
+                        .iter()
+                        .filter(|tc| {
+                            auto_select_names.contains(&tc.function.name)
+                                && tc.function.name != selected.function.name
+                        })
+                        .map(|tc| tc.function.name.as_str())
+                        .collect();
+                    if !extra_selectors.is_empty() {
+                        tracing::warn!(
+                            selected = %selected.function.name,
+                            ?extra_selectors,
+                            "Auto-select: LLM called multiple selector tools, using the first one"
+                        );
+                    }
+
+                    // INVARIANT: original_args is Some when is_auto_select is true
+                    let mut second_args = original_args
+                        .expect("original_args must be Some when is_auto_select is true");
+                    if let Some(ref mut fo) = second_args.function_options {
+                        fo.function_set_name = Some(selected_set_name);
+                        fo.auto_select_function_set = Some(false);
+                    }
+
+                    return Box::pin(self.request_chat(second_args, cx, (*metadata).clone())).await;
+                }
+
+                // Auto-select mode but no selector tool was called — LLM hallucinated
+                if is_auto_select {
+                    let attempted_names: Vec<&str> = tool_calls
+                        .iter()
+                        .map(|tc| tc.function.name.as_str())
+                        .collect();
+                    tracing::warn!(
+                        ?attempted_names,
+                        "Auto-select: LLM did not call any selector tool, returning error"
+                    );
+                    return Err(JobWorkerError::OtherError(format!(
+                        "Auto-select failed: LLM called {:?} instead of selector tools",
+                        attempted_names
+                    ))
+                    .into());
+                }
+
                 // Return tool calls for client approval (manual mode)
                 let pending_calls: Vec<ToolCallRequest> = tool_calls
                     .iter()
@@ -533,7 +670,13 @@ impl OllamaChatService {
         json_schema: Option<String>,
         is_auto_calling: bool,
         think: Option<bool>,
+        tool_call_depth: u32,
     ) -> Result<ChatInternalResult> {
+        if tool_call_depth >= MAX_TOOL_CALL_DEPTH {
+            return Err(anyhow::anyhow!(
+                "Maximum tool call depth ({MAX_TOOL_CALL_DEPTH}) exceeded. Aborting to prevent infinite recursion."
+            ));
+        }
         let mut req = ChatMessageRequest::new(model.clone(), messages.lock().await.clone());
         req = req.options(options.clone());
         if let Some(t) = think {
@@ -669,6 +812,8 @@ impl OllamaChatService {
             }
 
             // Auto mode: process tool calls automatically
+            // Add assistant message with tool calls to conversation history
+            messages.lock().await.push(res.message.clone());
             let tool_calls = res.message.tool_calls.clone();
 
             // Process tool calls and get updated context for each tool call
@@ -695,7 +840,9 @@ impl OllamaChatService {
             }
 
             // Recursive call with updated context from tool execution
-
+            tracing::debug!(
+                "Recursing into request_chat_internal_with_tracing after tool execution"
+            );
             Box::pin(self.request_chat_internal_with_tracing(
                 model,
                 options,
@@ -706,6 +853,7 @@ impl OllamaChatService {
                 None, // json_schema is not used in recursive calls to avoid conflicts
                 is_auto_calling,
                 think,
+                tool_call_depth + 1,
             ))
             .await
         }
@@ -864,6 +1012,18 @@ impl OllamaChatService {
         args: LlmChatArgs,
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
+        // auto-select is not supported in streaming mode
+        if args
+            .function_options
+            .as_ref()
+            .is_some_and(|fo| fo.auto_select_function_set.unwrap_or(false))
+        {
+            return Err(JobWorkerError::InvalidParameter(
+                "auto_select_function_set is not supported in streaming mode".to_string(),
+            )
+            .into());
+        }
+
         let metadata = Arc::new(metadata);
 
         // Check for tool execution requests in messages (manual mode continuation)
@@ -1002,7 +1162,8 @@ impl OllamaChatService {
 
         // Load tools if function calling is enabled
         let tools: Vec<ToolInfo> = if use_function_calling {
-            self.function_list(&args).await?
+            let (tools, _auto_select_names) = self.function_list(&args).await?;
+            tools
         } else {
             vec![]
         };

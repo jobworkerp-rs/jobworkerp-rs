@@ -1,0 +1,13 @@
+syntax = "proto3";
+package jobworkerp.runner.function_set_selector;
+
+// # FunctionSet Selector Runner Result
+// Formatted output for LLM consumption.
+message FunctionSetSelectorResult {
+  // Formatted text output containing all matching FunctionSets.
+  string formatted_output = 1;
+
+  // Total number of FunctionSets matching the filter
+  // (after category/name_filter, before limit/offset).
+  int64 total_count = 2;
+}
