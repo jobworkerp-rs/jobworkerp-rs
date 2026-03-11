@@ -158,11 +158,12 @@ impl ToolConverter {
         if name.is_empty() {
             return false;
         }
-        // Must not contain triple underscore (McpNameConverter::DELIMITER collision)
-        if name.contains("___") {
+        // Must not contain the MCP name delimiter
+        if name.contains(Self::DELIMITER) {
             tracing::warn!(
-                "FunctionSet name '{}' contains '___' (McpNameConverter delimiter), skipping",
-                name
+                "FunctionSet name '{}' contains '{}' (McpNameConverter delimiter), skipping",
+                name,
+                Self::DELIMITER
             );
             return false;
         }
