@@ -1,0 +1,22 @@
+syntax = "proto3";
+package jobworkerp.runner.function_set_selector;
+
+// # FunctionSet Selector Runner Arguments
+// Parameters for listing and filtering available FunctionSets.
+message FunctionSetSelectorArgs {
+  // Maximum number of FunctionSets to return.
+  // If omitted or 0, returns all FunctionSets.
+  optional int32 limit = 1;
+
+  // Number of FunctionSets to skip (for pagination).
+  // If omitted or 0, starts from the beginning.
+  optional int64 offset = 2;
+
+  // Filter by category value.
+  // If omitted, returns all categories.
+  optional int32 category = 3;
+
+  // Filter by name pattern (substring match, case-insensitive).
+  // If omitted, no name filtering is applied.
+  optional string name_filter = 4;
+}

@@ -2,6 +2,7 @@ use super::{
     RunnerSpec,
     command::CommandRunnerImpl,
     docker::{DockerExecRunner, DockerRunner},
+    function_set_selector::FunctionSetSelectorSpecImpl,
     grpc_unary::GrpcUnaryRunner,
     llm::LLMCompletionRunnerSpecImpl,
     llm_chat::LLMChatRunnerSpecImpl,
@@ -164,6 +165,10 @@ impl RunnerSpecFactory {
             }
             Some(RunnerType::SlackPostMessage) => {
                 Some(Box::new(SlackPostMessageRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
+            }
+            Some(RunnerType::FunctionSetSelector) => {
+                Some(Box::new(FunctionSetSelectorSpecImpl::new())
+                    as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::InlineWorkflow) => {
                 Some(Box::new(InlineWorkflowRunnerSpecImpl::new())

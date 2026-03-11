@@ -177,20 +177,27 @@ pub trait GenericLLMTracingHelper {
                     let provider = provider.clone();
 
                     move |result: &serde_json::Value| -> Option<OtelSpanAttributes> {
+                        // Detect tool execution errors from result string
+                        let is_error = result
+                            .as_str()
+                            .is_some_and(|s| s.starts_with("Error executing tool"));
+                        let execution_status = if is_error { "error" } else { "completed" };
+
                         let observation_output = serde_json::json!({
                             "function_name": function_name,
                             "arguments": arguments,
                             "result": result,
-                            "execution_status": "completed"
+                            "execution_status": execution_status
                         });
 
                         let completion_output = result.clone();
                         let trace_output = serde_json::json!({
                             "tool_name": function_name,
                             "output": result,
-                            "success": true
+                            "success": !is_error
                         });
 
+                        let level = if is_error { "ERROR" } else { "INFO" };
                         let mut response_span_builder = OtelSpanBuilder::new(format!(
                             "{provider}.tool.{function_name}.response"
                         ))
@@ -198,7 +205,7 @@ pub trait GenericLLMTracingHelper {
                         .observation_output(observation_output)
                         .completion_output(completion_output)
                         .trace_output(trace_output)
-                        .level("INFO");
+                        .level(level);
 
                         let mut metadata = HashMap::new();
                         metadata
@@ -206,7 +213,7 @@ pub trait GenericLLMTracingHelper {
                         metadata.insert("tool_name".to_string(), serde_json::json!(function_name));
                         metadata.insert(
                             "execution_status".to_string(),
-                            serde_json::json!("completed"),
+                            serde_json::json!(execution_status),
                         );
                         response_span_builder = response_span_builder.metadata(metadata);
 
