@@ -2612,6 +2612,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "serde_yaml",
+ "shlex",
  "signal-hook",
  "signal-hook-tokio",
  "strum",
