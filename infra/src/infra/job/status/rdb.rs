@@ -425,6 +425,77 @@ impl RdbJobProcessingStatusIndexRepository {
             .collect())
     }
 
+    /// Bulk logical deletion of stale records (orphaned_only=false)
+    ///
+    /// Marks stale records as deleted where:
+    /// - deleted_at IS NULL (still active)
+    /// - updated_at older than stale_threshold_hours
+    /// - job_id NOT IN jobs with future run_after_time (excludes scheduled jobs)
+    ///
+    /// # Returns
+    /// - `Ok((marked_count, cutoff_time))`: Number of marked records and cutoff timestamp
+    pub async fn purge_stale_records(&self, stale_threshold_hours: u64) -> Result<(u64, i64)> {
+        if !self.config.rdb_indexing_enabled {
+            return Ok((0, 0));
+        }
+
+        let now = datetime::now_millis();
+        let cutoff_millis = now - (stale_threshold_hours * 3600 * 1000) as i64;
+
+        let mut conn = self.rdb_pool.acquire().await?;
+        let result = sqlx::query(
+            "UPDATE job_processing_status
+             SET deleted_at = ?, updated_at = ?
+             WHERE deleted_at IS NULL AND updated_at < ?
+               AND job_id NOT IN (SELECT id FROM job WHERE run_after_time > ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(cutoff_millis)
+        .bind(now)
+        .execute(&mut *conn)
+        .await?;
+
+        Ok((result.rows_affected(), cutoff_millis))
+    }
+
+    /// Find stale job_ids for orphan checking (orphaned_only=true)
+    ///
+    /// Returns job_ids of stale records where:
+    /// - deleted_at IS NULL (still active)
+    /// - updated_at older than stale_threshold_hours
+    /// - job_id NOT IN jobs with future run_after_time
+    ///
+    /// # Performance
+    /// Loads all matching job_ids into memory without LIMIT.
+    /// Each returned id is then checked individually via `find_job()` + `find_status()` (N+1).
+    /// This is acceptable because this RPC is intended for infrequent admin use and
+    /// `stale_threshold_hours` typically limits the result set to a small number.
+    ///
+    /// # Returns
+    /// - `Ok((job_ids, cutoff_time))`: List of candidate job_ids and cutoff timestamp
+    pub async fn find_stale_job_ids(&self, stale_threshold_hours: u64) -> Result<(Vec<i64>, i64)> {
+        if !self.config.rdb_indexing_enabled {
+            return Ok((vec![], 0));
+        }
+
+        let now = datetime::now_millis();
+        let cutoff_millis = now - (stale_threshold_hours * 3600 * 1000) as i64;
+
+        let mut conn = self.rdb_pool.acquire().await?;
+        let rows: Vec<(i64,)> = sqlx::query_as(
+            "SELECT job_id FROM job_processing_status
+             WHERE deleted_at IS NULL AND updated_at < ?
+               AND job_id NOT IN (SELECT id FROM job WHERE run_after_time > ?)",
+        )
+        .bind(cutoff_millis)
+        .bind(now)
+        .fetch_all(&mut *conn)
+        .await?;
+
+        Ok((rows.into_iter().map(|(id,)| id).collect(), cutoff_millis))
+    }
+
     /// Physical deletion of logically deleted records (called from cleanup task)
     ///
     /// # Arguments
@@ -1197,6 +1268,252 @@ mod tests {
                 first_deleted_at, second_deleted_at,
                 "Multiple mark_deleted calls should be idempotent"
             );
+            Ok(())
+        })
+    }
+
+    async fn setup_job_table(pool: &RdbPool) {
+        let _ = sqlx::query(
+            "CREATE TABLE IF NOT EXISTS job (
+                id INTEGER PRIMARY KEY,
+                worker_id BIGINT NOT NULL,
+                args BLOB NOT NULL,
+                uniq_key TEXT,
+                enqueue_time BIGINT NOT NULL DEFAULT 0,
+                grabbed_until_time BIGINT DEFAULT 0,
+                run_after_time BIGINT NOT NULL DEFAULT 0,
+                retried INT NOT NULL DEFAULT 0,
+                priority INT NOT NULL DEFAULT 0,
+                timeout BIGINT NOT NULL DEFAULT 0,
+                request_streaming BOOLEAN NOT NULL DEFAULT 0,
+                using TEXT
+            )",
+        )
+        .execute(pool)
+        .await;
+
+        let _ = sqlx::query("DELETE FROM job").execute(pool).await;
+    }
+
+    #[test]
+    fn test_purge_stale_records() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            setup_job_table(pool).await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let now = datetime::now_millis();
+            let old_timestamp = now - (3 * 3600 * 1000); // 3 hours ago
+
+            // Insert a stale record (updated_at = 3 hours ago)
+            sqlx::query(
+                "INSERT INTO job_processing_status
+                 (job_id, status, worker_id, channel, priority, enqueue_time, version, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(700)
+            .bind(1) // PENDING
+            .bind(1)
+            .bind("test")
+            .bind(0)
+            .bind(old_timestamp)
+            .bind(1)
+            .bind(old_timestamp)
+            .execute(pool)
+            .await?;
+
+            // Insert a recent record (should NOT be purged)
+            sqlx::query(
+                "INSERT INTO job_processing_status
+                 (job_id, status, worker_id, channel, priority, enqueue_time, version, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(701)
+            .bind(1)
+            .bind(1)
+            .bind("test")
+            .bind(0)
+            .bind(now)
+            .bind(1)
+            .bind(now)
+            .execute(pool)
+            .await?;
+
+            // Purge with 2-hour threshold (should purge job 700, keep job 701)
+            let (marked_count, cutoff_time) = repo.purge_stale_records(2).await?;
+
+            assert_eq!(marked_count, 1);
+            assert!(cutoff_time > 0);
+
+            // Verify stale record is marked deleted
+            let deleted_at: Option<i64> = sqlx::query_scalar(
+                "SELECT deleted_at FROM job_processing_status WHERE job_id = 700",
+            )
+            .fetch_one(pool)
+            .await?;
+            assert!(deleted_at.is_some());
+
+            // Verify recent record is still active
+            let deleted_at: Option<i64> = sqlx::query_scalar(
+                "SELECT deleted_at FROM job_processing_status WHERE job_id = 701",
+            )
+            .fetch_one(pool)
+            .await?;
+            assert!(deleted_at.is_none());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_purge_stale_records_excludes_scheduled_jobs() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            setup_job_table(pool).await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let now = datetime::now_millis();
+            let old_timestamp = now - (3 * 3600 * 1000);
+            let future_time = now + (3600 * 1000); // 1 hour in future
+
+            // Insert stale status record
+            sqlx::query(
+                "INSERT INTO job_processing_status
+                 (job_id, status, worker_id, channel, priority, enqueue_time, version, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(710)
+            .bind(1)
+            .bind(1)
+            .bind("test")
+            .bind(0)
+            .bind(old_timestamp)
+            .bind(1)
+            .bind(old_timestamp)
+            .execute(pool)
+            .await?;
+
+            // Insert corresponding job with future run_after_time
+            sqlx::query(
+                "INSERT INTO job (id, worker_id, args, enqueue_time, run_after_time, retried, priority, timeout, request_streaming)
+                 VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0)",
+            )
+            .bind(710)
+            .bind(1)
+            .bind(b"test" as &[u8])
+            .bind(old_timestamp)
+            .bind(future_time)
+            .execute(pool)
+            .await?;
+
+            // Purge should skip job 710 (has future run_after_time)
+            let (marked_count, _) = repo.purge_stale_records(2).await?;
+            assert_eq!(marked_count, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_find_stale_job_ids() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            setup_job_table(pool).await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let now = datetime::now_millis();
+            let old_timestamp = now - (3 * 3600 * 1000);
+
+            // Insert stale records
+            for job_id in [720, 721] {
+                sqlx::query(
+                    "INSERT INTO job_processing_status
+                     (job_id, status, worker_id, channel, priority, enqueue_time, version, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(job_id)
+                .bind(1)
+                .bind(1)
+                .bind("test")
+                .bind(0)
+                .bind(old_timestamp)
+                .bind(1)
+                .bind(old_timestamp)
+                .execute(pool)
+                .await?;
+            }
+
+            // Insert recent record (should NOT appear)
+            sqlx::query(
+                "INSERT INTO job_processing_status
+                 (job_id, status, worker_id, channel, priority, enqueue_time, version, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(722)
+            .bind(1)
+            .bind(1)
+            .bind("test")
+            .bind(0)
+            .bind(now)
+            .bind(1)
+            .bind(now)
+            .execute(pool)
+            .await?;
+
+            let (ids, cutoff_time) = repo.find_stale_job_ids(2).await?;
+
+            assert_eq!(ids.len(), 2);
+            assert!(ids.contains(&720));
+            assert!(ids.contains(&721));
+            assert!(!ids.contains(&722));
+            assert!(cutoff_time > 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_purge_stale_records_disabled() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: false,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let (count, cutoff) = repo.purge_stale_records(2).await?;
+            assert_eq!(count, 0);
+            assert_eq!(cutoff, 0);
+
             Ok(())
         })
     }

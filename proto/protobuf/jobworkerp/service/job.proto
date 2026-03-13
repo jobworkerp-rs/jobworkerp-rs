@@ -170,6 +170,28 @@ message CleanupResponse {
   string message = 3;
 }
 
+// Purge stale job processing status records
+message PurgeStaleJobsRequest {
+  // Stale threshold in hours: records with updated_at older than this are candidates
+  uint64 stale_threshold_hours = 1;
+
+  // When true, only purge orphaned records (job_id not found in job store AND no active processing status)
+  // When false (default), purge all stale records regardless of job existence
+  optional bool orphaned_only = 2;
+}
+
+// Response for PurgeStaleJobs
+message PurgeStaleJobsResponse {
+  // Number of records marked as deleted
+  uint64 marked_count = 1;
+
+  // Cutoff timestamp used for stale detection (milliseconds since epoch)
+  int64 cutoff_time = 2;
+
+  // Human-readable message
+  string message = 3;
+}
+
 service JobProcessingStatusService {
   rpc Find(jobworkerp.data.JobId) returns (OptionalJobProcessingStatusResponse);
   rpc FindAll(jobworkerp.data.Empty) returns (stream JobProcessingStatusResponse);
@@ -197,6 +219,21 @@ service JobProcessingStatusService {
   // - FAILED_PRECONDITION: JOB_STATUS_RDB_INDEXING is disabled
   // - INTERNAL: Database error during cleanup
   rpc Cleanup(CleanupRequest) returns (CleanupResponse);
+
+  // Purge stale job processing status records
+  //
+  // Marks stale records (deleted_at IS NULL, updated_at older than threshold) as logically deleted.
+  // Records whose job has a future run_after_time are excluded.
+  //
+  // Modes:
+  // - orphaned_only=false (default): Purges all stale records in bulk
+  // - orphaned_only=true: Only purges orphaned records (job absent from both job store and status repository)
+  //
+  // Requirements:
+  // - JOB_STATUS_RDB_INDEXING=true (returns FAILED_PRECONDITION if disabled)
+  // - AUTH_TOKEN environment variable must match jobworkerp-auth header (if set)
+  // - stale_threshold_hours must be > 0 (returns INVALID_ARGUMENT if 0)
+  rpc PurgeStaleJobs(PurgeStaleJobsRequest) returns (PurgeStaleJobsResponse);
 }
 
 message JobRestoreRequest {
