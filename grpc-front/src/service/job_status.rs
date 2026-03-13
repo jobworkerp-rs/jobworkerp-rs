@@ -212,6 +212,12 @@ impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static>
                 "stale_threshold_hours must be greater than 0",
             ));
         }
+        // Cap at 1 year to prevent integer overflow in millis conversion
+        if req.stale_threshold_hours > 8760 {
+            return Err(tonic::Status::invalid_argument(
+                "stale_threshold_hours must be at most 8760 (1 year)",
+            ));
+        }
 
         let orphaned_only = req.orphaned_only.unwrap_or(false);
 

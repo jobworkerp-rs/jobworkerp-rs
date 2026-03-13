@@ -445,9 +445,27 @@ where
         let job_id = JobId {
             value: job_id_value,
         };
-        if is_orphaned(job_id).await? {
-            index_repo.mark_deleted_by_job_id(&job_id).await?;
-            marked_count += 1;
+        match is_orphaned(job_id).await {
+            Ok(true) => {
+                index_repo
+                    .mark_deleted_by_job_id(&job_id)
+                    .await
+                    .inspect_err(|_| {
+                        tracing::warn!(
+                            marked_count,
+                            "purge_orphaned interrupted during mark_deleted"
+                        );
+                    })?;
+                marked_count += 1;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(
+                    marked_count,
+                    "purge_orphaned interrupted during is_orphaned check"
+                );
+                return Err(e);
+            }
         }
     }
 

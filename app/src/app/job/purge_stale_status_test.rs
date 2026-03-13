@@ -9,7 +9,7 @@ mod purge_stale_status_tests {
 
     use anyhow::Result;
     use infra::infra::job::status::JobProcessingStatusRepository;
-    use infra_utils::infra::rdb::UseRdbPool;
+    use infra_utils::infra::rdb::{RdbPool, UseRdbPool};
     use infra_utils::infra::test::TEST_RUNTIME;
     use jobworkerp_base::codec::UseProstCodec;
     use proto::jobworkerp::data::{
@@ -17,6 +17,28 @@ mod purge_stale_status_tests {
     };
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    /// Poll until the given job_id appears in the RDB index table.
+    async fn poll_until_indexed(pool: &RdbPool, job_id_value: i64) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let exists: Option<(i64,)> =
+                sqlx::query_as("SELECT job_id FROM job_processing_status WHERE job_id = ?")
+                    .bind(job_id_value)
+                    .fetch_optional(pool)
+                    .await
+                    .unwrap();
+            if exists.is_some() {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Timed out waiting for job_id {} to appear in RDB index",
+                job_id_value
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
 
     fn test_worker_data(name: &str) -> WorkerData {
         let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
@@ -84,11 +106,11 @@ mod purge_stale_status_tests {
                 )
                 .await?;
 
-            // Wait for async indexing
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            // Wait for async indexing (poll instead of fixed sleep)
+            let rdb_pool = index_repo.db_pool();
+            poll_until_indexed(rdb_pool, job_id.value).await;
 
             // Backdate updated_at to make the record stale
-            let rdb_pool = index_repo.db_pool();
             let stale_time = chrono::Utc::now().timestamp_millis() - 3600 * 1000 * 2;
             sqlx::query("UPDATE job_processing_status SET updated_at = ? WHERE job_id = ?")
                 .bind(stale_time)
@@ -230,8 +252,9 @@ mod purge_stale_status_tests {
                 )
                 .await?;
 
-            // Wait for async indexing
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            // Wait for async indexing (poll instead of fixed sleep)
+            let rdb_pool = index_repo.db_pool();
+            poll_until_indexed(rdb_pool, job_id.value).await;
 
             // Verify the job has PENDING status in memory
             assert_eq!(
@@ -240,9 +263,8 @@ mod purge_stale_status_tests {
             );
 
             // Backdate updated_at to make the RDB index record stale
-            let rdb_pool = index_repo.db_pool();
             let stale_time = chrono::Utc::now().timestamp_millis() - 3600 * 1000 * 2;
-            sqlx::query("UPDATE job_processing_status SET updated_at = ? WHERE job_id = ?")
+            sqlx::query("UPDATE job_processing_status SET updated_at = ?, deleted_at = NULL WHERE job_id = ?")
                 .bind(stale_time)
                 .bind(job_id.value)
                 .execute(rdb_pool)
