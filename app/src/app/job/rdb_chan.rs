@@ -1480,7 +1480,7 @@ mod tests {
     }
     #[test]
     fn test_create_direct_job_complete() -> Result<()> {
-        // tracing_init_test(tracing::Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
         // enqueue, find, complete, find, delete, find
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
