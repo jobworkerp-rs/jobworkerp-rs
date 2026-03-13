@@ -13,6 +13,8 @@ pub mod hybrid_indexing_integration_test;
 #[cfg(test)]
 pub mod process_deque_job_cleanup_test;
 #[cfg(test)]
+pub mod purge_stale_status_test;
+#[cfg(test)]
 pub mod rdb_chan_cancellation_test;
 #[cfg(test)]
 pub mod rdb_chan_indexing_integration_test;
@@ -192,6 +194,30 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     async fn cleanup_job_processing_status(
         &self,
         retention_hours_override: Option<u64>,
+    ) -> Result<(u64, i64)>;
+
+    /// Purge stale job_processing_status records (mark as logically deleted)
+    ///
+    /// # Modes
+    /// - `orphaned_only=false`: Bulk mark all stale records as deleted.
+    ///   Records with a corresponding job that has future run_after_time are excluded.
+    /// - `orphaned_only=true`: Only mark records where the job no longer exists
+    ///   in both the job store (`find_job()`) AND the processing status repository
+    ///   (`find_status()`). Each candidate is checked individually (N+1 queries),
+    ///   so this mode may be slow if many stale records exist. Use an appropriate
+    ///   `stale_threshold_hours` to keep the candidate set small.
+    ///
+    /// # Limitations (documented for callers)
+    /// - In Standalone mode, QueueType::NORMAL jobs are not persisted to RDB,
+    ///   so `find_job()` cannot detect them. However, running/pending jobs will
+    ///   have an in-memory processing status. After worker restart, both job and
+    ///   status are lost, so they are correctly identified as orphans.
+    /// - Set `stale_threshold_hours` appropriately to avoid purging jobs that are
+    ///   still legitimately running.
+    async fn purge_stale_job_processing_status(
+        &self,
+        stale_threshold_hours: u64,
+        orphaned_only: bool,
     ) -> Result<(u64, i64)>;
 
     async fn pop_run_after_jobs_to_run(&self) -> Result<Vec<Job>>;
@@ -397,6 +423,35 @@ pub(crate) async fn feed_to_stream_with_fast_path(
         is_final,
     )
     .await
+}
+
+/// Shared orphaned-only purge logic for hybrid.rs and rdb_chan.rs.
+///
+/// Checks each stale candidate against both the job store and the status repository.
+/// Only marks records as deleted when neither source has the job (true orphan).
+pub(crate) async fn purge_orphaned_stale_records<F, Fut>(
+    index_repo: &infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository,
+    stale_threshold_hours: u64,
+    is_orphaned: F,
+) -> Result<(u64, i64)>
+where
+    F: Fn(JobId) -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    let (stale_job_ids, cutoff_time) = index_repo.find_stale_job_ids(stale_threshold_hours).await?;
+
+    let mut marked_count = 0u64;
+    for job_id_value in stale_job_ids {
+        let job_id = JobId {
+            value: job_id_value,
+        };
+        if is_orphaned(job_id).await? {
+            index_repo.mark_deleted_by_job_id(&job_id).await?;
+            marked_count += 1;
+        }
+    }
+
+    Ok((marked_count, cutoff_time))
 }
 
 /// Spawn a background task to publish an End marker stream when a streaming job
