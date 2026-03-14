@@ -1047,6 +1047,36 @@ impl JobApp for RdbChanJobAppImpl {
             .await
     }
 
+    async fn purge_stale_job_processing_status(
+        &self,
+        stale_threshold_hours: u64,
+        orphaned_only: bool,
+    ) -> Result<(u64, i64)> {
+        let index_repo = self.job_status_index_repository.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "RDB JobProcessingStatus index repository not available. \
+                     Ensure JOB_STATUS_RDB_INDEXING=true"
+            )
+        })?;
+
+        if !orphaned_only {
+            return index_repo.purge_stale_records(stale_threshold_hours).await;
+        }
+
+        super::purge_orphaned_stale_records(index_repo, stale_threshold_hours, async |job_id| {
+            if self.find_job(&job_id).await?.is_some() {
+                return Ok(false);
+            }
+            let status_exists = self
+                .job_processing_status_repository()
+                .find_status(&job_id)
+                .await?
+                .is_some();
+            Ok(!status_exists)
+        })
+        .await
+    }
+
     async fn count(&self) -> Result<i64>
     where
         Self: Send + 'static,
@@ -1452,7 +1482,7 @@ mod tests {
     }
     #[test]
     fn test_create_direct_job_complete() -> Result<()> {
-        // tracing_init_test(tracing::Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
         // enqueue, find, complete, find, delete, find
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
