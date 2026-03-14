@@ -452,6 +452,7 @@ where
                     .await
                     .inspect_err(|_| {
                         tracing::warn!(
+                            job_id = job_id.value,
                             marked_count,
                             "purge_orphaned interrupted during mark_deleted"
                         );
@@ -461,6 +462,7 @@ where
             Ok(false) => {}
             Err(e) => {
                 tracing::warn!(
+                    job_id = job_id.value,
                     marked_count,
                     "purge_orphaned interrupted during is_orphaned check"
                 );
