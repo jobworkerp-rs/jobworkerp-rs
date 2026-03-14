@@ -116,9 +116,9 @@ export default function Home() {
                         Args: <code className="text-slate-300">{m.toolCall.arguments}</code>
                       </div>
                     )}
-                    {m.toolCall?.result && (
+                    {m.toolCall?.result != null && (
                       <div className="text-xs text-slate-400 mt-1">
-                        Result: <code className="text-emerald-200">{JSON.stringify(m.toolCall.result)}</code>
+                        Result: <code className="text-emerald-200">{String(JSON.stringify(m.toolCall.result))}</code>
                       </div>
                     )}
                   </div>
