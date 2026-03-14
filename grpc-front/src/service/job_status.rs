@@ -179,6 +179,90 @@ impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static>
             }
         }
     }
+
+    /// Purge stale job_processing_status records
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(method = "purge_stale_jobs")
+    )]
+    async fn purge_stale_jobs(
+        &self,
+        request: tonic::Request<crate::proto::jobworkerp::service::PurgeStaleJobsRequest>,
+    ) -> Result<
+        tonic::Response<crate::proto::jobworkerp::service::PurgeStaleJobsResponse>,
+        tonic::Status,
+    > {
+        let _s = Self::trace_request("job_status", "purge_stale_jobs", &request);
+
+        // Authentication check
+        crate::service::process_metadata(request.metadata().clone())?;
+
+        if !JOB_STATUS_CONFIG.rdb_indexing_enabled {
+            return Err(tonic::Status::failed_precondition(
+                "Job processing status RDB indexing is disabled. \
+                 Set JOB_STATUS_RDB_INDEXING=true to enable purge_stale_jobs.",
+            ));
+        }
+
+        let req = request.get_ref();
+
+        if req.stale_threshold_hours == 0 {
+            return Err(tonic::Status::invalid_argument(
+                "stale_threshold_hours must be greater than 0",
+            ));
+        }
+        // Cap at 1 year to prevent integer overflow in millis conversion
+        if req.stale_threshold_hours > 8760 {
+            return Err(tonic::Status::invalid_argument(
+                "stale_threshold_hours must be at most 8760 (1 year)",
+            ));
+        }
+
+        let orphaned_only = req.orphaned_only.unwrap_or(false);
+
+        match self
+            .app()
+            .purge_stale_job_processing_status(req.stale_threshold_hours, orphaned_only)
+            .await
+        {
+            Ok((marked_count, cutoff_time)) => {
+                let mode = if orphaned_only {
+                    "orphaned-only"
+                } else {
+                    "all-stale"
+                };
+                let message = if marked_count > 0 {
+                    format!(
+                        "Purged {} stale job_processing_status records (mode: {}, threshold: {}h)",
+                        marked_count, mode, req.stale_threshold_hours
+                    )
+                } else {
+                    format!("No stale records to purge (mode: {})", mode)
+                };
+
+                tracing::info!(
+                    marked_count,
+                    cutoff_time,
+                    orphaned_only,
+                    stale_threshold_hours = req.stale_threshold_hours,
+                    "JobProcessingStatusService: purge_stale_jobs completed"
+                );
+
+                Ok(tonic::Response::new(
+                    crate::proto::jobworkerp::service::PurgeStaleJobsResponse {
+                        marked_count,
+                        cutoff_time,
+                        message,
+                    },
+                ))
+            }
+            Err(e) => {
+                tracing::error!(error = ?e, "JobProcessingStatusService: purge_stale_jobs failed");
+                Err(handle_error(&e))
+            }
+        }
+    }
 }
 
 #[derive(DebugStub)]
