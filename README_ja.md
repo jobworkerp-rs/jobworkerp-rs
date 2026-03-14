@@ -86,7 +86,7 @@ $ ./target/release/grpc-front &
 ### Docker環境での実行
 
 ```shell
-# docker-compose で起動（開発環境向け）
+# docker-compose で起動
 $ docker-compose up
 
 # スケーラブル構成で起動（本番環境向け）
@@ -99,8 +99,8 @@ all-in-oneイメージ用に2つのDockerfileがあります：
 
 | Dockerfile | 用途 | 説明 |
 |------------|------|------|
-| `Dockerfile` | GitHub Actions / ビルド済みバイナリ用 | 事前にビルドされた `./target/release/all-in-one` が必要。admin-uiのみDocker内でビルド。 |
-| `Dockerfile.full` | ローカル開発用 | フルマルチステージビルド。RustバイナリとAdmin UIの両方をDocker内でビルド。事前ビルド不要。 |
+| `Dockerfile` | CI / デモ配布用 | 事前にビルドされた `./target/release/all-in-one` が必要。GitHub Actionsでのイメージ公開やビルド済みバイナリがある環境向け。 |
+| `Dockerfile.full` | ローカル開発・テスト用 | フルマルチステージビルド。RustバイナリとAdmin UIの両方をDocker内でビルド。事前ビルド不要。 |
 
 ```shell
 # オプション1: ビルド済みバイナリを使用 (Dockerfile)
@@ -114,30 +114,27 @@ $ docker build -t jobworkerp-all-in-one .
 $ docker build -f Dockerfile.full -t jobworkerp-all-in-one .
 
 # コンテナを実行
-# - ポート80: Admin UI (nginx)
-# - ポート9000: gRPC-Web (admin-uiが接続)
-$ docker run -p 80:80 -p 9000:9000 \
-  -e VITE_GRPC_ENDPOINT=http://localhost:9000 \
-  -e USE_GRPC_WEB=true \
-  -e JOB_STATUS_RDB_INDEXING=true \
-  jobworkerp-all-in-one
-
-# リモートアクセスの場合、localhostをサーバーのIPアドレスに置き換えてください
-$ docker run -p 80:80 -p 9000:9000 \
-  -e VITE_GRPC_ENDPOINT=http://<サーバーのIPアドレス>:9000 \
-  -e USE_GRPC_WEB=true \
-  -e JOB_STATUS_RDB_INDEXING=true \
+# - ポート8080: Admin UI (nginx + MCP/AG-UIリバースプロキシ)
+# - ポート9000: gRPC / gRPC-Web
+# - ポート8000: MCP Server (直接アクセス)
+# - ポート8001: AG-UI Server (直接アクセス)
+# - docker.sock: ホストのDockerデーモンをマウント (DOCKERランナー用)
+$ docker run -p 8080:8080 -p 9000:9000 -p 8000:8000 -p 8001:8001 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   jobworkerp-all-in-one
 ```
 
-**admin-uiに必要な環境変数:**
-| 変数名 | 説明 |
-|--------|------|
-| `VITE_GRPC_ENDPOINT` | admin-uiが接続するgRPC-WebエンドポイントURL |
-| `USE_GRPC_WEB` | gRPC-Webプロトコルを有効にするため`true`が必須 |
-| `JOB_STATUS_RDB_INDEXING` | admin-uiでジョブ一覧を表示するため`true`が必須 |
+**ポート構成:**
+| ポート | サービス | アクセスURL |
+|--------|----------|-------------|
+| 8080 | Admin UI (nginx) | `http://localhost:8080` |
+| 9000 | gRPC / gRPC-Web | `http://localhost:9000` |
+| 8000 | MCP Server | `http://localhost:8000/mcp` |
+| 8001 | AG-UI Server | `http://localhost:8001/ag-ui/run` |
 
-> **注意**: `Dockerfile.full`はビルドに時間がかかりますが、ローカルにRustツールチェーンが不要なため、ローカル開発時に便利です。
+nginx経由でのプロキシアクセスも可能: `http://localhost:8080/mcp`, `http://localhost:8080/ag-ui/`
+
+> **注意**: `Dockerfile.full`はビルドに時間がかかりますが、ローカルにRustツールチェーンが不要なため、ローカル開発・テスト時に便利です。
 
 ### クライアントによる実行例
 
