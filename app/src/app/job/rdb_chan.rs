@@ -1064,13 +1064,15 @@ impl JobApp for RdbChanJobAppImpl {
         }
 
         super::purge_orphaned_stale_records(index_repo, stale_threshold_hours, async |job_id| {
-            let job_exists = self.find_job(&job_id).await?.is_some();
+            if self.find_job(&job_id).await?.is_some() {
+                return Ok(false);
+            }
             let status_exists = self
                 .job_processing_status_repository()
                 .find_status(&job_id)
                 .await?
                 .is_some();
-            Ok(!job_exists && !status_exists)
+            Ok(!status_exists)
         })
         .await
     }

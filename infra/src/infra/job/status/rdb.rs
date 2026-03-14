@@ -438,24 +438,7 @@ impl RdbJobProcessingStatusIndexRepository {
         if !self.config.rdb_indexing_enabled {
             return Ok((0, 0));
         }
-
-        let now = datetime::now_millis();
-        let threshold_millis = stale_threshold_hours
-            .checked_mul(3600)
-            .and_then(|v| v.checked_mul(1000))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "stale_threshold_hours {} overflows millisecond conversion",
-                    stale_threshold_hours
-                )
-            })?;
-        let threshold_millis_i64 = i64::try_from(threshold_millis).map_err(|_| {
-            anyhow::anyhow!(
-                "stale_threshold_hours {} exceeds i64 range in milliseconds",
-                stale_threshold_hours
-            )
-        })?;
-        let cutoff_millis = now.saturating_sub(threshold_millis_i64);
+        let (now, cutoff_millis) = compute_cutoff_millis(stale_threshold_hours)?;
 
         let mut conn = self.rdb_pool.acquire().await?;
         let result = sqlx::query(
@@ -493,24 +476,7 @@ impl RdbJobProcessingStatusIndexRepository {
         if !self.config.rdb_indexing_enabled {
             return Ok((vec![], 0));
         }
-
-        let now = datetime::now_millis();
-        let threshold_millis = stale_threshold_hours
-            .checked_mul(3600)
-            .and_then(|v| v.checked_mul(1000))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "stale_threshold_hours {} overflows millisecond conversion",
-                    stale_threshold_hours
-                )
-            })?;
-        let threshold_millis_i64 = i64::try_from(threshold_millis).map_err(|_| {
-            anyhow::anyhow!(
-                "stale_threshold_hours {} exceeds i64 range in milliseconds",
-                stale_threshold_hours
-            )
-        })?;
-        let cutoff_millis = now.saturating_sub(threshold_millis_i64);
+        let (now, cutoff_millis) = compute_cutoff_millis(stale_threshold_hours)?;
 
         let mut conn = self.rdb_pool.acquire().await?;
         let rows: Vec<(i64,)> = sqlx::query_as(
@@ -542,7 +508,22 @@ impl RdbJobProcessingStatusIndexRepository {
         }
 
         let retention_hours = retention_hours_override.unwrap_or(self.config.retention_hours);
-        let cutoff_millis = datetime::now_millis() - (retention_hours * 3600 * 1000) as i64;
+        let threshold_millis = retention_hours
+            .checked_mul(3600)
+            .and_then(|v| v.checked_mul(1000))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "retention_hours {} overflows millisecond conversion",
+                    retention_hours
+                )
+            })?;
+        let threshold_millis = i64::try_from(threshold_millis).map_err(|_| {
+            anyhow::anyhow!(
+                "retention_hours {} exceeds i64 range in milliseconds",
+                retention_hours
+            )
+        })?;
+        let cutoff_millis = datetime::now_millis().saturating_sub(threshold_millis);
 
         let mut conn = self.rdb_pool.acquire().await?;
         let result = sqlx::query(
@@ -593,6 +574,36 @@ struct JobProcessingStatusDetailRow {
     is_streamable: bool,
     broadcast_results: bool,
     updated_at: i64,
+}
+
+/// Compute cutoff timestamp in milliseconds from stale_threshold_hours.
+///
+/// Returns `(now_millis, cutoff_millis)` where cutoff = now - threshold.
+/// Errors if stale_threshold_hours is 0 or overflows during conversion.
+fn compute_cutoff_millis(stale_threshold_hours: u64) -> Result<(i64, i64)> {
+    if stale_threshold_hours == 0 {
+        return Err(anyhow::anyhow!(
+            "stale_threshold_hours must be greater than 0"
+        ));
+    }
+    let now = datetime::now_millis();
+    let threshold_millis = stale_threshold_hours
+        .checked_mul(3600)
+        .and_then(|v| v.checked_mul(1000))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "stale_threshold_hours {} overflows millisecond conversion",
+                stale_threshold_hours
+            )
+        })?;
+    let threshold_millis_i64 = i64::try_from(threshold_millis).map_err(|_| {
+        anyhow::anyhow!(
+            "stale_threshold_hours {} exceeds i64 range in milliseconds",
+            stale_threshold_hours
+        )
+    })?;
+    let cutoff_millis = now.saturating_sub(threshold_millis_i64);
+    Ok((now, cutoff_millis))
 }
 
 /// Trait for DI of RdbJobProcessingStatusIndexRepository (optional)
@@ -1316,7 +1327,7 @@ mod tests {
                 priority INT NOT NULL DEFAULT 0,
                 timeout BIGINT NOT NULL DEFAULT 0,
                 request_streaming BOOLEAN NOT NULL DEFAULT 0,
-                using TEXT
+                `using` TEXT
             )",
         )
         .execute(pool)
