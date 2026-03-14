@@ -88,7 +88,7 @@ $ ./target/release/grpc-front &
 #### Launch Example Using Docker Image
 
 ```shell
-# Launch with docker-compose (for development)
+# Launch with docker-compose
 $ docker-compose up
 
 # Launch with scalable configuration (for production)
@@ -101,8 +101,8 @@ There are two Dockerfiles available for the all-in-one image:
 
 | Dockerfile | Purpose | Description |
 |------------|---------|-------------|
-| `Dockerfile` | GitHub Actions / Pre-built binary | Requires pre-built `./target/release/all-in-one` binary. Builds only admin-ui inside Docker. |
-| `Dockerfile.full` | Local development | Full multi-stage build. Builds both Rust binary and admin-ui inside Docker. No pre-built binary required. |
+| `Dockerfile` | CI / Demo distribution | Requires pre-built `./target/release/all-in-one` binary. For publishing images via GitHub Actions or environments with pre-built binaries. |
+| `Dockerfile.full` | Local development / testing | Full multi-stage build. Builds both Rust binary and admin-ui inside Docker. No pre-built binary required. |
 
 ```shell
 # Option 1: Using pre-built binary (Dockerfile)
@@ -116,30 +116,27 @@ $ docker build -t jobworkerp-all-in-one .
 $ docker build -f Dockerfile.full -t jobworkerp-all-in-one .
 
 # Run the container
-# - Port 80: Admin UI (nginx)
-# - Port 9000: gRPC-Web (for admin-ui to connect)
-$ docker run -p 80:80 -p 9000:9000 \
-  -e VITE_GRPC_ENDPOINT=http://localhost:9000 \
-  -e USE_GRPC_WEB=true \
-  -e JOB_STATUS_RDB_INDEXING=true \
-  jobworkerp-all-in-one
-
-# For remote access, replace localhost with your server's IP address
-$ docker run -p 80:80 -p 9000:9000 \
-  -e VITE_GRPC_ENDPOINT=http://<your-server-ip>:9000 \
-  -e USE_GRPC_WEB=true \
-  -e JOB_STATUS_RDB_INDEXING=true \
+# - Port 8080: Admin UI (nginx + MCP/AG-UI reverse proxy)
+# - Port 9000: gRPC / gRPC-Web
+# - Port 8000: MCP Server (direct access)
+# - Port 8001: AG-UI Server (direct access)
+# - docker.sock: Mount host Docker daemon (for DOCKER runner)
+$ docker run -p 8080:8080 -p 9000:9000 -p 8000:8000 -p 8001:8001 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   jobworkerp-all-in-one
 ```
 
-**Required environment variables for admin-ui:**
-| Variable | Description |
-|----------|-------------|
-| `VITE_GRPC_ENDPOINT` | gRPC-Web endpoint URL that admin-ui connects to |
-| `USE_GRPC_WEB` | Must be `true` to enable gRPC-Web protocol |
-| `JOB_STATUS_RDB_INDEXING` | Must be `true` to display job list in admin-ui |
+**Port configuration:**
+| Port | Service | Access URL |
+|------|---------|------------|
+| 8080 | Admin UI (nginx) | `http://localhost:8080` |
+| 9000 | gRPC / gRPC-Web | `http://localhost:9000` |
+| 8000 | MCP Server | `http://localhost:8000/mcp` |
+| 8001 | AG-UI Server | `http://localhost:8001/ag-ui/run` |
 
-> **Note**: `Dockerfile.full` takes longer to build but is convenient for local development as it doesn't require a local Rust toolchain.
+Proxy access via nginx is also available: `http://localhost:8080/mcp`, `http://localhost:8080/ag-ui/`
+
+> **Note**: `Dockerfile.full` takes longer to build but is convenient for local development and testing as it doesn't require a local Rust toolchain.
 
 ### Execution Examples Using jobworkerp-client
 
