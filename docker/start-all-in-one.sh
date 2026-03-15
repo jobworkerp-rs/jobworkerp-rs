@@ -15,6 +15,12 @@ cleanup() {
 trap 'cleanup 143' SIGTERM  # 128 + 15 (SIGTERM)
 trap 'cleanup 130' SIGINT   # 128 + 2 (SIGINT)
 
+# Generate .env from Docker environment variables if not mounted
+if [ ! -f /home/jobworkerp/.env ]; then
+    env | grep -E '^(WORKER_|JOB_|STORAGE_|GRPC_|LOG_|RUST_LOG|MCP_|AG_UI_|USE_)' > /home/jobworkerp/.env
+    chown jobworkerp:jobworkerp /home/jobworkerp/.env
+fi
+
 # Generate runtime config for admin-ui
 /home/jobworkerp/env.sh
 
@@ -22,6 +28,7 @@ trap 'cleanup 130' SIGINT   # 128 + 2 (SIGINT)
 nginx
 
 # Start all-in-one as jobworkerp user (foreground)
+# MCP_ENABLED and AG_UI_ENABLED are set via environment variables
 gosu jobworkerp ./all-in-one &
 ALL_IN_ONE_PID=$!
 
