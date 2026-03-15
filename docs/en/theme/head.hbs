@@ -3,6 +3,12 @@
 <script>
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
+
+    // Consent Mode v2: deny analytics cookies by default (cookieless estimation)
+    gtag('consent', 'default', {
+        'analytics_storage': 'denied'
+    });
+
     gtag('js', new Date());
     gtag('config', 'G-1NW43F15XN');
 </script>
