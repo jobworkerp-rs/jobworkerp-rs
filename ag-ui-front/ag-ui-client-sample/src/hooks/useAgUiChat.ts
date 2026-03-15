@@ -57,7 +57,8 @@ const CHAT_WORKFLOW = {
                             },
                             functionOptions: {
                                 useFunctionCalling: true,
-                                functionSetName: "command-functions",
+                                useRunnersAsFunction: true,
+                                // functionSetName: "command-functions",
                                 isAutoCalling: false  // HITL mode - require user approval
                             }
                         },
@@ -202,7 +203,7 @@ export function useAgUiChat() {
 
             // Use direct backend URL to avoid Next.js rewrite buffering issue
             // Next.js rewrites buffer SSE streams, causing all events to arrive at once
-            const baseUrl = process.env.NEXT_PUBLIC_AG_UI_BASE_URL || '';
+            const baseUrl = process.env.NEXT_PUBLIC_AG_UI_BASE_URL || 'http://localhost:8001';
             const url = `${baseUrl}/ag-ui/run`;
 
             console.log("Fetching URL:", url);
@@ -434,7 +435,7 @@ export function useAgUiChat() {
         setError(null);
 
         try {
-            const baseUrl = process.env.NEXT_PUBLIC_AG_UI_BASE_URL || '';
+            const baseUrl = process.env.NEXT_PUBLIC_AG_UI_BASE_URL || 'http://localhost:8001';
             const url = `${baseUrl}/ag-ui/run`;
 
             // Get the tool call info for display
@@ -625,7 +626,7 @@ export function useAgUiChat() {
         setError(null);
 
         try {
-            const baseUrl = process.env.NEXT_PUBLIC_AG_UI_BASE_URL || '';
+            const baseUrl = process.env.NEXT_PUBLIC_AG_UI_BASE_URL || 'http://localhost:8001';
             const url = `${baseUrl}/ag-ui/run`;
 
             // Get tool call info for logging

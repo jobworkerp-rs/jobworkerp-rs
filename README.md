@@ -101,7 +101,7 @@ There are two Dockerfiles available for the all-in-one image:
 
 | Dockerfile | Purpose | Description |
 |------------|---------|-------------|
-| `Dockerfile` | CI / Demo distribution | Requires pre-built `./target/release/all-in-one` binary. For publishing images via GitHub Actions or environments with pre-built binaries. |
+| `Dockerfile` | CI / Demo distribution | Requires a pre-built `./target/release/all-in-one` binary. For publishing images via GitHub Actions or environments with pre-built binaries. |
 | `Dockerfile.full` | Local development / testing | Full multi-stage build. Builds both Rust binary and admin-ui inside Docker. No pre-built binary required. |
 
 ```shell
@@ -127,6 +127,7 @@ $ docker run -p 8080:8080 -p 9000:9000 -p 8000:8000 -p 8001:8001 \
 ```
 
 **Port configuration:**
+
 | Port | Service | Access URL |
 |------|---------|------------|
 | 8080 | Admin UI (nginx) | `http://localhost:8080` |

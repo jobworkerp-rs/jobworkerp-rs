@@ -14,6 +14,8 @@ services:
       - ./log:/home/jobworkerp/log
       - ./plugins:/home/jobworkerp/plugins
       - /var/run/docker.sock:/var/run/docker.sock
+    # No 'user:' directive — start-all-in-one.sh starts nginx as root,
+    # then drops privileges to jobworkerp via gosu for the application processes.
     ports:
       - 8080:8080   # Admin UI (nginx)
       - 9000:9000   # gRPC
