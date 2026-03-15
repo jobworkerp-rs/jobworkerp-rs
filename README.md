@@ -1,5 +1,7 @@
 # jobworkerp-rs
 
+> **Full documentation**: [https://jobworkerp-rs.github.io/jobworkerp-rs/](https://jobworkerp-rs.github.io/jobworkerp-rs/)
+
 [Japanese ver.](README_ja.md)
 
 ## Overview
@@ -8,6 +10,7 @@ jobworkerp-rs is a scalable job worker system implemented in Rust.
 The job worker system is used to process CPU-intensive and I/O-intensive tasks asynchronously.
 Using gRPC, you can define [Workers](proto/protobuf/jobworkerp/service/worker.proto), register [Jobs](proto/protobuf/jobworkerp/service/job.proto) for task execution, and retrieve execution results.
 Processing capabilities can be extended through plugins.
+It also provides [Serverless Workflow](https://serverlessworkflow.io/)-based workflow execution with LLM integration and streaming support, MCP proxy for using external MCP server tools as Runners, and an MCP server mode that exposes Workers as MCP tools to external LLM applications.
 
 ## Architecture Overview
 
