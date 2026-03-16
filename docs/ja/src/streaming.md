@@ -175,9 +175,12 @@ rpc ListenStream(ListenRequest) returns (stream ResultOutputItem);
 | 非ストリーミング | `JobService.Enqueue`（`StreamingType::None`使用） | `JobResultService.Listen` または `FindListByJobId` | - |
 | ストリーミング（単一クライアント） | `JobService.EnqueueForStream`（`StreamingType::Response`使用） | `EnqueueForStream`のレスポンスとして直接ストリーム返却 | (Job) `streaming_type` = Response |
 | ストリーミング（複数クライアント） | `JobService.Enqueue` または `EnqueueForStream` | `JobResultService.ListenStream` | (Worker) `broadcast_results=true`, (Job) `streaming_type` = Response or Internal |
+| **Client streaming + Direct** | **`JobService.EnqueueWithClientStream`** | **レスポンスストリーム直接** | Runner `require_client_stream=true` |
+| **Client streaming + NoResult** | **`JobService.EnqueueWithClientStream`** | **`JobResultService.ListenStream`（別クライアント）** | Runner `require_client_stream=true`, (Worker) `broadcast_results=true` |
 
 - ストリーミングジョブに対して`Listen`を呼び出すと、ストリーミング結果を単一の`JobResult`レスポンスにまとめられないため、エラーが返されます。代わりに`ListenStream`を使用してください。
 - `EnqueueForStream`はレスポンスとして直接ストリームを返すため、リクエスト元クライアントは別途`ListenStream`を呼ぶ必要はありません。ただし、`broadcast_results=true`の場合は、他のクライアントが`ListenStream`を使って同じストリーミング結果を購読できます。
+- `EnqueueWithClientStream`はジョブのエンキューとfeedデータ配信を単一の双方向ストリームに統合し、`FeedToStream`のタイミング制約を解消します。
 
 ## Workerプーリングとuse_static
 
@@ -190,34 +193,139 @@ Workerで`use_static=true`を使用する場合（例：ローカルLLM向け）
 
 これにより、ローカルLLMモデルなどの重いリソースがジョブごとに再初期化されることを防ぎます。
 
-## FeedToStream: 実行中ストリーミングジョブへのデータ送信
+## EnqueueWithClientStream: クライアントストリーミング
 
-> **⚠ 非推奨予告**: 現在の `FeedToStream` 実装は、個々のデータチャンクをUnary RPCで送信する方式であり、継続的なデータフィードのシナリオでは最適ではありません。将来のリリースで **gRPC client streaming** に置き換える予定です。より自然で効率的なインターフェースになりますが、以下に記載されているAPIおよび動作は変更される可能性があります。
+`EnqueueWithClientStream` RPCは、ジョブのエンキューとクライアントストリーミングデータの配信を単一の双方向gRPCストリームに統合します。非推奨の`FeedToStream` RPCの制約を解消します。
 
-`FeedToStream` RPC を使用すると、実行中のストリーミングジョブに対してクライアントから追加データを送信できます。リアルタイム音声処理など、クライアントが音声チャンクを送信しながら Runner が処理・結果を返すインタラクティブなストリーミングシナリオが可能になります。
+### FeedToStreamに対する利点
+
+| FeedToStreamの制約 | EnqueueWithClientStream |
+|-------------------|------------------------|
+| `use_static=true`が必須 | 不要 |
+| チャネル concurrency = 1 が必須 | 不要 |
+| feed前にジョブが`Running`状態である必要 | 自動：エンキューとfeedが単一ストリーム |
+| Enqueue + Feed が別RPC（レースコンディションリスク） | 単一の統合ストリーム |
+| Scalableモード：Redis Pub/Sub（メッセージロスリスク） | Scalableモード：Redis List + BLPOP（メッセージロスなし） |
+
+### プロトコル定義
+
+```protobuf
+message ClientStreamRequest {
+  oneof request {
+    JobRequest job_request = 1;                   // 最初のメッセージ：ジョブエンキューリクエスト
+    jobworkerp.data.FeedDataTransport feed_data = 2;  // 以降：feedデータチャンク
+  }
+}
+
+// JobService 内
+rpc EnqueueWithClientStream(stream ClientStreamRequest)
+    returns (stream jobworkerp.data.ResultOutputItem);
+```
+
+### 利用フロー
+
+#### Directモード（`response_type=Direct`）
+
+送信クライアント自身が結果ストリームを直接受信します。
+
+```text
+Client                                    Server
+  │                                          │
+  │─── ClientStreamRequest(job_request) ────>│  ジョブ受付
+  │<── [headers: x-job-id-bin, x-job-result-bin]
+  │<── ResultOutputItem(Data) ──────────────│  初期出力
+  │─── ClientStreamRequest(feed_data) ──────>│  feedデータ
+  │<── ResultOutputItem(Data) ──────────────│  中間出力
+  │─── ClientStreamRequest(feed_data,        │
+  │         is_final=true) ─────────────────>│  最終feedデータ
+  │<── ResultOutputItem(End(trailer)) ──────│  ストリーム終了
+```
+
+#### NoResultモード（`response_type=NoResult`）
+
+送信クライアントはデータ送信のみ。別クライアントが`ListenStream`で結果を受信します。
+
+```text
+Feed Client                               Server
+  │                                          │
+  │─── ClientStreamRequest(job_request) ────>│  ジョブ受付
+  │<── [headers: x-job-id-bin]               │
+  │─── ClientStreamRequest(feed_data) ──────>│  feedデータ
+  │─── ClientStreamRequest(feed_data,        │
+  │         is_final=true) ─────────────────>│  最終feedデータ
+  │<── ResultOutputItem(End(trailer)) ──────│  feed完了、ストリーム終了
+
+Listener Client                            Server
+  │─── ListenStream(job_id, worker_id) ────>│  結果を購読
+  │<── ResultOutputItem(Data) ──────────────│
+  │<── ResultOutputItem(End(trailer)) ──────│
+```
+
+> **注意**: NoResultモードでは、feedクライアント側のgRPCレスポンスストリームは、すべてのfeedデータの送信が完了する（クライアントが`is_final=true`を送信する）まで終了しません。結果データは受信しませんが、feedクライアントはすべてのデータ送信を完了する必要があります。
+
+### `require_client_stream` フラグ
+
+クライアントストリーミング入力を必要とするRunnerは、`MethodSchema`で`require_client_stream=true`を設定する必要があります。このフラグは`check_worker_streaming`で検証されます：
+
+- **EnqueueWithClientStream**: Runnerメソッドに`require_client_stream=true`が必要。falseの場合は拒否。
+- **Enqueue / EnqueueForStream**: `require_client_stream=true`のRunnerを拒否（逆方向ガード）。これらのRunnerは`EnqueueWithClientStream`経由で呼び出す必要があります。
+
+### データ転送メカニズム
+
+- **Standaloneモード**: feedデータはプロセス内`mpsc`チャネル（`ChanFeedSenderStore`）で直接配信。gRPCハンドラは`tokio::sync::Notify`を使用してDispatcherのfeedチャネル登録を待機します。
+- **Scalableモード**: feedデータはRedis List（`job_feed_buf:{job_id}`）にRPUSHで送信。Worker側のfeedブリッジがBLPOPで読み取ります。Listがバッファとして機能するため、メッセージロスは発生しません。
+
+### エラーケース
+
+| ケース | gRPCステータス | タイミング |
+|--------|---------------|----------|
+| 最初のメッセージが`job_request`でない | `INVALID_ARGUMENT` | ストリーム開始時 |
+| Workerが見つからない | `NOT_FOUND` | ストリーム開始時 |
+| Runnerがクライアントストリーミング非対応 | `INVALID_ARGUMENT` | ストリーム開始時 |
+| Runnerがストリーミング出力非対応 | `INVALID_ARGUMENT` | ストリーム開始時 |
+| feedチャネルディスパッチタイムアウト | `DEADLINE_EXCEEDED` | feed開始前 |
+| 最初のメッセージ後に`job_request`送信 | `INVALID_ARGUMENT` | feed中 |
+| Runner実行エラー | `ResultStatus`に応じたコード | 実行中 |
+| クライアント切断（half-closeなし） | Runnerにキャンセル通知 | 任意 |
+
+### 設定
+
+| 環境変数 | デフォルト | 説明 |
+|---------|----------|------|
+| `JOB_QUEUE_FEED_DISPATCH_TIMEOUT` | `5000` | feedチャネル準備完了の最大待機時間（Standaloneモード）。Scalableモードでは Redis List の TTL ベースとして使用。 |
+
+## [非推奨] FeedToStream: 実行中ストリーミングジョブへのデータ送信
+
+> **⚠ 非推奨**: `FeedToStream`は非推奨です。代わりに`EnqueueWithClientStream`を使用してください。`FeedToStream`は将来のバージョンで削除される予定です。
+>
+> **重要**: Scalableモードでは`FeedToStream`は動作しません。基盤のRedis Pub/Subメカニズムは`EnqueueWithClientStream`向けにRedis List + BLPOPに置き換えられました。Standaloneモードでは引き続き動作します。
+
+`FeedToStream` RPCを使用すると、実行中のストリーミングジョブに対してクライアントから追加データを送信できます。リアルタイム音声処理など、クライアントが音声チャンクを送信しながらRunnerが処理・結果を返すインタラクティブなストリーミングシナリオが可能になります。
 
 ### 前提条件
 
-ジョブが feed データを受け取るには、以下の条件すべてを満たす必要があります：
+ジョブがfeedデータを受け取るには、以下の条件すべてを満たす必要があります：
 
 | 条件 | 理由 |
 |------|------|
-| ジョブが `Running` 状態 | feed は実行中にのみ有効 |
-| `streaming_type != None` | Runner が `run_stream()` を使用している必要がある |
-| Worker が `use_static=true` | Runner インスタンスがプールされ永続化される必要がある |
-| チャネル concurrency = 1 | feed 先の Runner が一意に特定される必要がある (単一ホストであること) |
-| Runner メソッドが `need_feed=true` | Runner が明示的に feed をサポートしている必要がある |
+| ジョブが `Running` 状態 | feedは実行中にのみ有効 |
+| `streaming_type != None` | Runnerが`run_stream()`を使用している必要がある |
+| Workerが `use_static=true` | Runnerインスタンスがプールされ永続化される必要がある |
+| チャネル concurrency = 1 | feed先のRunnerが一意に特定される必要がある（単一ホストであること） |
+| Runnerメソッドが `require_client_stream=true` | Runnerが明示的にクライアントストリーミングをサポートしている必要がある |
 
 ### プロトコル
 
 ```protobuf
-// JobService 内
-rpc FeedToStream(FeedToStreamRequest) returns (FeedToStreamResponse);
+// JobService 内（非推奨）
+rpc FeedToStream(FeedToStreamRequest) returns (FeedToStreamResponse) {
+  option deprecated = true;
+}
 
 message FeedToStreamRequest {
-  jobworkerp.data.JobId job_id = 1;  // 対象ジョブ（EnqueueForStream レスポンスヘッダーから取得）
-  bytes data = 2;                     // feed データペイロード
-  bool is_final = 3;                  // feed の終了を通知
+  jobworkerp.data.JobId job_id = 1;
+  bytes data = 2;
+  bool is_final = 3;
 }
 
 message FeedToStreamResponse {
@@ -233,28 +341,24 @@ message FeedToStreamResponse {
 2. FeedToStream(job_id, data_chunk_1, is_final=false)
 3. FeedToStream(job_id, data_chunk_2, is_final=false)
 4. FeedToStream(job_id, last_chunk, is_final=true)
-   ↓（Runner が最終データを処理し、出力ストリーム終了）
-5. クライアントが残りの出力と End トレーラーを受信
+   ↓（Runnerが最終データを処理し、出力ストリーム終了）
+5. クライアントが残りの出力とEndトレーラーを受信
 ```
 
 ### データ転送メカニズム
 
-- **Scalable モード (Redis)**: feed データは Redis Pub/Sub (`job_feed:{job_id}`) で publish され、Worker 側のブリッジタスクが subscribe して Runner の `mpsc` チャネルに転送します。
-- **Standalone モード (Channel)**: feed データは `ChanFeedSenderStore` に保持されたプロセス内 `mpsc` チャネルを通じて直接送信されます。
+- **Standaloneモード (Channel)**: feedデータは`ChanFeedSenderStore`に保持されたプロセス内`mpsc`チャネルを通じて直接送信されます。
+- **Scalableモード**: 動作しません。代わりに`EnqueueWithClientStream`を使用してください。
 
 ### エラーケース
 
-| ケース | gRPC ステータス |
+| ケース | gRPCステータス |
 |--------|----------------|
 | ジョブが存在しない | `NOT_FOUND` |
 | ジョブが実行中でない | `FAILED_PRECONDITION` |
 | ジョブがストリーミングでない | `FAILED_PRECONDITION` |
-| Runner メソッドに `need_feed=true` がない | `FAILED_PRECONDITION` |
-| feed チャネルが利用不可（ジョブ完了済み） | `INTERNAL` |
-
-> **推奨構成**: FeedToStreamはチャネル並列度1かつ単一ホストでの実行が前提となるため、**Standalone構成を推奨します**。Scalableモードでも Redis Pub/Sub ブリッジ経由で動作しますが、レイテンシや複雑性が増します。特別な理由がない限りStandalone構成を使用してください。
-
-> **注意**: `is_final=true`送信後、feedチャネルはクローズされます。以降の`FeedToStream`呼び出しは`INTERNAL`エラーを返します。また、Scalableモードでは`EnqueueForStream`でストリーム受信を開始してからfeedデータを送信してください。ストリーム開始前のfeedデータはRedis Pub/Subの特性により消失する可能性があります。
+| Runnerメソッドに`require_client_stream=true`がない | `FAILED_PRECONDITION` |
+| feedチャネルが利用不可（ジョブ完了済み） | `INTERNAL` |
 
 ## 実装上の注意
 
@@ -273,3 +377,50 @@ message FeedToStreamResponse {
 3. 最終的な収集バイト列を返却
 
 例えば、LLM Runnerはすべてのトークンチャンクを連結し、コマンドRunnerはstdout/stderrを適切にマージします。
+
+## FeedToStreamからEnqueueWithClientStreamへの移行
+
+### 移行理由
+
+`FeedToStream`には`EnqueueWithClientStream`で解消される制約があります：
+
+- **`use_static=true`が不要に**: feedチャネルはRunnerインスタンスではなく`job_id`単位で紐付けられます
+- **チャネル concurrency=1 が不要に**: ジョブレベルのfeed分離により単一ホスト制約が不要になります
+- **レースコンディションリスクなし**: エンキューとfeedが単一ストリームで行われ、タイミング調整が不要です
+- **Scalableモード完全対応**: Redis List + BLPOPがPub/Subを置き換え、メッセージロスリスクを排除します
+
+### 重要な変更
+
+1. **Scalableモード**: `FeedToStream`はScalableモードでは動作しなくなりました。Redis Pub/SubはRedis List + BLPOPに置き換えられています。
+2. **フィールドリネーム**: `need_feed` → `require_client_stream`（protoフィールド番号は変更なし、ワイヤ互換）
+3. **トレイトリネーム**: `supports_feed()` → `supports_client_stream()`、`setup_feed_channel()` → `setup_client_stream_channel()`
+
+### 移行手順
+
+1. Runnerの`need_feed=true` → `require_client_stream=true`に更新（同一protoフィールド番号、ワイヤ互換）
+2. 2ステップのEnqueue + FeedToStreamフローを単一の`EnqueueWithClientStream`ストリームに置き換え
+3. 必要に応じて`use_static=true`やconcurrency=1の制約を緩和
+
+### コード例
+
+**変更前 (FeedToStream)**:
+```text
+1. EnqueueForStream(worker_id, args)
+   → x-job-id-binヘッダーからjob_idを取得
+   → 出力ストリームの受信開始
+2. FeedToStream(job_id, data_chunk_1, is_final=false)
+3. FeedToStream(job_id, data_chunk_2, is_final=false)
+4. FeedToStream(job_id, last_chunk, is_final=true)
+5. 残りの出力 + Endトレーラーを受信
+```
+
+**変更後 (EnqueueWithClientStream)**:
+```text
+1. EnqueueWithClientStreamストリームを開く
+2. ClientStreamRequest(job_request)を送信
+   → x-job-id-binヘッダー受信 + 出力の受信開始
+3. ClientStreamRequest(feed_data: chunk_1, is_final=false)を送信
+4. ClientStreamRequest(feed_data: chunk_2, is_final=false)を送信
+5. ClientStreamRequest(feed_data: last_chunk, is_final=true)を送信
+6. 残りの出力 + Endトレーラーを受信
+```

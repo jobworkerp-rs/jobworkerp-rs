@@ -231,6 +231,10 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         limit: Option<&i32>,
     ) -> Result<Vec<Job>>;
 
+    /// Generate a new unique job ID.
+    /// Used by EnqueueWithClientStream to pre-allocate job ID before enqueue.
+    fn generate_job_id(&self) -> Result<JobId>;
+
     /// Send feed data to a running streaming job
     ///
     /// Validates that the job is in the correct state for receiving feed data,
@@ -315,7 +319,7 @@ pub(crate) async fn validate_and_publish_feed(
         .into());
     }
 
-    // 5. Check runner's need_feed
+    // 5. Check runner's require_client_stream
     let runner_id = worker_data.runner_id.as_ref().ok_or_else(|| {
         JobWorkerError::InvalidParameter(format!(
             "worker has no runner_id: worker_id={}",
@@ -337,14 +341,14 @@ pub(crate) async fn validate_and_publish_feed(
         .using
         .as_deref()
         .unwrap_or(proto::DEFAULT_METHOD_NAME);
-    let need_feed = runner_data
+    let require_client_stream = runner_data
         .method_proto_map
         .as_ref()
         .and_then(|m| m.schemas.get(method_name))
-        .map(|s| s.need_feed)
+        .map(|s| s.require_client_stream)
         .unwrap_or(false);
 
-    if !need_feed {
+    if !require_client_stream {
         return Err(JobWorkerError::FailedPrecondition(format!(
             "runner method does not support feed: runner_id={}, method={}",
             runner_id.value, method_name
@@ -377,7 +381,7 @@ pub(crate) async fn feed_to_stream_with_fast_path(
     //
     // Safety invariant: a feed sender is only registered in run_job() for jobs that
     // satisfy all preconditions (Running state, streaming_type != None, use_static,
-    // concurrency == 1, need_feed). So has_active_feed == true implies valid state.
+    // concurrency == 1, require_client_stream). So has_active_feed == true implies valid state.
     if let Some(true) = feed_publisher.has_active_feed(job_id) {
         tracing::trace!(
             "feed_to_stream fast path: active feed found for job {}",

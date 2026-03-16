@@ -4,7 +4,8 @@ use dashmap::DashMap;
 use jobworkerp_runner::runner::FeedData;
 use proto::jobworkerp::data::JobId;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use std::time::Duration;
+use tokio::sync::{Notify, mpsc};
 
 use super::FeedPublisher;
 
@@ -14,23 +15,30 @@ use super::FeedPublisher;
 ///
 /// Registration invariant: entries are only inserted by `run_job()` for jobs that
 /// satisfy all feed preconditions (Running state, streaming_type != None, use_static,
-/// concurrency == 1, need_feed). Therefore, `has_active_feed` returning `true`
+/// concurrency == 1, require_client_stream). Therefore, `has_active_feed` returning `true`
 /// implies the job is in a valid state for feed delivery.
 #[derive(Clone, Debug)]
 pub struct ChanFeedSenderStore {
     senders: Arc<DashMap<i64, mpsc::Sender<FeedData>>>,
+    // Notify waiters when a feed sender is registered for a job
+    feed_ready_notifiers: Arc<DashMap<i64, Arc<Notify>>>,
 }
 
 impl ChanFeedSenderStore {
     pub fn new() -> Self {
         Self {
             senders: Arc::new(DashMap::new()),
+            feed_ready_notifiers: Arc::new(DashMap::new()),
         }
     }
 
     /// Register a feed sender for a job.
     pub fn register(&self, job_id: i64, sender: mpsc::Sender<FeedData>) {
         self.senders.insert(job_id, sender);
+        // Notify any waiting feed forwarder
+        if let Some((_, notify)) = self.feed_ready_notifiers.remove(&job_id) {
+            notify.notify_one();
+        }
     }
 
     /// Remove and return the sender for a job (cleanup on completion/drop).
@@ -48,6 +56,41 @@ impl ChanFeedSenderStore {
     /// Access the underlying DashMap (for StreamWithFeedGuard cleanup).
     pub fn store(&self) -> &Arc<DashMap<i64, mpsc::Sender<FeedData>>> {
         &self.senders
+    }
+
+    /// Wait until a feed channel is registered for the given job_id.
+    /// Returns Ok(()) when feed channel is ready, Err on timeout.
+    pub async fn wait_for_feed_ready(&self, job_id: i64, timeout: Duration) -> Result<()> {
+        // Fast path: already registered
+        if self.senders.contains_key(&job_id) {
+            return Ok(());
+        }
+
+        // Register notifier
+        let notify = Arc::new(Notify::new());
+        self.feed_ready_notifiers.insert(job_id, notify.clone());
+
+        // Double-check after registration to avoid race condition
+        if self.senders.contains_key(&job_id) {
+            self.feed_ready_notifiers.remove(&job_id);
+            return Ok(());
+        }
+
+        // Wait with timeout
+        match tokio::time::timeout(timeout, notify.notified()).await {
+            Ok(()) => {
+                self.feed_ready_notifiers.remove(&job_id);
+                Ok(())
+            }
+            Err(_) => {
+                self.feed_ready_notifiers.remove(&job_id);
+                Err(anyhow::anyhow!(
+                    "Feed channel not ready for job {} within {:?}",
+                    job_id,
+                    timeout
+                ))
+            }
+        }
     }
 }
 
@@ -184,5 +227,49 @@ mod tests {
 
         // Stale entry should be removed
         assert!(store.get(77).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_feed_ready_already_registered() {
+        let store = ChanFeedSenderStore::new();
+        let (tx, _rx) = mpsc::channel::<FeedData>(16);
+        store.register(100, tx);
+
+        // Should return immediately since already registered
+        let result = store
+            .wait_for_feed_ready(100, Duration::from_millis(100))
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_feed_ready_delayed_registration() {
+        let store = ChanFeedSenderStore::new();
+        let store_clone = store.clone();
+
+        // Spawn delayed registration
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let (tx, _rx) = mpsc::channel::<FeedData>(16);
+            store_clone.register(200, tx);
+        });
+
+        // Should wait and succeed
+        let result = store.wait_for_feed_ready(200, Duration::from_secs(5)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_feed_ready_timeout() {
+        let store = ChanFeedSenderStore::new();
+
+        // Should timeout since no registration happens
+        let result = store
+            .wait_for_feed_ready(300, Duration::from_millis(50))
+            .await;
+        assert!(result.is_err());
+
+        // Notifier should be cleaned up
+        assert!(!store.feed_ready_notifiers.contains_key(&300));
     }
 }

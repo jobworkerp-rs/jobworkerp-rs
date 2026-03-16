@@ -17,6 +17,7 @@ app = { path = "../app", features = ["test-utils"] }
 app-wrapper = { path = "../app-wrapper", features = ["test-utils"] }
 worker-app = { path = "../worker-app" }
 
+prost = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
 opentelemetry = { workspace = true }

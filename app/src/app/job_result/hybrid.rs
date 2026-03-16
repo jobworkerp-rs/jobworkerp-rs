@@ -218,9 +218,9 @@ impl JobResultApp for HybridJobResultAppImpl {
                 ))
                 .into());
             }
-            // check request streaming
+            // Check streaming output type only; client stream mode is irrelevant for listen
             self.worker_app()
-                .check_worker_streaming(&wid, request_streaming, Some(using))
+                .check_worker_streaming(&wid, request_streaming, None, Some(using))
                 .await?;
             // check job result (already finished or not)
             let res = self.find_job_result_by_job_id(job_id).await?;

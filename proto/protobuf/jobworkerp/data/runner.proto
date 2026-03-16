@@ -89,15 +89,16 @@ message MethodSchema {
   // - BOTH: Method supports both streaming and non-streaming outputs
   StreamingOutputType output_type = 4;
 
-  // # Feed Support Flag
-  // Whether this method accepts feed data during streaming execution
-  // When true, clients can send data via FeedToStream RPC while the job is running
-  bool need_feed = 5;
+  // # Client Streaming Support Flag
+  // Whether this method requires client streaming input during execution.
+  // When true, this method MUST be invoked via EnqueueWithClientStream.
+  // When false, this method can be invoked via Enqueue or EnqueueForStream.
+  bool require_client_stream = 5;
 
-  // # Feed Data Proto Definition (Optional)
-  // Protobuf schema definition for feed data
-  // If empty, feed data is treated as opaque bytes
-  optional string feed_data_proto = 6;
+  // # Client Streaming Data Proto Definition (Optional)
+  // Protobuf schema definition for client streaming data.
+  // If empty, streaming data is treated as opaque bytes.
+  optional string client_stream_data_proto = 6;
 }
 
 // # Method JSON Schema Map
@@ -134,10 +135,10 @@ message MethodJsonSchema {
   reserved 3;
   reserved "description";
 
-  // # Feed Data JSON Schema (Optional)
-  // JSON Schema for feed data, generated from MethodSchema.feed_data_proto
-  // None when feed_data_proto is empty or need_feed is false
-  optional string feed_data_schema = 4;
+  // # Client Streaming Data JSON Schema (Optional)
+  // JSON Schema for client streaming data, generated from MethodSchema.client_stream_data_proto
+  // None when client_stream_data_proto is empty or require_client_stream is false
+  optional string client_stream_data_schema = 4;
 }
 
 message RunnerId { int64 value = 1; }

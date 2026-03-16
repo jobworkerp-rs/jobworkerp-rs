@@ -422,24 +422,24 @@ mod streaming_pool_guard_tests {
             let pool_object = pool.get().await?;
             let mut runner = pool_object.lock().await;
 
-            // Verify feed support
+            // Verify client stream support
             assert!(
-                runner.supports_feed(Some("feed_hello")),
-                "HelloPlugin should support feed for 'feed_hello' method"
+                runner.supports_client_stream(Some("feed_hello")),
+                "HelloPlugin should support client stream for 'feed_hello' method"
             );
             assert!(
-                !runner.supports_feed(Some("run")),
-                "HelloPlugin should not support feed for 'run' method"
+                !runner.supports_client_stream(Some("run")),
+                "HelloPlugin should not support client stream for 'run' method"
             );
             assert!(
-                !runner.supports_feed(None),
-                "HelloPlugin should not support feed for None method"
+                !runner.supports_client_stream(None),
+                "HelloPlugin should not support client stream for None method"
             );
 
-            // Set up feed channel
+            // Set up client stream channel
             let feed_sender = runner
-                .setup_feed_channel(Some("feed_hello"))
-                .expect("setup_feed_channel should return a sender for feed_hello");
+                .setup_client_stream_channel(Some("feed_hello"))
+                .expect("setup_client_stream_channel should return a sender for feed_hello");
 
             // Encode HelloArgs { arg: "Test" } as protobuf manually
             // (the HelloArgs type is only available in the plugin crate)

@@ -96,16 +96,21 @@ pub trait MethodJsonSchemaConverter {
                     .ok()
                 };
 
-                // feed_data_proto → feed_data JSON Schema
-                let feed_data_schema = if !proto_schema.need_feed {
+                // client_stream_data_proto → client_stream_data JSON Schema
+                let client_stream_data_schema = if !proto_schema.require_client_stream {
                     None
                 } else {
                     proto_schema
-                        .feed_data_proto
+                        .client_stream_data_proto
                         .as_deref()
                         .filter(|fdp| !fdp.is_empty())
                         .and_then(|fdp| {
-                            Self::proto_string_to_json_schema(fdp, method_name, "feed_data").ok()
+                            Self::proto_string_to_json_schema(
+                                fdp,
+                                method_name,
+                                "client_stream_data",
+                            )
+                            .ok()
                         })
                 };
 
@@ -114,7 +119,7 @@ pub trait MethodJsonSchemaConverter {
                     MethodJsonSchema {
                         args_schema,
                         result_schema,
-                        feed_data_schema,
+                        client_stream_data_schema,
                     },
                 ))
             })

@@ -225,11 +225,11 @@ impl MultiMethodPluginRunner for HelloPlugin {
             Ok(res)
         })
     }
-    fn supports_feed(&self, using: Option<&str>) -> bool {
+    fn supports_client_stream(&self, using: Option<&str>) -> bool {
         using == Some("feed_hello")
     }
 
-    fn feed_data_proto(&self, using: Option<&str>) -> Option<String> {
+    fn client_stream_data_proto(&self, using: Option<&str>) -> Option<String> {
         if using == Some("feed_hello") {
             Some(include_str!("../protobuf/hello_job_args.proto").to_string())
         } else {
@@ -237,7 +237,10 @@ impl MultiMethodPluginRunner for HelloPlugin {
         }
     }
 
-    fn setup_feed_channel(&mut self, using: Option<&str>) -> Option<mpsc::Sender<Vec<u8>>> {
+    fn setup_client_stream_channel(
+        &mut self,
+        using: Option<&str>,
+    ) -> Option<mpsc::Sender<Vec<u8>>> {
         if using != Some("feed_hello") {
             return None;
         }
@@ -282,8 +285,10 @@ impl MultiMethodPluginRunner for HelloPlugin {
                 result_proto: include_str!("../protobuf/hello_result.proto").to_string(),
                 description: Some("Hello with feed support".to_string()),
                 output_type: proto::jobworkerp::data::StreamingOutputType::Both as i32,
-                need_feed: true,
-                feed_data_proto: Some(include_str!("../protobuf/hello_job_args.proto").to_string()),
+                require_client_stream: true,
+                client_stream_data_proto: Some(
+                    include_str!("../protobuf/hello_job_args.proto").to_string(),
+                ),
             },
         );
         schemas
