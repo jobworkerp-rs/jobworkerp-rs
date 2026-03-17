@@ -192,6 +192,8 @@ This ensures that heavy resources like local LLM models are not re-initialized f
 
 ## FeedToStream: Sending Data to Running Streaming Jobs
 
+> **⚠ Deprecation Notice**: The current `FeedToStream` implementation uses unary RPCs to send individual data chunks, which is suboptimal for continuous data feeding scenarios. This will be replaced with **gRPC client streaming** in a future release to provide a more natural and efficient interface. The API and behavior described below are subject to change.
+
 The `FeedToStream` RPC allows clients to send additional data to a running streaming job. This enables interactive streaming scenarios such as real-time audio processing, where the client feeds audio chunks while the runner processes and returns results.
 
 ### Prerequisites
