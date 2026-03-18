@@ -553,7 +553,7 @@ impl JobRunner for RedisJobDispatcherImpl {
         &self,
         job_id: i64,
         sender: tokio::sync::mpsc::Sender<jobworkerp_runner::runner::FeedData>,
-    ) -> Option<()> {
+    ) {
         // Scalable mode: spawn Redis feed bridge to forward Redis List messages to the runner
         let job_id_proto = proto::jobworkerp::data::JobId { value: job_id };
         // JoinHandle intentionally not tracked: the bridge task self-terminates
@@ -563,7 +563,6 @@ impl JobRunner for RedisJobDispatcherImpl {
             &job_id_proto,
             sender,
         ));
-        Some(())
     }
 
     // Scalable mode: Redis bridge self-terminates when feed_sender is dropped,
