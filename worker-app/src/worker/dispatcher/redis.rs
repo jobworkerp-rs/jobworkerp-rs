@@ -556,11 +556,13 @@ impl JobRunner for RedisJobDispatcherImpl {
     ) -> Option<()> {
         // Scalable mode: spawn Redis feed bridge to forward Redis List messages to the runner
         let job_id_proto = proto::jobworkerp::data::JobId { value: job_id };
-        crate::worker::runner::feed_bridge::spawn_redis_feed_bridge(
+        // JoinHandle intentionally not tracked: the bridge task self-terminates
+        // when is_final is received or the feed_sender (receiver side) is dropped.
+        drop(crate::worker::runner::feed_bridge::spawn_redis_feed_bridge(
             &self.redis_client,
             &job_id_proto,
             sender,
-        );
+        ));
         Some(())
     }
 }
