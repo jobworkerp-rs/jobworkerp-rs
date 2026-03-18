@@ -47,15 +47,14 @@ pub trait JobRunner:
     + Sync
 {
     /// Register a feed sender for a running job.
-    /// Default: no-op (returns None). Dispatchers override to register in
-    /// ChanFeedSenderStore (Standalone) or spawn Redis bridge (Scalable).
-    fn register_feed_sender(&self, _job_id: i64, _sender: mpsc::Sender<FeedData>) -> Option<()> {
-        None
-    }
+    /// Dispatchers register in ChanFeedSenderStore (Standalone) or spawn Redis bridge (Scalable).
+    /// Test/mock impls return None (no-op).
+    fn register_feed_sender(&self, job_id: i64, sender: mpsc::Sender<FeedData>) -> Option<()>;
 
     /// Unregister a feed sender for a job (cleanup on early termination).
-    /// Default: no-op. Standalone dispatchers override to remove from ChanFeedSenderStore.
-    fn unregister_feed_sender(&self, _job_id: i64) {}
+    /// Standalone dispatchers remove from ChanFeedSenderStore.
+    /// Test/mock impls are no-op.
+    fn unregister_feed_sender(&self, job_id: i64);
 
     //#[tracing::instrument(name = "JobRunner", skip(self))]
     #[inline]
@@ -697,7 +696,12 @@ pub(crate) mod tests {
             &self.runner_pool
         }
     }
-    impl JobRunner for MockJobRunner {}
+    impl JobRunner for MockJobRunner {
+        fn register_feed_sender(&self, _job_id: i64, _sender: mpsc::Sender<FeedData>) -> Option<()> {
+            None
+        }
+        fn unregister_feed_sender(&self, _job_id: i64) {}
+    }
     impl Tracing for MockJobRunner {}
     impl UseIdGenerator for MockJobRunner {
         fn id_generator(&self) -> &IdGeneratorWrapper {
