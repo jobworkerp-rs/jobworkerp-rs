@@ -8,12 +8,13 @@ use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_runner::jobworkerp::runner::{
     HttpRequestArgs, HttpResponseResult, http_request_args::KeyValue,
 };
+use jobworkerp_runner::runner::FeedData;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, ResponseType, ResultStatus, RunnerData, RunnerType, WorkerData, WorkerId,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, mpsc};
 
 // Import JobRunner infrastructure
 use app::app::WorkerConfig;
@@ -73,7 +74,11 @@ impl UseRunnerPoolMap for RealE2EJobRunner {
         &self.runner_pool
     }
 }
-impl JobRunner for RealE2EJobRunner {}
+impl JobRunner for RealE2EJobRunner {
+    fn register_feed_sender(&self, _job_id: i64, _sender: mpsc::Sender<FeedData>) {}
+
+    fn unregister_feed_sender(&self, _job_id: i64) {}
+}
 impl Tracing for RealE2EJobRunner {}
 impl UseIdGenerator for RealE2EJobRunner {
     fn id_generator(&self) -> &IdGeneratorWrapper {

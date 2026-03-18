@@ -553,16 +553,23 @@ impl JobRunner for RedisJobDispatcherImpl {
         &self,
         job_id: i64,
         sender: tokio::sync::mpsc::Sender<jobworkerp_runner::runner::FeedData>,
-    ) -> Option<super::super::runner::FeedRegistration> {
-        // Scalable mode: spawn Redis feed bridge to forward Pub/Sub messages to the runner
+    ) {
+        // Scalable mode: spawn Redis feed bridge to forward Redis List messages to the runner
         let job_id_proto = proto::jobworkerp::data::JobId { value: job_id };
-        let handle = crate::worker::runner::feed_bridge::spawn_redis_feed_bridge(
+        // JoinHandle intentionally not tracked: the bridge task self-terminates
+        // when is_final is received or the feed_sender (receiver side) is dropped.
+        // Note: if the spawned task panics, the panic is silently ignored.
+        // This is acceptable because bridge_loop only uses fallible operations (no unwrap/expect).
+        drop(crate::worker::runner::feed_bridge::spawn_redis_feed_bridge(
             &self.redis_client,
             &job_id_proto,
             sender,
-        );
-        Some((Some(handle), None))
+        ));
     }
+
+    // Scalable mode: Redis bridge self-terminates when feed_sender is dropped,
+    // so no explicit cleanup is needed.
+    fn unregister_feed_sender(&self, _job_id: i64) {}
 }
 
 impl UseIdGenerator for RedisJobDispatcherImpl {
