@@ -317,6 +317,10 @@ impl JobRunner for RdbJobDispatcherImpl {
         self.feed_sender_store.register(job_id, sender);
         Some(())
     }
+
+    fn unregister_feed_sender(&self, job_id: i64) {
+        self.feed_sender_store.remove(job_id);
+    }
 }
 
 impl UseWorkerConfig for RdbJobDispatcherImpl {

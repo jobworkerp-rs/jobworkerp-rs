@@ -53,6 +53,10 @@ pub trait JobRunner:
         None
     }
 
+    /// Unregister a feed sender for a job (cleanup on early termination).
+    /// Default: no-op. Standalone dispatchers override to remove from ChanFeedSenderStore.
+    fn unregister_feed_sender(&self, _job_id: i64) {}
+
     //#[tracing::instrument(name = "JobRunner", skip(self))]
     #[inline]
     async fn run_job(
@@ -102,25 +106,35 @@ pub trait JobRunner:
                         let job_id_value = job.id.as_ref().map(|id| id.value);
 
                         // Register feed sender before run_job_inner to avoid race condition
-                        match (feed_sender, job_id_value) {
+                        let registered_feed_job_id = match (feed_sender, job_id_value) {
                             (Some(sender), Some(id)) => {
                                 self.register_feed_sender(id, sender);
+                                Some(id)
                             }
                             (Some(_), None) => {
                                 tracing::warn!(
                                     "feed_sender exists but job_id is None; skipping feed registration"
                                 );
+                                None
                             }
-                            _ => {}
-                        }
+                            _ => None,
+                        };
 
                         let (job_result, stream) =
                             self.run_job_inner(worker_data, job, &mut r).await;
                         drop(r); // unlock
 
-                        let final_stream = stream.map(|s| {
-                            Box::pin(StreamWithPoolGuard::new(s, runner)) as BoxStream<'static, _>
-                        });
+                        let final_stream = if let Some(s) = stream {
+                            Some(Box::pin(StreamWithPoolGuard::new(s, runner))
+                                as BoxStream<'static, _>)
+                        } else {
+                            // No stream returned (cancellation, error, etc.):
+                            // clean up feed sender registration immediately
+                            if let Some(id) = registered_feed_job_id {
+                                self.unregister_feed_sender(id);
+                            }
+                            None
+                        };
 
                         (job_result, final_stream)
                     } else {
