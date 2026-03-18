@@ -18,17 +18,11 @@ pub mod purge_stale_status_test;
 pub mod rdb_chan_cancellation_test;
 #[cfg(test)]
 pub mod rdb_chan_indexing_integration_test;
-#[cfg(test)]
-pub mod validate_feed_test;
-
 use super::JobBuilder;
-use super::worker::WorkerApp;
-use crate::app::WorkerConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use infra::infra::feed::FeedPublisher;
 use infra::infra::job_result::pubsub::JobResultPublisher;
 use infra::infra::{
     UseJobQueueConfig,
@@ -38,7 +32,6 @@ use infra::infra::{
         status::UseJobProcessingStatusRepository,
     },
 };
-use jobworkerp_base::error::JobWorkerError;
 use proto::calculate_direct_response_timeout_ms;
 use proto::jobworkerp::data::{
     Job, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
@@ -235,198 +228,12 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     /// Used by EnqueueWithClientStream to pre-allocate job ID before enqueue.
     fn generate_job_id(&self) -> Result<JobId>;
 
-    /// Send feed data to a running streaming job
-    ///
-    /// Validates that the job is in the correct state for receiving feed data,
-    /// then publishes the data through the appropriate feed channel.
-    async fn feed_to_stream(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()>;
-
     /// Downcast to concrete type for testing internal methods
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
 pub trait UseJobApp {
     fn job_app(&self) -> &Arc<dyn JobApp + 'static>;
-}
-
-/// Validate feed preconditions and publish feed data to a running streaming job.
-///
-/// Shared implementation for `HybridJobAppImpl` and `RdbChanJobAppImpl`.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn validate_and_publish_feed(
-    job: &Job,
-    job_status: Option<JobProcessingStatus>,
-    worker_app: &dyn WorkerApp,
-    worker_config: &WorkerConfig,
-    feed_publisher: &dyn FeedPublisher,
-    job_id: &JobId,
-    data: Vec<u8>,
-    is_final: bool,
-) -> Result<()> {
-    let job_data = job.data.as_ref().ok_or_else(|| {
-        JobWorkerError::InvalidParameter(format!("job has no data: id={}", job_id.value))
-    })?;
-
-    // 1. Check job is Running
-    if job_status != Some(JobProcessingStatus::Running) {
-        return Err(JobWorkerError::FailedPrecondition(format!(
-            "job is not in Running state: id={}, status={:?}",
-            job_id.value, job_status
-        ))
-        .into());
-    }
-
-    // 2. Check streaming_type != None
-    let streaming_type =
-        StreamingType::try_from(job_data.streaming_type).unwrap_or(StreamingType::None);
-    if streaming_type == StreamingType::None {
-        return Err(JobWorkerError::FailedPrecondition(format!(
-            "job is not a streaming job: id={}",
-            job_id.value
-        ))
-        .into());
-    }
-
-    // 3. Check worker's use_static == true
-    let worker_id = job_data.worker_id.as_ref().ok_or_else(|| {
-        JobWorkerError::InvalidParameter(format!("job has no worker_id: id={}", job_id.value))
-    })?;
-    let worker_data = worker_app
-        .find_data_by_opt(Some(worker_id))
-        .await?
-        .ok_or_else(|| {
-            JobWorkerError::NotFound(format!("worker not found: id={}", worker_id.value))
-        })?;
-
-    if !worker_data.use_static {
-        return Err(JobWorkerError::FailedPrecondition(format!(
-            "worker must have use_static=true for feed: worker_id={}",
-            worker_id.value
-        ))
-        .into());
-    }
-
-    // 4. Check channel concurrency == 1
-    let concurrency = worker_config
-        .get_concurrency(worker_data.channel.as_ref())
-        .unwrap_or(worker_config.default_concurrency);
-    if concurrency != 1 {
-        return Err(JobWorkerError::FailedPrecondition(format!(
-            "channel concurrency must be 1 for feed: channel={}, concurrency={}",
-            worker_data.channel.as_deref().unwrap_or("default"),
-            concurrency
-        ))
-        .into());
-    }
-
-    // 5. Check runner's require_client_stream
-    let runner_id = worker_data.runner_id.as_ref().ok_or_else(|| {
-        JobWorkerError::InvalidParameter(format!(
-            "worker has no runner_id: worker_id={}",
-            worker_id.value
-        ))
-    })?;
-    let runner_schema = worker_app
-        .runner_app()
-        .find_runner(runner_id)
-        .await?
-        .ok_or_else(|| {
-            JobWorkerError::NotFound(format!("runner not found: id={}", runner_id.value))
-        })?;
-    let runner_data = runner_schema.data.as_ref().ok_or_else(|| {
-        JobWorkerError::NotFound(format!("runner has no data: id={}", runner_id.value))
-    })?;
-
-    let method_name = job_data
-        .using
-        .as_deref()
-        .unwrap_or(proto::DEFAULT_METHOD_NAME);
-    let require_client_stream = runner_data
-        .method_proto_map
-        .as_ref()
-        .and_then(|m| m.schemas.get(method_name))
-        .map(|s| s.require_client_stream)
-        .unwrap_or(false);
-
-    if !require_client_stream {
-        return Err(JobWorkerError::FailedPrecondition(format!(
-            "runner method does not support feed: runner_id={}, method={}",
-            runner_id.value, method_name
-        ))
-        .into());
-    }
-
-    // All validations passed, publish feed data
-    feed_publisher.publish_feed(job_id, data, is_final).await
-}
-
-/// Feed-to-stream with fast path optimization.
-///
-/// Shared implementation for `HybridJobAppImpl` and `RdbChanJobAppImpl`.
-/// Uses `has_active_feed` as a fast path to bypass job/status record lookup,
-/// falling back to full validation via `validate_and_publish_feed` when needed.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn feed_to_stream_with_fast_path(
-    feed_publisher: &dyn FeedPublisher,
-    job_id: &JobId,
-    data: Vec<u8>,
-    is_final: bool,
-    find_job: impl std::future::Future<Output = Result<Option<Job>>>,
-    find_status: impl std::future::Future<Output = Result<Option<JobProcessingStatus>>>,
-    worker_app: &dyn WorkerApp,
-    worker_config: &WorkerConfig,
-) -> Result<()> {
-    // Fast path: when FeedPublisher confirms active feed sender exists,
-    // bypass job/status record lookup to avoid race with cleanup_job().
-    //
-    // Safety invariant: a feed sender is only registered in run_job() for jobs that
-    // satisfy all preconditions (Running state, streaming_type != None, use_static,
-    // concurrency == 1, require_client_stream). So has_active_feed == true implies valid state.
-    if let Some(true) = feed_publisher.has_active_feed(job_id) {
-        tracing::trace!(
-            "feed_to_stream fast path: active feed found for job {}",
-            job_id.value
-        );
-        // Clone data before fast path attempt so slow path fallback can use it
-        let data_backup = data.clone();
-        match feed_publisher.publish_feed(job_id, data, is_final).await {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                // TOCTOU: feed sender removed between has_active_feed and publish_feed
-                tracing::warn!("fast path failed, falling back to slow path: {:?}", e);
-                return validate_and_publish_feed(
-                    &find_job.await?.ok_or_else(|| {
-                        JobWorkerError::NotFound(format!("job not found: id={}", job_id.value))
-                    })?,
-                    find_status.await?,
-                    worker_app,
-                    worker_config,
-                    feed_publisher,
-                    job_id,
-                    data_backup,
-                    is_final,
-                )
-                .await;
-            }
-        }
-    }
-
-    // Slow path: full validation via job record + status lookup
-    let job = find_job
-        .await?
-        .ok_or_else(|| JobWorkerError::NotFound(format!("job not found: id={}", job_id.value)))?;
-    let status = find_status.await?;
-    validate_and_publish_feed(
-        &job,
-        status,
-        worker_app,
-        worker_config,
-        feed_publisher,
-        job_id,
-        data,
-        is_final,
-    )
-    .await
 }
 
 /// Shared orphaned-only purge logic for hybrid.rs and rdb_chan.rs.

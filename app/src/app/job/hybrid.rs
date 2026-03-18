@@ -8,7 +8,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use futures::stream::BoxStream;
-use infra::infra::feed::FeedPublisher;
 use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
@@ -43,7 +42,6 @@ pub struct HybridJobAppImpl {
     // RDB index repository for JobProcessingStatus (controlled by JOB_STATUS_RDB_INDEXING env var)
     job_status_index_repository:
         Option<Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>>,
-    feed_publisher: Arc<dyn FeedPublisher>,
 }
 
 impl HybridJobAppImpl {
@@ -58,7 +56,6 @@ impl HybridJobAppImpl {
         job_status_index_repository: Option<
             Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>,
         >,
-        feed_publisher: Arc<dyn FeedPublisher>,
     ) -> Self {
         Self {
             app_config_module,
@@ -68,7 +65,6 @@ impl HybridJobAppImpl {
             memory_cache,
             job_queue_cancellation_repository,
             job_status_index_repository,
-            feed_publisher,
         }
     }
 
@@ -1281,21 +1277,6 @@ impl JobApp for HybridJobAppImpl {
         }
     }
 
-    async fn feed_to_stream(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
-        let status_repo = self.job_processing_status_repository();
-        super::feed_to_stream_with_fast_path(
-            self.feed_publisher.as_ref(),
-            job_id,
-            data,
-            is_final,
-            self.find_job(job_id),
-            status_repo.find_status(job_id),
-            self.worker_app().as_ref(),
-            self.worker_config(),
-        )
-        .await
-    }
-
     fn generate_job_id(&self) -> Result<JobId> {
         Ok(JobId {
             value: self.id_generator().generate_id()?,
@@ -1496,11 +1477,6 @@ pub mod tests {
             .rdb_job_processing_status_index_repository
             .clone();
 
-        let feed_publisher: Arc<dyn FeedPublisher> =
-            Arc::new(infra::infra::feed::redis::RedisFeedPublisher::new(
-                repositories.redis_module.redis_client.clone(),
-                std::time::Duration::from_millis(5000),
-            ));
         Ok((
             HybridJobAppImpl::new(
                 config_module,
@@ -1510,7 +1486,6 @@ pub mod tests {
                 job_memory_cache,
                 job_queue_cancellation_repository,
                 job_status_index_repository,
-                feed_publisher,
             ),
             subscrber,
         ))

@@ -180,7 +180,7 @@ rpc ListenStream(ListenRequest) returns (stream ResultOutputItem);
 
 - ストリーミングジョブに対して`Listen`を呼び出すと、ストリーミング結果を単一の`JobResult`レスポンスにまとめられないため、エラーが返されます。代わりに`ListenStream`を使用してください。
 - `EnqueueForStream`はレスポンスとして直接ストリームを返すため、リクエスト元クライアントは別途`ListenStream`を呼ぶ必要はありません。ただし、`broadcast_results=true`の場合は、他のクライアントが`ListenStream`を使って同じストリーミング結果を購読できます。
-- `EnqueueWithClientStream`はジョブのエンキューとfeedデータ配信を単一の双方向ストリームに統合し、`FeedToStream`のタイミング制約を解消します。
+- `EnqueueWithClientStream`はジョブのエンキューとfeedデータ配信を単一の双方向ストリームに統合します。
 
 ## Workerプーリングとuse_static
 
@@ -195,17 +195,7 @@ Workerで`use_static=true`を使用する場合（例：ローカルLLM向け）
 
 ## EnqueueWithClientStream: クライアントストリーミング
 
-`EnqueueWithClientStream` RPCは、ジョブのエンキューとクライアントストリーミングデータの配信を単一の双方向gRPCストリームに統合します。非推奨の`FeedToStream` RPCの制約を解消します。
-
-### FeedToStreamに対する利点
-
-| FeedToStreamの制約 | EnqueueWithClientStream |
-|-------------------|------------------------|
-| `use_static=true`が必須 | 不要 |
-| チャネル concurrency = 1 が必須 | 不要 |
-| feed前にジョブが`Running`状態である必要 | 自動：エンキューとfeedが単一ストリーム |
-| Enqueue + Feed が別RPC（レースコンディションリスク） | 単一の統合ストリーム |
-| Scalableモード：Redis Pub/Sub（メッセージロスリスク） | Scalableモード：Redis List + BLPOP（メッセージロスなし） |
+`EnqueueWithClientStream` RPCは、ジョブのエンキューとクライアントストリーミングデータの配信を単一の双方向gRPCストリームに統合します。
 
 ### プロトコル定義
 
@@ -294,72 +284,6 @@ Listener Client                            Server
 |---------|----------|------|
 | `JOB_QUEUE_FEED_DISPATCH_TIMEOUT` | `5000` | feedチャネル準備完了の最大待機時間（Standaloneモード）。Scalableモードでは Redis List の TTL ベースとして使用。 |
 
-## [非推奨] FeedToStream: 実行中ストリーミングジョブへのデータ送信
-
-> **⚠ 非推奨**: `FeedToStream`は非推奨です。代わりに`EnqueueWithClientStream`を使用してください。`FeedToStream`は将来のバージョンで削除される予定です。
->
-> **重要**: Scalableモードでは`FeedToStream`は動作しません。基盤のRedis Pub/Subメカニズムは`EnqueueWithClientStream`向けにRedis List + BLPOPに置き換えられました。Standaloneモードでは引き続き動作します。
-
-`FeedToStream` RPCを使用すると、実行中のストリーミングジョブに対してクライアントから追加データを送信できます。リアルタイム音声処理など、クライアントが音声チャンクを送信しながらRunnerが処理・結果を返すインタラクティブなストリーミングシナリオが可能になります。
-
-### 前提条件
-
-ジョブがfeedデータを受け取るには、以下の条件すべてを満たす必要があります：
-
-| 条件 | 理由 |
-|------|------|
-| ジョブが `Running` 状態 | feedは実行中にのみ有効 |
-| `streaming_type != None` | Runnerが`run_stream()`を使用している必要がある |
-| Workerが `use_static=true` | Runnerインスタンスがプールされ永続化される必要がある |
-| チャネル concurrency = 1 | feed先のRunnerが一意に特定される必要がある（単一ホストであること） |
-| Runnerメソッドが `require_client_stream=true` | Runnerが明示的にクライアントストリーミングをサポートしている必要がある |
-
-### プロトコル
-
-```protobuf
-// JobService 内（非推奨）
-rpc FeedToStream(FeedToStreamRequest) returns (FeedToStreamResponse) {
-  option deprecated = true;
-}
-
-message FeedToStreamRequest {
-  jobworkerp.data.JobId job_id = 1;
-  bytes data = 2;
-  bool is_final = 3;
-}
-
-message FeedToStreamResponse {
-  bool accepted = 1;
-}
-```
-
-### 利用フロー
-
-```text
-1. EnqueueForStream(worker_id, args) → job_id（レスポンスヘッダー x-job-id-bin から取得）
-   ↓（出力ストリーム開始）
-2. FeedToStream(job_id, data_chunk_1, is_final=false)
-3. FeedToStream(job_id, data_chunk_2, is_final=false)
-4. FeedToStream(job_id, last_chunk, is_final=true)
-   ↓（Runnerが最終データを処理し、出力ストリーム終了）
-5. クライアントが残りの出力とEndトレーラーを受信
-```
-
-### データ転送メカニズム
-
-- **Standaloneモード (Channel)**: feedデータは`ChanFeedSenderStore`に保持されたプロセス内`mpsc`チャネルを通じて直接送信されます。
-- **Scalableモード**: 動作しません。代わりに`EnqueueWithClientStream`を使用してください。
-
-### エラーケース
-
-| ケース | gRPCステータス |
-|--------|----------------|
-| ジョブが存在しない | `NOT_FOUND` |
-| ジョブが実行中でない | `FAILED_PRECONDITION` |
-| ジョブがストリーミングでない | `FAILED_PRECONDITION` |
-| Runnerメソッドに`require_client_stream=true`がない | `FAILED_PRECONDITION` |
-| feedチャネルが利用不可（ジョブ完了済み） | `INTERNAL` |
-
 ## 実装上の注意
 
 ### レースコンディションの防止
@@ -377,50 +301,3 @@ message FeedToStreamResponse {
 3. 最終的な収集バイト列を返却
 
 例えば、LLM Runnerはすべてのトークンチャンクを連結し、コマンドRunnerはstdout/stderrを適切にマージします。
-
-## FeedToStreamからEnqueueWithClientStreamへの移行
-
-### 移行理由
-
-`FeedToStream`には`EnqueueWithClientStream`で解消される制約があります：
-
-- **`use_static=true`が不要に**: feedチャネルはRunnerインスタンスではなく`job_id`単位で紐付けられます
-- **チャネル concurrency=1 が不要に**: ジョブレベルのfeed分離により単一ホスト制約が不要になります
-- **レースコンディションリスクなし**: エンキューとfeedが単一ストリームで行われ、タイミング調整が不要です
-- **Scalableモード完全対応**: Redis List + BLPOPがPub/Subを置き換え、メッセージロスリスクを排除します
-
-### 重要な変更
-
-1. **Scalableモード**: `FeedToStream`はScalableモードでは動作しなくなりました。Redis Pub/SubはRedis List + BLPOPに置き換えられています。
-2. **フィールドリネーム**: `need_feed` → `require_client_stream`（protoフィールド番号は変更なし、ワイヤ互換）
-3. **トレイトリネーム**: `supports_feed()` → `supports_client_stream()`、`setup_feed_channel()` → `setup_client_stream_channel()`
-
-### 移行手順
-
-1. Runnerの`need_feed=true` → `require_client_stream=true`に更新（同一protoフィールド番号、ワイヤ互換）
-2. 2ステップのEnqueue + FeedToStreamフローを単一の`EnqueueWithClientStream`ストリームに置き換え
-3. 必要に応じて`use_static=true`やconcurrency=1の制約を緩和
-
-### コード例
-
-**変更前 (FeedToStream)**:
-```text
-1. EnqueueForStream(worker_id, args)
-   → x-job-id-binヘッダーからjob_idを取得
-   → 出力ストリームの受信開始
-2. FeedToStream(job_id, data_chunk_1, is_final=false)
-3. FeedToStream(job_id, data_chunk_2, is_final=false)
-4. FeedToStream(job_id, last_chunk, is_final=true)
-5. 残りの出力 + Endトレーラーを受信
-```
-
-**変更後 (EnqueueWithClientStream)**:
-```text
-1. EnqueueWithClientStreamストリームを開く
-2. ClientStreamRequest(job_request)を送信
-   → x-job-id-binヘッダー受信 + 出力の受信開始
-3. ClientStreamRequest(feed_data: chunk_1, is_final=false)を送信
-4. ClientStreamRequest(feed_data: chunk_2, is_final=false)を送信
-5. ClientStreamRequest(feed_data: last_chunk, is_final=true)を送信
-6. 残りの出力 + Endトレーラーを受信
-```

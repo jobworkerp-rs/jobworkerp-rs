@@ -39,23 +39,6 @@ message JobRequest {
   optional string using = 8;
 }
 
-// # FeedToStream Request
-// Send feed data to a running streaming job
-message FeedToStreamRequest {
-  // Target job ID
-  jobworkerp.data.JobId job_id = 1;
-  // Feed data payload (protobuf serialized if feed_data_proto is defined)
-  bytes data = 2;
-  // Signal that this is the final feed data chunk
-  bool is_final = 3;
-}
-
-// # FeedToStream Response
-// Acknowledgement for feed data delivery
-// NOTE: accepted is always true on success; errors are returned via gRPC Status.
-// Retained for proto3 cost-free extensibility.
-message FeedToStreamResponse { bool accepted = 1; }
-
 // # Client Stream Request
 // Client-to-server message for client streaming.
 // The first message MUST contain `job_request`. Subsequent messages contain `feed_data`.
@@ -86,19 +69,6 @@ service JobService {
   // broadcast_results=true is required when response_type=NoResult.
   rpc EnqueueWithClientStream(stream ClientStreamRequest)
       returns (stream jobworkerp.data.ResultOutputItem);
-
-  // [Deprecated] Send feed data to a running streaming job
-  // Use EnqueueWithClientStream instead.
-  //
-  // Prerequisites:
-  // - Job must be in RUNNING status
-  // - Job must have streaming_type != NONE
-  // - Worker must have use_static = true
-  // - Runner method must have require_client_stream = true
-  // - Channel concurrency must be 1
-  rpc FeedToStream(FeedToStreamRequest) returns (FeedToStreamResponse) {
-    option deprecated = true;
-  }
 
   // Delete/Cancel job
   //
