@@ -565,6 +565,10 @@ impl JobRunner for RedisJobDispatcherImpl {
         ));
         Some(())
     }
+
+    // Scalable mode: Redis bridge self-terminates when feed_sender is dropped,
+    // so no explicit cleanup is needed.
+    fn unregister_feed_sender(&self, _job_id: i64) {}
 }
 
 impl UseIdGenerator for RedisJobDispatcherImpl {
