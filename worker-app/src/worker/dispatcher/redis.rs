@@ -558,6 +558,8 @@ impl JobRunner for RedisJobDispatcherImpl {
         let job_id_proto = proto::jobworkerp::data::JobId { value: job_id };
         // JoinHandle intentionally not tracked: the bridge task self-terminates
         // when is_final is received or the feed_sender (receiver side) is dropped.
+        // Note: if the spawned task panics, the panic is silently ignored.
+        // This is acceptable because bridge_loop only uses fallible operations (no unwrap/expect).
         drop(crate::worker::runner::feed_bridge::spawn_redis_feed_bridge(
             &self.redis_client,
             &job_id_proto,

@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use jobworkerp_runner::runner::FeedData;
 use proto::jobworkerp::data::{FeedDataTransport, JobId};
 
-/// Publish feed data to a running streaming job.
+/// Publish feed data to a running streaming job via `EnqueueWithClientStream`.
 /// Implementations deliver data to the runner via in-process channels (Standalone)
-/// or Redis List (Scalable).
+/// or Redis List + bridge task (Scalable).
 #[async_trait]
 pub trait FeedPublisher: Send + Sync + std::fmt::Debug {
     async fn publish_feed(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()>;
