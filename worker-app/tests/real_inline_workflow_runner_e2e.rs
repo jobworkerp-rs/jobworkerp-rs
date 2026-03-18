@@ -6,13 +6,13 @@
 use anyhow::Result;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_runner::jobworkerp::runner::{InlineWorkflowArgs, WorkflowResult};
+use jobworkerp_runner::runner::FeedData;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, ResponseType, ResultStatus, RunnerData, RunnerType, WorkerData, WorkerId,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{OnceCell, mpsc};
-use jobworkerp_runner::runner::FeedData;
 
 // Import JobRunner infrastructure
 use app::app::WorkerConfig;
@@ -73,9 +73,8 @@ impl UseRunnerPoolMap for RealE2EJobRunner {
     }
 }
 impl JobRunner for RealE2EJobRunner {
-    fn register_feed_sender(&self, _job_id: i64, _sender: mpsc::Sender<FeedData>) -> Option<()> {
-        None
-    }
+    fn register_feed_sender(&self, _job_id: i64, _sender: mpsc::Sender<FeedData>) {}
+
     fn unregister_feed_sender(&self, _job_id: i64) {}
 }
 impl Tracing for RealE2EJobRunner {}

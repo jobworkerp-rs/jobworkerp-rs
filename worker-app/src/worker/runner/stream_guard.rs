@@ -11,6 +11,7 @@ use std::task::{Context, Poll};
 pub struct StreamWithPoolGuard<T> {
     stream: BoxStream<'static, T>,
     _pool_guard: Option<Object<RunnerPoolManagerImpl>>, // deadpool::Object
+    on_complete: Option<Box<dyn FnOnce() + Send>>,
 }
 
 /// Stream Wrapper with Cancel Helper (for use_static=false only)
@@ -29,6 +30,23 @@ impl<T> StreamWithPoolGuard<T> {
         Self {
             stream,
             _pool_guard: Some(pool_object),
+            on_complete: None,
+        }
+    }
+
+    /// Create Stream with Pool Guard and a cleanup callback invoked on stream completion or drop
+    pub fn with_on_complete(
+        stream: BoxStream<'static, T>,
+        pool_object: Object<RunnerPoolManagerImpl>,
+        on_complete: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        tracing::debug!(
+            "Created StreamWithPoolGuard with on_complete - pool object will be held until stream completion"
+        );
+        Self {
+            stream,
+            _pool_guard: Some(pool_object),
+            on_complete: Some(Box::new(on_complete)),
         }
     }
 }
@@ -39,13 +57,17 @@ impl<T> Stream for StreamWithPoolGuard<T> {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let result = Pin::new(&mut self.stream).poll_next(cx);
 
-        // Release pool guard when stream ends
-        if let Poll::Ready(None) = result
-            && self._pool_guard.take().is_some()
-        {
-            tracing::debug!(
-                "Stream completed, releasing pool object (reset_for_pooling will be called)"
-            );
+        // Release pool guard and run cleanup when stream ends
+        if let Poll::Ready(None) = result {
+            if self._pool_guard.take().is_some() {
+                tracing::debug!(
+                    "Stream completed, releasing pool object (reset_for_pooling will be called)"
+                );
+            }
+            if let Some(cb) = self.on_complete.take() {
+                tracing::debug!("Stream completed, running on_complete callback");
+                cb();
+            }
         }
 
         result
@@ -58,6 +80,10 @@ impl<T> Drop for StreamWithPoolGuard<T> {
             tracing::debug!(
                 "StreamWithPoolGuard dropped with active pool guard - emergency release"
             );
+        }
+        if let Some(cb) = self.on_complete.take() {
+            tracing::debug!("StreamWithPoolGuard dropped, running on_complete callback");
+            cb();
         }
     }
 }
@@ -234,6 +260,51 @@ mod tests {
             assert!(!final_pool_object.lock().await.name().is_empty());
 
             tracing::debug!("✅ Multiple pool objects with stream guard test completed");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_on_complete_called_on_stream_completion() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let pool = create_test_pool().await?;
+            let pool_object = pool.get().await?;
+
+            let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let called_clone = called.clone();
+
+            let test_stream = Box::pin(stream::iter(vec![1, 2, 3]));
+            let guard_stream =
+                StreamWithPoolGuard::with_on_complete(test_stream, pool_object, move || {
+                    called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                });
+
+            let items: Vec<i32> = guard_stream.collect().await;
+            assert_eq!(items, vec![1, 2, 3]);
+            assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_on_complete_called_on_early_drop() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let pool = create_test_pool().await?;
+            let pool_object = pool.get().await?;
+
+            let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let called_clone = called.clone();
+
+            let test_stream = Box::pin(stream::iter(vec![1, 2, 3]));
+            let guard_stream =
+                StreamWithPoolGuard::with_on_complete(test_stream, pool_object, move || {
+                    called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                });
+
+            drop(guard_stream);
+            assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+
             Ok(())
         })
     }

@@ -48,8 +48,8 @@ pub trait JobRunner:
 {
     /// Register a feed sender for a running job.
     /// Dispatchers register in ChanFeedSenderStore (Standalone) or spawn Redis bridge (Scalable).
-    /// Test/mock impls return None (no-op).
-    fn register_feed_sender(&self, job_id: i64, sender: mpsc::Sender<FeedData>) -> Option<()>;
+    /// Test/mock impls are no-op.
+    fn register_feed_sender(&self, job_id: i64, sender: mpsc::Sender<FeedData>);
 
     /// Unregister a feed sender for a job (cleanup on early termination).
     /// Standalone dispatchers remove from ChanFeedSenderStore.
@@ -124,8 +124,16 @@ pub trait JobRunner:
                         drop(r); // unlock
 
                         let final_stream = if let Some(s) = stream {
-                            Some(Box::pin(StreamWithPoolGuard::new(s, runner))
-                                as BoxStream<'static, _>)
+                            if let Some(id) = registered_feed_job_id {
+                                Some(Box::pin(StreamWithPoolGuard::with_on_complete(
+                                    s,
+                                    runner,
+                                    move || self.unregister_feed_sender(id),
+                                )) as BoxStream<'static, _>)
+                            } else {
+                                Some(Box::pin(StreamWithPoolGuard::new(s, runner))
+                                    as BoxStream<'static, _>)
+                            }
                         } else {
                             // No stream returned (cancellation, error, etc.):
                             // clean up feed sender registration immediately
@@ -697,9 +705,8 @@ pub(crate) mod tests {
         }
     }
     impl JobRunner for MockJobRunner {
-        fn register_feed_sender(&self, _job_id: i64, _sender: mpsc::Sender<FeedData>) -> Option<()> {
-            None
-        }
+        fn register_feed_sender(&self, _job_id: i64, _sender: mpsc::Sender<FeedData>) {}
+
         fn unregister_feed_sender(&self, _job_id: i64) {}
     }
     impl Tracing for MockJobRunner {}
