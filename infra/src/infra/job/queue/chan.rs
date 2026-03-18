@@ -760,6 +760,7 @@ mod test {
             pubsub_channel_capacity: 128,
             max_channels: 10_000,
             cancel_channel_capacity: 1_000,
+            feed_dispatch_timeout: 5000,
         });
         let repo = ChanJobQueueRepositoryImpl {
             job_queue_config,
@@ -850,6 +851,7 @@ mod test {
             pubsub_channel_capacity: 128,
             max_channels: 10_000,
             cancel_channel_capacity: 1_000,
+            feed_dispatch_timeout: 5000,
         });
         let broadcast_chan_buf = BroadcastChan::new(100);
         let repo =

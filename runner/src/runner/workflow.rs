@@ -47,7 +47,7 @@ pub trait InlineWorkflowRunnerSpec: RunnerSpec {
             proto::jobworkerp::data::MethodJsonSchema {
                 args_schema: include_str!("../../schema/WorkflowArgs.json").to_string(),
                 result_schema: schema_to_json_string_option!(WorkflowResult, "output_schema"),
-                feed_data_schema: None,
+                client_stream_data_schema: None,
             },
         );
         schemas

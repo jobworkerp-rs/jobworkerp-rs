@@ -107,8 +107,8 @@ pub trait JobRunner:
                         // Check feed support and set up feed channel
                         let using = job.data.as_ref().and_then(|d| d.using.clone());
                         let using_ref = using.as_deref();
-                        let feed_sender = if r.supports_feed(using_ref) {
-                            r.setup_feed_channel(using_ref)
+                        let feed_sender = if r.supports_client_stream(using_ref) {
+                            r.setup_client_stream_channel(using_ref)
                         } else {
                             None
                         };

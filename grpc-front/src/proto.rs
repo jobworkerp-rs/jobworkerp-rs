@@ -49,6 +49,7 @@ pub mod jobworkerp {
         pub type ResultStatus = data::ResultStatus;
         pub type JobProcessingStatus = data::JobProcessingStatus;
         pub type Empty = data::Empty;
+        pub type FeedDataTransport = data::FeedDataTransport;
         // Worker Instance types
         pub type ChannelConfig = data::ChannelConfig;
         pub type WorkerInstanceId = data::WorkerInstanceId;

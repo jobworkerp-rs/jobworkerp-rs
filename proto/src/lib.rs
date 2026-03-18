@@ -97,11 +97,11 @@ impl jobworkerp::data::MethodJsonSchema {
                     }
                 };
 
-                // feed_data_proto → feed_data JSON Schema
-                let feed_data_schema = if !proto_schema.need_feed {
+                // client_stream_data_proto → client_stream_data JSON Schema
+                let client_stream_data_schema = if !proto_schema.require_client_stream {
                     None
                 } else {
-                    proto_schema.feed_data_proto.as_ref().and_then(|fdp| {
+                    proto_schema.client_stream_data_proto.as_ref().and_then(|fdp| {
                         if fdp.is_empty() {
                             None
                         } else {
@@ -117,7 +117,7 @@ impl jobworkerp::data::MethodJsonSchema {
                                 }
                                 Err(e) => {
                                     tracing::warn!(
-                                        "Failed to convert feed_data_proto to JSON Schema for method '{}': {:?}",
+                                        "Failed to convert client_stream_data_proto to JSON Schema for method '{}': {:?}",
                                         method_name,
                                         e
                                     );
@@ -133,7 +133,7 @@ impl jobworkerp::data::MethodJsonSchema {
                     jobworkerp::data::MethodJsonSchema {
                         args_schema,
                         result_schema,
-                        feed_data_schema,
+                        client_stream_data_schema,
                     },
                 )
             })

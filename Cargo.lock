@@ -5789,6 +5789,7 @@ dependencies = [
  "jobworkerp-runner",
  "memory-utils 0.1.0",
  "opentelemetry 0.31.0",
+ "prost",
  "proto",
  "serde_json",
  "tokio",

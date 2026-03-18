@@ -1,10 +1,11 @@
 use crate::proto::jobworkerp::data::{Priority, ResultOutputItem};
+use crate::proto::jobworkerp::service::client_stream_request;
 use crate::proto::jobworkerp::service::job_request::Worker;
 use crate::proto::jobworkerp::service::job_service_server::JobService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, CreateJobResponse, FeedToStreamRequest, FeedToStreamResponse,
-    FindListRequest, FindListWithProcessingStatusRequest, FindQueueListRequest, JobAndStatus,
-    JobRequest, OptionalJobResponse, SuccessResponse,
+    ClientStreamRequest, CountCondition, CountResponse, CreateJobResponse, FeedToStreamRequest,
+    FeedToStreamResponse, FindListRequest, FindListWithProcessingStatusRequest,
+    FindQueueListRequest, JobAndStatus, JobRequest, OptionalJobResponse, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::job::JobApp;
@@ -22,8 +23,55 @@ use std::sync::Arc;
 use tonic::Response;
 use tonic::metadata::MetadataValue;
 
+/// Convert a ResultOutputStream into a gRPC-compatible stream that ends on End item.
+fn wrap_result_output_stream(
+    st: BoxStream<'static, ResultOutputItem>,
+    method_name: &'static str,
+) -> BoxStream<'static, Result<ResultOutputItem, tonic::Status>> {
+    stream! {
+        let mut st = st;
+        loop {
+            match st.next().await {
+                Some(output_item) => {
+                    match &output_item.item {
+                        Some(result_output_item::Item::End(_)) => {
+                            tracing::debug!(
+                                "gRPC {} received End item (sending and ending stream)",
+                                method_name
+                            );
+                            yield Ok(output_item);
+                            break;
+                        }
+                        Some(_) => {
+                            tracing::trace!(
+                                "gRPC {} sending item: {:?}",
+                                method_name,
+                                output_item.item.as_ref().map(std::mem::discriminant)
+                            );
+                            yield Ok(output_item);
+                        }
+                        None => {
+                            tracing::debug!(
+                                "gRPC {} received None item (stream ending gracefully)",
+                                method_name
+                            );
+                            break;
+                        }
+                    }
+                }
+                None => {
+                    tracing::debug!("gRPC {}: underlying stream ended gracefully", method_name);
+                    break;
+                }
+            }
+        }
+    }
+    .boxed()
+}
+
 pub trait JobGrpc {
     fn app(&self) -> &Arc<dyn JobApp + 'static>;
+    fn app_module(&self) -> &Arc<AppModule>;
 }
 pub trait RequestValidator {
     // almost no timeout (1 year after)
@@ -120,6 +168,28 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         let (metadata, _extensions, req) = request.into_parts();
         let metadata = Arc::new(super::process_metadata(metadata)?);
         self.validate_create(&req)?;
+        // Reject client-stream-only runners from non-client-stream enqueue
+        {
+            let (wid_opt, wname_opt) = match req.worker.as_ref() {
+                Some(Worker::WorkerId(id)) => (Some(id), None),
+                Some(Worker::WorkerName(name)) => (None, Some(name)),
+                _ => (None, None),
+            };
+            let worker = self
+                .app_module()
+                .worker_app
+                .find_by_id_or_name(wid_opt, wname_opt.map(|s| s as &String))
+                .await
+                .map_err(|e| handle_error(&e))?;
+            let wid = worker
+                .id
+                .ok_or_else(|| tonic::Status::internal("worker has no id"))?;
+            self.app_module()
+                .worker_app
+                .check_worker_streaming(&wid, false, Some(false), req.using.as_deref())
+                .await
+                .map_err(|e| handle_error(&e))?;
+        }
         let res = match req.worker.as_ref() {
             Some(Worker::WorkerId(id)) => {
                 self.app()
@@ -210,6 +280,28 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         let (metadata, _, req) = request.into_parts();
         let metadata = Arc::new(super::process_metadata(metadata)?);
         self.validate_create(&req)?;
+        // Reject client-stream-only runners from non-client-stream enqueue
+        {
+            let (wid_opt, wname_opt) = match req.worker.as_ref() {
+                Some(Worker::WorkerId(id)) => (Some(id), None),
+                Some(Worker::WorkerName(name)) => (None, Some(name)),
+                _ => (None, None),
+            };
+            let worker = self
+                .app_module()
+                .worker_app
+                .find_by_id_or_name(wid_opt, wname_opt.map(|s| s as &String))
+                .await
+                .map_err(|e| handle_error(&e))?;
+            let wid = worker
+                .id
+                .ok_or_else(|| tonic::Status::internal("worker has no id"))?;
+            self.app_module()
+                .worker_app
+                .check_worker_streaming(&wid, true, Some(false), req.using.as_deref())
+                .await
+                .map_err(|e| handle_error(&e))?;
+        }
         let res = match req.worker.as_ref() {
             Some(Worker::WorkerId(id)) => {
                 self.app()
@@ -266,44 +358,8 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                 let res_header = res.encode_to_vec();
                 let job_id_header = id.encode_to_vec();
 
-                // Wrap the underlying stream with proper error handling
-                let stream = stream! {
-                    let mut st = st;
-                    loop {
-                        match st.next().await {
-                            Some(output_item) => {
-                                match &output_item.item {
-                                    Some(result_output_item::Item::End(_)) => {
-                                        tracing::debug!(
-                                            "gRPC enqueue_for_stream received End item (sending and ending stream)"
-                                        );
-                                        yield Ok(output_item);
-                                        break;
-                                    }
-                                    Some(_) => {
-                                        tracing::trace!(
-                                            "gRPC enqueue_for_stream sending item: {:?}",
-                                            output_item.item.as_ref().map(std::mem::discriminant)
-                                        );
-                                        yield Ok(output_item);
-                                    }
-                                    None => {
-                                        tracing::debug!(
-                                            "gRPC enqueue_for_stream received None item (stream ending gracefully)"
-                                        );
-                                        break;
-                                    }
-                                }
-                            }
-                            None => {
-                                // Stream naturally ended
-                                tracing::debug!("gRPC enqueue_for_stream: underlying stream ended gracefully");
-                                break;
-                            }
-                        }
-                    }
-                }.boxed();
-                let stream: Self::EnqueueForStreamStream = Box::pin(stream);
+                let stream: Self::EnqueueForStreamStream =
+                    Box::pin(wrap_result_output_stream(st, "enqueue_for_stream"));
                 let mut res = Response::new(stream);
                 res.metadata_mut().insert_bin(
                     super::JOB_RESULT_HEADER_NAME,
@@ -364,6 +420,307 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             }
         }
     }
+
+    type EnqueueWithClientStreamStream =
+        BoxStream<'static, Result<ResultOutputItem, tonic::Status>>;
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(method = "enqueue_with_client_stream")
+    )]
+    #[allow(clippy::result_large_err)]
+    async fn enqueue_with_client_stream(
+        &self,
+        request: tonic::Request<tonic::Streaming<ClientStreamRequest>>,
+    ) -> Result<tonic::Response<Self::EnqueueWithClientStreamStream>, tonic::Status> {
+        let _span = Self::trace_request("job", "enqueue_with_client_stream", &request);
+        let (metadata, _, mut client_stream) = request.into_parts();
+        let metadata = Arc::new(super::process_metadata(metadata)?);
+
+        // 1. First message MUST be job_request
+        let first_msg = client_stream
+            .next()
+            .await
+            .ok_or_else(|| tonic::Status::invalid_argument("stream ended without any message"))?
+            .map_err(|e| tonic::Status::invalid_argument(format!("stream error: {e}")))?;
+
+        let job_request = match first_msg.request {
+            Some(client_stream_request::Request::JobRequest(req)) => req,
+            Some(client_stream_request::Request::FeedData(_)) => {
+                return Err(tonic::Status::invalid_argument(
+                    "first message must be job_request, not feed_data",
+                ));
+            }
+            None => {
+                return Err(tonic::Status::invalid_argument(
+                    "first message must contain job_request",
+                ));
+            }
+        };
+
+        // 2. Validate request
+        self.validate_create(&job_request)?;
+
+        // 3. Resolve worker
+        let (worker_id, worker_name) = match job_request.worker.as_ref() {
+            Some(Worker::WorkerId(id)) => (Some(*id), None),
+            Some(Worker::WorkerName(name)) => (None, Some(name.clone())),
+            None => {
+                return Err(tonic::Status::invalid_argument(
+                    "worker_id or worker_name is required",
+                ));
+            }
+        };
+
+        // 4. Check worker supports client streaming
+        let using = job_request.using.clone();
+        let worker = self
+            .app_module()
+            .worker_app
+            .find_by_id_or_name(worker_id.as_ref(), worker_name.as_ref())
+            .await
+            .map_err(|e| handle_error(&e))?;
+        let wid = worker
+            .id
+            .ok_or_else(|| tonic::Status::internal("worker has no id"))?;
+
+        self.app_module()
+            .worker_app
+            .check_worker_streaming(&wid, true, Some(true), using.as_deref())
+            .await
+            .map_err(|e| handle_error(&e))?;
+
+        // 5. Pre-generate job ID
+        let reserved_job_id = self.app().generate_job_id().map_err(|e| handle_error(&e))?;
+        let job_id_value = reserved_job_id.value;
+
+        // 6. Run enqueue_job and feed_forwarder in parallel
+        let app = self.app().clone();
+        let app_module = self.app_module().clone();
+        let meta_clone = metadata.clone();
+        let job_request_clone = job_request.clone();
+        let reserved_id_clone = reserved_job_id;
+
+        let mut enqueue_handle = tokio::spawn(async move {
+            let (wid, wname) = match job_request_clone.worker.as_ref() {
+                Some(Worker::WorkerId(id)) => (Some(id), None),
+                Some(Worker::WorkerName(name)) => (None, Some(name)),
+                None => (None, None),
+            };
+            app.enqueue_job(
+                meta_clone,
+                wid,
+                wname,
+                job_request_clone.args,
+                job_request_clone.uniq_key,
+                job_request_clone.run_after_time.unwrap_or(0),
+                job_request_clone
+                    .priority
+                    .unwrap_or(Priority::Medium as i32),
+                job_request_clone.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
+                Some(reserved_id_clone),
+                // Currently hardcoded to Response; other StreamingTypes (e.g. Notify)
+                // are not supported for client-streaming jobs yet.
+                StreamingType::Response,
+                job_request_clone.using,
+            )
+            .await
+        });
+
+        let feed_publisher = app_module.feed_publisher.clone();
+        let cleanup_feed_publisher = app_module.feed_publisher.clone();
+        let feed_sender_store = app_module.feed_sender_store.clone();
+        let feed_dispatch_timeout = app_module
+            .config_module
+            .job_queue_config
+            .feed_dispatch_timeout_duration();
+
+        let mut feed_handle = tokio::spawn(async move {
+            // For Standalone mode, wait until the feed channel is ready
+            if let Some(store) = feed_sender_store.as_ref() {
+                let timeout = feed_dispatch_timeout;
+                store
+                    .wait_for_feed_ready(job_id_value, timeout)
+                    .await
+                    .map_err(|e| {
+                        tonic::Status::deadline_exceeded(format!(
+                            "feed channel not ready within timeout: {e}"
+                        ))
+                    })?;
+            }
+            // Forward feed data from client stream
+            let mut sent_final = false;
+            while let Some(msg_result) = client_stream.next().await {
+                let msg = msg_result
+                    .map_err(|e| tonic::Status::internal(format!("client stream error: {e}")))?;
+                match msg.request {
+                    Some(client_stream_request::Request::FeedData(feed_transport)) => {
+                        let is_final = feed_transport.is_final;
+                        feed_publisher
+                            .publish_feed(
+                                &JobId {
+                                    value: job_id_value,
+                                },
+                                feed_transport.data,
+                                is_final,
+                            )
+                            .await
+                            .map_err(|e| {
+                                tonic::Status::internal(format!("failed to publish feed: {e}"))
+                            })?;
+                        if is_final {
+                            sent_final = true;
+                            break;
+                        }
+                    }
+                    Some(client_stream_request::Request::JobRequest(_)) => {
+                        return Err(tonic::Status::invalid_argument(
+                            "job_request is only allowed as the first message",
+                        ));
+                    }
+                    None => {
+                        tracing::trace!(
+                            "enqueue_with_client_stream: received empty message (no request variant), skipping"
+                        );
+                    }
+                }
+            }
+            // Ensure runner's feed channel is closed on client disconnect
+            if !sent_final {
+                let _ = feed_publisher
+                    .publish_feed(
+                        &JobId {
+                            value: job_id_value,
+                        },
+                        Vec::new(),
+                        true,
+                    )
+                    .await;
+            }
+            Ok::<(), tonic::Status>(())
+        });
+
+        // Wait for both; abort feed_handle early if enqueue fails.
+        // IMPORTANT: enqueue_job must return before the runner starts consuming the
+        // feed stream. If a future runner implementation consumes feed data inside
+        // enqueue_job (before returning), this select! could deadlock.
+        let (enqueue_result, feed_result) = tokio::select! {
+            enqueue_res = &mut enqueue_handle => {
+                let enqueue_res = enqueue_res
+                    .map_err(|e| tonic::Status::internal(format!("enqueue task panicked: {e}")))?;
+                if enqueue_res.is_err() {
+                    feed_handle.abort();
+                    (enqueue_res, Ok(()))
+                } else {
+                    let feed_res = feed_handle.await
+                        .map_err(|e| tonic::Status::internal(format!("feed task panicked: {e}")))?;
+                    (enqueue_res, feed_res)
+                }
+            }
+            feed_res = &mut feed_handle => {
+                let feed_res = feed_res
+                    .map_err(|e| tonic::Status::internal(format!("feed task panicked: {e}")))?;
+                let enqueue_res = enqueue_handle.await
+                    .map_err(|e| tonic::Status::internal(format!("enqueue task panicked: {e}")))?;
+                (enqueue_res, feed_res)
+            }
+        };
+
+        // Check feed errors first
+        if let Err(feed_err) = feed_result {
+            tracing::warn!("feed forwarding failed: {:?}", feed_err);
+            // Force-close the runner's feed channel so it does not hang waiting for data
+            let _ = cleanup_feed_publisher
+                .publish_feed(
+                    &JobId {
+                        value: job_id_value,
+                    },
+                    Vec::new(),
+                    true,
+                )
+                .await;
+            // Try to clean up the job if enqueue succeeded
+            if let Ok((ref id, _, _)) = enqueue_result
+                && let Err(e) = self.app().delete_job(id).await
+            {
+                tracing::warn!("failed to clean up orphan job {}: {e}", id.value);
+            }
+            return Err(feed_err);
+        }
+
+        // Process enqueue result (same pattern as enqueue_for_stream)
+        match enqueue_result {
+            Ok((id, Some(res), Some(st))) => {
+                tracing::debug!(
+                    "enqueue_with_client_stream output = {:?}",
+                    &res.data
+                        .as_ref()
+                        .map(|d| d.output.as_ref().map(|o| o.items.len()))
+                );
+                let res_header = res.encode_to_vec();
+                let job_id_header = id.encode_to_vec();
+
+                let stream: Self::EnqueueWithClientStreamStream =
+                    Box::pin(wrap_result_output_stream(st, "enqueue_with_client_stream"));
+                let mut res = Response::new(stream);
+                res.metadata_mut().insert_bin(
+                    super::JOB_RESULT_HEADER_NAME,
+                    MetadataValue::from_bytes(res_header.as_slice()),
+                );
+                res.metadata_mut().insert_bin(
+                    super::JOB_ID_HEADER_NAME,
+                    MetadataValue::from_bytes(job_id_header.as_slice()),
+                );
+                Ok(res)
+            }
+            Ok((id, res, _)) => {
+                // NoResult mode or error case
+                if let Some(job_result) = &res
+                    && let Some(result_data) = &job_result.data
+                {
+                    use proto::jobworkerp::data::ResultStatus;
+                    if result_data.status != ResultStatus::Success as i32 {
+                        tracing::warn!(
+                            "enqueue_with_client_stream: job {} failed with status {}",
+                            id.value,
+                            result_data.status
+                        );
+                        let status = JobGrpcImpl::create_job_error_status(&id, result_data);
+                        return Err(status);
+                    }
+                }
+
+                let res_header = res.map(|r| r.encode_to_vec());
+                let job_id_header = id.encode_to_vec();
+
+                let st = futures::stream::iter(std::iter::empty::<
+                    Result<ResultOutputItem, tonic::Status>,
+                >())
+                .boxed() as Self::EnqueueWithClientStreamStream;
+
+                let mut res = Response::new(st);
+                if let Some(header) = res_header {
+                    res.metadata_mut().insert_bin(
+                        super::JOB_RESULT_HEADER_NAME,
+                        MetadataValue::from_bytes(header.as_slice()),
+                    );
+                }
+                res.metadata_mut().insert_bin(
+                    super::JOB_ID_HEADER_NAME,
+                    MetadataValue::from_bytes(job_id_header.as_slice()),
+                );
+                Ok(res)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "enqueue_with_client_stream failed during job creation: {:?}",
+                    e
+                );
+                Err(handle_error(&e))
+            }
+        }
+    }
+
     #[allow(clippy::result_large_err)]
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "delete"))]
     async fn delete(
@@ -541,6 +898,9 @@ impl JobGrpc for JobGrpcImpl {
     fn app(&self) -> &Arc<dyn JobApp + 'static> {
         &self.app_module.job_app
     }
+    fn app_module(&self) -> &Arc<AppModule> {
+        &self.app_module
+    }
 }
 
 // use tracing
@@ -698,5 +1058,60 @@ mod tests {
         assert!(v.validate_create(&req).is_ok());
         req.args = Vec::new();
         assert!(v.validate_create(&req).is_ok());
+    }
+
+    #[test]
+    fn test_client_stream_request_job_request_variant() {
+        let req = ClientStreamRequest {
+            request: Some(client_stream_request::Request::JobRequest(JobRequest {
+                worker: Some(Worker::WorkerId(WorkerId { value: 1 })),
+                args: vec![1, 2, 3],
+                ..Default::default()
+            })),
+        };
+        match req.request {
+            Some(client_stream_request::Request::JobRequest(jr)) => {
+                assert!(matches!(jr.worker, Some(Worker::WorkerId(id)) if id.value == 1));
+            }
+            _ => panic!("expected JobRequest variant"),
+        }
+    }
+
+    #[test]
+    fn test_client_stream_request_feed_data_variant() {
+        use crate::proto::jobworkerp::data::FeedDataTransport;
+        let req = ClientStreamRequest {
+            request: Some(client_stream_request::Request::FeedData(
+                FeedDataTransport {
+                    data: vec![10, 20, 30],
+                    is_final: true,
+                },
+            )),
+        };
+        match req.request {
+            Some(client_stream_request::Request::FeedData(fd)) => {
+                assert_eq!(fd.data, vec![10, 20, 30]);
+                assert!(fd.is_final);
+            }
+            _ => panic!("expected FeedData variant"),
+        }
+    }
+
+    #[test]
+    fn test_client_stream_request_empty() {
+        let req = ClientStreamRequest { request: None };
+        assert!(req.request.is_none());
+    }
+
+    #[test]
+    fn test_validate_create_rejects_first_message_without_worker() {
+        let v = Validator {};
+        let req = JobRequest {
+            worker: None,
+            args: vec![1, 2, 3],
+            ..Default::default()
+        };
+        // validate_create is used for the first message in enqueue_with_client_stream
+        assert!(v.validate_create(&req).is_err());
     }
 }
