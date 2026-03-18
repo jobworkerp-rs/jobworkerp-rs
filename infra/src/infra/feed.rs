@@ -26,11 +26,6 @@ pub fn job_feed_buf_key(job_id: &JobId) -> String {
     format!("job_feed_buf:{}", job_id.value)
 }
 
-/// Channel name for Redis Pub/Sub feed delivery (deprecated, kept for FeedToStream compatibility)
-pub fn job_feed_pubsub_channel_name(job_id: &JobId) -> String {
-    format!("job_feed:{}", job_id.value)
-}
-
 pub fn feed_data_from_transport(msg: FeedDataTransport) -> FeedData {
     FeedData {
         data: msg.data,

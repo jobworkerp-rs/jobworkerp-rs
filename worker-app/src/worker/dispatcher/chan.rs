@@ -533,10 +533,10 @@ impl JobRunner for ChanJobDispatcherImpl {
         &self,
         job_id: i64,
         sender: tokio::sync::mpsc::Sender<jobworkerp_runner::runner::FeedData>,
-    ) -> Option<super::super::runner::FeedRegistration> {
+    ) -> Option<()> {
         // Standalone mode: register sender directly in feed store
         self.feed_sender_store.register(job_id, sender);
-        Some((None, Some((job_id, self.feed_sender_store.store().clone()))))
+        Some(())
     }
 }
 

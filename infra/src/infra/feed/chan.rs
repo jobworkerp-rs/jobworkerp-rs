@@ -53,7 +53,7 @@ impl ChanFeedSenderStore {
             .map(|r: dashmap::mapref::one::Ref<'_, i64, mpsc::Sender<FeedData>>| r.value().clone())
     }
 
-    /// Access the underlying DashMap (for StreamWithFeedGuard cleanup).
+    /// Access the underlying DashMap.
     pub fn store(&self) -> &Arc<DashMap<i64, mpsc::Sender<FeedData>>> {
         &self.senders
     }
