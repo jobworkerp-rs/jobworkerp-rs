@@ -1,7 +1,7 @@
 //! Unit tests for validate_and_publish_feed function.
 //!
 //! Tests each validation case: job not running, non-streaming, use_static=false,
-//! concurrency != 1, and need_feed=false.
+//! concurrency != 1, and require_client_stream=false.
 
 #[cfg(test)]
 mod tests {
@@ -209,12 +209,12 @@ mod tests {
         }
     }
 
-    fn make_runner_schema(need_feed: bool) -> RunnerWithSchema {
+    fn make_runner_schema(require_client_stream: bool) -> RunnerWithSchema {
         let mut schemas = std::collections::HashMap::new();
         schemas.insert(
             proto::DEFAULT_METHOD_NAME.to_string(),
             MethodSchema {
-                need_feed,
+                require_client_stream,
                 ..Default::default()
             },
         );
@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_feed_no_need_feed() {
+    fn test_validate_feed_no_require_client_stream() {
         TEST_RUNTIME.block_on(async {
             let job = make_job(1, 1, StreamingType::Response);
             let mock_app = MockWorkerApp {

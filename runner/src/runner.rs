@@ -247,14 +247,17 @@ pub trait RunnerTrait: RunnerSpec + Send + Sync {
         using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>>;
 
-    /// Whether this runner supports feed data for the given method
-    fn supports_feed(&self, _using: Option<&str>) -> bool {
+    /// Whether this runner supports client streaming input for the given method
+    fn supports_client_stream(&self, _using: Option<&str>) -> bool {
         false
     }
 
-    /// Set up a feed channel for receiving data during streaming execution.
+    /// Set up a client stream channel for receiving data during streaming execution.
     /// Returns a Sender that the infrastructure layer will use to deliver feed data.
-    fn setup_feed_channel(&mut self, _using: Option<&str>) -> Option<mpsc::Sender<FeedData>> {
+    fn setup_client_stream_channel(
+        &mut self,
+        _using: Option<&str>,
+    ) -> Option<mpsc::Sender<FeedData>> {
         None
     }
 }

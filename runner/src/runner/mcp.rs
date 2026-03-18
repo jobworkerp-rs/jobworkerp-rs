@@ -341,7 +341,7 @@ impl RunnerSpec for McpServerRunnerImpl {
                             McpServerResult,
                             "mcp_server_output_schema"
                         ),
-                        feed_data_schema: None,
+                        client_stream_data_schema: None,
                     },
                 )
             })

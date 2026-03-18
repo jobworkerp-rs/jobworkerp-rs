@@ -86,6 +86,9 @@ pub struct JobQueueConfig {
     /// Must be large enough to buffer cancel signals until all workers consume them.
     #[serde(default = "default_cancel_channel_capacity")]
     pub cancel_channel_capacity: usize,
+    /// timeout in milliseconds for feed channel dispatch (client streaming)
+    #[serde(default = "default_feed_dispatch_timeout")]
+    pub feed_dispatch_timeout: u64,
 }
 
 fn default_channel_capacity() -> usize {
@@ -104,6 +107,10 @@ fn default_cancel_channel_capacity() -> usize {
     1_000
 }
 
+fn default_feed_dispatch_timeout() -> u64 {
+    5000
+}
+
 impl Default for JobQueueConfig {
     fn default() -> Self {
         tracing::info!("Use default JobQueueConfig.");
@@ -114,7 +121,14 @@ impl Default for JobQueueConfig {
             pubsub_channel_capacity: 128,
             max_channels: 10_000,
             cancel_channel_capacity: 1_000,
+            feed_dispatch_timeout: default_feed_dispatch_timeout(),
         }
+    }
+}
+
+impl JobQueueConfig {
+    pub fn feed_dispatch_timeout_duration(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.feed_dispatch_timeout)
     }
 }
 
@@ -192,6 +206,7 @@ pub mod test {
         pubsub_channel_capacity: 128,
         max_channels: 10_000,
         cancel_channel_capacity: 1_000,
+        feed_dispatch_timeout: 5000,
     });
 
     #[cfg(feature = "mysql")]

@@ -347,3 +347,7 @@ node_modules
 docs/en/book/
 docs/ja/book/
 docs/site/
+
+# spec docs
+spec-docs/
+

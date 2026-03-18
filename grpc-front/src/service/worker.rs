@@ -480,6 +480,7 @@ mod tests {
         pubsub_channel_capacity: 128,
         max_channels: 10_000,
         cancel_channel_capacity: 1_000,
+        feed_dispatch_timeout: 5000,
     };
     static mut STORAGE_CONFIG: StorageConfig = StorageConfig {
         r#type: StorageType::Standalone,

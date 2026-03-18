@@ -804,6 +804,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     let mut stderr_bytes = Vec::new();
 
                     let mut child = child;
+                    let mut process_exited = false;
 
                     // Stream processing loop
                     while !stdout_done || !stderr_done {
@@ -935,14 +936,17 @@ impl RunnerTrait for CommandRunnerImpl {
                                     }
                                 }
                             },
-                            exit_result = child.wait() => {
+                            exit_result = child.wait(), if !process_exited => {
                                 match exit_result {
                                     Ok(status) => {
                                         tracing::debug!("Process exited with status: {:?}", status);
-                                        // Even if the process exited, we still want to read all output
+                                        // Mark as exited so we don't call wait() again,
+                                        // but keep looping to drain remaining stdout/stderr.
+                                        process_exited = true;
                                     },
                                     Err(e) => {
                                         tracing::error!("Error waiting for process: {:?}", e);
+                                        process_exited = true;
                                     }
                                 }
                             }

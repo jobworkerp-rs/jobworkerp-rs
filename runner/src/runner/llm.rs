@@ -59,7 +59,7 @@ pub trait LLMCompletionRunnerSpec {
                 result_schema: Some(
                     include_str!("../../schema/llm/LLMCompletionResult.json").to_string(),
                 ),
-                feed_data_schema: None,
+                client_stream_data_schema: None,
             },
         );
         schemas

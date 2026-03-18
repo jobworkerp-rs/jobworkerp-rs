@@ -624,7 +624,7 @@ pub mod test {
                         proto::jobworkerp::data::MethodJsonSchema {
                             args_schema: "arguments_schema".to_string(),
                             result_schema: Some("output_schema".to_string()),
-                            feed_data_schema: None,
+                            client_stream_data_schema: None,
                         },
                     );
                     map

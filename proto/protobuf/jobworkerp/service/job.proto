@@ -56,6 +56,19 @@ message FeedToStreamRequest {
 // Retained for proto3 cost-free extensibility.
 message FeedToStreamResponse { bool accepted = 1; }
 
+// # Client Stream Request
+// Client-to-server message for client streaming.
+// The first message MUST contain `job_request`. Subsequent messages contain `feed_data`.
+message ClientStreamRequest {
+  oneof request {
+    // Initial message: job enqueue request (MUST be the first message)
+    JobRequest job_request = 1;
+
+    // Subsequent messages: feed data chunks using existing FeedDataTransport
+    jobworkerp.data.FeedDataTransport feed_data = 2;
+  }
+}
+
 service JobService {
   rpc Enqueue(JobRequest) returns (CreateJobResponse);
   // Direct response only, JobResult on metadata header of grpc response
@@ -63,15 +76,29 @@ service JobService {
   rpc EnqueueForStream(JobRequest)
       returns (stream jobworkerp.data.ResultOutputItem);
 
-  // Send feed data to a running streaming job
+  // Client streaming with server streaming response.
+  // Client sends initial job request followed by feed data chunks.
+  // streaming_type is fixed to Response (Internal is for internal workflow use only).
+  // Server response behavior depends on worker's response_type:
+  //   - Response + Direct: Returns streaming results (ResultOutputItem) as bidirectional stream
+  //   - Response + NoResult: Feed-only stream; results available via ListenStream
+  //
+  // broadcast_results=true is required when response_type=NoResult.
+  rpc EnqueueWithClientStream(stream ClientStreamRequest)
+      returns (stream jobworkerp.data.ResultOutputItem);
+
+  // [Deprecated] Send feed data to a running streaming job
+  // Use EnqueueWithClientStream instead.
   //
   // Prerequisites:
   // - Job must be in RUNNING status
-  // - Worker must have streaming_type != NONE
+  // - Job must have streaming_type != NONE
   // - Worker must have use_static = true
-  // - Runner method must have need_feed = true
+  // - Runner method must have require_client_stream = true
   // - Channel concurrency must be 1
-  rpc FeedToStream(FeedToStreamRequest) returns (FeedToStreamResponse);
+  rpc FeedToStream(FeedToStreamRequest) returns (FeedToStreamResponse) {
+    option deprecated = true;
+  }
 
   // Delete/Cancel job
   //

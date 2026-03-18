@@ -473,6 +473,7 @@ mod test {
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
                 cancel_channel_capacity: 1_000,
+                feed_dispatch_timeout: 5000,
             }),
         };
         let job_id = JobId { value: 11 };
@@ -524,6 +525,7 @@ mod test {
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
                 cancel_channel_capacity: 1_000,
+                feed_dispatch_timeout: 5000,
             }),
         };
         let worker_id = WorkerId { value: 1 };
@@ -584,6 +586,7 @@ mod test {
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
                 cancel_channel_capacity: 1_000,
+                feed_dispatch_timeout: 5000,
             }),
         };
         let job_id = JobId { value: 999 };
@@ -701,6 +704,7 @@ mod test {
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
                 cancel_channel_capacity: 1_000,
+                feed_dispatch_timeout: 5000,
             }),
         };
         let job_id = JobId { value: 12345 };
@@ -787,6 +791,7 @@ mod test {
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
                 cancel_channel_capacity: 1_000,
+                feed_dispatch_timeout: 5000,
             }),
         };
         let job_id = JobId { value: 99999 };
@@ -869,6 +874,7 @@ mod test {
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
                 cancel_channel_capacity: 1_000,
+                feed_dispatch_timeout: 5000,
             }),
         };
         let job_id = JobId { value: 20001 };
@@ -915,6 +921,7 @@ mod test {
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
                 cancel_channel_capacity: 1_000,
+                feed_dispatch_timeout: 5000,
             }),
         };
         let job_id = JobId { value: 20002 };
@@ -963,6 +970,7 @@ mod test {
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
                 cancel_channel_capacity: 1_000,
+                feed_dispatch_timeout: 5000,
             }),
         };
         let job_id = JobId { value: 20003 };
@@ -1023,6 +1031,7 @@ mod test {
                 pubsub_channel_capacity: 128,
                 max_channels: 10_000,
                 cancel_channel_capacity: 1_000,
+                feed_dispatch_timeout: 5000,
             }),
         };
         let job_id = JobId { value: 54321 };

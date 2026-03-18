@@ -95,6 +95,8 @@ pub struct AppModule {
     pub workflow_loader: Arc<infra::workflow::WorkflowLoader>,
     /// Shared ChanFeedSenderStore for Standalone mode (None in Scalable mode)
     pub feed_sender_store: Option<Arc<infra::infra::feed::chan::ChanFeedSenderStore>>,
+    /// Feed publisher for both modes (used by EnqueueWithClientStream)
+    pub feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher>,
 }
 
 impl AppModule {
@@ -112,6 +114,7 @@ impl AppModule {
         descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         workflow_loader: Arc<infra::workflow::WorkflowLoader>,
         feed_sender_store: Option<Arc<infra::infra::feed::chan::ChanFeedSenderStore>>,
+        feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher>,
     ) -> Self {
         Self {
             config_module,
@@ -125,6 +128,7 @@ impl AppModule {
             descriptor_cache,
             workflow_loader,
             feed_sender_store,
+            feed_publisher,
         }
     }
     pub async fn new_by_env(config_module: Arc<AppConfigModule>) -> Result<Self> {
@@ -223,6 +227,8 @@ impl AppModule {
                     },
                     function_app.clone(),
                 ));
+                let feed_publisher_for_module: Arc<dyn infra::infra::feed::FeedPublisher> =
+                    feed_sender_store.clone();
                 Ok(AppModule {
                     config_module,
                     repositories: Arc::new(RedisRdbOptionalRepositoryModule::from(repositories)),
@@ -235,6 +241,7 @@ impl AppModule {
                     descriptor_cache,
                     workflow_loader,
                     feed_sender_store: Some(feed_sender_store),
+                    feed_publisher: feed_publisher_for_module,
                 })
             }
             // TODO not used now (remove or implement later)
@@ -324,6 +331,9 @@ impl AppModule {
                 let feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher> =
                     Arc::new(infra::infra::feed::redis::RedisFeedPublisher::new(
                         repositories.redis_module.redis_client.clone(),
+                        config_module
+                            .job_queue_config
+                            .feed_dispatch_timeout_duration(),
                     ));
                 let job_app = Arc::new(HybridJobAppImpl::new(
                     config_module.clone(),
@@ -336,7 +346,7 @@ impl AppModule {
                     }),
                     job_queue_cancellation_repository,
                     job_status_index_repository,
-                    feed_publisher,
+                    feed_publisher.clone(),
                 ));
                 let job_result_app = Arc::new(HybridJobResultAppImpl::new(
                     config_module.storage_config.clone(),
@@ -377,6 +387,7 @@ impl AppModule {
                     descriptor_cache,
                     workflow_loader,
                     feed_sender_store: None,
+                    feed_publisher: feed_publisher.clone(),
                 })
             }
         }
@@ -584,6 +595,7 @@ pub mod test {
         let feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher> =
             Arc::new(infra::infra::feed::redis::RedisFeedPublisher::new(
                 repositories.redis_module.redis_client.clone(),
+                app_config.job_queue_config.feed_dispatch_timeout_duration(),
             ));
         let job_app = Arc::new(HybridJobAppImpl::new(
             app_config.clone(),
@@ -624,6 +636,11 @@ pub mod test {
             function_app.clone(),
         ));
 
+        let feed_publisher: Arc<dyn infra::infra::feed::FeedPublisher> =
+            Arc::new(infra::infra::feed::redis::RedisFeedPublisher::new(
+                repositories.redis_module.redis_client.clone(),
+                app_config.job_queue_config.feed_dispatch_timeout_duration(),
+            ));
         Ok(AppModule::new(
             app_config,
             Arc::new(RedisRdbOptionalRepositoryModule::from(repositories)),
@@ -636,6 +653,7 @@ pub mod test {
             descriptor_cache,
             workflow_loader,
             None, // Scalable mode: no shared ChanFeedSenderStore
+            feed_publisher,
         ))
     }
 
@@ -681,6 +699,7 @@ pub mod test {
             pubsub_channel_capacity: 128,
             max_channels: 10_000,
             cancel_channel_capacity: 1_000,
+            feed_dispatch_timeout: 5000,
         });
 
         let worker_config = Arc::new(WorkerConfig {
@@ -782,6 +801,8 @@ pub mod test {
             rdb_module: Some(repositories),
         });
 
+        let feed_publisher_for_module: Arc<dyn infra::infra::feed::FeedPublisher> =
+            feed_sender_store.clone();
         Ok(AppModule::new(
             config_module,
             repositories_module,
@@ -794,6 +815,7 @@ pub mod test {
             descriptor_cache,
             workflow_loader,
             Some(feed_sender_store),
+            feed_publisher_for_module,
         ))
     }
 
