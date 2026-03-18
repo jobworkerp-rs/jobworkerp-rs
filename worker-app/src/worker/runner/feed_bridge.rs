@@ -18,7 +18,7 @@ const BLPOP_TIMEOUT_SECS: f64 = 5.0;
 /// On successful completion (final feed received), DEL is called to clean up the Redis key.
 /// On error or early termination (receiver dropped), DEL is skipped to let TTL expire naturally.
 ///
-/// Returns a JoinHandle that can be aborted when the stream ends.
+/// Returns a JoinHandle for the background task. The task self-terminates when is_final is received or the sender is closed.
 pub fn spawn_redis_feed_bridge(
     redis_client: &RedisClient,
     job_id: &JobId,

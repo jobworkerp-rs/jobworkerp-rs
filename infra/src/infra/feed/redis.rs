@@ -26,9 +26,6 @@ impl RedisFeedPublisher {
     }
 }
 
-// NOTE: RedisFeedPublisher uses the default `has_active_feed` (returns None).
-// In Scalable mode, feed senders live on remote worker processes, so the local process
-// cannot know whether a feed channel is active.
 #[async_trait]
 impl FeedPublisher for RedisFeedPublisher {
     async fn publish_feed(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
