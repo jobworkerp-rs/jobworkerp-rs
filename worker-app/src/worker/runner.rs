@@ -102,8 +102,16 @@ pub trait JobRunner:
                         let job_id_value = job.id.as_ref().map(|id| id.value);
 
                         // Register feed sender before run_job_inner to avoid race condition
-                        if let (Some(sender), Some(id)) = (feed_sender, job_id_value) {
-                            self.register_feed_sender(id, sender);
+                        match (feed_sender, job_id_value) {
+                            (Some(sender), Some(id)) => {
+                                self.register_feed_sender(id, sender);
+                            }
+                            (Some(_), None) => {
+                                tracing::warn!(
+                                    "feed_sender exists but job_id is None; skipping feed registration"
+                                );
+                            }
+                            _ => {}
                         }
 
                         let (job_result, stream) =
