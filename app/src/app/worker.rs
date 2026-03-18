@@ -1,6 +1,9 @@
 pub mod hybrid;
 pub mod rdb;
 
+#[cfg(test)]
+pub mod check_worker_streaming_test;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
@@ -231,6 +234,7 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
         &self,
         id: &WorkerId,
         request_streaming: bool,
+        require_client_stream: Option<bool>,
         using: Option<&str>,
     ) -> Result<()> {
         let runner_id = if let Some(Worker {
@@ -255,55 +259,79 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
             ..
         }) = self.runner_app().find_runner(&runner_id).await?
         {
-            let output_type = if let Some(ref method_proto_map) = runner_data.method_proto_map {
-                let method_name = using.unwrap_or(proto::DEFAULT_METHOD_NAME);
-                let schema = method_proto_map.schemas.get(method_name).or_else(|| {
-                    // Fallback to DEFAULT_METHOD_NAME for deterministic behavior
-                    if method_name != proto::DEFAULT_METHOD_NAME {
-                        tracing::debug!(
-                            "Schema not found for method '{}', falling back to default",
-                            method_name
-                        );
-                        method_proto_map.schemas.get(proto::DEFAULT_METHOD_NAME)
-                    } else {
-                        None
-                    }
-                });
-                schema
-                    .map(|s| s.output_type)
-                    .unwrap_or(proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32)
-            } else {
-                proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32
-            };
+            let (output_type, schema_require_client_stream) =
+                if let Some(ref method_proto_map) = runner_data.method_proto_map {
+                    let method_name = using.unwrap_or(proto::DEFAULT_METHOD_NAME);
+                    let schema = method_proto_map.schemas.get(method_name).or_else(|| {
+                        if method_name != proto::DEFAULT_METHOD_NAME {
+                            tracing::debug!(
+                                "Schema not found for method '{}', falling back to default",
+                                method_name
+                            );
+                            method_proto_map.schemas.get(proto::DEFAULT_METHOD_NAME)
+                        } else {
+                            None
+                        }
+                    });
+                    (
+                        schema.map(|s| s.output_type).unwrap_or(
+                            proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                        ),
+                        schema.map(|s| s.require_client_stream).unwrap_or(false),
+                    )
+                } else {
+                    (
+                        proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                        false,
+                    )
+                };
 
+            // Check streaming output compatibility
             match proto::jobworkerp::data::StreamingOutputType::try_from(output_type).ok() {
                 Some(proto::jobworkerp::data::StreamingOutputType::Streaming) => {
-                    if request_streaming {
-                        Ok(())
-                    } else {
-                        Err(JobWorkerError::InvalidParameter(
+                    if !request_streaming {
+                        return Err(JobWorkerError::InvalidParameter(
                             "runner does not support non-streaming".to_string(),
                         )
-                        .into())
+                        .into());
                     }
                 }
                 Some(proto::jobworkerp::data::StreamingOutputType::NonStreaming) => {
                     if request_streaming {
-                        Err(JobWorkerError::InvalidParameter(
+                        return Err(JobWorkerError::InvalidParameter(
                             "runner does not support streaming".to_string(),
                         )
-                        .into())
-                    } else {
-                        Ok(())
+                        .into());
                     }
                 }
-                Some(_) => Ok(()), // Both
-                None => Err(JobWorkerError::InvalidParameter(format!(
-                    "runner does not support streaming mode: {}",
-                    output_type
-                ))
-                .into()),
+                Some(_) => {} // Both
+                None => {
+                    return Err(JobWorkerError::InvalidParameter(format!(
+                        "runner does not support streaming mode: {}",
+                        output_type
+                    ))
+                    .into());
+                }
             }
+
+            // Check client streaming compatibility (skip when None)
+            if let Some(require) = require_client_stream {
+                if require && !schema_require_client_stream {
+                    return Err(JobWorkerError::InvalidParameter(
+                        "runner does not support client streaming input".to_string(),
+                    )
+                    .into());
+                }
+                if !require && schema_require_client_stream {
+                    return Err(JobWorkerError::InvalidParameter(
+                        "runner requires client streaming input; use EnqueueWithClientStream"
+                            .to_string(),
+                    )
+                    .into());
+                }
+            }
+
+            Ok(())
         } else {
             Err(JobWorkerError::InvalidParameter("runner not found".to_string()).into())
         }

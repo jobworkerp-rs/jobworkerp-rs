@@ -53,7 +53,7 @@ graph TB
 
 #### Result Retrieval and Notification
 - Two methods for retrieving job execution results: Direct retrieval (DIRECT), No result retrieval (NONE)
-- Real-time result notification (broadcast_results): Result distribution to multiple clients, streaming retrieval (See [STREAMING.md](STREAMING.md) for details)
+- Real-time result notification (broadcast_results): Result distribution to multiple clients, streaming retrieval (See [streaming.md](docs/en/src/streaming.md) for details)
 
 #### Execution Environment and Scalability
 - Job execution channel configuration with parallel execution settings per channel
@@ -63,8 +63,8 @@ graph TB
 #### Extensibility
 - Extensible job execution content (Runner) through plugins
 - Model Context Protocol (MCP) proxy functionality: Access LLMs and various tools provided by MCP servers through Runners
-- LLM integration: Text generation and chat with tool calling support (See [LLM.md](LLM.md) for details)
-- Workflow functionality: Execute multiple jobs in coordination (See [WORKFLOW.md](WORKFLOW.md) for details)
+- LLM integration: Text generation and chat with tool calling support (See [llm.md](docs/en/src/llm.md) for details)
+- Workflow functionality: Execute multiple jobs in coordination (See [workflow.md](docs/en/src/workflow.md) for details)
 
 ## Command Examples
 
@@ -227,8 +227,8 @@ Each feature requires setting necessary values in protobuf format for worker.run
 | GRPC_UNARY | gRPC communication | gRPC unary requests | worker.runner_settings: URL+path, job.args: protobuf encoded arguments |
 | DOCKER | Docker container execution | Equivalent to docker run | worker.runner_settings: FromImage/Tag, job.args: Image/Cmd, etc. |
 | SLACK_POST_MESSAGE | Slack message posting | Posts messages to Slack channels | worker.runner_settings: Slack API settings, job.args: channel, message content, etc. |
-| LLM | LLM execution (multi-method) | Uses various LLMs via external servers | See [LLM.md](LLM.md) for details |
-| WORKFLOW | Workflow execution (multi-method) | Executes multiple jobs in defined order | See [WORKFLOW.md](WORKFLOW.md) for details |
+| LLM | LLM execution (multi-method) | Uses various LLMs via external servers | See [llm.md](docs/en/src/llm.md) for details |
+| WORKFLOW | Workflow execution (multi-method) | Executes multiple jobs in defined order | See [workflow.md](docs/en/src/workflow.md) for details |
 
 ### Job Queue Types
 

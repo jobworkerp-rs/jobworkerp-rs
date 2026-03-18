@@ -219,10 +219,10 @@ impl HybridJobAppImpl {
             data: Some(w),
         } = worker
         {
-            // check if worker supports streaming mode
+            // Check streaming output type only; client stream validation is the gRPC layer's responsibility
             let request_streaming = streaming_type != StreamingType::None;
             self.worker_app()
-                .check_worker_streaming(wid, request_streaming, using.as_deref())
+                .check_worker_streaming(wid, request_streaming, None, using.as_deref())
                 .await?;
 
             let job_data = JobData {
@@ -637,11 +637,11 @@ impl JobApp for HybridJobAppImpl {
             data: Some(w),
         }) = worker_res.as_ref()
         {
-            // check if worker supports streaming mode
+            // Check streaming output type only; client stream validation is the gRPC layer's responsibility
             let request_streaming = streaming_type != StreamingType::None;
             let _ = self
                 .worker_app()
-                .check_worker_streaming(wid, request_streaming, using.as_deref())
+                .check_worker_streaming(wid, request_streaming, None, using.as_deref())
                 .await?;
 
             let job_data = JobData {
@@ -1296,6 +1296,12 @@ impl JobApp for HybridJobAppImpl {
         .await
     }
 
+    fn generate_job_id(&self) -> Result<JobId> {
+        Ok(JobId {
+            value: self.id_generator().generate_id()?,
+        })
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -1434,6 +1440,7 @@ pub mod tests {
             pubsub_channel_capacity: 128,
             max_channels: 10_000,
             cancel_channel_capacity: 1_000,
+            feed_dispatch_timeout: 5000,
         });
         let worker_config = Arc::new(WorkerConfig {
             default_concurrency: 4,
@@ -1492,6 +1499,7 @@ pub mod tests {
         let feed_publisher: Arc<dyn FeedPublisher> =
             Arc::new(infra::infra::feed::redis::RedisFeedPublisher::new(
                 repositories.redis_module.redis_client.clone(),
+                std::time::Duration::from_millis(5000),
             ));
         Ok((
             HybridJobAppImpl::new(

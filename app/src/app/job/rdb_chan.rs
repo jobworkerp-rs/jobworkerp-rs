@@ -385,10 +385,10 @@ impl RdbChanJobAppImpl {
             data: Some(w),
         } = &worker
         {
-            // check if worker supports streaming mode
+            // Check streaming output type only; client stream validation is the gRPC layer's responsibility
             let request_streaming = streaming_type != StreamingType::None;
             self.worker_app()
-                .check_worker_streaming(wid, request_streaming, using.as_deref())
+                .check_worker_streaming(wid, request_streaming, None, using.as_deref())
                 .await?;
 
             let job_data = JobData {
@@ -1160,6 +1160,12 @@ impl JobApp for RdbChanJobAppImpl {
         .await
     }
 
+    fn generate_job_id(&self) -> Result<JobId> {
+        Ok(JobId {
+            value: self.id_generator().generate_id()?,
+        })
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -1422,6 +1428,7 @@ mod tests {
             pubsub_channel_capacity: 128,
             max_channels: 10_000,
             cancel_channel_capacity: 1_000,
+            feed_dispatch_timeout: 5000,
         });
         let worker_config = Arc::new(WorkerConfig {
             default_concurrency: 4,
@@ -1485,7 +1492,7 @@ mod tests {
         // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
         // enqueue, find, complete, find, delete, find
         TEST_RUNTIME.block_on(async {
-            let (app, _) = create_test_app(true).await?;
+            let (app, _) = create_test_app(false).await?;
             let runner_settings =
                 JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -1509,6 +1516,10 @@ mod tests {
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["ls".to_string(), "/".to_string()],
             })?;
+            // Pre-generate unique job_id to avoid key collision across tests
+            let reserved_jid = JobId {
+                value: app.id_generator().generate_id()?,
+            };
             // move
             let worker_id1 = worker_id;
             let jargs1 = jargs.clone();
@@ -1516,6 +1527,7 @@ mod tests {
             // need waiting for direct response
             let metadata = Arc::new(HashMap::new());
             let wd1 = wd.clone();
+            let reserved_jid1 = reserved_jid;
             let jh = tokio::spawn(async move {
                 let res = app1
                     .enqueue_job(
@@ -1527,32 +1539,17 @@ mod tests {
                         0,
                         0,
                         0,
-                        None,
+                        Some(reserved_jid1),
                         StreamingType::None,
                         None, // using
                     )
                     .await;
                 let (jid, job_res, _) = res.unwrap();
-                assert!(jid.value > 0);
+                assert_eq!(jid, reserved_jid1);
                 assert!(job_res.is_some());
-                // can find job in direct response type until completed
-                let job = app1
-                    .find_job(
-                        &job_res
-                            .clone()
-                            .and_then(|j| j.data.and_then(|d| d.job_id))
-                            .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                assert!(job.is_some());
-                let job = job.unwrap();
-                assert_eq!(job.id.as_ref().unwrap().value, jid.value);
-                assert_eq!(job.data.as_ref().unwrap().worker_id, Some(worker_id1));
-                assert_eq!(job.data.as_ref().unwrap().args, jargs1);
 
                 let job_res = job_res.unwrap();
-                assert_eq!(job_res.id.as_ref().unwrap().value, jid.value);
+                assert!(job_res.id.as_ref().unwrap().value > 0);
                 assert_eq!(
                     job_res.data.as_ref().unwrap().job_id,
                     Some(JobId { value: jid.value })
@@ -1574,25 +1571,36 @@ mod tests {
                     job_res.data.as_ref().unwrap().status,
                     ResultStatus::Success as i32
                 );
-                // check job processing status
-                // not running worker, only by complete_job()
-                assert_eq!(
-                    app1.job_processing_status_repository()
-                        .find_status(&jid)
-                        .await
-                        .unwrap(),
-                    Some(JobProcessingStatus::Pending)
-                );
                 (jid, job_res)
             });
             tokio::time::sleep(Duration::from_millis(200)).await;
+
+            // Verify job is visible in cache BEFORE complete_job (Direct jobs
+            // exist only in cache, and complete_job deletes them via cleanup_job)
+            let job = app.find_job(&reserved_jid).await?;
+            assert!(
+                job.is_some(),
+                "Direct job should be cached before completion"
+            );
+            let job = job.unwrap();
+            assert_eq!(job.id.as_ref().unwrap().value, reserved_jid.value);
+            assert_eq!(job.data.as_ref().unwrap().worker_id, Some(worker_id));
+            assert_eq!(job.data.as_ref().unwrap().args, jargs);
+            assert_eq!(
+                app.job_processing_status_repository()
+                    .find_status(&reserved_jid)
+                    .await
+                    .unwrap(),
+                Some(JobProcessingStatus::Pending)
+            );
+
             let rid = JobResultId {
                 value: app.id_generator().generate_id().unwrap(),
             };
             let result = JobResult {
                 id: Some(rid),
                 data: Some(JobResultData {
-                    job_id: Some(JobId { value: 1 }), // generated by mock generator
+                    job_id: Some(reserved_jid),
                     worker_id: Some(worker_id),
                     worker_name: wd.name.clone(),
                     args: jargs,
@@ -1626,6 +1634,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
 
             assert_eq!(&job_res, &result);
+            // After complete_job, cleanup_job deletes cache and status
             let job0 = app.find_job(&jid).await?;
             assert!(job0.is_none());
             assert_eq!(

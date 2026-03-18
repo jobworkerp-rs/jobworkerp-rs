@@ -175,9 +175,12 @@ The following table shows which RPCs to use depending on whether streaming is en
 | Non-streaming | `JobService.Enqueue` (uses `StreamingType::None`) | `JobResultService.Listen` or `FindListByJobId` | - |
 | Streaming (single client) | `JobService.EnqueueForStream` (uses `StreamingType::Response`) | Stream returned directly from `EnqueueForStream` | (Job) `streaming_type` = Response |
 | Streaming (multiple clients) | `JobService.Enqueue` or `EnqueueForStream` | `JobResultService.ListenStream` | (Worker) `broadcast_results=true`, (Job) `streaming_type` = Response or Internal |
+| **Client streaming + Direct** | **`JobService.EnqueueWithClientStream`** | **Response stream directly** | Runner `require_client_stream=true` |
+| **Client streaming + NoResult** | **`JobService.EnqueueWithClientStream`** | **`JobResultService.ListenStream` (separate client)** | Runner `require_client_stream=true`, (Worker) `broadcast_results=true` |
 
 - `Listen` called on a streaming job returns an error because streaming results cannot be collapsed into a single `JobResult` response. Use `ListenStream` instead.
 - `EnqueueForStream` returns the stream directly in its response, so a separate `ListenStream` call is not needed for the requesting client. However, when `broadcast_results=true`, additional clients can subscribe to the same streaming results via `ListenStream`.
+- `EnqueueWithClientStream` combines job enqueue and feed data delivery into a single bidirectional stream, eliminating the timing constraints of `FeedToStream`.
 
 ## Worker Pooling and use_static
 
@@ -190,7 +193,112 @@ When using `use_static=true` on workers (e.g., for local LLMs), the runner insta
 
 This ensures that heavy resources like local LLM models are not re-initialized for each job.
 
-## FeedToStream: Sending Data to Running Streaming Jobs
+## EnqueueWithClientStream: Client Streaming
+
+The `EnqueueWithClientStream` RPC combines job enqueue and client streaming data delivery into a single bidirectional gRPC stream. It resolves the constraints of the deprecated `FeedToStream` RPC.
+
+### Advantages over FeedToStream
+
+| FeedToStream constraint | EnqueueWithClientStream |
+|------------------------|------------------------|
+| Requires `use_static=true` | Not required |
+| Requires channel concurrency = 1 | Not required |
+| Requires job to be in `Running` status before feed | Automatic: enqueue and feed in single stream |
+| Separate Enqueue + Feed RPCs (race condition risk) | Single unified stream |
+| Scalable mode: Redis Pub/Sub (message loss risk) | Scalable mode: Redis List + BLPOP (no message loss) |
+
+### Protocol Definition
+
+```protobuf
+message ClientStreamRequest {
+  oneof request {
+    JobRequest job_request = 1;                   // First message: job enqueue request
+    jobworkerp.data.FeedDataTransport feed_data = 2;  // Subsequent: feed data chunks
+  }
+}
+
+// In JobService
+rpc EnqueueWithClientStream(stream ClientStreamRequest)
+    returns (stream jobworkerp.data.ResultOutputItem);
+```
+
+### Usage Flow
+
+#### Direct mode (`response_type=Direct`)
+
+The sending client directly receives the result stream.
+
+```text
+Client                                    Server
+  │                                          │
+  │─── ClientStreamRequest(job_request) ────>│  Job accepted
+  │<── [headers: x-job-id-bin, x-job-result-bin]
+  │<── ResultOutputItem(Data) ──────────────│  Initial output
+  │─── ClientStreamRequest(feed_data) ──────>│  Feed data
+  │<── ResultOutputItem(Data) ──────────────│  Intermediate output
+  │─── ClientStreamRequest(feed_data,        │
+  │         is_final=true) ─────────────────>│  Final feed data
+  │<── ResultOutputItem(End(trailer)) ──────│  Stream ends
+```
+
+#### NoResult mode (`response_type=NoResult`)
+
+The sending client only feeds data. A separate client receives results via `ListenStream`.
+
+```text
+Feed Client                               Server
+  │                                          │
+  │─── ClientStreamRequest(job_request) ────>│  Job accepted
+  │<── [headers: x-job-id-bin]               │
+  │─── ClientStreamRequest(feed_data) ──────>│  Feed data
+  │─── ClientStreamRequest(feed_data,        │
+  │         is_final=true) ─────────────────>│  Final feed data
+  │<── ResultOutputItem(End(trailer)) ──────│  Feed complete, stream ends
+
+Listener Client                            Server
+  │─── ListenStream(job_id, worker_id) ────>│  Subscribe to results
+  │<── ResultOutputItem(Data) ──────────────│
+  │<── ResultOutputItem(End(trailer)) ──────│
+```
+
+> **Note**: In NoResult mode, the gRPC response stream for the feed client does not complete until all feed data has been delivered (i.e., the client sends `is_final=true`). The feed client must complete sending all data before the stream ends, even though it does not receive result data.
+
+### `require_client_stream` Flag
+
+Runners that need client streaming input must set `require_client_stream=true` in their `MethodSchema`. This flag is validated by `check_worker_streaming`:
+
+- **EnqueueWithClientStream**: Requires `require_client_stream=true` on the runner method. Rejects if false.
+- **Enqueue / EnqueueForStream**: Rejects runners with `require_client_stream=true` (reverse guard). These runners must be invoked via `EnqueueWithClientStream`.
+
+### Data Transport
+
+- **Standalone mode**: Feed data is delivered via in-process `mpsc` channel (`ChanFeedSenderStore`). The gRPC handler waits for the Dispatcher to register the feed channel using `tokio::sync::Notify`.
+- **Scalable mode**: Feed data is pushed to a Redis List (`job_feed_buf:{job_id}`) via RPUSH. The worker's feed bridge reads via BLPOP. No message loss since the List buffers data.
+
+### Error Cases
+
+| Case | gRPC Status | Timing |
+|------|-------------|--------|
+| First message is not `job_request` | `INVALID_ARGUMENT` | Stream start |
+| Worker not found | `NOT_FOUND` | Stream start |
+| Runner does not support client streaming | `INVALID_ARGUMENT` | Stream start |
+| Runner does not support streaming output | `INVALID_ARGUMENT` | Stream start |
+| Feed channel dispatch timeout | `DEADLINE_EXCEEDED` | Before feed starts |
+| `job_request` sent after first message | `INVALID_ARGUMENT` | During feed |
+| Runner execution error | Status code per `ResultStatus` | During execution |
+| Client disconnect (no half-close) | Cancel notification to runner | Any time |
+
+### Configuration
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `JOB_QUEUE_FEED_DISPATCH_TIMEOUT` | `5000` | Maximum wait time for feed channel readiness (Standalone mode). In Scalable mode, used as Redis List TTL base. |
+
+## [Deprecated] FeedToStream: Sending Data to Running Streaming Jobs
+
+> **⚠ Deprecated**: `FeedToStream` is deprecated. Use `EnqueueWithClientStream` instead. `FeedToStream` will be removed in a future version.
+>
+> **Important**: In Scalable mode, `FeedToStream` is no longer functional. The underlying Redis Pub/Sub mechanism has been replaced by Redis List + BLPOP for `EnqueueWithClientStream`. In Standalone mode, `FeedToStream` continues to work.
 
 > **⚠ Deprecation Notice**: The current `FeedToStream` implementation uses unary RPCs to send individual data chunks, which is suboptimal for continuous data feeding scenarios. This will be replaced with **gRPC client streaming** in a future release to provide a more natural and efficient interface. The API and behavior described below are subject to change.
 
@@ -206,18 +314,20 @@ For a job to accept feed data, all of the following must be true:
 | `streaming_type != None` | Runner must be using `run_stream()` |
 | Worker has `use_static=true` | Runner instance must be pooled and persistent |
 | Channel concurrency = 1 | Feed target runner must be unambiguous (single host required) |
-| Runner method has `need_feed=true` | Runner must explicitly support feed |
+| Runner method has `require_client_stream=true` | Runner must explicitly support client streaming |
 
 ### Protocol
 
 ```protobuf
-// In JobService
-rpc FeedToStream(FeedToStreamRequest) returns (FeedToStreamResponse);
+// In JobService (deprecated)
+rpc FeedToStream(FeedToStreamRequest) returns (FeedToStreamResponse) {
+  option deprecated = true;
+}
 
 message FeedToStreamRequest {
-  jobworkerp.data.JobId job_id = 1;  // Target job (from EnqueueForStream response header)
-  bytes data = 2;                     // Feed data payload
-  bool is_final = 3;                  // Signal end of feed
+  jobworkerp.data.JobId job_id = 1;
+  bytes data = 2;
+  bool is_final = 3;
 }
 
 message FeedToStreamResponse {
@@ -239,8 +349,8 @@ message FeedToStreamResponse {
 
 ### Data Transport
 
-- **Scalable mode (Redis)**: Feed data is published via Redis Pub/Sub (`job_feed:{job_id}`), and a bridge task on the worker subscribes and forwards to the runner's `mpsc` channel.
 - **Standalone mode (Channel)**: Feed data is sent directly via an in-process `mpsc` channel stored in `ChanFeedSenderStore`.
+- **Scalable mode**: Not supported. Use `EnqueueWithClientStream` instead.
 
 ### Error Cases
 
@@ -249,12 +359,8 @@ message FeedToStreamResponse {
 | Job not found | `NOT_FOUND` |
 | Job not running | `FAILED_PRECONDITION` |
 | Job not streaming | `FAILED_PRECONDITION` |
-| Runner method lacks `need_feed=true` | `FAILED_PRECONDITION` |
+| Runner method lacks `require_client_stream=true` | `FAILED_PRECONDITION` |
 | Feed channel unavailable (job completed) | `INTERNAL` |
-
-> **Recommendation**: FeedToStream requires channel concurrency of 1 on a single host, so **Standalone mode is recommended**. While Scalable mode is supported via Redis Pub/Sub bridging, it adds latency and complexity. Use Standalone mode unless you have a specific reason to use Scalable mode.
-
-> **Note**: After sending `is_final=true`, the feed channel is closed. Subsequent `FeedToStream` calls will return an `INTERNAL` error. In Scalable mode, start receiving the stream from `EnqueueForStream` before sending feed data. Feed data sent before stream initialization may be lost due to Redis Pub/Sub characteristics.
 
 ## Implementation Notes
 
@@ -273,3 +379,50 @@ Each runner implementing streaming should provide a `collect_stream()` method in
 3. Returns the final collected bytes
 
 For example, an LLM runner might concatenate all token chunks, while a command runner might merge stdout/stderr appropriately.
+
+## Migration from FeedToStream to EnqueueWithClientStream
+
+### Why Migrate
+
+`FeedToStream` has several constraints that `EnqueueWithClientStream` eliminates:
+
+- **`use_static=true` no longer required**: Feed channel is bound per `job_id`, not per runner instance
+- **Channel concurrency=1 no longer required**: Job-level feed isolation removes the need for single-host constraint
+- **No race condition risk**: Enqueue and feed happen in a single stream, no timing coordination needed
+- **Scalable mode fully supported**: Redis List + BLPOP replaces Pub/Sub, eliminating message loss risk
+
+### Important Changes
+
+1. **Scalable mode**: `FeedToStream` no longer works in Scalable mode. Redis Pub/Sub has been replaced by Redis List + BLPOP.
+2. **Field rename**: `need_feed` → `require_client_stream` (proto field number unchanged, wire-compatible)
+3. **Trait rename**: `supports_feed()` → `supports_client_stream()`, `setup_feed_channel()` → `setup_client_stream_channel()`
+
+### Migration Steps
+
+1. Update runner's `need_feed=true` → `require_client_stream=true` (same proto field number, wire-compatible)
+2. Replace the two-step Enqueue + FeedToStream flow with single `EnqueueWithClientStream` stream
+3. Optionally relax `use_static=true` and concurrency=1 constraints if no longer needed
+
+### Code Example
+
+**Before (FeedToStream)**:
+```text
+1. EnqueueForStream(worker_id, args)
+   → job_id from x-job-id-bin header
+   → start receiving output stream
+2. FeedToStream(job_id, data_chunk_1, is_final=false)
+3. FeedToStream(job_id, data_chunk_2, is_final=false)
+4. FeedToStream(job_id, last_chunk, is_final=true)
+5. Receive remaining output + End trailer
+```
+
+**After (EnqueueWithClientStream)**:
+```text
+1. Open EnqueueWithClientStream stream
+2. Send ClientStreamRequest(job_request)
+   → receive x-job-id-bin header + start receiving output
+3. Send ClientStreamRequest(feed_data: chunk_1, is_final=false)
+4. Send ClientStreamRequest(feed_data: chunk_2, is_final=false)
+5. Send ClientStreamRequest(feed_data: last_chunk, is_final=true)
+6. Receive remaining output + End trailer
+```

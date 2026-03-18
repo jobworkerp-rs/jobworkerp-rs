@@ -127,7 +127,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                     proto::jobworkerp::data::MethodJsonSchema {
                         args_schema: plugin.arguments_schema(),
                         result_schema: plugin.output_json_schema(),
-                        feed_data_schema: None,
+                        client_stream_data_schema: None,
                     },
                 );
                 tracing::debug!(
@@ -479,21 +479,24 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         Ok(st)
     }
 
-    fn supports_feed(&self, using: Option<&str>) -> bool {
+    fn supports_client_stream(&self, using: Option<&str>) -> bool {
         let guard = block_on(self.variant.read());
         match &*guard {
             PluginRunnerVariant::Legacy(_) => false,
-            PluginRunnerVariant::MultiMethod(plugin) => plugin.supports_feed(using),
+            PluginRunnerVariant::MultiMethod(plugin) => plugin.supports_client_stream(using),
         }
     }
 
-    fn setup_feed_channel(&mut self, using: Option<&str>) -> Option<mpsc::Sender<FeedData>> {
+    fn setup_client_stream_channel(
+        &mut self,
+        using: Option<&str>,
+    ) -> Option<mpsc::Sender<FeedData>> {
         let mut guard = block_on(self.variant.write());
         match &mut *guard {
             PluginRunnerVariant::Legacy(_) => None,
             PluginRunnerVariant::MultiMethod(plugin) => {
                 // Plugin provides Sender<Vec<u8>>, bridge to Sender<FeedData>
-                plugin.setup_feed_channel(using).map(|raw_tx| {
+                plugin.setup_client_stream_channel(using).map(|raw_tx| {
                     let (feed_tx, mut feed_rx) = mpsc::channel::<FeedData>(32);
                     tokio::spawn(async move {
                         while let Some(feed) = feed_rx.recv().await {

@@ -319,17 +319,15 @@ impl MultiMethodPluginRunner for MyPlugin {
 }
 ```
 
-## Feed Support (FeedToStream)
+## Client Streaming Support (EnqueueWithClientStream)
 
-Plugins can accept additional data from clients during streaming execution via the `FeedToStream` gRPC RPC. This is useful for scenarios such as real-time audio processing where the client sends audio chunks while the runner processes and returns results.
+Plugins can accept additional data from clients during streaming execution via the `EnqueueWithClientStream` gRPC RPC. This is useful for scenarios such as real-time audio processing where the client sends audio chunks while the runner processes and returns results.
 
 ### Prerequisites
 
-For a plugin to support feed:
+For a plugin to support client streaming:
 
-- The worker must have `use_static=true` (runner instances are pooled)
-- The worker's channel concurrency must be 1
-- The plugin's `MethodSchema` must have `need_feed=true`
+- The plugin's `MethodSchema` must have `require_client_stream=true`
 
 ### Implementation
 
@@ -337,17 +335,17 @@ Override the following methods in `MultiMethodPluginRunner`:
 
 ```rust
 impl MultiMethodPluginRunner for MyFeedPlugin {
-    fn supports_feed(&self, _using: Option<&str>) -> bool {
+    fn supports_client_stream(&self, _using: Option<&str>) -> bool {
         true
     }
 
-    fn feed_data_proto(&self, _using: Option<&str>) -> Option<String> {
-        // Optional: protobuf schema for feed data
-        // Return None to treat feed data as raw bytes
+    fn client_stream_data_proto(&self, _using: Option<&str>) -> Option<String> {
+        // Optional: protobuf schema for client stream data
+        // Return None to treat data as raw bytes
         Some(r#"syntax = "proto3"; message AudioChunk { bytes pcm = 1; }"#.to_string())
     }
 
-    fn setup_feed_channel(
+    fn setup_client_stream_channel(
         &mut self,
         _using: Option<&str>,
     ) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
@@ -361,10 +359,10 @@ impl MultiMethodPluginRunner for MyFeedPlugin {
         schemas.insert("run".to_string(), proto::jobworkerp::data::MethodSchema {
             args_proto: "...".to_string(),
             result_proto: "...".to_string(),
-            description: Some("Feed-capable streaming method".to_string()),
+            description: Some("Client-streaming-capable method".to_string()),
             output_type: proto::jobworkerp::data::StreamingOutputType::Streaming as i32,
-            need_feed: true,        // Enables FeedToStream RPC
-            feed_data_proto: Some("...".to_string()), // Optional schema
+            require_client_stream: true,        // Enables EnqueueWithClientStream RPC
+            client_stream_data_proto: Some("...".to_string()), // Optional schema
         });
         schemas
     }
@@ -390,13 +388,13 @@ impl MultiMethodPluginRunner for MyFeedPlugin {
 
 ### How It Works
 
-1. `setup_feed_channel()` is called before `begin_stream()` — the plugin stores the `Receiver`
-2. Client sends feed data via `FeedToStream` RPC with the `job_id`
+1. `setup_client_stream_channel()` is called before `begin_stream()` — the plugin stores the `Receiver`
+2. Client sends data via `EnqueueWithClientStream` RPC
 3. Data arrives at the plugin's `mpsc::Receiver` (via direct channel or Redis bridge)
 4. Plugin reads from the receiver in `receive_stream()` using `try_recv()` (non-blocking) or `recv().await` (blocking)
 5. When `is_final=true` is sent, the channel's `Sender` is dropped, and `recv()` returns `None` / `try_recv()` returns `Disconnected`
 
-> **Important**: Feed data is delivered as `Vec<u8>` (not `FeedData`). The `is_final` flag is handled by the bridge layer — when `is_final=true`, the `Sender` is dropped, signaling end-of-feed to the plugin.
+> **Important**: Client stream data is delivered as `Vec<u8>`. The `is_final` flag is handled by the bridge layer — when `is_final=true`, the `Sender` is dropped, signaling end-of-stream to the plugin.
 
 ## Building
 
