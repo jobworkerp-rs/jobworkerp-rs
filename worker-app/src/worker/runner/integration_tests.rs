@@ -394,9 +394,9 @@ mod streaming_pool_guard_tests {
     }
 
     /// Verify that feed data injected during streaming is reflected in the output.
-    /// Uses HelloPlugin's "feed_hello" method which supports feed channels.
+    /// Uses HelloPlugin's "feed_hello" method which supports client stream channels.
     #[test]
-    fn test_feed_to_stream_with_hello_plugin() -> Result<()> {
+    fn test_client_stream_with_hello_plugin() -> Result<()> {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let runner_factory = create_runner_factory().await?;
 
