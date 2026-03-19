@@ -150,10 +150,16 @@ impl GrpcConnection {
         }
     }
 
-    pub async fn get_output_message_descriptor(
+    /// Resolve a method descriptor from the given method path, then extract a
+    /// message descriptor using the provided extractor function.
+    async fn get_method_message_descriptor<F>(
         &self,
         method_path: &str,
-    ) -> Result<MessageDescriptor> {
+        extractor: F,
+    ) -> Result<MessageDescriptor>
+    where
+        F: Fn(&prost_reflect::MethodDescriptor) -> MessageDescriptor,
+    {
         let (service_name, method_name) = Self::parse_method_path(method_path)?;
 
         if let Some(ref reflection_client) = self.reflection_client {
@@ -164,7 +170,7 @@ impl GrpcConnection {
             if let Some(service) = pool.get_service_by_name(&service_name)
                 && let Some(method) = service.methods().find(|m| m.name() == method_name)
             {
-                return Ok(method.output());
+                return Ok(extractor(&method));
             }
             Err(anyhow!(
                 "Method {} not found in service {}",
@@ -176,7 +182,7 @@ impl GrpcConnection {
                 if service.full_name() == service_name
                     && let Some(method) = service.methods().find(|m| m.name() == method_name)
                 {
-                    return Ok(method.output());
+                    return Ok(extractor(&method));
                 }
             }
             Err(anyhow!(
@@ -189,43 +195,20 @@ impl GrpcConnection {
         }
     }
 
+    pub async fn get_output_message_descriptor(
+        &self,
+        method_path: &str,
+    ) -> Result<MessageDescriptor> {
+        self.get_method_message_descriptor(method_path, |m| m.output())
+            .await
+    }
+
     pub async fn get_input_message_descriptor(
         &self,
         method_path: &str,
     ) -> Result<MessageDescriptor> {
-        let (service_name, method_name) = Self::parse_method_path(method_path)?;
-
-        if let Some(ref reflection_client) = self.reflection_client {
-            let pool = reflection_client
-                .get_service_with_dependencies(&service_name)
-                .await?;
-
-            if let Some(service) = pool.get_service_by_name(&service_name)
-                && let Some(method) = service.methods().find(|m| m.name() == method_name)
-            {
-                return Ok(method.input());
-            }
-            Err(anyhow!(
-                "Method {} not found in service {}",
-                method_name,
-                service_name
-            ))
-        } else if let Some(pool) = &self.descriptor_pool {
-            for service in pool.services() {
-                if service.full_name() == service_name
-                    && let Some(method) = service.methods().find(|m| m.name() == method_name)
-                {
-                    return Ok(method.input());
-                }
-            }
-            Err(anyhow!(
-                "Method {} not found in service {}",
-                method_name,
-                service_name
-            ))
-        } else {
-            Err(anyhow!("No reflection client or descriptor pool available"))
-        }
+        self.get_method_message_descriptor(method_path, |m| m.input())
+            .await
     }
 
     pub async fn json_to_protobuf(&self, method_path: &str, json_str: &str) -> Result<Vec<u8>> {

@@ -158,7 +158,7 @@ impl RunnerSpecFactory {
                 Some(Box::new(DockerRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::GrpcUnary) => {
-                // Deprecated: falls back to GRPC runner (unary method is default)
+                tracing::warn!("RunnerType::GrpcUnary is deprecated, use RunnerType::Grpc instead");
                 Some(Box::new(GrpcRunnerSpecImpl::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::HttpRequest) => {
