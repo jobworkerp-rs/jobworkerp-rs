@@ -340,17 +340,58 @@ impl GrpcConnection {
 
         let metadata_mut = request.metadata_mut();
         for (key, value) in req_metadata {
-            match MetadataValue::try_from(value.as_str()) {
-                Ok(val) => match tonic::metadata::MetadataKey::from_bytes(key.as_bytes()) {
-                    Ok(key) => {
-                        metadata_mut.insert(key, val);
+            if key.ends_with("-bin") {
+                // Binary metadata: value is base64-encoded, decode and insert as binary
+                // tonic's as_encoded_bytes() may omit padding, so use a pad-tolerant decoder
+                const PAD_INDIFFERENT: base64::engine::GeneralPurpose =
+                    base64::engine::GeneralPurpose::new(
+                        &base64::alphabet::STANDARD,
+                        base64::engine::GeneralPurposeConfig::new()
+                            .with_decode_padding_mode(
+                                base64::engine::DecodePaddingMode::Indifferent,
+                            ),
+                    );
+                match base64::Engine::decode(&PAD_INDIFFERENT, value) {
+                    Ok(decoded) => {
+                        match tonic::metadata::MetadataKey::<tonic::metadata::Binary>::from_bytes(
+                            key.as_bytes(),
+                        ) {
+                            Ok(k) => {
+                                metadata_mut
+                                    .insert_bin(k, MetadataValue::from_bytes(&decoded));
+                            }
+                            Err(_) => {
+                                tracing::warn!("Invalid binary metadata key: {}", key);
+                            }
+                        }
                     }
-                    _ => {
-                        tracing::warn!("Invalid metadata key: {}", key);
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to base64-decode binary metadata value for key {}: {}",
+                            key,
+                            e
+                        );
                     }
-                },
-                _ => {
-                    tracing::warn!("Invalid metadata value for key {}: {}", key, value);
+                }
+            } else {
+                match MetadataValue::try_from(value.as_str()) {
+                    Ok(val) => {
+                        match tonic::metadata::MetadataKey::from_bytes(key.as_bytes()) {
+                            Ok(key) => {
+                                metadata_mut.insert(key, val);
+                            }
+                            Err(_) => {
+                                tracing::warn!("Invalid metadata key: {}", key);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "Invalid metadata value for key {}: {}",
+                            key,
+                            value
+                        );
+                    }
                 }
             }
         }
@@ -474,6 +515,48 @@ mod tests {
             !result.contains_key("data-bin-bin"),
             "should not have double -bin suffix"
         );
+    }
+
+    #[test]
+    fn test_build_request_binary_metadata() {
+        use base64::Engine;
+        let conn = GrpcConnection::new();
+        let mut metadata = HashMap::new();
+        let original_bytes = b"hello binary";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(original_bytes);
+        metadata.insert("trace-bin".to_string(), encoded);
+        metadata.insert("x-custom".to_string(), "ascii-value".to_string());
+
+        let request = conn.build_request(vec![], &metadata);
+        let meta = request.metadata();
+
+        // Binary key should be retrievable via get_bin
+        let bin_val = meta.get_bin("trace-bin").expect("trace-bin should exist");
+        assert_eq!(bin_val.to_bytes().unwrap().as_ref(), original_bytes);
+
+        // ASCII key should be retrievable via get
+        let ascii_val = meta.get("x-custom").expect("x-custom should exist");
+        assert_eq!(ascii_val.to_str().unwrap(), "ascii-value");
+    }
+
+    #[test]
+    fn test_build_request_binary_metadata_roundtrip() {
+        // Simulate: server response metadata → hashmap → build_request
+        let mut server_meta = tonic::metadata::MetadataMap::new();
+        let original_bytes = b"\x00\x01\x02\xff";
+        server_meta.insert_bin(
+            "data-bin",
+            tonic::metadata::MetadataValue::from_bytes(original_bytes),
+        );
+        let hashmap = GrpcConnection::metadata_map_to_hashmap(&server_meta);
+
+        let conn = GrpcConnection::new();
+        let request = conn.build_request(vec![], &hashmap);
+        let bin_val = request
+            .metadata()
+            .get_bin("data-bin")
+            .expect("data-bin should exist");
+        assert_eq!(bin_val.to_bytes().unwrap().as_ref(), original_bytes);
     }
 
     #[test]
