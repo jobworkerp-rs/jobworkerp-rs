@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS `runner` (
     `name` TEXT NOT NULL UNIQUE,
     `description` TEXT NOT NULL,
     `definition` TEXT NOT NULL, -- runner definition (mcp definition or plugin file name)
-    `type` INT(10) NOT NULL, -- runner type. enum: command, request, grpc_unary, plugin
+    `type` INT(10) NOT NULL, -- runner type. enum: command, request, grpc_unary, docker, slack, python, grpc, plugin
     `created_at` BIGINT NOT NULL DEFAULT 0
 );
 
@@ -120,6 +120,10 @@ INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`definition`, `type`) 
   32769, 'WORKFLOW',
   'Unified workflow runner with multiple methods: run (execute workflow, default) and create (create workflow worker). Using defaults to run if not specified.',
   'builtin32769', 32769
+), (
+  32770, 'GRPC',
+  'Unified gRPC runner with multiple methods: unary (gRPC unary call, default) and streaming (gRPC server streaming call). Using defaults to unary if not specified.',
+  'builtin32770', 32770
 );
 
 

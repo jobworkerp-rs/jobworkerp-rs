@@ -42,7 +42,8 @@ enum RunnerType {
   // Makes HTTP requests to specified endpoints
   HTTP_REQUEST = 2;
 
-  // # gRPC Unary Runner
+  // # gRPC Unary Runner [DEPRECATED]
+  // Deprecated: Use GRPC runner with 'unary' method instead
   // Makes unary gRPC calls to specified services
   GRPC_UNARY = 3;
 
@@ -85,6 +86,13 @@ enum RunnerType {
   // - create: Create new workflow worker from definition
   // 'using' defaults to 'run' if not specified
   WORKFLOW = 32769;
+
+  // # GRPC Runner (Multi-method)
+  // Unified gRPC runner with 'unary' and 'streaming' methods
+  // - unary: gRPC unary call (default, equivalent to GRPC_UNARY)
+  // - streaming: gRPC server streaming call
+  // 'using' defaults to 'unary' if not specified
+  GRPC = 32770;
 
   // ============================================================
   // Legacy Runners (deprecated - use multi-method runners above)
