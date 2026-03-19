@@ -116,6 +116,9 @@ impl GrpcConnection {
                     json_body,
                 }
             }
+            // gRPC errors are wrapped in GrpcUnaryResult (not propagated as Err) so that
+            // the job system records the runner as "executed successfully" while the
+            // actual gRPC status is preserved in the result's code/message fields.
             Err(e) => {
                 tracing::warn!("grpc request error: {:?}", e);
                 if let Some(status) = e.downcast_ref::<tonic::Status>() {

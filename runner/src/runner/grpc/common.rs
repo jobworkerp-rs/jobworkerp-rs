@@ -100,7 +100,9 @@ impl GrpcConnection {
                 }
             } else {
                 let _ = rustls::crypto::ring::default_provider().install_default();
-                tls_config = tls_config.with_enabled_roots();
+                tls_config = tls_config
+                    .domain_name(Self::strip_scheme(host))
+                    .with_enabled_roots();
             }
 
             endpoint = endpoint.tls_config(tls_config)?;
@@ -284,7 +286,9 @@ impl GrpcConnection {
                     }
                 }
                 tonic::metadata::KeyAndValueRef::Binary(key, value) => {
-                    // key already includes the "-bin" suffix; as_encoded_bytes() returns base64
+                    // key already includes the "-bin" suffix (tonic restores it on iteration).
+                    // as_encoded_bytes() returns base64-encoded ASCII bytes, so
+                    // from_utf8_lossy is safe here (no replacement characters possible).
                     let value_str = String::from_utf8_lossy(value.as_encoded_bytes()).to_string();
                     result.insert(key.to_string(), value_str);
                 }
