@@ -22,6 +22,9 @@ pub mod jobworkerp {
                 .ok()
             }
         }
+        pub mod grpc {
+            tonic::include_proto!("jobworkerp.runner.grpc");
+        }
         pub mod llm {
             tonic::include_proto!("jobworkerp.runner.llm");
         }
