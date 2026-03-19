@@ -423,7 +423,9 @@ The following Runner Types are available:
 }
 ```
 
-### GRPC_UNARY - gRPC Unary Request
+### GRPC - gRPC Request (Multi-method)
+
+A multi-method runner supporting both unary and server streaming gRPC calls.
 
 **Runner Settings (settings_json):**
 ```json
@@ -436,7 +438,7 @@ The following Runner Types are available:
 }
 ```
 
-**Job Arguments (args_json):**
+**Job Arguments (args_json) - Unary (using: "unary", default):**
 ```json
 {
   "method": "example.v1.ExampleService/GetUser",
@@ -445,6 +447,18 @@ The following Runner Types are available:
     "authorization": "Bearer token"
   },
   "timeout": 10000
+}
+```
+
+**Job Arguments (args_json) - Server Streaming (using: "streaming"):**
+```json
+{
+  "method": "example.v1.ExampleService/ListUsers",
+  "request": "{\"page_size\": 10}",
+  "metadata": {
+    "authorization": "Bearer token"
+  },
+  "timeout": 30000
 }
 ```
 

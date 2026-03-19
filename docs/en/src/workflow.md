@@ -219,7 +219,7 @@ The jobworkerp-rs workflow DSL adopts the logic construction aspects of the offi
 
 **Not Adopted:**
 - **Scheduling & event-driven triggers**: The official `schedule` (cron, interval), `listen`/`emit` (CloudEvents-based event waiting/emission) are not supported. Job scheduling is handled by jobworkerp-rs's [periodic job execution feature](operations.md)
-- **External service calls (call task)**: The official specification standardizes HTTP, gRPC, AsyncAPI, and OpenAPI protocols via the `call` task. In jobworkerp-rs, these are executed through `run` task's function/runner/worker using built-in Runners (HTTP_REQUEST, GRPC_UNARY, etc.), MCP servers, or plugins
+- **External service calls (call task)**: The official specification standardizes HTTP, gRPC, AsyncAPI, and OpenAPI protocols via the `call` task. In jobworkerp-rs, these are executed through `run` task's function/runner/worker using built-in Runners (HTTP_REQUEST, GRPC, etc.), MCP servers, or plugins
 - **run.container / run.shell**: The official container execution (`run.container`) and shell command execution (`run.shell`) are not supported. Equivalent functionality is available through the DOCKER runner and COMMAND runner via `run.function`/`run.runner`
 - **run.workflow**: The official nested workflow execution (`run.workflow`) is not supported. Use the WORKFLOW runner via `run.function`/`run.runner` instead
 - **await / return**: The `await` (completion waiting) and `return` (stdout/stderr/code/all/none) properties of the official `run` task exist in the schema definition but are not implemented in the execution code
