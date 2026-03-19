@@ -415,7 +415,9 @@ USE_GRPC_WEB=true ./target/release/grpc-front
 }
 ```
 
-### GRPC_UNARY - gRPC Unary リクエスト
+### GRPC - gRPC リクエスト（multi-method: unary / streaming）
+
+> **Note:** `GRPC_UNARY` is deprecated. Use the `GRPC` runner with `using: "unary"` or `using: "streaming"` instead.
 
 **Runner Settings (settings_json):**
 ```json

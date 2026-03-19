@@ -102,7 +102,6 @@ pub mod common {
     /// Test runner types with limited cancellation support
     pub enum LimitedCancellationRunner {
         Mcp,
-        GrpcUnary,
         Slack,
     }
 
@@ -110,13 +109,12 @@ pub mod common {
         pub fn name(&self) -> &'static str {
             match self {
                 Self::Mcp => "MCP",
-                Self::GrpcUnary => "GRPC_UNARY",
                 Self::Slack => "SLACK",
             }
         }
 
         pub fn all() -> Vec<Self> {
-            vec![Self::Mcp, Self::GrpcUnary, Self::Slack]
+            vec![Self::Mcp, Self::Slack]
         }
     }
 }

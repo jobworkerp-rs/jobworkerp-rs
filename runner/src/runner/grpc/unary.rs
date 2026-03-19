@@ -135,6 +135,7 @@ impl GrpcConnection {
                         )),
                     }
                 } else {
+                    // Non-tonic errors (e.g. connection failures) have no gRPC details
                     GrpcUnaryResult {
                         metadata: HashMap::new(),
                         code: tonic::Code::Internal as i32,

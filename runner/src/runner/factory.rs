@@ -157,10 +157,6 @@ impl RunnerSpecFactory {
             Some(RunnerType::Docker) => {
                 Some(Box::new(DockerRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
-            Some(RunnerType::GrpcUnary) => {
-                tracing::warn!("RunnerType::GrpcUnary is deprecated, use RunnerType::Grpc instead");
-                Some(Box::new(GrpcRunnerSpecImpl::new()) as Box<dyn RunnerSpec + Send + Sync>)
-            }
             Some(RunnerType::HttpRequest) => {
                 Some(Box::new(RequestRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
@@ -253,15 +249,6 @@ mod test {
                 .active_plugin_info()
                 .len(),
             3 // Test, Hello, LegacyCompat (MistralLocalLLM moved to separate repository)
-        );
-        // from builtins (GRPC_UNARY is deprecated, falls back to GRPC runner)
-        assert_eq!(
-            runner_factory
-                .create_runner_spec_by_name(RunnerType::GrpcUnary.as_str_name(), false)
-                .await
-                .unwrap()
-                .name(),
-            "GRPC"
         );
         // from plugins
         assert_eq!(
