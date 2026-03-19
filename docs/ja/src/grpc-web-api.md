@@ -423,7 +423,9 @@ USE_GRPC_WEB=true ./target/release/grpc-front
 }
 ```
 
-### GRPC_UNARY - gRPC Unary リクエスト
+### GRPC - gRPCリクエスト（マルチメソッド）
+
+unaryおよびサーバストリーミングの両方のgRPC呼び出しをサポートするマルチメソッドランナーです。
 
 **Runner Settings (settings_json):**
 ```json
@@ -436,7 +438,7 @@ USE_GRPC_WEB=true ./target/release/grpc-front
 }
 ```
 
-**Job Arguments (args_json):**
+**Job Arguments (args_json) - Unary (using: "unary", デフォルト):**
 ```json
 {
   "method": "example.v1.ExampleService/GetUser",
@@ -445,6 +447,18 @@ USE_GRPC_WEB=true ./target/release/grpc-front
     "authorization": "Bearer token"
   },
   "timeout": 10000
+}
+```
+
+**Job Arguments (args_json) - サーバストリーミング (using: "streaming"):**
+```json
+{
+  "method": "example.v1.ExampleService/ListUsers",
+  "request": "{\"page_size\": 10}",
+  "metadata": {
+    "authorization": "Bearer token"
+  },
+  "timeout": 30000
 }
 ```
 

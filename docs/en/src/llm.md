@@ -34,7 +34,7 @@ The chat method supports providing tools to the LLM via FunctionSets. The `is_au
 ### FunctionSets
 
 Tools are organized by functionality using FunctionSets. Available built-in function sets correspond to runner types:
-- COMMAND, HTTP_REQUEST, GRPC_UNARY, DOCKER, etc.
+- COMMAND, HTTP_REQUEST, GRPC, DOCKER, etc.
 - MCP server tools
 
 For details on FunctionSet definition, management, and AutoSelection (automatic FunctionSet selection by LLM to reduce context usage), see [Function / FunctionSet](function.md).
