@@ -13,7 +13,7 @@
 //!
 //! * [`command`] - Runs shell commands
 //! * [`docker`] - Executes jobs in Docker containers
-//! * [`grpc_unary`] - Runs jobs via gRPC unary calls
+//! * [`grpc`] - Runs jobs via gRPC calls (unary and server streaming)
 //! * [`k8s_job`] - Manages Kubernetes jobs
 //! * [`llm`] - Integrates with LLM (Large Language Model) APIs
 //! * [`mcp`] - Manages jobs in a multi-cluster environment
@@ -64,7 +64,7 @@ pub mod create_workflow;
 pub mod docker;
 pub mod factory;
 pub mod function_set_selector;
-pub mod grpc_unary;
+pub mod grpc;
 pub mod k8s_job;
 pub mod llm;
 pub mod llm_chat;

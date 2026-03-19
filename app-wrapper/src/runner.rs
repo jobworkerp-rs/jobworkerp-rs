@@ -18,7 +18,7 @@ use jobworkerp_runner::runner::{
     cancellation::CancellableRunner,
     command::CommandRunnerImpl,
     docker::{DockerExecRunner, DockerRunner},
-    grpc_unary::GrpcUnaryRunner,
+    grpc::GrpcRunnerSpecImpl,
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
     request::RequestRunner,
@@ -92,7 +92,8 @@ impl RunnerFactory {
             ))
                 as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::GrpcUnary) => Some(Box::new(
-                GrpcUnaryRunner::new_with_cancel_monitoring(create_cancel_helper()),
+                // Deprecated: falls back to GRPC runner (unary method is default)
+                GrpcRunnerSpecImpl::new_with_cancel_monitoring(create_cancel_helper()),
             )
                 as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::HttpRequest) => Some(Box::new(
@@ -162,6 +163,11 @@ impl RunnerFactory {
                     as Box<dyn CancellableRunner + Send + Sync>)
             }
             // Unified multi-method runners
+            Some(RunnerType::Grpc) => Some(
+                Box::new(GrpcRunnerSpecImpl::new_with_cancel_monitoring(
+                    create_cancel_helper(),
+                )) as Box<dyn CancellableRunner + Send + Sync>,
+            ),
             Some(RunnerType::Llm) => {
                 Some(Box::new(LLMUnifiedRunnerImpl::new_with_cancel_monitoring(
                     self.app_module.clone(),

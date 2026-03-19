@@ -1,0 +1,27 @@
+syntax = "proto3";
+package jobworkerp.runner.grpc;
+
+// # GrpcStreamingResult
+// Aggregated result from a gRPC server streaming call.
+// Contains all messages collected from the stream.
+message GrpcStreamingResult {
+  // # Metadata
+  // Response metadata including trailers
+  map<string, string> metadata = 1;
+
+  // # Bodies
+  // All response messages collected from the stream (each element is protobuf binary)
+  repeated bytes bodies = 2;
+
+  // # Code
+  // gRPC status code (0 = OK, other values indicate errors)
+  int32 code = 3;
+
+  // # Message
+  // Error message if the stream ended with an error
+  optional string message = 4;
+
+  // # JsonBody
+  // JSON array string when as_json=true (e.g., "[{...},{...},...]")
+  optional string json_body = 5;
+}
