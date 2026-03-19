@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS `runner` (
     `name` TEXT NOT NULL UNIQUE,
     `description` TEXT NOT NULL,
     `definition` TEXT NOT NULL, -- runner definition (mcp definition or plugin file name)
-    `type` INT(10) NOT NULL, -- runner type. enum: command, request, grpc_unary, docker, slack, python, grpc, plugin
+    `type` INT(10) NOT NULL, -- runner type. enum: command, request, docker, slack, python, grpc, plugin
     `created_at` BIGINT NOT NULL DEFAULT 0
 );
 
@@ -76,10 +76,6 @@ INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`definition`, `type`) 
   2, 'HTTP_REQUEST',
   'Sends HTTP requests to specified URLs with configured methods, headers, and body content.',
   'builtin2', 2
-), (
-  3, 'GRPC_UNARY',
-  'Makes gRPC unary calls to specified services with configured methods, metadata, and request messages.',
-  'builtin3', 3
 ), (
   4, 'DOCKER',
   'Runs Docker containers with specified images, environment variables, and command arguments.',

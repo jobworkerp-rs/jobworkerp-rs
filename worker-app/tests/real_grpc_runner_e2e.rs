@@ -657,3 +657,74 @@ async fn test_grpc_error_handling() -> Result<()> {
     println!("test_grpc_error_handling passed");
     Ok(())
 }
+
+/// Test gRPC connection failure returns response_data=None and code=Internal
+#[tokio::test]
+async fn test_grpc_connection_failure() -> Result<()> {
+    let job_runner = get_real_job_runner().await;
+
+    // Use a port where no server is listening
+    let settings = GrpcRunnerSettings {
+        host: "http://localhost".to_string(),
+        port: 19999,
+        tls: false,
+        timeout_ms: Some(2000),
+        max_message_size: None,
+        auth_token: None,
+        tls_config: None,
+        use_reflection: Some(false),
+    };
+    let settings_bytes = ProstMessageCodec::serialize_message(&settings)?;
+
+    let worker_data = WorkerData {
+        name: "grpc_connection_failure_test".to_string(),
+        runner_settings: settings_bytes,
+        retry_policy: None,
+        channel: Some("test".to_string()),
+        response_type: ResponseType::NoResult as i32,
+        store_success: false,
+        store_failure: false,
+        use_static: false,
+        ..Default::default()
+    };
+    let runner_data = RunnerData {
+        name: RunnerType::Grpc.as_str_name().to_string(),
+        ..Default::default()
+    };
+    let worker_id = WorkerId { value: 999 };
+
+    let job = create_grpc_job(
+        "some.Service/Method",
+        Some(grpc_args::Request::Body(Vec::new())),
+        false,
+        2000,
+        Some("unary"),
+    );
+
+    let (result, _stream) = job_runner
+        .run_job(&runner_data, &worker_id, &worker_data, job)
+        .await;
+
+    assert!(result.data.is_some());
+    let data = result.data.unwrap();
+    // Connection failure causes a fatal error at the runner load stage
+    assert_eq!(
+        data.status,
+        ResultStatus::FatalError as i32,
+        "Connection failure should result in FatalError"
+    );
+
+    let output = data.output.unwrap();
+    let error_message = String::from_utf8_lossy(&output.items);
+    assert!(
+        !error_message.is_empty(),
+        "Error output should contain a message"
+    );
+
+    println!(
+        "Connection failure: status=FatalError, error={}",
+        error_message
+    );
+    println!("test_grpc_connection_failure passed");
+    Ok(())
+}

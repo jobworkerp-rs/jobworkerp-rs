@@ -91,13 +91,6 @@ impl RunnerFactory {
                 create_cancel_helper(),
             ))
                 as Box<dyn CancellableRunner + Send + Sync>),
-            Some(RunnerType::GrpcUnary) => {
-                tracing::warn!("RunnerType::GrpcUnary is deprecated, use RunnerType::Grpc instead");
-                Some(Box::new(GrpcRunnerSpecImpl::new_with_cancel_monitoring(
-                    create_cancel_helper(),
-                ))
-                    as Box<dyn CancellableRunner + Send + Sync>)
-            }
             Some(RunnerType::HttpRequest) => Some(Box::new(
                 RequestRunner::new_with_cancel_monitoring(create_cancel_helper()),
             )
