@@ -2,7 +2,9 @@ pub mod common;
 pub mod streaming;
 pub mod unary;
 
-use crate::jobworkerp::runner::grpc::{GrpcArgs, GrpcRunnerSettings, GrpcStreamingResult};
+use crate::jobworkerp::runner::grpc::{
+    GrpcArgs, GrpcRunnerSettings, GrpcStreamingResult, StreamBodies, grpc_streaming_result,
+};
 use crate::schema_to_json_string;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -111,12 +113,18 @@ fn build_streaming_result(
         .unwrap_or(tonic::Code::Ok as i32);
     let message = metadata.get("grpc-message").cloned();
 
+    let response_data = match json_body {
+        Some(json) => Some(grpc_streaming_result::ResponseData::JsonBody(json)),
+        None => Some(grpc_streaming_result::ResponseData::Bodies(StreamBodies {
+            items: bodies,
+        })),
+    };
+
     GrpcStreamingResult {
         metadata,
-        bodies,
         code,
         message,
-        json_body,
+        response_data,
     }
 }
 
