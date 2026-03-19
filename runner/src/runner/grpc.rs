@@ -77,6 +77,53 @@ impl Default for GrpcRunnerSpecImpl {
     }
 }
 
+/// Aggregate stream items into collected bodies and trailer metadata.
+async fn collect_stream_items(
+    stream: &mut BoxStream<'static, ResultOutputItem>,
+) -> (Vec<Vec<u8>>, HashMap<String, String>, Option<Vec<u8>>) {
+    let mut bodies: Vec<Vec<u8>> = Vec::new();
+    let mut metadata = HashMap::new();
+
+    while let Some(item) = stream.next().await {
+        match item.item {
+            Some(result_output_item::Item::Data(data)) => {
+                bodies.push(data);
+            }
+            Some(result_output_item::Item::End(trailer)) => {
+                metadata = trailer.metadata;
+                break;
+            }
+            Some(result_output_item::Item::FinalCollected(data)) => {
+                return (bodies, metadata, Some(data));
+            }
+            None => {}
+        }
+    }
+
+    (bodies, metadata, None)
+}
+
+/// Build GrpcStreamingResult from collected stream data.
+fn build_streaming_result(
+    bodies: Vec<Vec<u8>>,
+    metadata: HashMap<String, String>,
+    json_body: Option<String>,
+) -> GrpcStreamingResult {
+    let code = metadata
+        .get("grpc-status")
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(tonic::Code::Ok as i32);
+    let message = metadata.get("grpc-message").cloned();
+
+    GrpcStreamingResult {
+        metadata,
+        bodies,
+        code,
+        message,
+        json_body,
+    }
+}
+
 impl std::fmt::Display for GrpcRunnerSpecImpl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -147,40 +194,14 @@ impl RunnerSpec for GrpcRunnerSpecImpl {
         _using: Option<&str>,
     ) -> CollectStreamFuture {
         Box::pin(async move {
-            let mut bodies: Vec<Vec<u8>> = Vec::new();
-            let mut metadata = HashMap::new();
             let mut stream = stream;
+            let (bodies, metadata, final_collected) = collect_stream_items(&mut stream).await;
 
-            while let Some(item) = stream.next().await {
-                match item.item {
-                    Some(result_output_item::Item::Data(data)) => {
-                        bodies.push(data);
-                    }
-                    Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
-                        break;
-                    }
-                    Some(result_output_item::Item::FinalCollected(data)) => {
-                        return Ok((data, metadata));
-                    }
-                    None => {}
-                }
+            if let Some(data) = final_collected {
+                return Ok((data, metadata));
             }
 
-            // Extract gRPC status code and message from trailer metadata (preserve in map)
-            let code = metadata
-                .get("grpc-status")
-                .and_then(|v| v.parse::<i32>().ok())
-                .unwrap_or(tonic::Code::Ok as i32);
-            let message = metadata.get("grpc-message").cloned();
-
-            let result = GrpcStreamingResult {
-                metadata,
-                bodies,
-                code,
-                message,
-                json_body: None,
-            };
+            let result = build_streaming_result(bodies, metadata, None);
             let serialized = ProstMessageCodec::serialize_message(&result)?;
             Ok((serialized, result.metadata))
         })
@@ -209,31 +230,16 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
             match method {
                 METHOD_UNARY => self.connection.call_unary(&req, cancellation_token).await,
                 METHOD_STREAMING => {
-                    // For streaming via run(), collect all stream items into GrpcStreamingResult
-                    let stream = self
+                    let mut stream = self
                         .connection
                         .call_server_streaming(&req, cancellation_token)
                         .await?;
 
-                    // Collect stream items
-                    let mut bodies: Vec<Vec<u8>> = Vec::new();
-                    let mut trailer_metadata = HashMap::new();
-                    let mut stream = stream;
+                    let (bodies, trailer_metadata, final_collected) =
+                        collect_stream_items(&mut stream).await;
 
-                    while let Some(item) = stream.next().await {
-                        match item.item {
-                            Some(result_output_item::Item::Data(data)) => {
-                                bodies.push(data);
-                            }
-                            Some(result_output_item::Item::End(trailer)) => {
-                                trailer_metadata = trailer.metadata;
-                                break;
-                            }
-                            Some(result_output_item::Item::FinalCollected(data)) => {
-                                return Ok(data);
-                            }
-                            None => {}
-                        }
+                    if let Some(data) = final_collected {
+                        return Ok(data);
                     }
 
                     // Build JSON body if reflection is available and as_json is requested
@@ -264,20 +270,7 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
                         }
                     }
 
-                    // Extract gRPC status code and message from trailer metadata (preserve in map)
-                    let code = trailer_metadata
-                        .get("grpc-status")
-                        .and_then(|v| v.parse::<i32>().ok())
-                        .unwrap_or(tonic::Code::Ok as i32);
-                    let message = trailer_metadata.get("grpc-message").cloned();
-
-                    let result = GrpcStreamingResult {
-                        metadata: trailer_metadata,
-                        bodies,
-                        code,
-                        message,
-                        json_body,
-                    };
+                    let result = build_streaming_result(bodies, trailer_metadata, json_body);
                     Ok(ProstMessageCodec::serialize_message(&result)?)
                 }
                 _ => unreachable!(),

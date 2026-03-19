@@ -13,8 +13,8 @@ use jobworkerp_runner::jobworkerp::runner::grpc::{
 };
 use jobworkerp_runner::runner::FeedData;
 use proto::jobworkerp::data::{
-    Job, JobData, JobId, ResponseType, ResultStatus, RunnerData, RunnerType, WorkerData, WorkerId,
-    result_output_item,
+    Job, JobData, JobId, ResponseType, ResultStatus, RunnerData, RunnerType, StreamingType,
+    WorkerData, WorkerId, result_output_item,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -321,8 +321,7 @@ async fn test_grpc_streaming_via_run() -> Result<()> {
     );
 
     let mut streaming_job_data = job.data.clone().unwrap();
-    // streaming_type=STREAMING_TYPE_INTERNAL for run() with stream collection
-    streaming_job_data.streaming_type = 2;
+    streaming_job_data.streaming_type = StreamingType::Internal as i32;
     let streaming_job = Job {
         data: Some(streaming_job_data),
         ..job
@@ -408,9 +407,8 @@ async fn test_grpc_streaming_response() -> Result<()> {
         Some("streaming"),
     );
 
-    // Set streaming_type to RESPONSE for full streaming output
     let mut streaming_job_data = job.data.clone().unwrap();
-    streaming_job_data.streaming_type = 1;
+    streaming_job_data.streaming_type = StreamingType::Response as i32;
     let streaming_job = Job {
         data: Some(streaming_job_data),
         ..job
@@ -481,7 +479,7 @@ async fn test_grpc_streaming_via_run_without_reflection() -> Result<()> {
     );
 
     let mut streaming_job_data = job.data.clone().unwrap();
-    streaming_job_data.streaming_type = 2; // STREAMING_TYPE_INTERNAL
+    streaming_job_data.streaming_type = StreamingType::Internal as i32;
     let streaming_job = Job {
         data: Some(streaming_job_data),
         ..job
@@ -555,7 +553,7 @@ async fn test_grpc_streaming_response_without_reflection() -> Result<()> {
     );
 
     let mut streaming_job_data = job.data.clone().unwrap();
-    streaming_job_data.streaming_type = 1; // STREAMING_TYPE_RESPONSE
+    streaming_job_data.streaming_type = StreamingType::Response as i32;
     let streaming_job = Job {
         data: Some(streaming_job_data),
         ..job

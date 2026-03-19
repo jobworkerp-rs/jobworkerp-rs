@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use net_utils::grpc::RawBytesCodec;
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -27,33 +28,42 @@ impl GrpcConnection {
                 .max_encoding_message_size(size);
         }
 
-        client.ready().await.map_err(|e| {
-            tonic::Status::new(
-                tonic::Code::Unknown,
-                format!("Service was not ready: {e:?}"),
-            )
-        })?;
+        let method_path = GrpcConnection::normalize_method_path(&args.method)?;
 
-        let request_bytes = self
-            .prepare_request_bytes(&args.method, &args.request)
-            .await?;
-        let request_len = request_bytes.len();
-        let request = self.build_request(request_bytes, &args.metadata);
-        let method = GrpcConnection::normalize_method_path(&args.method)?;
+        // Prepare request (ready + serialization) and execute call within timeout/cancellation scope
+        let call_fut = async {
+            client.ready().await.map_err(|e| {
+                anyhow::anyhow!(tonic::Status::new(
+                    tonic::Code::Unknown,
+                    format!("Service was not ready: {e:?}"),
+                ))
+            })?;
 
-        tracing::debug!(
-            "Sending gRPC unary request to {}, payload size: {} bytes",
-            args.method,
-            request_len
-        );
+            let request_bytes = self
+                .prepare_request_bytes(&args.method, &args.request)
+                .await?;
+            let request_len = request_bytes.len();
+            let request = self.build_request(request_bytes, &args.metadata);
 
-        let response = if args.timeout > 0 {
+            tracing::debug!(
+                "Sending gRPC unary request to {}, payload size: {} bytes",
+                args.method,
+                request_len
+            );
+
+            client
+                .unary(request, method_path, codec)
+                .await
+                .inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
+                .map_err(Into::into)
+        };
+
+        let response: Result<tonic::Response<Vec<u8>>> = if args.timeout > 0 {
             let timeout_duration = Duration::from_millis(args.timeout as u64);
             tokio::select! {
-                timeout_result = tokio::time::timeout(timeout_duration, client.unary(request, method, codec)) => {
+                timeout_result = tokio::time::timeout(timeout_duration, call_fut) => {
                     timeout_result
-                        .map(|r| r.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e)))
-                        .map_err(|_| tonic::Status::new(tonic::Code::DeadlineExceeded, format!("Request timed out after {} ms", args.timeout)))?
+                        .map_err(|_| anyhow::anyhow!(tonic::Status::new(tonic::Code::DeadlineExceeded, format!("Request timed out after {} ms", args.timeout))))?
                 }
                 _ = cancellation_token.cancelled() => {
                     return Err(JobWorkerError::CancelledError("gRPC request was cancelled".to_string()).into());
@@ -61,8 +71,8 @@ impl GrpcConnection {
             }
         } else {
             tokio::select! {
-                response_result = client.unary(request, method, codec) => {
-                    response_result.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
+                response_result = call_fut => {
+                    response_result
                 }
                 _ = cancellation_token.cancelled() => {
                     return Err(JobWorkerError::CancelledError("gRPC request was cancelled".to_string()).into());
@@ -107,13 +117,23 @@ impl GrpcConnection {
                 }
             }
             Err(e) => {
-                tracing::warn!("grpc request error: status={:?}", e);
-                GrpcUnaryResult {
-                    metadata: GrpcConnection::metadata_map_to_hashmap(e.metadata()),
-                    body: e.details().to_vec(),
-                    code: e.code() as i32,
-                    message: Some(e.message().to_string()),
-                    json_body: None,
+                tracing::warn!("grpc request error: {:?}", e);
+                if let Some(status) = e.downcast_ref::<tonic::Status>() {
+                    GrpcUnaryResult {
+                        metadata: GrpcConnection::metadata_map_to_hashmap(status.metadata()),
+                        body: status.details().to_vec(),
+                        code: status.code() as i32,
+                        message: Some(status.message().to_string()),
+                        json_body: None,
+                    }
+                } else {
+                    GrpcUnaryResult {
+                        metadata: HashMap::new(),
+                        body: Vec::new(),
+                        code: tonic::Code::Internal as i32,
+                        message: Some(e.to_string()),
+                        json_body: None,
+                    }
                 }
             }
         };
