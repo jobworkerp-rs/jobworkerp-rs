@@ -10,6 +10,7 @@ use futures::StreamExt;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_runner::jobworkerp::runner::grpc::{
     GrpcArgs, GrpcRunnerSettings, GrpcStreamingResult, GrpcUnaryResult, grpc_args,
+    grpc_streaming_result, grpc_unary_result,
 };
 use jobworkerp_runner::runner::FeedData;
 use proto::jobworkerp::data::{
@@ -208,13 +209,17 @@ async fn test_grpc_unary_without_reflection() -> Result<()> {
     let grpc_result: GrpcUnaryResult = ProstMessageCodec::deserialize_message(&output.items)?;
 
     assert_eq!(grpc_result.code, tonic::Code::Ok as i32);
-    assert!(!grpc_result.body.is_empty());
+    let body = match &grpc_result.response_data {
+        Some(grpc_unary_result::ResponseData::Body(b)) => b.clone(),
+        other => panic!("Expected Body variant, got {:?}", other),
+    };
+    assert!(!body.is_empty());
     assert!(elapsed < Duration::from_secs(10));
 
     println!(
         "grpc unary result (no reflection): code={}, body_len={}",
         grpc_result.code,
-        grpc_result.body.len()
+        body.len()
     );
     println!("test_grpc_unary_without_reflection passed");
     Ok(())
@@ -252,13 +257,14 @@ async fn test_grpc_unary_with_reflection() -> Result<()> {
     let grpc_result: GrpcUnaryResult = ProstMessageCodec::deserialize_message(&output.items)?;
 
     assert_eq!(grpc_result.code, tonic::Code::Ok as i32);
-    assert!(!grpc_result.body.is_empty());
-    assert!(
-        grpc_result.json_body.is_some(),
-        "json_body should be set when as_json=true with reflection"
-    );
+    let json_body = match &grpc_result.response_data {
+        Some(grpc_unary_result::ResponseData::JsonBody(j)) => j.clone(),
+        other => panic!(
+            "Expected JsonBody variant when as_json=true with reflection, got {:?}",
+            other
+        ),
+    };
 
-    let json_body = grpc_result.json_body.unwrap();
     println!("grpc unary result (reflection): json_body={}", json_body);
 
     println!("test_grpc_unary_with_reflection passed");
@@ -361,16 +367,20 @@ async fn test_grpc_streaming_via_run() -> Result<()> {
                     tonic::Code::Ok as i32,
                     "Streaming result should have OK status"
                 );
+                let bodies = match &streaming_result.response_data {
+                    Some(grpc_streaming_result::ResponseData::Bodies(b)) => &b.items,
+                    other => panic!("Expected Bodies variant, got {:?}", other),
+                };
                 assert!(
-                    !streaming_result.bodies.is_empty(),
+                    !bodies.is_empty(),
                     "Streaming result should contain at least one body"
                 );
-                for (i, body) in streaming_result.bodies.iter().enumerate() {
+                for (i, body) in bodies.iter().enumerate() {
                     assert!(!body.is_empty(), "Body {} should not be empty", i);
                 }
                 println!(
                     "Collected streaming result: bodies={}, code={}",
-                    streaming_result.bodies.len(),
+                    bodies.len(),
                     streaming_result.code
                 );
                 got_final_collected = true;
@@ -514,14 +524,15 @@ async fn test_grpc_streaming_via_run_without_reflection() -> Result<()> {
                 let streaming_result: GrpcStreamingResult =
                     ProstMessageCodec::deserialize_message(&collected)?;
                 assert_eq!(streaming_result.code, tonic::Code::Ok as i32);
-                assert!(
-                    !streaming_result.bodies.is_empty(),
-                    "Should have collected bodies"
-                );
-                assert!(
-                    streaming_result.json_body.is_none(),
-                    "json_body should be None without reflection"
-                );
+                match &streaming_result.response_data {
+                    Some(grpc_streaming_result::ResponseData::Bodies(b)) => {
+                        assert!(!b.items.is_empty(), "Should have collected bodies");
+                    }
+                    Some(grpc_streaming_result::ResponseData::JsonBody(_)) => {
+                        panic!("json_body should not be set without reflection");
+                    }
+                    None => panic!("response_data should not be None"),
+                }
                 got_final_collected = true;
                 break;
             }
