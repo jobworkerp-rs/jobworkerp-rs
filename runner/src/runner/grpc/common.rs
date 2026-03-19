@@ -346,10 +346,9 @@ impl GrpcConnection {
                 const PAD_INDIFFERENT: base64::engine::GeneralPurpose =
                     base64::engine::GeneralPurpose::new(
                         &base64::alphabet::STANDARD,
-                        base64::engine::GeneralPurposeConfig::new()
-                            .with_decode_padding_mode(
-                                base64::engine::DecodePaddingMode::Indifferent,
-                            ),
+                        base64::engine::GeneralPurposeConfig::new().with_decode_padding_mode(
+                            base64::engine::DecodePaddingMode::Indifferent,
+                        ),
                     );
                 match base64::Engine::decode(&PAD_INDIFFERENT, value) {
                     Ok(decoded) => {
@@ -357,8 +356,7 @@ impl GrpcConnection {
                             key.as_bytes(),
                         ) {
                             Ok(k) => {
-                                metadata_mut
-                                    .insert_bin(k, MetadataValue::from_bytes(&decoded));
+                                metadata_mut.insert_bin(k, MetadataValue::from_bytes(&decoded));
                             }
                             Err(_) => {
                                 tracing::warn!("Invalid binary metadata key: {}", key);
@@ -375,22 +373,16 @@ impl GrpcConnection {
                 }
             } else {
                 match MetadataValue::try_from(value.as_str()) {
-                    Ok(val) => {
-                        match tonic::metadata::MetadataKey::from_bytes(key.as_bytes()) {
-                            Ok(key) => {
-                                metadata_mut.insert(key, val);
-                            }
-                            Err(_) => {
-                                tracing::warn!("Invalid metadata key: {}", key);
-                            }
+                    Ok(val) => match tonic::metadata::MetadataKey::from_bytes(key.as_bytes()) {
+                        Ok(key) => {
+                            metadata_mut.insert(key, val);
                         }
-                    }
+                        Err(_) => {
+                            tracing::warn!("Invalid metadata key: {}", key);
+                        }
+                    },
                     Err(_) => {
-                        tracing::warn!(
-                            "Invalid metadata value for key {}: {}",
-                            key,
-                            value
-                        );
+                        tracing::warn!("Invalid metadata value for key {}: {}", key, value);
                     }
                 }
             }
