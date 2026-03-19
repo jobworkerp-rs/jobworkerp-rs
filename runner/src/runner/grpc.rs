@@ -10,17 +10,13 @@ use common::GrpcConnection;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-#[allow(unused_imports)]
 use proto::jobworkerp::data::{
-    JobData, JobId, JobResult, ResultOutputItem, RunnerType, StreamingOutputType,
-    result_output_item,
+    ResultOutputItem, RunnerType, StreamingOutputType, result_output_item,
 };
 use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
 use super::CollectStreamFuture;
-#[allow(unused_imports)]
-use super::cancellation::CancelMonitoring;
 use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use super::{RunnerSpec, RunnerTrait};
 
