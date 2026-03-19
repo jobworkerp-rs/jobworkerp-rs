@@ -29,34 +29,42 @@ impl GrpcConnection {
                 .max_encoding_message_size(size);
         }
 
-        client.ready().await.map_err(|e| {
-            tonic::Status::new(
-                tonic::Code::Unknown,
-                format!("Service was not ready: {e:?}"),
-            )
-        })?;
+        let method_path = GrpcConnection::normalize_method_path(&args.method)?;
 
-        let request_bytes = self
-            .prepare_request_bytes(&args.method, &args.request)
-            .await?;
-        let request_len = request_bytes.len();
-        let request = self.build_request(request_bytes, &args.metadata);
-        let method = GrpcConnection::normalize_method_path(&args.method)?;
+        // Prepare request and initiate streaming call within timeout/cancellation scope
+        let call_fut = async {
+            client.ready().await.map_err(|e| {
+                anyhow::anyhow!(tonic::Status::new(
+                    tonic::Code::Unknown,
+                    format!("Service was not ready: {e:?}"),
+                ))
+            })?;
 
-        tracing::debug!(
-            "Sending gRPC server streaming request to {}, payload size: {} bytes",
-            args.method,
-            request_len
-        );
+            let request_bytes = self
+                .prepare_request_bytes(&args.method, &args.request)
+                .await?;
+            let request_len = request_bytes.len();
+            let request = self.build_request(request_bytes, &args.metadata);
 
-        // Initiate server streaming call with cancellation support
+            tracing::debug!(
+                "Sending gRPC server streaming request to {}, payload size: {} bytes",
+                args.method,
+                request_len
+            );
+
+            client
+                .server_streaming(request, method_path, codec)
+                .await
+                .inspect_err(|e| tracing::warn!("grpc streaming request error: status={:?}", e))
+                .map_err(|e| anyhow::anyhow!(e))
+        };
+
         let response = if args.timeout > 0 {
             let timeout_duration = Duration::from_millis(args.timeout as u64);
             tokio::select! {
-                timeout_result = tokio::time::timeout(timeout_duration, client.server_streaming(request, method, codec)) => {
+                timeout_result = tokio::time::timeout(timeout_duration, call_fut) => {
                     timeout_result
-                        .map(|r| r.inspect_err(|e| tracing::warn!("grpc streaming request error: status={:?}", e)))
-                        .map_err(|_| tonic::Status::new(tonic::Code::DeadlineExceeded, format!("Request timed out after {} ms", args.timeout)))?
+                        .map_err(|_| anyhow::anyhow!(tonic::Status::new(tonic::Code::DeadlineExceeded, format!("Request timed out after {} ms", args.timeout))))?
                 }
                 _ = cancellation_token.cancelled() => {
                     return Err(JobWorkerError::CancelledError("gRPC streaming request was cancelled".to_string()).into());
@@ -64,8 +72,8 @@ impl GrpcConnection {
             }
         } else {
             tokio::select! {
-                response_result = client.server_streaming(request, method, codec) => {
-                    response_result.inspect_err(|e| tracing::warn!("grpc streaming request error: status={:?}", e))
+                response_result = call_fut => {
+                    response_result
                 }
                 _ = cancellation_token.cancelled() => {
                     return Err(JobWorkerError::CancelledError("gRPC streaming request was cancelled".to_string()).into());
@@ -94,13 +102,15 @@ impl GrpcConnection {
                                         };
                                     }
                                     Ok(None) => {
-                                        // Stream ended normally
+                                        // Merge initial metadata with trailer (trailer wins on conflict)
+                                        let mut merged_metadata = initial_metadata.clone();
                                         let trailer_metadata = streaming.trailers().await
                                             .map(|t| t.map(|m| GrpcConnection::metadata_map_to_hashmap(&m)).unwrap_or_default())
                                             .unwrap_or_default();
+                                        merged_metadata.extend(trailer_metadata);
                                         yield ResultOutputItem {
                                             item: Some(result_output_item::Item::End(Trailer {
-                                                metadata: trailer_metadata,
+                                                metadata: merged_metadata,
                                             })),
                                         };
                                         break;
@@ -152,9 +162,9 @@ impl GrpcConnection {
 
                 Ok(Box::pin(stream) as BoxStream<'static, ResultOutputItem>)
             }
-            Err(status) => {
-                tracing::warn!("gRPC server streaming failed: status={:?}", status);
-                Err(status.into())
+            Err(e) => {
+                tracing::warn!("gRPC server streaming failed: {:?}", e);
+                Err(e)
             }
         }
     }

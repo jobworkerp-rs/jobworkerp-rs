@@ -1,6 +1,5 @@
 use crate::jobworkerp::runner::grpc::{GrpcRunnerSettings, grpc_args};
 use anyhow::{Result, anyhow};
-use base64::Engine;
 use command_utils::protobuf::ProtobufDescriptor;
 use net_utils::grpc::reflection::GrpcReflectionClient;
 use prost_reflect::{DescriptorPool, MessageDescriptor};
@@ -75,15 +74,21 @@ impl GrpcConnection {
             let mut tls_config = ClientTlsConfig::new();
 
             if let Some(tls_settings) = &settings.tls_config {
-                if !tls_settings.server_name_override.is_empty() {
-                    tls_config = tls_config.domain_name(tls_settings.server_name_override.clone());
+                let domain = if !tls_settings.server_name_override.is_empty() {
+                    tls_settings.server_name_override.clone()
                 } else {
-                    tls_config = tls_config.domain_name(host.clone());
-                }
+                    // Strip scheme prefix for SNI/certificate verification
+                    Self::strip_scheme(host)
+                };
+                tls_config = tls_config.domain_name(domain);
 
                 if !tls_settings.ca_cert_path.is_empty() {
                     let ca_cert = std::fs::read_to_string(&tls_settings.ca_cert_path)?;
                     tls_config = tls_config.ca_certificate(Certificate::from_pem(ca_cert));
+                } else {
+                    // Use system root CAs when no custom CA is specified
+                    let _ = rustls::crypto::ring::default_provider().install_default();
+                    tls_config = tls_config.with_enabled_roots();
                 }
 
                 if !tls_settings.client_cert_path.is_empty()
@@ -137,6 +142,14 @@ impl GrpcConnection {
             self.use_reflection
         );
         Ok(())
+    }
+
+    /// Strip http:// or https:// scheme prefix from a host string.
+    fn strip_scheme(host: &str) -> String {
+        host.strip_prefix("https://")
+            .or_else(|| host.strip_prefix("http://"))
+            .unwrap_or(host)
+            .to_string()
     }
 
     pub fn parse_method_path(method_path: &str) -> Result<(String, String)> {
@@ -271,9 +284,9 @@ impl GrpcConnection {
                     }
                 }
                 tonic::metadata::KeyAndValueRef::Binary(key, value) => {
-                    let value_str =
-                        base64::engine::general_purpose::STANDARD.encode(value.as_encoded_bytes());
-                    result.insert(format!("{key}-bin"), value_str);
+                    // key already includes the "-bin" suffix; as_encoded_bytes() returns base64
+                    let value_str = String::from_utf8_lossy(value.as_encoded_bytes()).to_string();
+                    result.insert(key.to_string(), value_str);
                 }
             }
         }
@@ -384,5 +397,87 @@ impl std::fmt::Debug for GrpcConnection {
 impl Default for GrpcConnection {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_scheme_https() {
+        assert_eq!(
+            GrpcConnection::strip_scheme("https://example.com"),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn test_strip_scheme_http() {
+        assert_eq!(
+            GrpcConnection::strip_scheme("http://example.com"),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn test_strip_scheme_none() {
+        assert_eq!(GrpcConnection::strip_scheme("example.com"), "example.com");
+    }
+
+    #[test]
+    fn test_parse_method_path_with_leading_slash() {
+        let (svc, method) = GrpcConnection::parse_method_path("/my.Service/MyMethod").unwrap();
+        assert_eq!(svc, "my.Service");
+        assert_eq!(method, "MyMethod");
+    }
+
+    #[test]
+    fn test_parse_method_path_without_leading_slash() {
+        let (svc, method) = GrpcConnection::parse_method_path("my.Service/MyMethod").unwrap();
+        assert_eq!(svc, "my.Service");
+        assert_eq!(method, "MyMethod");
+    }
+
+    #[test]
+    fn test_parse_method_path_invalid() {
+        assert!(GrpcConnection::parse_method_path("invalid").is_err());
+    }
+
+    #[test]
+    fn test_metadata_map_to_hashmap_ascii() {
+        let mut map = tonic::metadata::MetadataMap::new();
+        map.insert("content-type", "application/grpc".parse().unwrap());
+        let result = GrpcConnection::metadata_map_to_hashmap(&map);
+        assert_eq!(result.get("content-type").unwrap(), "application/grpc");
+    }
+
+    #[test]
+    fn test_metadata_map_to_hashmap_binary() {
+        let mut map = tonic::metadata::MetadataMap::new();
+        map.insert_bin(
+            "data-bin",
+            tonic::metadata::MetadataValue::from_bytes(b"hello"),
+        );
+        let result = GrpcConnection::metadata_map_to_hashmap(&map);
+        // Key should be "data-bin" (not "data-bin-bin")
+        assert!(
+            result.contains_key("data-bin"),
+            "key should be 'data-bin', got: {:?}",
+            result.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !result.contains_key("data-bin-bin"),
+            "should not have double -bin suffix"
+        );
+    }
+
+    #[test]
+    fn test_normalize_method_path() {
+        let p = GrpcConnection::normalize_method_path("my.Service/Method").unwrap();
+        assert_eq!(p.as_str(), "/my.Service/Method");
+
+        let p = GrpcConnection::normalize_method_path("/my.Service/Method").unwrap();
+        assert_eq!(p.as_str(), "/my.Service/Method");
     }
 }
