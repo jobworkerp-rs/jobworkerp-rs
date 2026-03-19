@@ -83,7 +83,7 @@ CREATE TABLE `runner` (
   `name` VARCHAR(128) NOT NULL, -- name for identification
   `description` TEXT NOT NULL, -- runner description
   `definition` TEXT NOT NULL, -- runner definition (mcp definition or plugin file name)
-  `type` INT(10) NOT NULL, -- runner type. enum: command, request, grpc_unary, plugin
+  `type` INT(10) NOT NULL, -- runner type. enum: command, request, grpc_unary, docker, slack, python, grpc, plugin
   `created_at` BIGINT(20) NOT NULL DEFAULT 0, -- record creation timestamp (milliseconds)
   UNIQUE KEY `name` (`name`),
   KEY `idx_runner_type` (`type`),
@@ -144,6 +144,10 @@ INSERT IGNORE INTO runner (id, name, description, definition, type) VALUES (
   32769, 'WORKFLOW',
   'Unified workflow runner with multiple methods: run (execute workflow, default) and create (create workflow worker). Using defaults to run if not specified.',
   'builtin32769', 32769
+), (
+  32770, 'GRPC',
+  'Unified gRPC runner with multiple methods: unary (gRPC unary call, default) and streaming (gRPC server streaming call). Using defaults to unary if not specified.',
+  'builtin32770', 32770
 );
 
 

@@ -18,7 +18,7 @@ use jobworkerp_runner::runner::{
     cancellation::CancellableRunner,
     command::CommandRunnerImpl,
     docker::{DockerExecRunner, DockerRunner},
-    grpc_unary::GrpcUnaryRunner,
+    grpc::GrpcRunnerSpecImpl,
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
     request::RequestRunner,
@@ -91,10 +91,13 @@ impl RunnerFactory {
                 create_cancel_helper(),
             ))
                 as Box<dyn CancellableRunner + Send + Sync>),
-            Some(RunnerType::GrpcUnary) => Some(Box::new(
-                GrpcUnaryRunner::new_with_cancel_monitoring(create_cancel_helper()),
-            )
-                as Box<dyn CancellableRunner + Send + Sync>),
+            Some(RunnerType::GrpcUnary) => {
+                tracing::warn!("RunnerType::GrpcUnary is deprecated, use RunnerType::Grpc instead");
+                Some(Box::new(GrpcRunnerSpecImpl::new_with_cancel_monitoring(
+                    create_cancel_helper(),
+                ))
+                    as Box<dyn CancellableRunner + Send + Sync>)
+            }
             Some(RunnerType::HttpRequest) => Some(Box::new(
                 RequestRunner::new_with_cancel_monitoring(create_cancel_helper()),
             )
@@ -162,6 +165,11 @@ impl RunnerFactory {
                     as Box<dyn CancellableRunner + Send + Sync>)
             }
             // Unified multi-method runners
+            Some(RunnerType::Grpc) => Some(
+                Box::new(GrpcRunnerSpecImpl::new_with_cancel_monitoring(
+                    create_cancel_helper(),
+                )) as Box<dyn CancellableRunner + Send + Sync>,
+            ),
             Some(RunnerType::Llm) => {
                 Some(Box::new(LLMUnifiedRunnerImpl::new_with_cancel_monitoring(
                     self.app_module.clone(),

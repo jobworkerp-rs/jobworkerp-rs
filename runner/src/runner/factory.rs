@@ -3,7 +3,7 @@ use super::{
     command::CommandRunnerImpl,
     docker::{DockerExecRunner, DockerRunner},
     function_set_selector::FunctionSetSelectorSpecImpl,
-    grpc_unary::GrpcUnaryRunner,
+    grpc::GrpcRunnerSpecImpl,
     llm::LLMCompletionRunnerSpecImpl,
     llm_chat::LLMChatRunnerSpecImpl,
     llm_unified::LLMUnifiedRunnerSpecImpl,
@@ -158,7 +158,8 @@ impl RunnerSpecFactory {
                 Some(Box::new(DockerRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::GrpcUnary) => {
-                Some(Box::new(GrpcUnaryRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
+                tracing::warn!("RunnerType::GrpcUnary is deprecated, use RunnerType::Grpc instead");
+                Some(Box::new(GrpcRunnerSpecImpl::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::HttpRequest) => {
                 Some(Box::new(RequestRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
@@ -190,6 +191,9 @@ impl RunnerSpecFactory {
                     as Box<dyn RunnerSpec + Send + Sync>)
             }
             // Unified multi-method runners
+            Some(RunnerType::Grpc) => {
+                Some(Box::new(GrpcRunnerSpecImpl::new()) as Box<dyn RunnerSpec + Send + Sync>)
+            }
             Some(RunnerType::Llm) => {
                 Some(Box::new(LLMUnifiedRunnerSpecImpl::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
@@ -250,14 +254,14 @@ mod test {
                 .len(),
             3 // Test, Hello, LegacyCompat (MistralLocalLLM moved to separate repository)
         );
-        // from builtins
+        // from builtins (GRPC_UNARY is deprecated, falls back to GRPC runner)
         assert_eq!(
             runner_factory
                 .create_runner_spec_by_name(RunnerType::GrpcUnary.as_str_name(), false)
                 .await
                 .unwrap()
                 .name(),
-            "GRPC_UNARY"
+            "GRPC"
         );
         // from plugins
         assert_eq!(
@@ -282,6 +286,24 @@ mod test {
             .await
             .unwrap();
         assert_eq!(runner.name(), "COMMAND");
+    }
+
+    #[tokio::test]
+    async fn test_create_grpc_runner() {
+        let runner_factory = RunnerSpecFactory::new(
+            Arc::new(Plugins::new()),
+            Arc::new(McpServerFactory::default()),
+        );
+        let runner = runner_factory
+            .create_runner_spec_by_name(RunnerType::Grpc.as_str_name(), false)
+            .await
+            .unwrap();
+        assert_eq!(runner.name(), "GRPC");
+
+        let methods = runner.method_proto_map();
+        assert!(methods.contains_key("unary"));
+        assert!(methods.contains_key("streaming"));
+        assert_eq!(methods.len(), 2);
     }
 
     #[tokio::test]

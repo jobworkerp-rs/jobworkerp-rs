@@ -1,0 +1,35 @@
+syntax = "proto3";
+package jobworkerp.runner.grpc;
+
+// # GrpcArgs
+// Arguments for gRPC calls (shared by unary and streaming methods).
+// Encapsulates all necessary information to make a gRPC call.
+message GrpcArgs {
+  // # Method
+  // Full method name in format "service/method" that identifies the gRPC endpoint
+  string method = 1;
+
+  // # Request
+  // Request payload: either raw protobuf binary or JSON string.
+  oneof request {
+    // Raw protobuf binary (non-reflection mode).
+    // Must be a pre-serialized protobuf message.
+    bytes body = 2;
+
+    // JSON string (reflection mode).
+    // Will be converted to protobuf message by the runner using reflection.
+    string json_body = 3;
+  }
+
+  // # Metadata
+  // Request metadata as key-value pairs to be sent with the gRPC call
+  map<string, string> metadata = 4;
+
+  // # Timeout
+  // Maximum time in milliseconds to wait for the request to complete
+  int64 timeout = 5;
+
+  // # AsJson
+  // When true, convert response body from binary protobuf to JSON using reflection
+  bool as_json = 6;
+}
