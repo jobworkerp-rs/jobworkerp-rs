@@ -838,14 +838,14 @@ mod test {
             let rdb_pool = if cfg!(feature = "mysql") {
                 let pool = setup_test_rdb_from("sql/mysql").await;
                 // delete only not built-in records
-                sqlx::query("DELETE FROM runner WHERE id > 100;")
+                sqlx::query("DELETE FROM runner WHERE id > 65535;")
                     .execute(pool)
                     .await?;
                 pool
             } else {
                 let pool = setup_test_rdb_from("sql/sqlite").await;
                 // delete only not built-in records
-                sqlx::query("DELETE FROM runner WHERE id > 100;")
+                sqlx::query("DELETE FROM runner WHERE id > 65535;")
                     .execute(pool)
                     .await?;
                 pool
@@ -1517,14 +1517,14 @@ mod test {
             let rdb_pool = if cfg!(feature = "mysql") {
                 let pool = setup_test_rdb_from("sql/mysql").await;
                 // delete only not built-in records
-                sqlx::query("DELETE FROM runner WHERE id > 100;")
+                sqlx::query("DELETE FROM runner WHERE id > 65535;")
                     .execute(pool)
                     .await?;
                 pool
             } else {
                 let pool = setup_test_rdb_from("sql/sqlite").await;
                 // delete only not built-in records
-                sqlx::query("DELETE FROM runner WHERE id > 100;")
+                sqlx::query("DELETE FROM runner WHERE id > 65535;")
                     .execute(pool)
                     .await?;
                 pool
