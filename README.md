@@ -224,7 +224,7 @@ Each feature requires setting necessary values in protobuf format for worker.run
 | COMMAND | Command execution | Executes shell commands | worker.runner_settings: command name, job.args: argument array |
 | PYTHON_COMMAND | Python execution | Executes Python scripts using uv | worker.runner_settings: uv environment settings, job.args: python script, input, etc. |
 | HTTP_REQUEST | HTTP requests | HTTP communication using reqwest | worker.runner_settings: base URL, job.args: headers, method, body, path, etc. |
-| GRPC_UNARY | gRPC communication | gRPC unary requests | worker.runner_settings: URL+path, job.args: protobuf encoded arguments |
+| GRPC | gRPC communication (multi-method) | gRPC unary/streaming requests | worker.runner_settings: URL+connection settings, job.args: method, request, metadata |
 | DOCKER | Docker container execution | Equivalent to docker run | worker.runner_settings: FromImage/Tag, job.args: Image/Cmd, etc. |
 | SLACK_POST_MESSAGE | Slack message posting | Posts messages to Slack channels | worker.runner_settings: Slack API settings, job.args: channel, message content, etc. |
 | LLM | LLM execution (multi-method) | Uses various LLMs via external servers | See [llm.md](docs/en/src/llm.md) for details |

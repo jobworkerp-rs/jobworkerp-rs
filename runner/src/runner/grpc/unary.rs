@@ -1,5 +1,5 @@
 use super::common::GrpcConnection;
-use crate::jobworkerp::runner::grpc::{GrpcArgs, GrpcUnaryResult};
+use crate::jobworkerp::runner::grpc::{GrpcArgs, GrpcUnaryResult, grpc_unary_result};
 use anyhow::{Result, anyhow};
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
@@ -84,36 +84,40 @@ impl GrpcConnection {
             Ok(response) => {
                 let metadata = GrpcConnection::metadata_map_to_hashmap(response.metadata());
                 let response_body = response.into_inner();
-                let mut json_body = None;
-
-                if args.as_json && self.use_reflection && self.reflection_client.is_some() {
+                let response_data = if args.as_json
+                    && self.use_reflection
+                    && self.reflection_client.is_some()
+                {
                     match self
                         .convert_response_to_json(&args.method, &response_body)
                         .await
                     {
                         Ok(json_str) => {
                             tracing::debug!("Converted response to JSON: {}", json_str);
-                            json_body = Some(json_str);
+                            Some(grpc_unary_result::ResponseData::JsonBody(json_str))
                         }
                         Err(e) => {
                             tracing::warn!(
                                 "Failed to convert response to JSON, using raw bytes: {}",
                                 e
                             );
+                            Some(grpc_unary_result::ResponseData::Body(response_body))
                         }
                     }
-                } else if args.as_json {
-                    tracing::warn!(
-                        "JSON conversion requested but reflection not available, returning raw bytes"
-                    );
-                }
+                } else {
+                    if args.as_json {
+                        tracing::warn!(
+                            "JSON conversion requested but reflection not available, returning raw bytes"
+                        );
+                    }
+                    Some(grpc_unary_result::ResponseData::Body(response_body))
+                };
 
                 GrpcUnaryResult {
                     metadata,
-                    body: response_body,
                     code: tonic::Code::Ok as i32,
                     message: None,
-                    json_body,
+                    response_data,
                 }
             }
             // gRPC errors are wrapped in GrpcUnaryResult (not propagated as Err) so that
@@ -124,27 +128,33 @@ impl GrpcConnection {
                 if let Some(status) = e.downcast_ref::<tonic::Status>() {
                     GrpcUnaryResult {
                         metadata: GrpcConnection::metadata_map_to_hashmap(status.metadata()),
-                        body: status.details().to_vec(),
                         code: status.code() as i32,
                         message: Some(status.message().to_string()),
-                        json_body: None,
+                        response_data: Some(grpc_unary_result::ResponseData::Body(
+                            status.details().to_vec(),
+                        )),
                     }
                 } else {
+                    // Non-tonic errors (e.g. connection failures) have no gRPC details
                     GrpcUnaryResult {
                         metadata: HashMap::new(),
-                        body: Vec::new(),
                         code: tonic::Code::Internal as i32,
                         message: Some(e.to_string()),
-                        json_body: None,
+                        response_data: None,
                     }
                 }
             }
         };
 
+        let body_size = match &res.response_data {
+            Some(grpc_unary_result::ResponseData::Body(b)) => b.len(),
+            Some(grpc_unary_result::ResponseData::JsonBody(j)) => j.len(),
+            None => 0,
+        };
         tracing::info!(
             "grpc unary runner completed: code={}, body_size={} bytes",
             res.code,
-            res.body.len()
+            body_size
         );
         tracing::debug!("grpc unary runner result detail: {:?}", &res);
         ProstMessageCodec::serialize_message(&res)

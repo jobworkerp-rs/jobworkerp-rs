@@ -838,14 +838,14 @@ mod test {
             let rdb_pool = if cfg!(feature = "mysql") {
                 let pool = setup_test_rdb_from("sql/mysql").await;
                 // delete only not built-in records
-                sqlx::query("DELETE FROM runner WHERE id > 100;")
+                sqlx::query("DELETE FROM runner WHERE id > 65535;")
                     .execute(pool)
                     .await?;
                 pool
             } else {
                 let pool = setup_test_rdb_from("sql/sqlite").await;
                 // delete only not built-in records
-                sqlx::query("DELETE FROM runner WHERE id > 100;")
+                sqlx::query("DELETE FROM runner WHERE id > 65535;")
                     .execute(pool)
                     .await?;
                 pool
@@ -1259,13 +1259,13 @@ mod test {
             RunnerType::HttpRequest as i32
         );
 
-        // Test 3: Filter by multiple types (COMMAND, HTTP_REQUEST, GRPC_UNARY)
+        // Test 3: Filter by multiple types (COMMAND, HTTP_REQUEST, GRPC)
         let results = repository
             .find_list_by(
                 vec![
                     RunnerType::Command as i32,
                     RunnerType::HttpRequest as i32,
-                    RunnerType::GrpcUnary as i32,
+                    RunnerType::Grpc as i32,
                 ],
                 None,
                 None,
@@ -1286,7 +1286,7 @@ mod test {
             assert!(
                 runner_type == RunnerType::Command as i32
                     || runner_type == RunnerType::HttpRequest as i32
-                    || runner_type == RunnerType::GrpcUnary as i32,
+                    || runner_type == RunnerType::Grpc as i32,
                 "Runner type should be one of the specified types"
             );
         }
@@ -1517,14 +1517,14 @@ mod test {
             let rdb_pool = if cfg!(feature = "mysql") {
                 let pool = setup_test_rdb_from("sql/mysql").await;
                 // delete only not built-in records
-                sqlx::query("DELETE FROM runner WHERE id > 100;")
+                sqlx::query("DELETE FROM runner WHERE id > 65535;")
                     .execute(pool)
                     .await?;
                 pool
             } else {
                 let pool = setup_test_rdb_from("sql/sqlite").await;
                 // delete only not built-in records
-                sqlx::query("DELETE FROM runner WHERE id > 100;")
+                sqlx::query("DELETE FROM runner WHERE id > 65535;")
                     .execute(pool)
                     .await?;
                 pool
