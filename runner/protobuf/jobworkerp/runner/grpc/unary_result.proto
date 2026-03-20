@@ -9,21 +9,21 @@ message GrpcUnaryResult {
     // Initial metadata (headers) received from the gRPC response
     map<string, string> metadata = 1;
 
-    // # Body
-    // Response payload containing the binary-encoded response message
-    bytes body = 2;
-
     // # Code
     // gRPC status code (0 = OK, other values indicate errors)
     // See: https://grpc.github.io/grpc/core/md_doc_statuscodes.html
-    int32 code = 3;
+    int32 code = 2;
 
     // # Message
     // Error message describing the result
-    optional string message = 4;
+    optional string message = 3;
 
-    // # JsonBody
-    // JSON-formatted response body when as_json flag is enabled
-    // Contains the same data as 'body' but in human-readable JSON format
-    optional string json_body = 5;
+    // # ResponseData
+    // Response payload: either binary protobuf or JSON string (mutually exclusive)
+    oneof response_data {
+        // Binary-encoded response message (default, or fallback when JSON conversion fails)
+        bytes body = 4;
+        // JSON-formatted response body (when as_json=true and reflection is available)
+        string json_body = 5;
+    }
 }

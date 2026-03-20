@@ -9,19 +9,25 @@ message GrpcStreamingResult {
   // Response metadata including trailers
   map<string, string> metadata = 1;
 
-  // # Bodies
-  // All response messages collected from the stream (each element is protobuf binary)
-  repeated bytes bodies = 2;
-
   // # Code
   // gRPC status code (0 = OK, other values indicate errors)
-  int32 code = 3;
+  int32 code = 2;
 
   // # Message
   // Error message if the stream ended with an error
-  optional string message = 4;
+  optional string message = 3;
 
-  // # JsonBody
-  // JSON array string when as_json=true (e.g., "[{...},{...},...]")
-  optional string json_body = 5;
+  // # ResponseData
+  // Response payload: either binary protobuf bodies or JSON string (mutually exclusive)
+  oneof response_data {
+    // All response messages collected from the stream (each element is protobuf binary)
+    StreamBodies bodies = 4;
+    // JSON array string when as_json=true (e.g., "[{...},{...},...]")
+    string json_body = 5;
+  }
+}
+
+// Wrapper for repeated bytes (oneof cannot contain repeated directly)
+message StreamBodies {
+  repeated bytes items = 1;
 }

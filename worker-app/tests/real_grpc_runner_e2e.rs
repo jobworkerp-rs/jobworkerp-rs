@@ -10,6 +10,7 @@ use futures::StreamExt;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_runner::jobworkerp::runner::grpc::{
     GrpcArgs, GrpcRunnerSettings, GrpcStreamingResult, GrpcUnaryResult, grpc_args,
+    grpc_streaming_result, grpc_unary_result,
 };
 use jobworkerp_runner::runner::FeedData;
 use proto::jobworkerp::data::{
@@ -208,13 +209,17 @@ async fn test_grpc_unary_without_reflection() -> Result<()> {
     let grpc_result: GrpcUnaryResult = ProstMessageCodec::deserialize_message(&output.items)?;
 
     assert_eq!(grpc_result.code, tonic::Code::Ok as i32);
-    assert!(!grpc_result.body.is_empty());
+    let body = match &grpc_result.response_data {
+        Some(grpc_unary_result::ResponseData::Body(b)) => b.clone(),
+        other => panic!("Expected Body variant, got {:?}", other),
+    };
+    assert!(!body.is_empty());
     assert!(elapsed < Duration::from_secs(10));
 
     println!(
         "grpc unary result (no reflection): code={}, body_len={}",
         grpc_result.code,
-        grpc_result.body.len()
+        body.len()
     );
     println!("test_grpc_unary_without_reflection passed");
     Ok(())
@@ -252,13 +257,14 @@ async fn test_grpc_unary_with_reflection() -> Result<()> {
     let grpc_result: GrpcUnaryResult = ProstMessageCodec::deserialize_message(&output.items)?;
 
     assert_eq!(grpc_result.code, tonic::Code::Ok as i32);
-    assert!(!grpc_result.body.is_empty());
-    assert!(
-        grpc_result.json_body.is_some(),
-        "json_body should be set when as_json=true with reflection"
-    );
+    let json_body = match &grpc_result.response_data {
+        Some(grpc_unary_result::ResponseData::JsonBody(j)) => j.clone(),
+        other => panic!(
+            "Expected JsonBody variant when as_json=true with reflection, got {:?}",
+            other
+        ),
+    };
 
-    let json_body = grpc_result.json_body.unwrap();
     println!("grpc unary result (reflection): json_body={}", json_body);
 
     println!("test_grpc_unary_with_reflection passed");
@@ -361,16 +367,20 @@ async fn test_grpc_streaming_via_run() -> Result<()> {
                     tonic::Code::Ok as i32,
                     "Streaming result should have OK status"
                 );
+                let bodies = match &streaming_result.response_data {
+                    Some(grpc_streaming_result::ResponseData::Bodies(b)) => &b.items,
+                    other => panic!("Expected Bodies variant, got {:?}", other),
+                };
                 assert!(
-                    !streaming_result.bodies.is_empty(),
+                    !bodies.is_empty(),
                     "Streaming result should contain at least one body"
                 );
-                for (i, body) in streaming_result.bodies.iter().enumerate() {
+                for (i, body) in bodies.iter().enumerate() {
                     assert!(!body.is_empty(), "Body {} should not be empty", i);
                 }
                 println!(
                     "Collected streaming result: bodies={}, code={}",
-                    streaming_result.bodies.len(),
+                    bodies.len(),
                     streaming_result.code
                 );
                 got_final_collected = true;
@@ -514,14 +524,15 @@ async fn test_grpc_streaming_via_run_without_reflection() -> Result<()> {
                 let streaming_result: GrpcStreamingResult =
                     ProstMessageCodec::deserialize_message(&collected)?;
                 assert_eq!(streaming_result.code, tonic::Code::Ok as i32);
-                assert!(
-                    !streaming_result.bodies.is_empty(),
-                    "Should have collected bodies"
-                );
-                assert!(
-                    streaming_result.json_body.is_none(),
-                    "json_body should be None without reflection"
-                );
+                match &streaming_result.response_data {
+                    Some(grpc_streaming_result::ResponseData::Bodies(b)) => {
+                        assert!(!b.items.is_empty(), "Should have collected bodies");
+                    }
+                    Some(grpc_streaming_result::ResponseData::JsonBody(_)) => {
+                        panic!("json_body should not be set without reflection");
+                    }
+                    None => panic!("response_data should not be None"),
+                }
                 got_final_collected = true;
                 break;
             }
@@ -644,5 +655,76 @@ async fn test_grpc_error_handling() -> Result<()> {
     );
 
     println!("test_grpc_error_handling passed");
+    Ok(())
+}
+
+/// Test gRPC connection failure returns response_data=None and code=Internal
+#[tokio::test]
+async fn test_grpc_connection_failure() -> Result<()> {
+    let job_runner = get_real_job_runner().await;
+
+    // Use a port where no server is listening
+    let settings = GrpcRunnerSettings {
+        host: "http://localhost".to_string(),
+        port: 19999,
+        tls: false,
+        timeout_ms: Some(2000),
+        max_message_size: None,
+        auth_token: None,
+        tls_config: None,
+        use_reflection: Some(false),
+    };
+    let settings_bytes = ProstMessageCodec::serialize_message(&settings)?;
+
+    let worker_data = WorkerData {
+        name: "grpc_connection_failure_test".to_string(),
+        runner_settings: settings_bytes,
+        retry_policy: None,
+        channel: Some("test".to_string()),
+        response_type: ResponseType::NoResult as i32,
+        store_success: false,
+        store_failure: false,
+        use_static: false,
+        ..Default::default()
+    };
+    let runner_data = RunnerData {
+        name: RunnerType::Grpc.as_str_name().to_string(),
+        ..Default::default()
+    };
+    let worker_id = WorkerId { value: 999 };
+
+    let job = create_grpc_job(
+        "some.Service/Method",
+        Some(grpc_args::Request::Body(Vec::new())),
+        false,
+        2000,
+        Some("unary"),
+    );
+
+    let (result, _stream) = job_runner
+        .run_job(&runner_data, &worker_id, &worker_data, job)
+        .await;
+
+    assert!(result.data.is_some());
+    let data = result.data.unwrap();
+    // Connection failure causes a fatal error at the runner load stage
+    assert_eq!(
+        data.status,
+        ResultStatus::FatalError as i32,
+        "Connection failure should result in FatalError"
+    );
+
+    let output = data.output.unwrap();
+    let error_message = String::from_utf8_lossy(&output.items);
+    assert!(
+        !error_message.is_empty(),
+        "Error output should contain a message"
+    );
+
+    println!(
+        "Connection failure: status=FatalError, error={}",
+        error_message
+    );
+    println!("test_grpc_connection_failure passed");
     Ok(())
 }
