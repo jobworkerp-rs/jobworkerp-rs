@@ -28,7 +28,11 @@ impl GrpcConnection {
                 .max_encoding_message_size(size);
         }
 
-        let method_path = GrpcConnection::normalize_method_path(&args.method)?;
+        let method = self.resolve_effective_method(&args.method)?;
+        let method_path = GrpcConnection::normalize_method_path(&method)?;
+        let metadata = self.resolve_effective_metadata(&args.metadata);
+        let timeout = self.resolve_effective_timeout(&args.timeout);
+        let as_json = self.resolve_effective_as_json(&args.as_json);
 
         // Prepare request (ready + serialization) and execute call within timeout/cancellation scope
         let call_fut = async {
@@ -39,15 +43,13 @@ impl GrpcConnection {
                 ))
             })?;
 
-            let request_bytes = self
-                .prepare_request_bytes(&args.method, &args.request)
-                .await?;
+            let request_bytes = self.prepare_request_bytes(&method, &args.request).await?;
             let request_len = request_bytes.len();
-            let request = self.build_request(request_bytes, &args.metadata);
+            let request = self.build_request(request_bytes, &metadata);
 
             tracing::debug!(
                 "Sending gRPC unary request to {}, payload size: {} bytes",
-                args.method,
+                method,
                 request_len
             );
 
@@ -58,12 +60,12 @@ impl GrpcConnection {
                 .map_err(Into::into)
         };
 
-        let response: Result<tonic::Response<Vec<u8>>> = if args.timeout > 0 {
-            let timeout_duration = Duration::from_millis(args.timeout as u64);
+        let response: Result<tonic::Response<Vec<u8>>> = if timeout > 0 {
+            let timeout_duration = Duration::from_millis(timeout as u64);
             tokio::select! {
                 timeout_result = tokio::time::timeout(timeout_duration, call_fut) => {
                     timeout_result
-                        .map_err(|_| anyhow::anyhow!(tonic::Status::new(tonic::Code::DeadlineExceeded, format!("Request timed out after {} ms", args.timeout))))?
+                        .map_err(|_| anyhow::anyhow!(tonic::Status::new(tonic::Code::DeadlineExceeded, format!("Request timed out after {} ms", timeout))))?
                 }
                 _ = cancellation_token.cancelled() => {
                     return Err(JobWorkerError::CancelledError("gRPC request was cancelled".to_string()).into());
@@ -84,14 +86,11 @@ impl GrpcConnection {
             Ok(response) => {
                 let metadata = GrpcConnection::metadata_map_to_hashmap(response.metadata());
                 let response_body = response.into_inner();
-                let response_data = if args.as_json
+                let response_data = if as_json
                     && self.use_reflection
                     && self.reflection_client.is_some()
                 {
-                    match self
-                        .convert_response_to_json(&args.method, &response_body)
-                        .await
-                    {
+                    match self.convert_response_to_json(&method, &response_body).await {
                         Ok(json_str) => {
                             tracing::debug!("Converted response to JSON: {}", json_str);
                             Some(grpc_unary_result::ResponseData::JsonBody(json_str))
@@ -105,7 +104,7 @@ impl GrpcConnection {
                         }
                     }
                 } else {
-                    if args.as_json {
+                    if as_json {
                         tracing::warn!(
                             "JSON conversion requested but reflection not available, returning raw bytes"
                         );

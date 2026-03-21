@@ -29,7 +29,10 @@ impl GrpcConnection {
                 .max_encoding_message_size(size);
         }
 
-        let method_path = GrpcConnection::normalize_method_path(&args.method)?;
+        let method = self.resolve_effective_method(&args.method)?;
+        let method_path = GrpcConnection::normalize_method_path(&method)?;
+        let metadata = self.resolve_effective_metadata(&args.metadata);
+        let timeout = self.resolve_effective_timeout(&args.timeout);
 
         // Prepare request and initiate streaming call within timeout/cancellation scope
         let call_fut = async {
@@ -40,15 +43,13 @@ impl GrpcConnection {
                 ))
             })?;
 
-            let request_bytes = self
-                .prepare_request_bytes(&args.method, &args.request)
-                .await?;
+            let request_bytes = self.prepare_request_bytes(&method, &args.request).await?;
             let request_len = request_bytes.len();
-            let request = self.build_request(request_bytes, &args.metadata);
+            let request = self.build_request(request_bytes, &metadata);
 
             tracing::debug!(
                 "Sending gRPC server streaming request to {}, payload size: {} bytes",
-                args.method,
+                method,
                 request_len
             );
 
@@ -59,12 +60,12 @@ impl GrpcConnection {
                 .map_err(|e| anyhow::anyhow!(e))
         };
 
-        let response = if args.timeout > 0 {
-            let timeout_duration = Duration::from_millis(args.timeout as u64);
+        let response = if timeout > 0 {
+            let timeout_duration = Duration::from_millis(timeout as u64);
             tokio::select! {
                 timeout_result = tokio::time::timeout(timeout_duration, call_fut) => {
                     timeout_result
-                        .map_err(|_| anyhow::anyhow!(tonic::Status::new(tonic::Code::DeadlineExceeded, format!("Request timed out after {} ms", args.timeout))))?
+                        .map_err(|_| anyhow::anyhow!(tonic::Status::new(tonic::Code::DeadlineExceeded, format!("Request timed out after {} ms", timeout))))?
                 }
                 _ = cancellation_token.cancelled() => {
                     return Err(JobWorkerError::CancelledError("gRPC streaming request was cancelled".to_string()).into());

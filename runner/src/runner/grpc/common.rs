@@ -23,6 +23,14 @@ pub struct GrpcConnection {
     pub(crate) max_message_size: Option<usize>,
     pub(crate) auth_token: Option<String>,
     pub(crate) use_reflection: bool,
+    /// Default gRPC method from settings (takes priority over args method)
+    pub(crate) settings_method: Option<String>,
+    /// Default metadata from settings (takes priority over args metadata when non-empty)
+    pub(crate) settings_metadata: HashMap<String, String>,
+    /// Default timeout from settings (takes priority over args timeout)
+    pub(crate) settings_timeout: Option<i64>,
+    /// Default as_json from settings (takes priority over args as_json)
+    pub(crate) settings_as_json: Option<bool>,
 }
 
 impl GrpcConnection {
@@ -34,6 +42,10 @@ impl GrpcConnection {
             max_message_size: None,
             auth_token: None,
             use_reflection: false,
+            settings_method: None,
+            settings_metadata: HashMap::new(),
+            settings_timeout: None,
+            settings_as_json: None,
         }
     }
 
@@ -45,6 +57,10 @@ impl GrpcConnection {
         self.max_message_size = None;
         self.auth_token = None;
         self.use_reflection = false;
+        self.settings_method = None;
+        self.settings_metadata = HashMap::new();
+        self.settings_timeout = None;
+        self.settings_as_json = None;
     }
 
     pub async fn create(&mut self, settings: &GrpcRunnerSettings) -> Result<()> {
@@ -111,6 +127,10 @@ impl GrpcConnection {
         let channel = endpoint.connect().await?;
 
         self.use_reflection = settings.use_reflection.unwrap_or(false);
+        self.settings_method = settings.method.clone();
+        self.settings_metadata = settings.metadata.clone();
+        self.settings_timeout = settings.timeout;
+        self.settings_as_json = settings.as_json;
 
         if self.use_reflection {
             let reflection_channel = channel.clone();
@@ -144,6 +164,41 @@ impl GrpcConnection {
             self.use_reflection
         );
         Ok(())
+    }
+
+    /// Resolve the effective gRPC method: settings_method takes priority over args_method.
+    pub fn resolve_effective_method(&self, args_method: &Option<String>) -> Result<String> {
+        if let Some(ref m) = self.settings_method {
+            return Ok(m.clone());
+        }
+        match args_method {
+            Some(m) if !m.is_empty() => Ok(m.clone()),
+            _ => Err(anyhow!(
+                "No gRPC method specified: set method in GrpcRunnerSettings or GrpcArgs"
+            )),
+        }
+    }
+
+    /// Resolve effective metadata: settings_metadata takes priority when non-empty.
+    pub fn resolve_effective_metadata(
+        &self,
+        args_metadata: &HashMap<String, String>,
+    ) -> HashMap<String, String> {
+        if !self.settings_metadata.is_empty() {
+            self.settings_metadata.clone()
+        } else {
+            args_metadata.clone()
+        }
+    }
+
+    /// Resolve effective timeout: settings_timeout takes priority over args_timeout.
+    pub fn resolve_effective_timeout(&self, args_timeout: &Option<i64>) -> i64 {
+        self.settings_timeout.or(*args_timeout).unwrap_or(0)
+    }
+
+    /// Resolve effective as_json: settings_as_json takes priority over args_as_json.
+    pub fn resolve_effective_as_json(&self, args_as_json: &Option<bool>) -> bool {
+        self.settings_as_json.or(*args_as_json).unwrap_or(false)
     }
 
     /// Strip http:// or https:// scheme prefix from a host string.
@@ -427,6 +482,10 @@ impl std::fmt::Debug for GrpcConnection {
                 &self.auth_token.as_ref().map(|_| "[REDACTED]"),
             )
             .field("use_reflection", &self.use_reflection)
+            .field("settings_method", &self.settings_method)
+            .field("settings_metadata", &self.settings_metadata)
+            .field("settings_timeout", &self.settings_timeout)
+            .field("settings_as_json", &self.settings_as_json)
             .finish()
     }
 }
@@ -549,6 +608,111 @@ mod tests {
             .get_bin("data-bin")
             .expect("data-bin should exist");
         assert_eq!(bin_val.to_bytes().unwrap().as_ref(), original_bytes);
+    }
+
+    #[test]
+    fn test_resolve_effective_method_both_set_settings_wins() {
+        let mut conn = GrpcConnection::new();
+        conn.settings_method = Some("settings.Service/Method".to_string());
+        let result = conn
+            .resolve_effective_method(&Some("args.Service/Method".to_string()))
+            .unwrap();
+        assert_eq!(result, "settings.Service/Method");
+    }
+
+    #[test]
+    fn test_resolve_effective_method_settings_only() {
+        let mut conn = GrpcConnection::new();
+        conn.settings_method = Some("settings.Service/Method".to_string());
+        let result = conn.resolve_effective_method(&None).unwrap();
+        assert_eq!(result, "settings.Service/Method");
+    }
+
+    #[test]
+    fn test_resolve_effective_method_args_only() {
+        let conn = GrpcConnection::new();
+        let result = conn
+            .resolve_effective_method(&Some("args.Service/Method".to_string()))
+            .unwrap();
+        assert_eq!(result, "args.Service/Method");
+    }
+
+    #[test]
+    fn test_resolve_effective_method_neither_set() {
+        let conn = GrpcConnection::new();
+        let result = conn.resolve_effective_method(&None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No gRPC method"));
+    }
+
+    #[test]
+    fn test_resolve_effective_method_args_empty_string() {
+        let conn = GrpcConnection::new();
+        let result = conn.resolve_effective_method(&Some("".to_string()));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No gRPC method"));
+    }
+
+    #[test]
+    fn test_resolve_effective_metadata_settings_wins() {
+        let mut conn = GrpcConnection::new();
+        conn.settings_metadata = HashMap::from([("key".to_string(), "settings_val".to_string())]);
+        let args_meta = HashMap::from([("key".to_string(), "args_val".to_string())]);
+        let result = conn.resolve_effective_metadata(&args_meta);
+        assert_eq!(result.get("key").unwrap(), "settings_val");
+    }
+
+    #[test]
+    fn test_resolve_effective_metadata_args_fallback() {
+        let conn = GrpcConnection::new();
+        let args_meta = HashMap::from([("key".to_string(), "args_val".to_string())]);
+        let result = conn.resolve_effective_metadata(&args_meta);
+        assert_eq!(result.get("key").unwrap(), "args_val");
+    }
+
+    #[test]
+    fn test_resolve_effective_metadata_both_empty() {
+        let conn = GrpcConnection::new();
+        let result = conn.resolve_effective_metadata(&HashMap::new());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_effective_timeout_settings_wins() {
+        let mut conn = GrpcConnection::new();
+        conn.settings_timeout = Some(5000);
+        assert_eq!(conn.resolve_effective_timeout(&Some(3000)), 5000);
+    }
+
+    #[test]
+    fn test_resolve_effective_timeout_args_fallback() {
+        let conn = GrpcConnection::new();
+        assert_eq!(conn.resolve_effective_timeout(&Some(3000)), 3000);
+    }
+
+    #[test]
+    fn test_resolve_effective_timeout_both_none() {
+        let conn = GrpcConnection::new();
+        assert_eq!(conn.resolve_effective_timeout(&None), 0);
+    }
+
+    #[test]
+    fn test_resolve_effective_as_json_settings_wins() {
+        let mut conn = GrpcConnection::new();
+        conn.settings_as_json = Some(true);
+        assert!(conn.resolve_effective_as_json(&Some(false)));
+    }
+
+    #[test]
+    fn test_resolve_effective_as_json_args_fallback() {
+        let conn = GrpcConnection::new();
+        assert!(conn.resolve_effective_as_json(&Some(true)));
+    }
+
+    #[test]
+    fn test_resolve_effective_as_json_both_none() {
+        let conn = GrpcConnection::new();
+        assert!(!conn.resolve_effective_as_json(&None));
     }
 
     #[test]

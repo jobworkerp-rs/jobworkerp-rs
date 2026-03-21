@@ -434,9 +434,22 @@ A multi-method runner supporting both unary and server streaming gRPC calls.
   "port": 9090,
   "tls": false,
   "timeout_ms": 30000,
-  "use_reflection": true
+  "use_reflection": true,
+  "method": "example.v1.ExampleService/GetUser",
+  "metadata": {
+    "authorization": "Bearer token"
+  },
+  "timeout": 10000,
+  "as_json": true
 }
 ```
+
+The following fields can be set as defaults in runner settings. When set, they take priority over the corresponding fields in job arguments (GrpcArgs):
+
+- `method` (optional): Default gRPC method in "service/method" format. Useful when a worker always calls the same endpoint.
+- `metadata` (optional): Default request metadata as key-value pairs. When non-empty, overrides args metadata entirely.
+- `timeout` (optional): Default request timeout in milliseconds.
+- `as_json` (optional): Default value for converting response to JSON using reflection.
 
 **Job Arguments (args_json) - Unary (using: "unary", default):**
 ```json
@@ -449,6 +462,8 @@ A multi-method runner supporting both unary and server streaming gRPC calls.
   "timeout": 10000
 }
 ```
+
+- `method`, `metadata`, `timeout`, `as_json` are all optional when the corresponding field is set in runner settings. If both are set, the settings value takes priority.
 
 **Job Arguments (args_json) - Server Streaming (using: "streaming"):**
 ```json
