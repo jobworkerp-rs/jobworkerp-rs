@@ -373,18 +373,26 @@ pub fn tool_calls_to_ag_ui_events(
     events
 }
 
+/// Extracted tool execution result with metadata.
+#[derive(Debug, Clone)]
+pub struct ExtractedToolResult {
+    pub fn_name: String,
+    pub result: serde_json::Value,
+}
+
 /// Extract tool execution results from LlmChatResult bytes.
 ///
 /// In auto-calling mode, `LlmChatResult.tool_execution_results` contains
 /// the results of executed tool calls (call_id → result mapping).
 ///
-/// Returns a HashMap of call_id → result (as serde_json::Value).
+/// Returns a HashMap of call_id → ExtractedToolResult.
 pub fn extract_tool_execution_results(
     bytes: &[u8],
-) -> std::collections::HashMap<String, serde_json::Value> {
+) -> std::collections::HashMap<String, ExtractedToolResult> {
     let mut results = std::collections::HashMap::new();
 
-    // Try protobuf decoding
+    // Try protobuf decoding — return immediately on success (even if empty)
+    // to avoid JSON fallback misinterpreting valid protobuf with no tool results
     if let Ok(result) = LlmChatResult::decode(bytes) {
         for ter in &result.tool_execution_results {
             let value = if ter.success {
@@ -396,16 +404,16 @@ pub fn extract_tool_execution_results(
                     "result": ter.result,
                 })
             };
-            results.insert(ter.call_id.clone(), value);
+            results.insert(ter.call_id.clone(), ExtractedToolResult {
+                fn_name: ter.fn_name.clone(),
+                result: value,
+            });
         }
-        if !results.is_empty() {
-            return results;
-        }
+        return results;
     }
 
     // Fallback: try JSON decoding
     if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(bytes) {
-        // Check tool_execution_results / toolExecutionResults
         let ter_arr = json_value
             .get("tool_execution_results")
             .or_else(|| json_value.get("toolExecutionResults"))
@@ -417,6 +425,11 @@ pub fn extract_tool_execution_results(
                     .get("call_id")
                     .or_else(|| item.get("callId"))
                     .and_then(|v| v.as_str());
+                let fn_name = item
+                    .get("fn_name")
+                    .or_else(|| item.get("fnName"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 let result_str = item.get("result").and_then(|v| v.as_str()).unwrap_or("");
                 let success = item
                     .get("success")
@@ -437,7 +450,10 @@ pub fn extract_tool_execution_results(
                             "result": result_str,
                         })
                     };
-                    results.insert(cid.to_string(), value);
+                    results.insert(cid.to_string(), ExtractedToolResult {
+                        fn_name: fn_name.to_string(),
+                        result: value,
+                    });
                 }
             }
         }
@@ -1337,11 +1353,13 @@ mod tests {
 
         // Successful result is parsed as JSON
         let r1 = results.get("call_1").unwrap();
-        assert_eq!(r1["status"], 200);
+        assert_eq!(r1.fn_name, "http_request");
+        assert_eq!(r1.result["status"], 200);
 
         // Failed result includes error info
         let r2 = results.get("call_2").unwrap();
-        assert_eq!(r2["error"], "command failed");
+        assert_eq!(r2.fn_name, "command");
+        assert_eq!(r2.result["error"], "command failed");
     }
 
     #[test]
@@ -1360,7 +1378,9 @@ mod tests {
 
         let results = extract_tool_execution_results(&bytes);
         assert_eq!(results.len(), 1);
-        assert_eq!(results["call_j1"]["data"], "ok");
+        let r = results.get("call_j1").unwrap();
+        assert_eq!(r.fn_name, "fetch");
+        assert_eq!(r.result["data"], "ok");
     }
 
     #[test]

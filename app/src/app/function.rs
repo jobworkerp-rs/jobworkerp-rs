@@ -1094,6 +1094,9 @@ pub(crate) fn wrap_workflow_args_if_needed(
             let input_json = serde_json::to_string(&arg_json).unwrap_or_else(|_| "{}".to_string());
             serde_json::json!({"input": input_json})
         }
+        serde_json::Value::String(s) => {
+            serde_json::json!({"input": s.clone()})
+        }
         _ => arg_json,
     }
 }
@@ -1284,5 +1287,39 @@ mod tests {
         let arg = json!({});
         let result = wrap_workflow_args_if_needed(RunnerType::ReusableWorkflow, arg);
         assert_eq!(result["input"].as_str().unwrap(), "{}");
+    }
+
+    #[test]
+    fn test_wrap_workflow_args_string_value() {
+        let arg = json!("hello world");
+        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, arg);
+        assert_eq!(result["input"].as_str().unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_wrap_workflow_args_string_non_workflow_passthrough() {
+        let arg = json!("hello world");
+        let result = wrap_workflow_args_if_needed(RunnerType::Command, arg.clone());
+        assert_eq!(result, arg);
+    }
+
+    #[test]
+    fn test_workflow_arguments_string_value() {
+        // LLM may return arguments as a JSON string instead of an object.
+        // The string is serialized as-is into the 'input' field (JSON-encoded string).
+        let args = serde_json::Map::from_iter([(
+            "arguments".to_string(),
+            json!("{\"owner\":\"foo\",\"repo\":\"bar\"}"),
+        )]);
+        let result = transform_function_arguments_impl(RunnerType::Workflow, Some(args)).unwrap();
+        assert!(result.contains_key("input"));
+        let input_str = result["input"].as_str().unwrap();
+        // The input contains the JSON string value (which itself is a JSON string)
+        let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
+        // The parsed value is a string containing the original JSON
+        assert!(parsed.is_string());
+        let inner: serde_json::Value = serde_json::from_str(parsed.as_str().unwrap()).unwrap();
+        assert_eq!(inner["owner"], "foo");
+        assert_eq!(inner["repo"], "bar");
     }
 }

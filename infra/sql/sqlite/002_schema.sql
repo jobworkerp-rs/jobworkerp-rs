@@ -117,6 +117,7 @@ INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`definition`, `type`) 
   'Unified workflow runner with multiple methods: run (execute workflow, default) and create (create workflow worker). Using defaults to run if not specified.',
   'builtin32769', 32769
 ), (
+  -- NOTE: This row is also added via migration 008_add_function_set_selector_runner.sql for existing installations
   8, 'FUNCTION_SET_SELECTOR',
   'Lists available FunctionSets with tool summaries for LLM tool selection. Used as a meta-tool to help LLM discover and select appropriate FunctionSets.',
   'builtin8', 8
