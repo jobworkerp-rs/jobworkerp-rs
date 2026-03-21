@@ -60,11 +60,12 @@ message GrpcRunnerSettings {
 
     // # Default Metadata
     // Default request metadata as key-value pairs.
-    // When non-empty, this takes priority over metadata specified in GrpcArgs.
+    // Merged with GrpcArgs metadata; settings keys take priority over args keys.
     map<string, string> metadata = 10;
 
     // # Default Timeout
     // Default request timeout in milliseconds.
+    // 0 means no timeout (wait indefinitely).
     // When set, this takes priority over timeout specified in GrpcArgs.
     optional int64 timeout = 11;
 

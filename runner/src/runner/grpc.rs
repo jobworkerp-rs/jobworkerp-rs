@@ -230,12 +230,13 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
         let result = async {
             let req = ProstMessageCodec::deserialize_message::<GrpcArgs>(args)?;
             let method = Self::resolve_method(using)?;
-            let effective_grpc_method = self.connection.resolve_effective_method(&req.method)?;
-            let as_json = self.connection.resolve_effective_as_json(&req.as_json);
 
             match method {
                 METHOD_UNARY => self.connection.call_unary(&req, cancellation_token).await,
                 METHOD_STREAMING => {
+                    let effective_grpc_method =
+                        self.connection.resolve_effective_method(&req.method)?;
+                    let as_json = self.connection.resolve_effective_as_json(&req.as_json);
                     let mut stream = self
                         .connection
                         .call_server_streaming(&req, cancellation_token)

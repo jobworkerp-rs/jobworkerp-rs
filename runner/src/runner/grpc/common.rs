@@ -179,16 +179,17 @@ impl GrpcConnection {
         }
     }
 
-    /// Resolve effective metadata: settings_metadata takes priority when non-empty.
+    /// Resolve effective metadata: merges args and settings, with settings keys taking priority.
     pub fn resolve_effective_metadata(
         &self,
         args_metadata: &HashMap<String, String>,
     ) -> HashMap<String, String> {
-        if !self.settings_metadata.is_empty() {
-            self.settings_metadata.clone()
-        } else {
-            args_metadata.clone()
+        if self.settings_metadata.is_empty() {
+            return args_metadata.clone();
         }
+        let mut merged = args_metadata.clone();
+        merged.extend(self.settings_metadata.clone());
+        merged
     }
 
     /// Resolve effective timeout: settings_timeout takes priority over args_timeout.
@@ -657,9 +658,15 @@ mod tests {
     fn test_resolve_effective_metadata_settings_wins() {
         let mut conn = GrpcConnection::new();
         conn.settings_metadata = HashMap::from([("key".to_string(), "settings_val".to_string())]);
-        let args_meta = HashMap::from([("key".to_string(), "args_val".to_string())]);
+        let args_meta = HashMap::from([
+            ("key".to_string(), "args_val".to_string()),
+            ("args_only".to_string(), "args_only_val".to_string()),
+        ]);
         let result = conn.resolve_effective_metadata(&args_meta);
+        // settings key overwrites args key
         assert_eq!(result.get("key").unwrap(), "settings_val");
+        // args-only key is preserved
+        assert_eq!(result.get("args_only").unwrap(), "args_only_val");
     }
 
     #[test]

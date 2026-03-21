@@ -28,6 +28,7 @@ message GrpcArgs {
 
   // # Timeout
   // Maximum time in milliseconds to wait for the request to complete.
+  // 0 or unset means no timeout (wait indefinitely).
   // Optional when GrpcRunnerSettings.timeout is set (settings takes priority).
   optional int64 timeout = 5;
 
