@@ -858,20 +858,16 @@ where
             "Handling LLM tool approval"
         );
 
-        // 1. Build ToolExecutionRequests message for LLM
-        // OllamaChatService expects messages with TOOL role containing ToolExecutionRequests
-        // If client provided modified arguments via toolResults, use them to override fnArguments
-        let tool_execution_requests: Vec<serde_json::Value> = hitl_info
+        // Pre-resolve fn_arguments with client overrides
+        let resolved_fn_args: HashMap<&str, String> = hitl_info
             .pending_tool_calls
             .iter()
             .map(|tc| {
-                // Check if client sent overridden arguments for this tool call
                 let fn_arguments = tool_results
                     .as_ref()
                     .and_then(|results| results.iter().find(|r| r.call_id == tc.call_id))
                     .map(|r| {
-                        // Client sends the full GrpcArgs JSON as result
-                        let overridden = r.result.to_string();
+                        let overridden = value_to_json_string(&r.result);
                         tracing::info!(
                             call_id = %tc.call_id,
                             original = %tc.fn_arguments,
@@ -880,6 +876,19 @@ where
                         );
                         overridden
                     })
+                    .unwrap_or_else(|| tc.fn_arguments.clone());
+                (tc.call_id.as_str(), fn_arguments)
+            })
+            .collect();
+
+        // 1. Build ToolExecutionRequests message for LLM
+        let tool_execution_requests: Vec<serde_json::Value> = hitl_info
+            .pending_tool_calls
+            .iter()
+            .map(|tc| {
+                let fn_arguments = resolved_fn_args
+                    .get(tc.call_id.as_str())
+                    .cloned()
                     .unwrap_or_else(|| tc.fn_arguments.clone());
                 serde_json::json!({
                     "callId": tc.call_id,
@@ -924,15 +933,13 @@ where
                 };
 
                 // Add Assistant's tool call response (required for OllamaChatService)
-                // Use client-overridden arguments if provided
                 let tool_calls: Vec<serde_json::Value> = hitl_info
                     .pending_tool_calls
                     .iter()
                     .map(|tc| {
-                        let fn_arguments = tool_results
-                            .as_ref()
-                            .and_then(|results| results.iter().find(|r| r.call_id == tc.call_id))
-                            .map(|r| r.result.to_string())
+                        let fn_arguments = resolved_fn_args
+                            .get(tc.call_id.as_str())
+                            .cloned()
                             .unwrap_or_else(|| tc.fn_arguments.clone());
                         serde_json::json!({
                             "callId": tc.call_id,
@@ -1768,6 +1775,15 @@ where
             encoder: self.encoder.clone(),
             executor_registry: self.executor_registry.clone(),
         }
+    }
+}
+
+/// Convert a serde_json::Value to a JSON string suitable for fn_arguments.
+/// Value::String is unwrapped directly (avoids double-quoting), others are serialized.
+fn value_to_json_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        other => serde_json::to_string(other).unwrap_or_default(),
     }
 }
 

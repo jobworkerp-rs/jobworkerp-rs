@@ -447,7 +447,7 @@ A multi-method runner supporting both unary and server streaming gRPC calls.
 The following fields can be set as defaults in runner settings. When set, they take priority over the corresponding fields in job arguments (GrpcArgs):
 
 - `method` (optional): Default gRPC method in "service/method" format. Useful when a worker always calls the same endpoint.
-- `metadata` (optional): Default request metadata as key-value pairs. When non-empty, overrides args metadata entirely.
+- `metadata` (optional): Default request metadata as key-value pairs. Merged with args metadata; settings keys take priority over args keys with the same name.
 - `timeout` (optional): Default request timeout in milliseconds.
 - `as_json` (optional): Default value for converting response to JSON using reflection.
 
