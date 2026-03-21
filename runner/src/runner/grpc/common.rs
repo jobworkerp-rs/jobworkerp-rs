@@ -170,7 +170,9 @@ impl GrpcConnection {
 
     /// Resolve the effective gRPC method: settings_method takes priority over args_method.
     pub fn resolve_effective_method(&self, args_method: &Option<String>) -> Result<String> {
-        if let Some(ref m) = self.settings_method {
+        if let Some(ref m) = self.settings_method
+            && !m.trim().is_empty()
+        {
             return Ok(m.clone());
         }
         match args_method {
@@ -486,11 +488,31 @@ impl std::fmt::Debug for GrpcConnection {
             )
             .field("use_reflection", &self.use_reflection)
             .field("settings_method", &self.settings_method)
-            .field("settings_metadata", &self.settings_metadata)
+            .field(
+                "settings_metadata",
+                &redact_sensitive_metadata(&self.settings_metadata),
+            )
             .field("settings_timeout", &self.settings_timeout)
             .field("settings_as_json", &self.settings_as_json)
             .finish()
     }
+}
+
+const SENSITIVE_METADATA_KEYS: &[&str] =
+    &["authorization", "api-key", "x-api-key", "token", "cookie"];
+
+fn redact_sensitive_metadata(metadata: &HashMap<String, String>) -> HashMap<String, String> {
+    metadata
+        .iter()
+        .map(|(k, v)| {
+            let lower = k.to_ascii_lowercase();
+            if SENSITIVE_METADATA_KEYS.iter().any(|s| lower == *s) {
+                (k.clone(), "[REDACTED]".to_string())
+            } else {
+                (k.clone(), v.clone())
+            }
+        })
+        .collect()
 }
 
 impl Default for GrpcConnection {
@@ -731,5 +753,52 @@ mod tests {
 
         let p = GrpcConnection::normalize_method_path("/my.Service/Method").unwrap();
         assert_eq!(p.as_str(), "/my.Service/Method");
+    }
+
+    #[test]
+    fn test_resolve_effective_method_settings_empty_falls_back_to_args() {
+        let mut conn = GrpcConnection::new();
+        conn.settings_method = Some("".to_string());
+        let result = conn
+            .resolve_effective_method(&Some("args.Service/Method".to_string()))
+            .unwrap();
+        assert_eq!(result, "args.Service/Method");
+    }
+
+    #[test]
+    fn test_resolve_effective_method_settings_whitespace_falls_back_to_args() {
+        let mut conn = GrpcConnection::new();
+        conn.settings_method = Some("   ".to_string());
+        let result = conn
+            .resolve_effective_method(&Some("args.Service/Method".to_string()))
+            .unwrap();
+        assert_eq!(result, "args.Service/Method");
+    }
+
+    #[test]
+    fn test_resolve_effective_method_settings_empty_args_empty_errors() {
+        let mut conn = GrpcConnection::new();
+        conn.settings_method = Some("".to_string());
+        let result = conn.resolve_effective_method(&Some("".to_string()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_redact_sensitive_metadata() {
+        let metadata = HashMap::from([
+            ("Authorization".to_string(), "Bearer secret".to_string()),
+            ("api-key".to_string(), "my-key".to_string()),
+            ("x-api-key".to_string(), "another-key".to_string()),
+            ("Token".to_string(), "tok123".to_string()),
+            ("Cookie".to_string(), "session=abc".to_string()),
+            ("x-request-id".to_string(), "req-123".to_string()),
+        ]);
+        let redacted = redact_sensitive_metadata(&metadata);
+        assert_eq!(redacted.get("Authorization").unwrap(), "[REDACTED]");
+        assert_eq!(redacted.get("api-key").unwrap(), "[REDACTED]");
+        assert_eq!(redacted.get("x-api-key").unwrap(), "[REDACTED]");
+        assert_eq!(redacted.get("Token").unwrap(), "[REDACTED]");
+        assert_eq!(redacted.get("Cookie").unwrap(), "[REDACTED]");
+        assert_eq!(redacted.get("x-request-id").unwrap(), "req-123");
     }
 }

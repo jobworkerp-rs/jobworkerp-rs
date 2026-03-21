@@ -870,9 +870,15 @@ where
                         let overridden = value_to_json_string(&r.result);
                         tracing::info!(
                             call_id = %tc.call_id,
+                            original_len = tc.fn_arguments.len(),
+                            overridden_len = overridden.len(),
+                            "Client overrode tool call arguments"
+                        );
+                        tracing::debug!(
+                            call_id = %tc.call_id,
                             original = %tc.fn_arguments,
                             overridden = %overridden,
-                            "Client overrode tool call arguments"
+                            "Client overrode tool call arguments (detail)"
                         );
                         overridden
                     })
