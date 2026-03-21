@@ -104,11 +104,15 @@ fn create_grpc_settings(use_reflection: bool) -> Vec<u8> {
         host: format!("http://{GRPC_HOST}"),
         port: GRPC_PORT,
         tls: false,
-        timeout_ms: Some(10000),
+        connection_timeout: Some(10000),
         max_message_size: None,
         auth_token: None,
         tls_config: None,
         use_reflection: Some(use_reflection),
+        method: None,
+        metadata: HashMap::new(),
+        timeout: None,
+        as_json: None,
     };
     ProstMessageCodec::serialize_message(&settings).unwrap()
 }
@@ -117,15 +121,15 @@ fn create_grpc_job(
     method: &str,
     request: Option<grpc_args::Request>,
     as_json: bool,
-    timeout_ms: i64,
+    timeout: u32,
     using: Option<&str>,
 ) -> Job {
     let grpc_args = GrpcArgs {
-        method: method.to_string(),
+        method: Some(method.to_string()),
         request,
         metadata: HashMap::new(),
-        timeout: timeout_ms,
-        as_json,
+        timeout: Some(timeout),
+        as_json: Some(as_json),
     };
     let args_bytes = ProstMessageCodec::serialize_message(&grpc_args).unwrap();
 
@@ -137,7 +141,7 @@ fn create_grpc_job(
             uniq_key: Some("real_grpc_test".to_string()),
             retried: 0,
             priority: 0,
-            timeout: timeout_ms as u64,
+            timeout: timeout as u64,
             enqueue_time: command_utils::util::datetime::now_millis(),
             run_after_time: command_utils::util::datetime::now_millis(),
             grabbed_until_time: None,
@@ -658,6 +662,116 @@ async fn test_grpc_error_handling() -> Result<()> {
     Ok(())
 }
 
+fn create_grpc_settings_with_defaults(
+    use_reflection: bool,
+    method: Option<&str>,
+    timeout: Option<u32>,
+    as_json: Option<bool>,
+) -> Vec<u8> {
+    let settings = GrpcRunnerSettings {
+        host: format!("http://{GRPC_HOST}"),
+        port: GRPC_PORT,
+        tls: false,
+        connection_timeout: Some(10000),
+        max_message_size: None,
+        auth_token: None,
+        tls_config: None,
+        use_reflection: Some(use_reflection),
+        method: method.map(|s| s.to_string()),
+        metadata: HashMap::new(),
+        timeout,
+        as_json,
+    };
+    ProstMessageCodec::serialize_message(&settings).unwrap()
+}
+
+/// Test gRPC unary call with settings defaults (method/timeout/as_json set in settings, omitted in args)
+#[ignore = "Requires running gRPC server at localhost:9000 with reflection enabled"]
+#[tokio::test]
+async fn test_grpc_unary_with_settings_defaults() -> Result<()> {
+    let job_runner = get_real_job_runner().await;
+
+    let settings_bytes = create_grpc_settings_with_defaults(
+        true,
+        Some("jobworkerp.service.RunnerService/Find"),
+        Some(10000),
+        Some(true),
+    );
+
+    let worker_data = WorkerData {
+        name: "grpc_settings_defaults_test".to_string(),
+        runner_settings: settings_bytes,
+        retry_policy: None,
+        channel: Some("test".to_string()),
+        response_type: ResponseType::NoResult as i32,
+        store_success: false,
+        store_failure: false,
+        use_static: false,
+        ..Default::default()
+    };
+    let runner_data = RunnerData {
+        name: RunnerType::Grpc.as_str_name().to_string(),
+        ..Default::default()
+    };
+    let worker_id = WorkerId { value: 1 };
+
+    // Args: method/timeout/as_json are all omitted — settings defaults should apply
+    let grpc_args = GrpcArgs {
+        method: None,
+        request: Some(grpc_args::Request::JsonBody(
+            r#"{"value": "1"}"#.to_string(),
+        )),
+        metadata: HashMap::new(),
+        timeout: None,
+        as_json: None,
+    };
+    let args_bytes = ProstMessageCodec::serialize_message(&grpc_args).unwrap();
+
+    let job = Job {
+        id: Some(JobId { value: 1 }),
+        data: Some(JobData {
+            worker_id: Some(WorkerId { value: 1 }),
+            args: args_bytes,
+            uniq_key: Some("grpc_settings_defaults_test".to_string()),
+            retried: 0,
+            priority: 0,
+            timeout: 10000,
+            enqueue_time: command_utils::util::datetime::now_millis(),
+            run_after_time: command_utils::util::datetime::now_millis(),
+            grabbed_until_time: None,
+            streaming_type: 0,
+            using: Some("unary".to_string()),
+        }),
+        ..Default::default()
+    };
+
+    let (result, _stream) = job_runner
+        .run_job(&runner_data, &worker_id, &worker_data, job)
+        .await;
+
+    assert!(result.data.is_some());
+    let data = result.data.unwrap();
+    assert_eq!(data.status, ResultStatus::Success as i32);
+
+    let output = data.output.unwrap();
+    let grpc_result: GrpcUnaryResult = ProstMessageCodec::deserialize_message(&output.items)?;
+
+    assert_eq!(grpc_result.code, tonic::Code::Ok as i32);
+    // as_json=true from settings, so response should be JSON
+    let json_body = match &grpc_result.response_data {
+        Some(grpc_unary_result::ResponseData::JsonBody(j)) => j.clone(),
+        other => panic!(
+            "Expected JsonBody variant when as_json=true via settings, got {:?}",
+            other
+        ),
+    };
+    assert!(!json_body.is_empty());
+
+    println!("grpc unary with settings defaults: json_body={}", json_body);
+    println!("test_grpc_unary_with_settings_defaults passed");
+    Ok(())
+}
+
 /// Test gRPC connection failure returns response_data=None and code=Internal
 #[tokio::test]
 async fn test_grpc_connection_failure() -> Result<()> {
@@ -668,11 +782,15 @@ async fn test_grpc_connection_failure() -> Result<()> {
         host: "http://localhost".to_string(),
         port: 19999,
         tls: false,
-        timeout_ms: Some(2000),
+        connection_timeout: Some(2000),
         max_message_size: None,
         auth_token: None,
         tls_config: None,
         use_reflection: Some(false),
+        method: None,
+        metadata: HashMap::new(),
+        timeout: None,
+        as_json: None,
     };
     let settings_bytes = ProstMessageCodec::serialize_message(&settings)?;
 

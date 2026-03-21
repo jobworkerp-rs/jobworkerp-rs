@@ -6,8 +6,9 @@ package jobworkerp.runner.grpc;
 // Encapsulates all necessary information to make a gRPC call.
 message GrpcArgs {
   // # Method
-  // Full method name in format "service/method" that identifies the gRPC endpoint
-  string method = 1;
+  // Full method name in format "service/method" that identifies the gRPC endpoint.
+  // Optional when GrpcRunnerSettings.method is set (settings takes priority).
+  optional string method = 1;
 
   // # Request
   // Request payload: either raw protobuf binary or JSON string.
@@ -26,10 +27,13 @@ message GrpcArgs {
   map<string, string> metadata = 4;
 
   // # Timeout
-  // Maximum time in milliseconds to wait for the request to complete
-  int64 timeout = 5;
+  // Maximum time in milliseconds to wait for the request to complete.
+  // 0 or unset means no timeout (wait indefinitely).
+  // Optional when GrpcRunnerSettings.timeout is set (settings takes priority).
+  optional uint32 timeout = 5;
 
   // # AsJson
-  // When true, convert response body from binary protobuf to JSON using reflection
-  bool as_json = 6;
+  // When true, convert response body from binary protobuf to JSON using reflection.
+  // Optional when GrpcRunnerSettings.as_json is set (settings takes priority).
+  optional bool as_json = 6;
 }

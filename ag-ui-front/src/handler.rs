@@ -846,7 +846,7 @@ where
         mut input: RunAgentInput,
         session: Session,
         hitl_info: HitlWaitingInfo,
-        _tool_results: Option<Vec<crate::types::input::ToolCallResult>>,
+        tool_results: Option<Vec<crate::types::input::ToolCallResult>>,
     ) -> Result<(
         Session,
         Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
@@ -858,16 +858,48 @@ where
             "Handling LLM tool approval"
         );
 
+        // Pre-resolve fn_arguments with client overrides
+        let resolved_fn_args: HashMap<&str, String> = hitl_info
+            .pending_tool_calls
+            .iter()
+            .map(|tc| {
+                let fn_arguments = tool_results
+                    .as_ref()
+                    .and_then(|results| results.iter().find(|r| r.call_id == tc.call_id))
+                    .map(|r| {
+                        let overridden = value_to_json_string(&r.result);
+                        tracing::info!(
+                            call_id = %tc.call_id,
+                            original_len = tc.fn_arguments.len(),
+                            overridden_len = overridden.len(),
+                            "Client overrode tool call arguments"
+                        );
+                        tracing::debug!(
+                            call_id = %tc.call_id,
+                            original = %tc.fn_arguments,
+                            overridden = %overridden,
+                            "Client overrode tool call arguments (detail)"
+                        );
+                        overridden
+                    })
+                    .unwrap_or_else(|| tc.fn_arguments.clone());
+                (tc.call_id.as_str(), fn_arguments)
+            })
+            .collect();
+
         // 1. Build ToolExecutionRequests message for LLM
-        // OllamaChatService expects messages with TOOL role containing ToolExecutionRequests
         let tool_execution_requests: Vec<serde_json::Value> = hitl_info
             .pending_tool_calls
             .iter()
             .map(|tc| {
+                let fn_arguments = resolved_fn_args
+                    .get(tc.call_id.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| tc.fn_arguments.clone());
                 serde_json::json!({
                     "callId": tc.call_id,
                     "fnName": tc.fn_name,
-                    "fnArguments": tc.fn_arguments
+                    "fnArguments": fn_arguments
                 })
             })
             .collect();
@@ -911,10 +943,14 @@ where
                     .pending_tool_calls
                     .iter()
                     .map(|tc| {
+                        let fn_arguments = resolved_fn_args
+                            .get(tc.call_id.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| tc.fn_arguments.clone());
                         serde_json::json!({
                             "callId": tc.call_id,
                             "fnName": tc.fn_name,
-                            "fnArguments": tc.fn_arguments
+                            "fnArguments": fn_arguments
                         })
                     })
                     .collect();
@@ -1745,6 +1781,21 @@ where
             encoder: self.encoder.clone(),
             executor_registry: self.executor_registry.clone(),
         }
+    }
+}
+
+/// Convert a serde_json::Value to a JSON string suitable for fn_arguments.
+/// - Value::String is unwrapped directly (avoids double-quoting). Callers are expected
+///   to send JSON-encoded strings (e.g. `"{\"key\": \"value\"}"`) in String variants,
+///   or JSON objects/arrays directly.
+/// - Other variants are serialized to JSON.
+fn value_to_json_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        other => serde_json::to_string(other).unwrap_or_else(|e| {
+            tracing::warn!("Failed to serialize serde_json::Value to string: {}", e);
+            String::new()
+        }),
     }
 }
 
