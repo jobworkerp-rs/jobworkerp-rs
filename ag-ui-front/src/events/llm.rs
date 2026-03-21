@@ -388,9 +388,8 @@ pub fn extract_tool_execution_results(
     if let Ok(result) = LlmChatResult::decode(bytes) {
         for ter in &result.tool_execution_results {
             let value = if ter.success {
-                serde_json::from_str(&ter.result).unwrap_or_else(|_| {
-                    serde_json::Value::String(ter.result.clone())
-                })
+                serde_json::from_str(&ter.result)
+                    .unwrap_or_else(|_| serde_json::Value::String(ter.result.clone()))
             } else {
                 serde_json::json!({
                     "error": ter.error.as_deref().unwrap_or("unknown error"),
@@ -418,10 +417,7 @@ pub fn extract_tool_execution_results(
                     .get("call_id")
                     .or_else(|| item.get("callId"))
                     .and_then(|v| v.as_str());
-                let result_str = item
-                    .get("result")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let result_str = item.get("result").and_then(|v| v.as_str()).unwrap_or("");
                 let success = item
                     .get("success")
                     .and_then(|v| v.as_bool())
@@ -429,9 +425,8 @@ pub fn extract_tool_execution_results(
 
                 if let Some(cid) = call_id {
                     let value = if success {
-                        serde_json::from_str(result_str).unwrap_or_else(|_| {
-                            serde_json::Value::String(result_str.to_string())
-                        })
+                        serde_json::from_str(result_str)
+                            .unwrap_or_else(|_| serde_json::Value::String(result_str.to_string()))
                     } else {
                         let error = item
                             .get("error")
