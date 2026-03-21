@@ -286,6 +286,21 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                                 e
                             )
                         })?;
+                    // Transform arguments for Workflow/ReusableWorkflow (wrap into 'input' field)
+                    let arguments = match arguments {
+                        Value::Object(map) => {
+                            let transformed =
+                                crate::app::function::transform_function_arguments_impl(
+                                    rdata.runner_type(),
+                                    Some(map),
+                                );
+                            Value::Object(transformed.unwrap_or_default())
+                        }
+                        other => crate::app::function::wrap_workflow_args_if_needed(
+                            rdata.runner_type(),
+                            other,
+                        ),
+                    };
                     tracing::debug!("job args (using: {:?}): {:#?}", using, &arguments);
                     let job_args = if let Some(desc) = args_descriptor {
                         ProtobufDescriptor::json_value_to_message(desc, &arguments, true, true)

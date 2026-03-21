@@ -1012,25 +1012,112 @@ impl OllamaChatService {
         args: LlmChatArgs,
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
-        // auto-select is not supported in streaming mode
-        if args
-            .function_options
-            .as_ref()
-            .is_some_and(|fo| fo.auto_select_function_set.unwrap_or(false))
-        {
-            return Err(JobWorkerError::InvalidParameter(
-                "auto_select_function_set is not supported in streaming mode".to_string(),
-            )
-            .into());
-        }
-
-        let metadata = Arc::new(metadata);
-
-        // Check for tool execution requests in messages (manual mode continuation)
+        // Check for tool execution requests first (highest priority, manual mode continuation)
+        let metadata_arc = Arc::new(metadata);
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
             return self
-                .handle_tool_execution_stream(args, tool_exec_requests, metadata)
+                .handle_tool_execution_stream(args, tool_exec_requests, metadata_arc)
                 .await;
+        }
+
+        let is_auto_select = args
+            .function_options
+            .as_ref()
+            .is_some_and(|fo| fo.auto_select_function_set.unwrap_or(false));
+
+        // auto_select_function_set: Phase 1 (non-streaming) selects FunctionSet, Phase 2 streams
+        if is_auto_select {
+            let original_args = args.clone();
+            let (tools_vec, auto_select_names) = self.function_list(&args).await?;
+            let options = Self::create_chat_options(&args);
+            let model = args.model.clone().unwrap_or_else(|| self.model.clone());
+            let mut messages = Self::convert_messages(&args).await;
+
+            if let Some(system_prompt) = self.system_prompt.clone() {
+                messages.retain(|m| m.role != MessageRole::System);
+                messages.insert(0, ChatMessage::new(MessageRole::System, system_prompt));
+            }
+
+            let tools = Arc::new(tools_vec);
+            let messages = Arc::new(Mutex::new(messages));
+            let think = args.options.as_ref().map(|o| o.extract_reasoning_content());
+            let res = Self::request_chat_internal_with_tracing(
+                self.clone(),
+                model,
+                options,
+                messages,
+                tools,
+                None,
+                metadata_arc.clone(),
+                args.json_schema.clone(),
+                false, // manual mode to intercept selector tool call
+                think,
+                0,
+            )
+            .await?;
+
+            match res {
+                ChatInternalResult::PendingTools { tool_calls } => {
+                    if let Some(selected) = tool_calls
+                        .iter()
+                        .find(|tc| auto_select_names.contains(&tc.function.name))
+                    {
+                        let selected_set_name = selected
+                            .function
+                            .name
+                            .strip_prefix(ToolConverter::SELECTOR_TOOL_PREFIX)
+                            .unwrap_or(&selected.function.name)
+                            .to_string();
+                        tracing::info!(
+                            function_set = %selected_set_name,
+                            "Auto-select (stream): LLM selected FunctionSet"
+                        );
+
+                        let extra_selectors: Vec<&str> = tool_calls
+                            .iter()
+                            .filter(|tc| {
+                                auto_select_names.contains(&tc.function.name)
+                                    && tc.function.name != selected.function.name
+                            })
+                            .map(|tc| tc.function.name.as_str())
+                            .collect();
+                        if !extra_selectors.is_empty() {
+                            tracing::warn!(
+                                selected = %selected.function.name,
+                                ?extra_selectors,
+                                "Auto-select (stream): LLM called multiple selector tools, using the first one"
+                            );
+                        }
+
+                        let mut second_args = original_args;
+                        if let Some(ref mut fo) = second_args.function_options {
+                            fo.function_set_name = Some(selected_set_name);
+                            fo.auto_select_function_set = Some(false);
+                        }
+                        return self.create_streaming_chat(second_args).await;
+                    }
+
+                    let attempted_names: Vec<&str> = tool_calls
+                        .iter()
+                        .map(|tc| tc.function.name.as_str())
+                        .collect();
+                    tracing::warn!(
+                        ?attempted_names,
+                        "Auto-select (stream): LLM did not call any selector tool"
+                    );
+                    return Err(JobWorkerError::OtherError(format!(
+                        "Auto-select failed: LLM called {:?} instead of selector tools",
+                        attempted_names
+                    ))
+                    .into());
+                }
+                ChatInternalResult::Final(_) => {
+                    return Err(JobWorkerError::OtherError(
+                        "Auto-select failed: LLM did not call any selector tool".to_string(),
+                    )
+                    .into());
+                }
+            }
         }
 
         // Normal streaming flow (first request or no tool execution)

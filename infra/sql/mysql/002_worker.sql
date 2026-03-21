@@ -141,6 +141,10 @@ INSERT IGNORE INTO runner (id, name, description, definition, type) VALUES (
   'Unified workflow runner with multiple methods: run (execute workflow, default) and create (create workflow worker). Using defaults to run if not specified.',
   'builtin32769', 32769
 ), (
+  8, 'FUNCTION_SET_SELECTOR',
+  'Lists available FunctionSets with tool summaries for LLM tool selection. Used as a meta-tool to help LLM discover and select appropriate FunctionSets.',
+  'builtin8', 8
+), (
   32770, 'GRPC',
   'Unified gRPC runner with multiple methods: unary (gRPC unary call, default) and streaming (gRPC server streaming call). Using defaults to unary if not specified.',
   'builtin32770', 32770
