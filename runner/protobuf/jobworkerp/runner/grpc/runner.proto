@@ -52,4 +52,24 @@ message GrpcRunnerSettings {
     // # Use Reflection
     // Whether to use gRPC reflection API for dynamic message construction
     optional bool use_reflection = 8;
+
+    // # Default Method
+    // Default gRPC method in "service/method" format.
+    // When set, this takes priority over method specified in GrpcArgs.
+    optional string method = 9;
+
+    // # Default Metadata
+    // Default request metadata as key-value pairs.
+    // When non-empty, this takes priority over metadata specified in GrpcArgs.
+    map<string, string> metadata = 10;
+
+    // # Default Timeout
+    // Default request timeout in milliseconds.
+    // When set, this takes priority over timeout specified in GrpcArgs.
+    optional int64 timeout = 11;
+
+    // # Default AsJson
+    // Default value for converting response to JSON using reflection.
+    // When set, this takes priority over as_json specified in GrpcArgs.
+    optional bool as_json = 12;
 }

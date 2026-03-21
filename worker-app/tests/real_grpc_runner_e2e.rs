@@ -109,6 +109,10 @@ fn create_grpc_settings(use_reflection: bool) -> Vec<u8> {
         auth_token: None,
         tls_config: None,
         use_reflection: Some(use_reflection),
+        method: None,
+        metadata: HashMap::new(),
+        timeout: None,
+        as_json: None,
     };
     ProstMessageCodec::serialize_message(&settings).unwrap()
 }
@@ -121,11 +125,11 @@ fn create_grpc_job(
     using: Option<&str>,
 ) -> Job {
     let grpc_args = GrpcArgs {
-        method: method.to_string(),
+        method: Some(method.to_string()),
         request,
         metadata: HashMap::new(),
-        timeout: timeout_ms,
-        as_json,
+        timeout: Some(timeout_ms),
+        as_json: Some(as_json),
     };
     let args_bytes = ProstMessageCodec::serialize_message(&grpc_args).unwrap();
 
@@ -673,6 +677,10 @@ async fn test_grpc_connection_failure() -> Result<()> {
         auth_token: None,
         tls_config: None,
         use_reflection: Some(false),
+        method: None,
+        metadata: HashMap::new(),
+        timeout: None,
+        as_json: None,
     };
     let settings_bytes = ProstMessageCodec::serialize_message(&settings)?;
 

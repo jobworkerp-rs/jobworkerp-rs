@@ -230,6 +230,8 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
         let result = async {
             let req = ProstMessageCodec::deserialize_message::<GrpcArgs>(args)?;
             let method = Self::resolve_method(using)?;
+            let effective_grpc_method = self.connection.resolve_effective_method(&req.method)?;
+            let as_json = self.connection.resolve_effective_as_json(&req.as_json);
 
             match method {
                 METHOD_UNARY => self.connection.call_unary(&req, cancellation_token).await,
@@ -248,7 +250,7 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
 
                     // Build JSON body if reflection is available and as_json is requested
                     let mut json_body = None;
-                    if req.as_json
+                    if as_json
                         && self.connection.use_reflection
                         && self.connection.reflection_client.is_some()
                     {
@@ -256,7 +258,7 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
                         for body in &bodies {
                             match self
                                 .connection
-                                .convert_response_to_json(&req.method, body)
+                                .convert_response_to_json(&effective_grpc_method, body)
                                 .await
                             {
                                 Ok(json_str) => json_parts.push(json_str),
