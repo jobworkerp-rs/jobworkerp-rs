@@ -582,8 +582,9 @@ pub trait UseJobExecutor:
         }
     }
 
-    /// Transform job arguments from JSON to Protobuf binary
-    /// Transform job arguments using protobuf schema, supporting method-specific schema resolution
+    /// Transform job arguments from JSON to Protobuf binary.
+    /// Wraps flat args for Workflow/ReusableWorkflow into 'input' field (idempotent — safe to call
+    /// even if upstream already wrapped, guarded by `contains_key("input")` check).
     fn transform_job_args(
         &self,
         rid: &RunnerId,
@@ -592,7 +593,6 @@ pub trait UseJobExecutor:
         using: Option<&str>,          // method name for MCP/Plugin runners
     ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send {
         async move {
-            // Wrap flat arguments into 'input' field for Workflow/ReusableWorkflow runners
             let job_args = crate::app::function::wrap_workflow_args_if_needed(
                 rdata.runner_type(),
                 job_args.clone(),

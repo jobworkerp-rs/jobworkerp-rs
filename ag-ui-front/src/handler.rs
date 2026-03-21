@@ -1331,7 +1331,7 @@ where
                             yield (event_id, ag_event);
                         }
 
-                        // Handle StreamingData: emit TEXT_MESSAGE_CONTENT
+                        // Handle StreamingData: emit TEXT_MESSAGE_CONTENT or role=tool messages
                         if let WorkflowStreamEvent::StreamingData { event: ev } = &event {
                             let job_id_value = ev.job_id.as_ref().map(|j| j.value).unwrap_or(0);
                             if let Some(message_id) = active_message_ids.get(&job_id_value) {
@@ -1344,6 +1344,38 @@ where
                                     let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
                                     event_store.store_event(&run_id, event_id, ag_event.clone()).await;
                                     yield (event_id, ag_event);
+                                }
+
+                                // Check for tool execution results in streaming chunks
+                                // (emitted by LlmChatService during auto-calling)
+                                let tool_results = extract_tool_execution_results(&ev.data);
+                                for (call_id, extracted) in &tool_results {
+                                    let tool_msg_id = MessageId::random();
+                                    let start_ev = AgUiEvent::text_message_start(
+                                        tool_msg_id.clone(),
+                                        crate::types::Role::Tool,
+                                    );
+                                    let start_ev_id = Self::encode_event_with_logging(&encoder, &start_ev);
+                                    event_store.store_event(&run_id, start_ev_id, start_ev.clone()).await;
+                                    yield (start_ev_id, start_ev);
+
+                                    let content_json = serde_json::json!({
+                                        "tool_call_id": call_id,
+                                        "tool_name": extracted.fn_name,
+                                        "result": extracted.result
+                                    }).to_string();
+                                    let content_ev = AgUiEvent::text_message_content(
+                                        tool_msg_id.clone(),
+                                        content_json,
+                                    );
+                                    let content_ev_id = Self::encode_event_with_logging(&encoder, &content_ev);
+                                    event_store.store_event(&run_id, content_ev_id, content_ev.clone()).await;
+                                    yield (content_ev_id, content_ev);
+
+                                    let end_ev = AgUiEvent::text_message_end(tool_msg_id);
+                                    let end_ev_id = Self::encode_event_with_logging(&encoder, &end_ev);
+                                    event_store.store_event(&run_id, end_ev_id, end_ev.clone()).await;
+                                    yield (end_ev_id, end_ev);
                                 }
                             } else {
                                 tracing::warn!(
@@ -1406,9 +1438,9 @@ where
                                             yield (end_event_id, end_event);
 
                                             // role=tool TEXT_MESSAGE with execution result
-                                            let result = tool_results.get(&call.call_id)
-                                                .cloned()
-                                                .unwrap_or(serde_json::Value::Null);
+                                            let (tool_name, result) = tool_results.get(&call.call_id)
+                                                .map(|e| (e.fn_name.as_str(), e.result.clone()))
+                                                .unwrap_or((&call.fn_name, serde_json::Value::Null));
                                             let tool_msg_id = MessageId::random();
                                             let start_ev = AgUiEvent::text_message_start(
                                                 tool_msg_id.clone(),
@@ -1420,7 +1452,7 @@ where
 
                                             let content_json = serde_json::json!({
                                                 "tool_call_id": call.call_id,
-                                                "tool_name": call.fn_name,
+                                                "tool_name": tool_name,
                                                 "result": result
                                             }).to_string();
                                             let content_ev = AgUiEvent::text_message_content(

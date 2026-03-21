@@ -1094,7 +1094,7 @@ impl OllamaChatService {
                             fo.function_set_name = Some(selected_set_name);
                             fo.auto_select_function_set = Some(false);
                         }
-                        return self.create_streaming_chat(second_args).await;
+                        return self.create_streaming_chat(second_args, metadata_arc).await;
                     }
 
                     let attempted_names: Vec<&str> = tool_calls
@@ -1121,7 +1121,7 @@ impl OllamaChatService {
         }
 
         // Normal streaming flow (first request or no tool execution)
-        self.create_streaming_chat(args).await
+        self.create_streaming_chat(args, metadata_arc).await
     }
 
     /// Wrapper method for non-Arc callers (backward compatibility)
@@ -1208,7 +1208,7 @@ impl OllamaChatService {
             }
 
             // Phase 3: Continue with LLM streaming using updated args
-            match self_clone.clone().create_streaming_chat(updated_args).await {
+            match self_clone.clone().create_streaming_chat(updated_args, metadata_clone.clone()).await {
                 Ok(mut continuation_stream) => {
                     while let Some(chunk) = continuation_stream.next().await {
                         yield chunk;
@@ -1240,6 +1240,7 @@ impl OllamaChatService {
     async fn create_streaming_chat(
         self: Arc<Self>,
         args: LlmChatArgs,
+        _metadata: Arc<HashMap<String, String>>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
         let use_function_calling = args
             .function_options
