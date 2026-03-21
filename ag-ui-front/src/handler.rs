@@ -7,7 +7,8 @@ use crate::error::{AgUiError, Result};
 use crate::events::{
     AgUiEvent, EventEncoder, InterruptInfo, InterruptPayload, PendingToolCall,
     SharedWorkflowEventAdapter, extract_text_from_llm_chat_result,
-    extract_tool_calls_from_llm_result, shared_adapter, tool_calls_to_ag_ui_events,
+    extract_tool_calls_from_llm_result, extract_tool_execution_results, shared_adapter,
+    tool_calls_to_ag_ui_events,
 };
 use crate::session::{
     EventStore, HitlWaitingInfo, PendingToolCallInfo, Session, SessionManager, SessionState,
@@ -1392,6 +1393,49 @@ where
                                         let event_id = Self::encode_event_with_logging(&encoder, &tool_event);
                                         event_store.store_event(&run_id, event_id, tool_event.clone()).await;
                                         yield (event_id, tool_event);
+                                    }
+
+                                    // Auto-calling mode: emit TOOL_CALL_END + role=tool TEXT_MESSAGE for each tool
+                                    if !tool_calls.requires_execution {
+                                        let tool_results = extract_tool_execution_results(&output_bytes);
+                                        for call in &tool_calls.tool_calls {
+                                            // TOOL_CALL_END (AG-UI protocol compliant)
+                                            let end_event = AgUiEvent::tool_call_end(call.call_id.clone());
+                                            let end_event_id = Self::encode_event_with_logging(&encoder, &end_event);
+                                            event_store.store_event(&run_id, end_event_id, end_event.clone()).await;
+                                            yield (end_event_id, end_event);
+
+                                            // role=tool TEXT_MESSAGE with execution result
+                                            let result = tool_results.get(&call.call_id)
+                                                .cloned()
+                                                .unwrap_or(serde_json::Value::Null);
+                                            let tool_msg_id = MessageId::random();
+                                            let start_ev = AgUiEvent::text_message_start(
+                                                tool_msg_id.clone(),
+                                                crate::types::Role::Tool,
+                                            );
+                                            let start_ev_id = Self::encode_event_with_logging(&encoder, &start_ev);
+                                            event_store.store_event(&run_id, start_ev_id, start_ev.clone()).await;
+                                            yield (start_ev_id, start_ev);
+
+                                            let content_json = serde_json::json!({
+                                                "tool_call_id": call.call_id,
+                                                "tool_name": call.fn_name,
+                                                "result": result
+                                            }).to_string();
+                                            let content_ev = AgUiEvent::text_message_content(
+                                                tool_msg_id.clone(),
+                                                content_json,
+                                            );
+                                            let content_ev_id = Self::encode_event_with_logging(&encoder, &content_ev);
+                                            event_store.store_event(&run_id, content_ev_id, content_ev.clone()).await;
+                                            yield (content_ev_id, content_ev);
+
+                                            let end_msg_ev = AgUiEvent::text_message_end(tool_msg_id);
+                                            let end_msg_ev_id = Self::encode_event_with_logging(&encoder, &end_msg_ev);
+                                            event_store.store_event(&run_id, end_msg_ev_id, end_msg_ev.clone()).await;
+                                            yield (end_msg_ev_id, end_msg_ev);
+                                        }
                                     }
                                 }
 

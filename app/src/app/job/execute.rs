@@ -592,6 +592,12 @@ pub trait UseJobExecutor:
         using: Option<&str>,          // method name for MCP/Plugin runners
     ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send {
         async move {
+            // Wrap flat arguments into 'input' field for Workflow/ReusableWorkflow runners
+            let job_args = crate::app::function::wrap_workflow_args_if_needed(
+                rdata.runner_type(),
+                job_args.clone(),
+            );
+
             let descriptors = self.parse_proto_with_cache(rid, rdata).await?;
 
             let mut args_descriptor =
@@ -614,9 +620,10 @@ pub trait UseJobExecutor:
             tracing::debug!("job args (using: {:?}): {:#?}", using, &job_args);
             if let Some(desc) = args_descriptor {
                 Ok(
-                    ProtobufDescriptor::json_value_to_message(desc, job_args, true, true).map_err(
-                        |e| anyhow::anyhow!("Failed to parse job_args schema: {:#?}", e),
-                    )?,
+                    ProtobufDescriptor::json_value_to_message(desc, &job_args, true, true)
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to parse job_args schema: {:#?}", e)
+                        })?,
                 )
             } else {
                 // Fallback: serialize as JSON string
