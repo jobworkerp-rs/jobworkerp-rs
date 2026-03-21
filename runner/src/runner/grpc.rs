@@ -234,9 +234,21 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
             match method {
                 METHOD_UNARY => self.connection.call_unary(&req, cancellation_token).await,
                 METHOD_STREAMING => {
+                    let effective_grpc_method =
+                        self.connection.resolve_effective_method(&req.method)?;
+                    let effective_metadata =
+                        self.connection.resolve_effective_metadata(&req.metadata);
+                    let effective_timeout = self.connection.resolve_effective_timeout(&req.timeout);
+                    let as_json = self.connection.resolve_effective_as_json(&req.as_json);
                     let mut stream = self
                         .connection
-                        .call_server_streaming(&req, cancellation_token)
+                        .call_server_streaming(
+                            &effective_grpc_method,
+                            &effective_metadata,
+                            effective_timeout,
+                            &req.request,
+                            cancellation_token,
+                        )
                         .await?;
 
                     let (bodies, trailer_metadata, final_collected) =
@@ -248,7 +260,7 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
 
                     // Build JSON body if reflection is available and as_json is requested
                     let mut json_body = None;
-                    if req.as_json
+                    if as_json
                         && self.connection.use_reflection
                         && self.connection.reflection_client.is_some()
                     {
@@ -256,7 +268,7 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
                         for body in &bodies {
                             match self
                                 .connection
-                                .convert_response_to_json(&req.method, body)
+                                .convert_response_to_json(&effective_grpc_method, body)
                                 .await
                             {
                                 Ok(json_str) => json_parts.push(json_str),
@@ -297,8 +309,17 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
 
         match method {
             METHOD_STREAMING => {
+                let effective_method = self.connection.resolve_effective_method(&req.method)?;
+                let effective_metadata = self.connection.resolve_effective_metadata(&req.metadata);
+                let effective_timeout = self.connection.resolve_effective_timeout(&req.timeout);
                 self.connection
-                    .call_server_streaming(&req, cancellation_token)
+                    .call_server_streaming(
+                        &effective_method,
+                        &effective_metadata,
+                        effective_timeout,
+                        &req.request,
+                        cancellation_token,
+                    )
                     .await
             }
             _ => Err(anyhow!(
