@@ -27,8 +27,8 @@ pub struct GrpcConnection {
     pub(crate) settings_method: Option<String>,
     /// Default metadata from settings (takes priority over args metadata when non-empty)
     pub(crate) settings_metadata: HashMap<String, String>,
-    /// Default timeout from settings (takes priority over args timeout)
-    pub(crate) settings_timeout: Option<i64>,
+    /// Default job timeout from settings (takes priority over args job_timeout)
+    pub(crate) settings_timeout: Option<u32>,
     /// Default as_json from settings (takes priority over args as_json)
     pub(crate) settings_as_json: Option<bool>,
 }
@@ -78,8 +78,8 @@ impl GrpcConnection {
 
         let mut endpoint = Endpoint::new(format!("{prtcl}{host}:{port}"))?;
 
-        if let Some(timeout_ms) = settings.timeout_ms {
-            endpoint = endpoint.timeout(Duration::from_millis(timeout_ms as u64));
+        if let Some(connection_timeout) = settings.connection_timeout {
+            endpoint = endpoint.timeout(Duration::from_millis(connection_timeout as u64));
         }
 
         if let Some(max_size) = settings.max_message_size {
@@ -138,7 +138,9 @@ impl GrpcConnection {
                 GrpcReflectionClient::connect(
                     endpoint,
                     reflection_channel,
-                    settings.timeout_ms.map(|s| Duration::from_millis(s as u64)),
+                    settings
+                        .connection_timeout
+                        .map(|s| Duration::from_millis(s as u64)),
                 )
                 .await?,
             );
@@ -192,8 +194,8 @@ impl GrpcConnection {
         merged
     }
 
-    /// Resolve effective timeout: settings_timeout takes priority over args_timeout.
-    pub fn resolve_effective_timeout(&self, args_timeout: &Option<i64>) -> i64 {
+    /// Resolve effective job timeout: settings_timeout takes priority over args_timeout.
+    pub fn resolve_effective_timeout(&self, args_timeout: &Option<u32>) -> u32 {
         self.settings_timeout.or(*args_timeout).unwrap_or(0)
     }
 
@@ -687,20 +689,20 @@ mod tests {
     #[test]
     fn test_resolve_effective_timeout_settings_wins() {
         let mut conn = GrpcConnection::new();
-        conn.settings_timeout = Some(5000);
-        assert_eq!(conn.resolve_effective_timeout(&Some(3000)), 5000);
+        conn.settings_timeout = Some(5000u32);
+        assert_eq!(conn.resolve_effective_timeout(&Some(3000u32)), 5000u32);
     }
 
     #[test]
     fn test_resolve_effective_timeout_args_fallback() {
         let conn = GrpcConnection::new();
-        assert_eq!(conn.resolve_effective_timeout(&Some(3000)), 3000);
+        assert_eq!(conn.resolve_effective_timeout(&Some(3000u32)), 3000u32);
     }
 
     #[test]
     fn test_resolve_effective_timeout_both_none() {
         let conn = GrpcConnection::new();
-        assert_eq!(conn.resolve_effective_timeout(&None), 0);
+        assert_eq!(conn.resolve_effective_timeout(&None), 0u32);
     }
 
     #[test]

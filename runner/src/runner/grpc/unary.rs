@@ -61,7 +61,7 @@ impl GrpcConnection {
         };
 
         let response: Result<tonic::Response<Vec<u8>>> = if timeout > 0 {
-            let timeout_duration = Duration::from_millis(timeout as u64);
+            let timeout_duration = Duration::from_millis(timeout.into());
             tokio::select! {
                 timeout_result = tokio::time::timeout(timeout_duration, call_fut) => {
                     timeout_result

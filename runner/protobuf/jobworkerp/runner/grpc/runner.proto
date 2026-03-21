@@ -33,9 +33,9 @@ message GrpcRunnerSettings {
     // Whether to use TLS encryption for the connection
     bool tls = 3;
 
-    // # Timeout
-    // Connection timeout in milliseconds
-    optional uint32 timeout_ms = 4;
+    // # Connection Timeout
+    // Connection timeout in milliseconds (used when establishing the gRPC channel)
+    optional uint32 connection_timeout = 4;
 
     // # Max Message Size
     // Maximum message size in bytes (0 for default)
@@ -64,10 +64,11 @@ message GrpcRunnerSettings {
     map<string, string> metadata = 10;
 
     // # Default Timeout
-    // Default request timeout in milliseconds.
+    // Default per-request timeout in milliseconds.
     // 0 means no timeout (wait indefinitely).
     // When set, this takes priority over timeout specified in GrpcArgs.
-    optional int64 timeout = 11;
+    // This is distinct from connection_timeout (field 4) which controls channel establishment.
+    optional uint32 timeout = 11;
 
     // # Default AsJson
     // Default value for converting response to JSON using reflection.
