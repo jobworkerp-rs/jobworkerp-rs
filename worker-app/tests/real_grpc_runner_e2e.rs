@@ -104,7 +104,7 @@ fn create_grpc_settings(use_reflection: bool) -> Vec<u8> {
         host: format!("http://{GRPC_HOST}"),
         port: GRPC_PORT,
         tls: false,
-        timeout_ms: Some(10000),
+        connection_timeout: Some(10000),
         max_message_size: None,
         auth_token: None,
         tls_config: None,
@@ -121,14 +121,14 @@ fn create_grpc_job(
     method: &str,
     request: Option<grpc_args::Request>,
     as_json: bool,
-    timeout_ms: i64,
+    timeout: u32,
     using: Option<&str>,
 ) -> Job {
     let grpc_args = GrpcArgs {
         method: Some(method.to_string()),
         request,
         metadata: HashMap::new(),
-        timeout: Some(timeout_ms),
+        timeout: Some(timeout),
         as_json: Some(as_json),
     };
     let args_bytes = ProstMessageCodec::serialize_message(&grpc_args).unwrap();
@@ -141,7 +141,7 @@ fn create_grpc_job(
             uniq_key: Some("real_grpc_test".to_string()),
             retried: 0,
             priority: 0,
-            timeout: timeout_ms as u64,
+            timeout: timeout as u64,
             enqueue_time: command_utils::util::datetime::now_millis(),
             run_after_time: command_utils::util::datetime::now_millis(),
             grabbed_until_time: None,
@@ -665,14 +665,14 @@ async fn test_grpc_error_handling() -> Result<()> {
 fn create_grpc_settings_with_defaults(
     use_reflection: bool,
     method: Option<&str>,
-    timeout: Option<i64>,
+    timeout: Option<u32>,
     as_json: Option<bool>,
 ) -> Vec<u8> {
     let settings = GrpcRunnerSettings {
         host: format!("http://{GRPC_HOST}"),
         port: GRPC_PORT,
         tls: false,
-        timeout_ms: Some(10000),
+        connection_timeout: Some(10000),
         max_message_size: None,
         auth_token: None,
         tls_config: None,
@@ -782,7 +782,7 @@ async fn test_grpc_connection_failure() -> Result<()> {
         host: "http://localhost".to_string(),
         port: 19999,
         tls: false,
-        timeout_ms: Some(2000),
+        connection_timeout: Some(2000),
         max_message_size: None,
         auth_token: None,
         tls_config: None,

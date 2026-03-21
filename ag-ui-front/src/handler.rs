@@ -1779,11 +1779,17 @@ where
 }
 
 /// Convert a serde_json::Value to a JSON string suitable for fn_arguments.
-/// Value::String is unwrapped directly (avoids double-quoting), others are serialized.
+/// - Value::String is unwrapped directly (avoids double-quoting). Callers are expected
+///   to send JSON-encoded strings (e.g. `"{\"key\": \"value\"}"`) in String variants,
+///   or JSON objects/arrays directly.
+/// - Other variants are serialized to JSON.
 fn value_to_json_string(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(s) => s.clone(),
-        other => serde_json::to_string(other).unwrap_or_default(),
+        other => serde_json::to_string(other).unwrap_or_else(|e| {
+            tracing::warn!("Failed to serialize serde_json::Value to string: {}", e);
+            String::new()
+        }),
     }
 }
 

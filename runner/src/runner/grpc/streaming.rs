@@ -1,5 +1,5 @@
 use super::common::GrpcConnection;
-use crate::jobworkerp::runner::grpc::GrpcArgs;
+use crate::jobworkerp::runner::grpc::grpc_args;
 use anyhow::{Result, anyhow};
 use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
@@ -11,9 +11,13 @@ use tokio_util::sync::CancellationToken;
 
 impl GrpcConnection {
     /// Execute a gRPC server streaming call and return a stream of ResultOutputItem.
+    /// All resolve_effective_* should be called by the caller; this method is a pure execution layer.
     pub async fn call_server_streaming(
         &mut self,
-        args: &GrpcArgs,
+        method: &str,
+        metadata: &HashMap<String, String>,
+        timeout: u32,
+        request: &Option<grpc_args::Request>,
         cancellation_token: CancellationToken,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let mut client = self
@@ -29,10 +33,7 @@ impl GrpcConnection {
                 .max_encoding_message_size(size);
         }
 
-        let method = self.resolve_effective_method(&args.method)?;
-        let method_path = GrpcConnection::normalize_method_path(&method)?;
-        let metadata = self.resolve_effective_metadata(&args.metadata);
-        let timeout = self.resolve_effective_timeout(&args.timeout);
+        let method_path = GrpcConnection::normalize_method_path(method)?;
 
         // Prepare request and initiate streaming call within timeout/cancellation scope
         let call_fut = async {
@@ -43,9 +44,9 @@ impl GrpcConnection {
                 ))
             })?;
 
-            let request_bytes = self.prepare_request_bytes(&method, &args.request).await?;
+            let request_bytes = self.prepare_request_bytes(method, request).await?;
             let request_len = request_bytes.len();
-            let request = self.build_request(request_bytes, &metadata);
+            let request = self.build_request(request_bytes, metadata);
 
             tracing::debug!(
                 "Sending gRPC server streaming request to {}, payload size: {} bytes",
@@ -61,7 +62,7 @@ impl GrpcConnection {
         };
 
         let response = if timeout > 0 {
-            let timeout_duration = Duration::from_millis(timeout as u64);
+            let timeout_duration = Duration::from_millis(timeout.into());
             tokio::select! {
                 timeout_result = tokio::time::timeout(timeout_duration, call_fut) => {
                     timeout_result
