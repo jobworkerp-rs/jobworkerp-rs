@@ -405,7 +405,14 @@ where
             )));
         }
 
-        // Emit TOOL_CALL_RESULT and TOOL_CALL_END events
+        // Emit TOOL_CALL_END and TOOL_CALL_RESULT events
+        // Order: END → RESULT (AG-UI protocol compliant)
+        let tool_call_end = AgUiEvent::tool_call_end(tool_call_id.to_string());
+        let end_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_end);
+        self.event_store
+            .store_event(run_id, end_event_id, tool_call_end.clone())
+            .await;
+
         let tool_call_result = AgUiEvent::tool_call_result(
             tool_call_id.to_string(),
             serde_json::json!({"status": "resumed"}),
@@ -413,12 +420,6 @@ where
         let result_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_result);
         self.event_store
             .store_event(run_id, result_event_id, tool_call_result.clone())
-            .await;
-
-        let tool_call_end = AgUiEvent::tool_call_end(tool_call_id.to_string());
-        let end_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_end);
-        self.event_store
-            .store_event(run_id, end_event_id, tool_call_end.clone())
             .await;
 
         // Capture all necessary data for the stream closure
@@ -429,9 +430,9 @@ where
         let handler = self.clone();
 
         let stream = stream! {
-            // Yield tool call events first
-            yield (result_event_id, tool_call_result);
+            // Yield tool call events first (END → RESULT order)
             yield (end_event_id, tool_call_end);
+            yield (result_event_id, tool_call_result);
 
             // Enqueue resume job
             let metadata = Arc::new(HashMap::new());
