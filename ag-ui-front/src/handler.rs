@@ -5,7 +5,7 @@
 use crate::config::AgUiServerConfig;
 use crate::error::{AgUiError, Result};
 use crate::events::{
-    AgUiEvent, EventEncoder, InterruptInfo, InterruptPayload, PendingToolCall,
+    AgUiEvent, EventEncoder, ExtractedToolResult, InterruptInfo, InterruptPayload, PendingToolCall,
     SharedWorkflowEventAdapter, extract_text_from_completed_output,
     extract_text_from_llm_chat_result, extract_tool_calls_from_llm_result,
     extract_tool_execution_results, shared_adapter, tool_calls_to_ag_ui_events,
@@ -1501,6 +1501,8 @@ where
             let mut active_message_ids: HashMap<i64, MessageId> = HashMap::new();
             // Track sent tool result call_ids to prevent duplicate TOOL_CALL_RESULT events
             let mut sent_tool_result_ids = std::collections::HashSet::<String>::new();
+            // Buffer tool results from StreamingData until StreamingJobCompleted emits START/ARGS/END first
+            let mut pending_tool_results = std::collections::HashMap::<String, ExtractedToolResult>::new();
             // Track whether text content was sent via StreamingData for each job_id
             // Used to decide whether to emit compensating TEXT_MESSAGE_CONTENT at StreamingJobCompleted
             let mut text_content_sent = std::collections::HashSet::<i64>::new();
@@ -1563,21 +1565,15 @@ where
                                     yield (event_id, ag_event);
                                 }
 
-                                // Check for tool execution results in streaming chunks
-                                // (emitted by LlmChatService during auto-calling)
+                                // Buffer tool execution results from streaming chunks
+                                // (emitted by LlmChatService during auto-calling).
+                                // Actual TOOL_CALL_RESULT emission is deferred to StreamingJobCompleted
+                                // to ensure correct AG-UI event ordering: START → ARGS → END → RESULT.
                                 let tool_results = extract_tool_execution_results(&ev.data);
-                                for (call_id, extracted) in &tool_results {
-                                    if sent_tool_result_ids.contains(call_id.as_str()) {
-                                        continue;
+                                for (call_id, extracted) in tool_results {
+                                    if !sent_tool_result_ids.contains(call_id.as_str()) {
+                                        pending_tool_results.insert(call_id, extracted);
                                     }
-                                    sent_tool_result_ids.insert(call_id.clone());
-                                    let result_ev = AgUiEvent::tool_call_result(
-                                        call_id.clone(),
-                                        extracted.result.clone(),
-                                    );
-                                    let ev_id = Self::encode_event_with_logging(&encoder, &result_ev);
-                                    event_store.store_event(&run_id, ev_id, result_ev.clone()).await;
-                                    yield (ev_id, result_ev);
                                 }
                             } else {
                                 tracing::warn!(
@@ -1629,21 +1625,24 @@ where
                                         yield (event_id, tool_event);
                                     }
 
-                                    // Auto-calling mode: emit TOOL_CALL_END + role=tool TEXT_MESSAGE for each tool
+                                    // Auto-calling mode: emit TOOL_CALL_END + TOOL_CALL_RESULT for each tool
+                                    // Order: START → ARGS → END → RESULT (AG-UI protocol compliant)
                                     if !tool_calls.requires_execution {
-                                        let tool_results = extract_tool_execution_results(&output_bytes);
+                                        let tool_results_from_output = extract_tool_execution_results(&output_bytes);
                                         for call in &tool_calls.tool_calls {
-                                            // TOOL_CALL_END (AG-UI protocol compliant)
+                                            // TOOL_CALL_END
                                             let end_event = AgUiEvent::tool_call_end(call.call_id.clone());
                                             let end_event_id = Self::encode_event_with_logging(&encoder, &end_event);
                                             event_store.store_event(&run_id, end_event_id, end_event.clone()).await;
                                             yield (end_event_id, end_event);
 
-                                            // Emit TOOL_CALL_RESULT (skip if already sent via StreamingData)
+                                            // TOOL_CALL_RESULT: buffered result (from StreamingData) takes priority,
+                                            // then fall back to output bytes, then Null
                                             if !sent_tool_result_ids.contains(call.call_id.as_str()) {
                                                 sent_tool_result_ids.insert(call.call_id.clone());
-                                                let result = tool_results.get(&call.call_id)
-                                                    .map(|e| e.result.clone())
+                                                let result = pending_tool_results.remove(&call.call_id)
+                                                    .or_else(|| tool_results_from_output.get(&call.call_id).cloned())
+                                                    .map(|e| e.result)
                                                     .unwrap_or(serde_json::Value::Null);
                                                 let result_ev = AgUiEvent::tool_call_result(
                                                     call.call_id.clone(),
