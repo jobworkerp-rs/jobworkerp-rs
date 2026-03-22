@@ -6,7 +6,7 @@ An HTTP SSE server compliant with the AG-UI protocol for real-time streaming exe
 
 ## Overview
 
-AG-UI Front implements the [AG-UI protocol](https://docs.ag-ui.com/) and provides the following features:
+AG-UI Front implements the [AG-UI protocol](https://docs.ag-ui.com/llms-full.txt) and provides the following features:
 
 - **Workflow Execution**: Execute jobworkerp-rs workflows via HTTP API
 - **Real-time Streaming**: Event delivery via SSE (Server-Sent Events)
