@@ -5,7 +5,7 @@
 use crate::config::AgUiServerConfig;
 use crate::error::{AgUiError, Result};
 use crate::events::{
-    AgUiEvent, EventEncoder, InterruptInfo, InterruptPayload, PendingToolCall,
+    AgUiEvent, EventEncoder, ExtractedToolResult, InterruptInfo, InterruptPayload, PendingToolCall,
     SharedWorkflowEventAdapter, extract_text_from_completed_output,
     extract_text_from_llm_chat_result, extract_tool_calls_from_llm_result,
     extract_tool_execution_results, shared_adapter, tool_calls_to_ag_ui_events,
@@ -412,22 +412,23 @@ where
             }
         }
 
-        // 3. Emit TOOL_CALL_RESULT and TOOL_CALL_END events for each result
+        // 3. Emit TOOL_CALL_END and TOOL_CALL_RESULT events for each result
+        // Order: END → RESULT (AG-UI protocol compliant)
         let mut events = Vec::new();
         for (tool_call_id, result) in &tool_results {
-            let result_event = AgUiEvent::tool_call_result(tool_call_id.clone(), result.clone());
-            let result_event_id = Self::encode_event_with_logging(&self.encoder, &result_event);
-            self.event_store
-                .store_event(run_id, result_event_id, result_event.clone())
-                .await;
-            events.push((result_event_id, result_event));
-
             let end_event = AgUiEvent::tool_call_end(tool_call_id.clone());
             let end_event_id = Self::encode_event_with_logging(&self.encoder, &end_event);
             self.event_store
                 .store_event(run_id, end_event_id, end_event.clone())
                 .await;
             events.push((end_event_id, end_event));
+
+            let result_event = AgUiEvent::tool_call_result(tool_call_id.clone(), result.clone());
+            let result_event_id = Self::encode_event_with_logging(&self.encoder, &result_event);
+            self.event_store
+                .store_event(run_id, result_event_id, result_event.clone())
+                .await;
+            events.push((result_event_id, result_event));
         }
 
         // 4. Emit RUN_FINISHED to signal client can proceed
@@ -633,13 +634,21 @@ where
             )));
         }
 
-        // 9. Emit TOOL_CALL_RESULT and TOOL_CALL_END events
+        // 9. Emit TOOL_CALL_END and TOOL_CALL_RESULT events
         // For LLM tool calls (pending_tool_calls non-empty), emit events for the specific tool
         // For traditional HITL (pending_tool_calls empty), emit events for the primary tool_call_id
         let mut tool_events_vec = Vec::new();
 
         if !hitl_info.pending_tool_calls.is_empty() {
-            // LLM tool call mode: emit TOOL_CALL_RESULT and TOOL_CALL_END for the matched tool
+            // LLM tool call mode: emit TOOL_CALL_END and TOOL_CALL_RESULT for the matched tool
+            // Order: END → RESULT (AG-UI protocol compliant)
+            let tool_call_end_event = AgUiEvent::tool_call_end(tool_call_id.to_string());
+            let end_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_end_event);
+            self.event_store
+                .store_event(run_id, end_event_id, tool_call_end_event.clone())
+                .await;
+            tool_events_vec.push((end_event_id, tool_call_end_event));
+
             let tool_call_result_event =
                 AgUiEvent::tool_call_result(tool_call_id.to_string(), user_input_for_event);
             let result_event_id =
@@ -649,6 +658,14 @@ where
                 .await;
             tool_events_vec.push((result_event_id, tool_call_result_event));
 
+            tracing::info!(
+                tool_call_id = %tool_call_id,
+                pending_count = hitl_info.pending_tool_calls.len(),
+                "LLM tool call result received"
+            );
+        } else {
+            // Traditional HITL mode: emit TOOL_CALL_END then status-based TOOL_CALL_RESULT
+            // Order: END → RESULT (AG-UI protocol compliant)
             let tool_call_end_event = AgUiEvent::tool_call_end(tool_call_id.to_string());
             let end_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_end_event);
             self.event_store
@@ -656,13 +673,6 @@ where
                 .await;
             tool_events_vec.push((end_event_id, tool_call_end_event));
 
-            tracing::info!(
-                tool_call_id = %tool_call_id,
-                pending_count = hitl_info.pending_tool_calls.len(),
-                "LLM tool call result received"
-            );
-        } else {
-            // Traditional HITL mode: emit status-based result
             let tool_call_result_event = AgUiEvent::tool_call_result(
                 tool_call_id.to_string(),
                 serde_json::json!({"status": "resumed"}),
@@ -673,13 +683,6 @@ where
                 .store_event(run_id, result_event_id, tool_call_result_event.clone())
                 .await;
             tool_events_vec.push((result_event_id, tool_call_result_event));
-
-            let tool_call_end_event = AgUiEvent::tool_call_end(tool_call_id.to_string());
-            let end_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_end_event);
-            self.event_store
-                .store_event(run_id, end_event_id, tool_call_end_event.clone())
-                .await;
-            tool_events_vec.push((end_event_id, tool_call_end_event));
         }
 
         // 10. Register executor for cancellation support
@@ -1097,9 +1100,14 @@ where
             "Handling LLM tool rejection"
         );
 
-        // 1. Build TOOL_CALL_RESULT + TOOL_CALL_END events (persist after validation succeeds)
+        // 1. Build TOOL_CALL_END + TOOL_CALL_RESULT events (persist after validation succeeds)
+        // Order: END → RESULT (AG-UI protocol compliant)
         let mut rejection_events: Vec<(u64, AgUiEvent)> = Vec::new();
         for tc in &hitl_info.pending_tool_calls {
+            let end_event = AgUiEvent::tool_call_end(tc.call_id.clone());
+            let end_id = Self::encode_event_with_logging(&self.encoder, &end_event);
+            rejection_events.push((end_id, end_event));
+
             let result_event = AgUiEvent::tool_call_result(
                 tc.call_id.clone(),
                 serde_json::json!({
@@ -1109,10 +1117,6 @@ where
             );
             let event_id = Self::encode_event_with_logging(&self.encoder, &result_event);
             rejection_events.push((event_id, result_event));
-
-            let end_event = AgUiEvent::tool_call_end(tc.call_id.clone());
-            let end_id = Self::encode_event_with_logging(&self.encoder, &end_event);
-            rejection_events.push((end_id, end_event));
         }
 
         // 2. Update workflowContext with rejection info in runnerMessages
@@ -1501,6 +1505,8 @@ where
             let mut active_message_ids: HashMap<i64, MessageId> = HashMap::new();
             // Track sent tool result call_ids to prevent duplicate TOOL_CALL_RESULT events
             let mut sent_tool_result_ids = std::collections::HashSet::<String>::new();
+            // Buffer tool results from StreamingData until StreamingJobCompleted emits START/ARGS/END first
+            let mut pending_tool_results = std::collections::HashMap::<String, ExtractedToolResult>::new();
             // Track whether text content was sent via StreamingData for each job_id
             // Used to decide whether to emit compensating TEXT_MESSAGE_CONTENT at StreamingJobCompleted
             let mut text_content_sent = std::collections::HashSet::<i64>::new();
@@ -1563,21 +1569,15 @@ where
                                     yield (event_id, ag_event);
                                 }
 
-                                // Check for tool execution results in streaming chunks
-                                // (emitted by LlmChatService during auto-calling)
+                                // Buffer tool execution results from streaming chunks
+                                // (emitted by LlmChatService during auto-calling).
+                                // Actual TOOL_CALL_RESULT emission is deferred to StreamingJobCompleted
+                                // to ensure correct AG-UI event ordering: START → ARGS → END → RESULT.
                                 let tool_results = extract_tool_execution_results(&ev.data);
-                                for (call_id, extracted) in &tool_results {
-                                    if sent_tool_result_ids.contains(call_id.as_str()) {
-                                        continue;
+                                for (call_id, extracted) in tool_results {
+                                    if !sent_tool_result_ids.contains(call_id.as_str()) {
+                                        pending_tool_results.entry(call_id).or_insert(extracted);
                                     }
-                                    sent_tool_result_ids.insert(call_id.clone());
-                                    let result_ev = AgUiEvent::tool_call_result(
-                                        call_id.clone(),
-                                        extracted.result.clone(),
-                                    );
-                                    let ev_id = Self::encode_event_with_logging(&encoder, &result_ev);
-                                    event_store.store_event(&run_id, ev_id, result_ev.clone()).await;
-                                    yield (ev_id, result_ev);
                                 }
                             } else {
                                 tracing::warn!(
@@ -1629,21 +1629,24 @@ where
                                         yield (event_id, tool_event);
                                     }
 
-                                    // Auto-calling mode: emit TOOL_CALL_END + role=tool TEXT_MESSAGE for each tool
+                                    // Auto-calling mode: emit TOOL_CALL_END + TOOL_CALL_RESULT for each tool
+                                    // Order: START → ARGS → END → RESULT (AG-UI protocol compliant)
                                     if !tool_calls.requires_execution {
-                                        let tool_results = extract_tool_execution_results(&output_bytes);
+                                        let tool_results_from_output = extract_tool_execution_results(&output_bytes);
                                         for call in &tool_calls.tool_calls {
-                                            // TOOL_CALL_END (AG-UI protocol compliant)
+                                            // TOOL_CALL_END
                                             let end_event = AgUiEvent::tool_call_end(call.call_id.clone());
                                             let end_event_id = Self::encode_event_with_logging(&encoder, &end_event);
                                             event_store.store_event(&run_id, end_event_id, end_event.clone()).await;
                                             yield (end_event_id, end_event);
 
-                                            // Emit TOOL_CALL_RESULT (skip if already sent via StreamingData)
+                                            // TOOL_CALL_RESULT: buffered result (from StreamingData) takes priority,
+                                            // then fall back to output bytes, then Null
                                             if !sent_tool_result_ids.contains(call.call_id.as_str()) {
                                                 sent_tool_result_ids.insert(call.call_id.clone());
-                                                let result = tool_results.get(&call.call_id)
-                                                    .map(|e| e.result.clone())
+                                                let result = pending_tool_results.remove(&call.call_id)
+                                                    .or_else(|| tool_results_from_output.get(&call.call_id).cloned())
+                                                    .map(|e| e.result)
                                                     .unwrap_or(serde_json::Value::Null);
                                                 let result_ev = AgUiEvent::tool_call_result(
                                                     call.call_id.clone(),
