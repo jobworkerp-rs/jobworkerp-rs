@@ -91,7 +91,7 @@ pub trait GenericLLMTracingHelper {
         &self,
         _metadata: &HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
-        mut span_attributes: OtelSpanAttributes,
+        span_attributes: OtelSpanAttributes,
         action: F,
     ) -> impl std::future::Future<Output = Result<(R, opentelemetry::Context)>> + Send
     where
@@ -102,25 +102,37 @@ pub trait GenericLLMTracingHelper {
 
         async move {
             let (result, context) = if let Some(client) = &otel_client {
-                let result = action.await.map_err(|e| {
-                    tracing::error!("LLM action failed: {:?}", e);
-                    anyhow::anyhow!("Action failed: {}", e)
-                })?;
+                use opentelemetry::trace::{Span, Status};
 
-                let response_output = result.to_json();
-                span_attributes.data.output = Some(response_output);
-
+                // Start span BEFORE action to capture actual duration
                 let mut span = if let Some(ref ctx) = parent_context {
                     client.start_with_context(span_attributes, ctx.clone())
                 } else {
                     client.start_new_span(span_attributes)
                 };
-                use opentelemetry::trace::{Span, Status};
-                span.set_status(Status::Ok);
-                span.end();
 
-                let context = parent_context.unwrap_or(opentelemetry::Context::current());
-                (result, context)
+                let action_result = action.await;
+
+                match action_result {
+                    Ok(result) => {
+                        let response_output = result.to_json().to_string();
+                        span.set_attribute(opentelemetry::KeyValue::new(
+                            "langfuse.observation.output",
+                            response_output,
+                        ));
+                        span.set_status(Status::Ok);
+                        span.end();
+
+                        let context = parent_context.unwrap_or(opentelemetry::Context::current());
+                        (result, context)
+                    }
+                    Err(e) => {
+                        tracing::error!("LLM action failed: {:?}", e);
+                        span.set_status(Status::error(e.to_string()));
+                        span.end();
+                        return Err(anyhow::anyhow!("Action failed: {}", e));
+                    }
+                }
             } else {
                 let result = action.await?;
                 let context = opentelemetry::Context::current();

@@ -945,7 +945,7 @@ impl GenaiChatService {
 
     pub async fn request_chat_stream(
         &self,
-        args: LlmChatArgs,
+        mut args: LlmChatArgs,
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Check for tool execution requests first (highest priority, manual mode continuation)
@@ -963,25 +963,34 @@ impl GenaiChatService {
 
         // auto_select_function_set: Phase 1 (non-streaming) selects FunctionSet, Phase 2 streams
         if is_auto_select {
-            let original_args = args.clone();
             let (tools_vec, auto_select_names) = self.function_list(&args).await?;
-            let options = self.options(&args);
-            let model = args.model.clone().unwrap_or_else(|| self.model.clone());
-            let mut messages = self.trans_messages(args);
-
-            if let Some(system_prompt) = self.system_prompt.clone() {
-                messages.retain(|m| !matches!(m.role, genai::chat::ChatRole::System));
-                messages.insert(
+            if auto_select_names.is_empty() {
+                tracing::warn!(
+                    "auto_select_function_set is true but no selector tools available, falling back to normal streaming"
+                );
+                return self.create_chat_stream(args, metadata).await;
+            }
+            // Insert system_prompt into args before cloning for Phase 2
+            if let Some(ref system_prompt) = self.system_prompt {
+                use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+                    ChatMessage as ProtoChatMessage, MessageContent, message_content,
+                };
+                args.messages.retain(|m| m.role() != ChatRole::System);
+                args.messages.insert(
                     0,
-                    ChatMessage {
-                        role: genai::chat::ChatRole::System,
-                        content: GenaiMessageContent::from_text(system_prompt),
-                        options: None,
+                    ProtoChatMessage {
+                        role: ChatRole::System.into(),
+                        content: Some(MessageContent {
+                            content: Some(message_content::Content::Text(system_prompt.clone())),
+                        }),
                     },
                 );
             }
+            let original_args = args.clone();
 
-            let messages = Arc::new(Mutex::new(messages));
+            let options = self.options(&args);
+            let model = args.model.clone().unwrap_or_else(|| self.model.clone());
+            let messages = Arc::new(Mutex::new(self.trans_messages(args)));
             let tools = Arc::new(tools_vec);
 
             let res = Self::request_chat_internal_with_tracing(
@@ -1097,6 +1106,11 @@ impl GenaiChatService {
                     tracing::warn!(
                         tool = %req.fn_name,
                         "Skipping selector pseudo-tool in tool execution stream"
+                    );
+                    Self::replace_tool_execution_with_result(
+                        &mut updated_args.messages,
+                        &req.call_id,
+                        "Tool selection completed",
                     );
                     continue;
                 }

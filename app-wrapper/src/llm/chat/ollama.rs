@@ -1067,7 +1067,7 @@ impl OllamaChatService {
     /// 3. Server executes tools, yields results, then continues LLM conversation
     pub async fn request_stream_chat(
         self: Arc<Self>,
-        args: LlmChatArgs,
+        mut args: LlmChatArgs,
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
         // Check for tool execution requests first (highest priority, manual mode continuation)
@@ -1085,19 +1085,36 @@ impl OllamaChatService {
 
         // auto_select_function_set: Phase 1 (non-streaming) selects FunctionSet, Phase 2 streams
         if is_auto_select {
-            let original_args = args.clone();
             let (tools_vec, auto_select_names) = self.function_list(&args).await?;
+            if auto_select_names.is_empty() {
+                tracing::warn!(
+                    "auto_select_function_set is true but no selector tools available, falling back to normal streaming"
+                );
+                return self.create_streaming_chat(args, metadata_arc).await;
+            }
+            // Insert system_prompt into args before cloning for Phase 2
+            if let Some(ref system_prompt) = self.system_prompt {
+                use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+                    ChatMessage as ProtoChatMessage, MessageContent, message_content,
+                };
+                args.messages.retain(|m| m.role() != ChatRole::System);
+                args.messages.insert(
+                    0,
+                    ProtoChatMessage {
+                        role: ChatRole::System.into(),
+                        content: Some(MessageContent {
+                            content: Some(message_content::Content::Text(system_prompt.clone())),
+                        }),
+                    },
+                );
+            }
+            let original_args = args.clone();
+
             let options = Self::create_chat_options(&args);
             let model = args.model.clone().unwrap_or_else(|| self.model.clone());
-            let mut messages = Self::convert_messages(&args).await;
-
-            if let Some(system_prompt) = self.system_prompt.clone() {
-                messages.retain(|m| m.role != MessageRole::System);
-                messages.insert(0, ChatMessage::new(MessageRole::System, system_prompt));
-            }
+            let messages = Arc::new(Mutex::new(Self::convert_messages(&args).await));
 
             let tools = Arc::new(tools_vec);
-            let messages = Arc::new(Mutex::new(messages));
             let think = args.options.as_ref().map(|o| o.extract_reasoning_content());
             let res = Self::request_chat_internal_with_tracing(
                 self.clone(),
@@ -1225,6 +1242,11 @@ impl OllamaChatService {
                     tracing::warn!(
                         tool = %req.fn_name,
                         "Skipping selector pseudo-tool in tool execution stream"
+                    );
+                    OllamaChatService::replace_tool_execution_with_result(
+                        &mut updated_args.messages,
+                        &req.call_id,
+                        "Tool selection completed",
                     );
                     continue;
                 }
