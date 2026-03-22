@@ -404,10 +404,13 @@ pub fn extract_tool_execution_results(
                     "result": ter.result,
                 })
             };
-            results.insert(ter.call_id.clone(), ExtractedToolResult {
-                fn_name: ter.fn_name.clone(),
-                result: value,
-            });
+            results.insert(
+                ter.call_id.clone(),
+                ExtractedToolResult {
+                    fn_name: ter.fn_name.clone(),
+                    result: value,
+                },
+            );
         }
         return results;
     }
@@ -450,10 +453,13 @@ pub fn extract_tool_execution_results(
                             "result": result_str,
                         })
                     };
-                    results.insert(cid.to_string(), ExtractedToolResult {
-                        fn_name: fn_name.to_string(),
-                        result: value,
-                    });
+                    results.insert(
+                        cid.to_string(),
+                        ExtractedToolResult {
+                            fn_name: fn_name.to_string(),
+                            result: value,
+                        },
+                    );
                 }
             }
         }

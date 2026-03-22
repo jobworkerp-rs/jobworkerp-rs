@@ -213,7 +213,7 @@ pub trait FunctionSpecConverter {
             runner_type: runner_data.runner_type,
             runner_id: runner.id,
             worker_id: None,
-            name: format!("{}___{}", runner_data.name, using),
+            name: runner_data.name.clone(),
             description: proto_schema
                 .description
                 .clone()
@@ -310,7 +310,7 @@ pub trait FunctionSpecConverter {
             runner_type: runner_data.runner_type,
             runner_id: runner.id,
             worker_id: Some(worker_id),
-            name: format!("{}___{}", worker_data.name, using),
+            name: worker_data.name.clone(),
             description: description
                 .unwrap_or_else(|| format!("{} - {}", worker_data.description, using)),
             settings_schema: String::new(),
@@ -621,8 +621,8 @@ mod tests {
         )
         .unwrap();
 
-        // Name should include ___run suffix
-        assert_eq!(specs.name, "gitea-code-review-workflow___run");
+        // Name should be the raw worker name (tool name combining is done by ToolConverter)
+        assert_eq!(specs.name, "gitea-code-review-workflow");
 
         // Description should be workflow summary, not generic runner description
         assert_eq!(specs.description, summary);

@@ -596,6 +596,20 @@ impl OllamaChatService {
     ) -> Result<LlmChatResult> {
         // Execute each requested tool
         for req in &requests {
+            // Skip selector pseudo-tools — they cannot be executed as real tools
+            if ToolConverter::is_selector_tool(&req.fn_name) {
+                tracing::warn!(
+                    tool = %req.fn_name,
+                    "Skipping selector pseudo-tool in tool execution"
+                );
+                Self::replace_tool_execution_with_result(
+                    &mut args.messages,
+                    &req.call_id,
+                    "Tool selection completed",
+                );
+                continue;
+            }
+
             let arguments: Option<serde_json::Map<String, serde_json::Value>> =
                 serde_json::from_str(&req.fn_arguments).ok();
 
@@ -812,9 +826,38 @@ impl OllamaChatService {
             }
 
             // Auto mode: process tool calls automatically
-            // Add assistant message with tool calls to conversation history
-            messages.lock().await.push(res.message.clone());
-            let tool_calls = res.message.tool_calls.clone();
+            // Filter out selector pseudo-tools to prevent infinite loops —
+            // LLM may hallucinate selector tool calls from conversation history
+            let tool_calls: Vec<_> = res
+                .message
+                .tool_calls
+                .iter()
+                .filter(|tc| {
+                    if ToolConverter::is_selector_tool(&tc.function.name) {
+                        tracing::warn!(
+                            tool = %tc.function.name,
+                            "Skipping selector pseudo-tool call in auto-calling mode"
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .cloned()
+                .collect();
+
+            // If only selector tools were called, treat as text response or error
+            if tool_calls.is_empty() {
+                tracing::warn!(
+                    "All tool calls were selector pseudo-tools, treating as final response"
+                );
+                return Ok(ChatInternalResult::Final(Box::new(res)));
+            }
+
+            // Add assistant message with filtered tool calls to conversation history
+            let mut filtered_message = res.message.clone();
+            filtered_message.tool_calls = tool_calls.clone();
+            messages.lock().await.push(filtered_message);
 
             // Process tool calls and get updated context for each tool call
             let mut updated_context = current_context;
@@ -1094,7 +1137,12 @@ impl OllamaChatService {
                             fo.function_set_name = Some(selected_set_name);
                             fo.auto_select_function_set = Some(false);
                         }
-                        return self.create_streaming_chat(second_args, metadata_arc).await;
+                        // Use request_stream_chat (not create_streaming_chat) so that
+                        // is_auto_calling and tool execution handling are fully active in Phase 2
+                        return Box::pin(
+                            self.request_stream_chat(second_args, (*metadata_arc).clone()),
+                        )
+                        .await;
                     }
 
                     let attempted_names: Vec<&str> = tool_calls
@@ -1155,6 +1203,15 @@ impl OllamaChatService {
 
             // Phase 1: Execute tools, yield results, and cache for later
             for req in &requests_clone {
+                // Skip selector pseudo-tools — they cannot be executed as real tools
+                if ToolConverter::is_selector_tool(&req.fn_name) {
+                    tracing::warn!(
+                        tool = %req.fn_name,
+                        "Skipping selector pseudo-tool in tool execution stream"
+                    );
+                    continue;
+                }
+
                 let arguments: Option<serde_json::Map<String, serde_json::Value>> =
                     serde_json::from_str(&req.fn_arguments).ok();
 
@@ -1334,6 +1391,19 @@ impl OllamaChatService {
                     }
 
                     // After stream ends, process any accumulated tool calls
+                    // Filter out selector pseudo-tools — they are internal to auto-select
+                    // and must not be exposed as pending tool calls to clients/workflows
+                    accumulated_tool_calls.retain(|tc| {
+                        if ToolConverter::is_selector_tool(&tc.function.name) {
+                            tracing::warn!(
+                                tool = %tc.function.name,
+                                "Filtering out selector pseudo-tool from pending tool calls"
+                            );
+                            false
+                        } else {
+                            true
+                        }
+                    });
                     if !accumulated_tool_calls.is_empty() {
                         // Convert to pending tool calls format
                         let pending_calls: Vec<ToolCallRequest> = accumulated_tool_calls
