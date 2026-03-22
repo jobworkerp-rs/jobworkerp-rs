@@ -12,6 +12,9 @@ use std::collections::HashSet;
 use tracing;
 
 /// Abstracts tool name access across different LLM provider ToolCall types.
+///
+/// Each LLM provider's ToolCall type must implement this trait in its own module
+/// (e.g., genai.rs, ollama.rs) to enable shared selector-tool filtering logic.
 pub trait ToolCallName {
     fn tool_name(&self) -> &str;
 }
@@ -322,21 +325,9 @@ impl ToolConverter {
     }
 
     /// Filter out selector pseudo-tools from a list, logging warnings.
-    pub fn filter_selector_tools<T: ToolCallName>(tool_calls: Vec<T>) -> Vec<T> {
+    pub fn filter_selector_tools<T: ToolCallName>(mut tool_calls: Vec<T>) -> Vec<T> {
+        Self::retain_non_selector_tools(&mut tool_calls);
         tool_calls
-            .into_iter()
-            .filter(|tc| {
-                if Self::is_selector_tool(tc.tool_name()) {
-                    tracing::warn!(
-                        tool = %tc.tool_name(),
-                        "Skipping selector pseudo-tool call"
-                    );
-                    false
-                } else {
-                    true
-                }
-            })
-            .collect()
     }
 
     /// Retain only non-selector tools in place.
