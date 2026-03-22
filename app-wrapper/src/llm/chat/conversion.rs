@@ -278,25 +278,40 @@ impl ToolConverter {
     }
 
     /// Replace a tool execution request message with a text result in the message list.
+    /// Only removes the matching request; other requests in the same message are preserved.
     pub fn replace_tool_execution_with_result(
-        messages: &mut [jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage],
+        messages: &mut Vec<jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage>,
         call_id: &str,
         result: &str,
     ) {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage as ProtoChatMessage;
         use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::MessageContent;
         use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
 
-        for msg in messages.iter_mut() {
-            if msg.role() != ChatRole::Tool {
+        for i in 0..messages.len() {
+            if messages[i].role() != ChatRole::Tool {
                 continue;
             }
-            if let Some(ref content) = msg.content
-                && let Some(ProtoContent::ToolExecutionRequests(reqs)) = &content.content
+            if let Some(ref mut content) = messages[i].content
+                && let Some(ProtoContent::ToolExecutionRequests(reqs)) = &mut content.content
                 && reqs.requests.iter().any(|r| r.call_id == call_id)
             {
-                msg.content = Some(MessageContent {
-                    content: Some(ProtoContent::Text(result.to_string())),
-                });
+                reqs.requests.retain(|r| r.call_id != call_id);
+                if reqs.requests.is_empty() {
+                    messages[i].content = Some(MessageContent {
+                        content: Some(ProtoContent::Text(result.to_string())),
+                    });
+                } else {
+                    messages.insert(
+                        i + 1,
+                        ProtoChatMessage {
+                            role: ChatRole::Tool.into(),
+                            content: Some(MessageContent {
+                                content: Some(ProtoContent::Text(result.to_string())),
+                            }),
+                        },
+                    );
+                }
                 return;
             }
         }
@@ -306,7 +321,7 @@ impl ToolConverter {
     /// replace it with a completion message. Returns true if skipped.
     pub fn skip_selector_tool_execution(
         req: &ToolExecutionRequest,
-        messages: &mut [jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage],
+        messages: &mut Vec<jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage>,
     ) -> bool {
         if Self::is_selector_tool(&req.fn_name) {
             tracing::warn!(
@@ -388,9 +403,20 @@ impl ToolConverter {
             }
 
             let mut second_args = original_args;
-            if let Some(ref mut fo) = second_args.function_options {
-                fo.function_set_name = Some(selected_set_name.clone());
-                fo.auto_select_function_set = Some(false);
+            match second_args.function_options {
+                Some(ref mut fo) => {
+                    fo.function_set_name = Some(selected_set_name.clone());
+                    fo.auto_select_function_set = Some(false);
+                }
+                None => {
+                    use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::FunctionOptions;
+                    second_args.function_options = Some(FunctionOptions {
+                        use_function_calling: true,
+                        function_set_name: Some(selected_set_name.clone()),
+                        auto_select_function_set: Some(false),
+                        ..Default::default()
+                    });
+                }
             }
 
             Ok(AutoSelectResult {
@@ -1683,10 +1709,10 @@ mod tests {
         let args = LlmChatArgs::default();
         let result = ToolConverter::evaluate_auto_select(&calls, &names, args, "").unwrap();
         assert_eq!(result.selected_set_name, "web-tools");
-        assert_eq!(
-            result.second_args.function_options,
-            None // default args have no function_options
-        );
+        // Even when original args have no function_options, selected_set_name must be propagated
+        let fo = result.second_args.function_options.unwrap();
+        assert_eq!(fo.function_set_name, Some("web-tools".to_string()));
+        assert_eq!(fo.auto_select_function_set, Some(false));
     }
 
     #[test]
@@ -1778,5 +1804,102 @@ mod tests {
             &req,
             &mut messages
         ));
+    }
+
+    #[test]
+    fn test_replace_tool_execution_preserves_other_requests() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage as ProtoChatMessage, MessageContent,
+            message_content::Content as ProtoContent,
+        };
+
+        let req1 = ToolExecutionRequest {
+            call_id: "call-1".to_string(),
+            fn_name: "tool_a".to_string(),
+            fn_arguments: "{}".to_string(),
+        };
+        let req2 = ToolExecutionRequest {
+            call_id: "call-2".to_string(),
+            fn_name: "tool_b".to_string(),
+            fn_arguments: "{}".to_string(),
+        };
+
+        let mut messages = vec![ProtoChatMessage {
+            role: ChatRole::Tool.into(),
+            content: Some(MessageContent {
+                content: Some(ProtoContent::ToolExecutionRequests(
+                    jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequests {
+                        requests: vec![req1, req2],
+                    },
+                )),
+            }),
+        }];
+
+        // Replace only call-1
+        ToolConverter::replace_tool_execution_with_result(
+            &mut messages,
+            "call-1",
+            "result-1",
+        );
+
+        // Should now have 2 messages: original with only call-2, and new Text with result-1
+        assert_eq!(messages.len(), 2);
+
+        // First message should still have call-2
+        if let Some(ref content) = messages[0].content {
+            match &content.content {
+                Some(ProtoContent::ToolExecutionRequests(reqs)) => {
+                    assert_eq!(reqs.requests.len(), 1);
+                    assert_eq!(reqs.requests[0].call_id, "call-2");
+                }
+                other => panic!("Expected ToolExecutionRequests, got {:?}", other),
+            }
+        }
+
+        // Second message should be the text result
+        if let Some(ref content) = messages[1].content {
+            match &content.content {
+                Some(ProtoContent::Text(t)) => assert_eq!(t, "result-1"),
+                other => panic!("Expected Text content, got {:?}", other),
+            }
+        }
+
+        // Now replace call-2 — should collapse to Text
+        ToolConverter::replace_tool_execution_with_result(
+            &mut messages,
+            "call-2",
+            "result-2",
+        );
+
+        // First message should now be Text
+        assert_eq!(messages.len(), 2);
+        if let Some(ref content) = messages[0].content {
+            match &content.content {
+                Some(ProtoContent::Text(t)) => assert_eq!(t, "result-2"),
+                other => panic!("Expected Text content, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_evaluate_auto_select_none_function_options_propagates() {
+        let calls = vec![MockToolCall {
+            name: "select_toolset_api-tools".to_string(),
+        }];
+        let mut names = std::collections::HashSet::new();
+        names.insert("select_toolset_api-tools".to_string());
+
+        // function_options is None
+        let args = LlmChatArgs {
+            function_options: None,
+            ..Default::default()
+        };
+        let result = ToolConverter::evaluate_auto_select(&calls, &names, args, "").unwrap();
+        assert_eq!(result.selected_set_name, "api-tools");
+
+        let fo = result.second_args.function_options.expect("function_options should be Some");
+        assert_eq!(fo.function_set_name, Some("api-tools".to_string()));
+        assert_eq!(fo.auto_select_function_set, Some(false));
+        assert!(fo.use_function_calling);
     }
 }
