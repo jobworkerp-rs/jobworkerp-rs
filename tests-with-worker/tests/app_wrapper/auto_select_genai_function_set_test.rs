@@ -194,6 +194,51 @@ async fn test_genai_auto_select_picks_function_set() -> Result<()> {
     Ok(())
 }
 
+/// LLM should auto-select a FunctionSet in streaming mode via GenAI.
+/// Phase 1 selects the toolset non-streaming, Phase 2 streams the response.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "Integration test requiring Ollama server"]
+async fn test_genai_auto_select_streaming_picks_function_set() -> Result<()> {
+    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    let (service, worker_handle) = create_auto_select_test_service().await?;
+
+    let args = create_auto_select_chat_args(
+        "Please run the shell command 'echo hello world' and show me the output.",
+    );
+
+    let metadata = HashMap::new();
+
+    println!("Sending auto-select streaming request to GenAI (via Ollama)...");
+    let result = timeout(TEST_TIMEOUT, service.request_chat_stream(args, metadata)).await;
+
+    match result {
+        Ok(Ok(mut stream)) => {
+            use futures::StreamExt;
+            let mut chunk_count = 0;
+            while let Some(_chunk) = stream.next().await {
+                chunk_count += 1;
+            }
+            println!(
+                "Streaming auto-select (GenAI): received {} chunks",
+                chunk_count
+            );
+            assert!(
+                chunk_count > 0,
+                "Should receive at least one streaming chunk"
+            );
+        }
+        Ok(Err(e)) => {
+            panic!("Streaming chat returned error: {}", e);
+        }
+        Err(_) => {
+            panic!("Request timed out after {:?}", TEST_TIMEOUT);
+        }
+    }
+
+    worker_handle.shutdown().await;
+    Ok(())
+}
+
 /// When no FunctionSets are registered, auto-select should gracefully
 /// fall back to a normal chat without tools (no tools injected).
 #[tokio::test(flavor = "current_thread")]

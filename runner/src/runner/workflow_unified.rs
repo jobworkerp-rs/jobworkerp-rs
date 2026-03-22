@@ -25,6 +25,19 @@ use futures::stream::BoxStream;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use std::collections::HashMap;
 
+impl crate::jobworkerp::runner::WorkflowRunnerSettings {
+    /// Parse workflow definition from workflow_data to extract schema (document/input).
+    pub fn schema(&self) -> Option<serde_json::Map<String, serde_json::Value>> {
+        use crate::jobworkerp::runner::workflow_runner_settings::WorkflowSource;
+        match &self.workflow_source {
+            Some(WorkflowSource::WorkflowData(data)) => {
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(data).ok()
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Method name for workflow execution
 pub const METHOD_RUN: &str = "run";
 /// Method name for workflow worker creation

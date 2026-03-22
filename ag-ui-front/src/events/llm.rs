@@ -373,6 +373,105 @@ pub fn tool_calls_to_ag_ui_events(
     events
 }
 
+/// Extracted tool execution result with metadata.
+#[derive(Debug, Clone)]
+pub struct ExtractedToolResult {
+    pub fn_name: String,
+    pub result: serde_json::Value,
+}
+
+/// Extract tool execution results from LlmChatResult bytes.
+///
+/// In auto-calling mode, `LlmChatResult.tool_execution_results` contains
+/// the results of executed tool calls (call_id → result mapping).
+///
+/// Returns a HashMap of call_id → ExtractedToolResult.
+pub fn extract_tool_execution_results(
+    bytes: &[u8],
+) -> std::collections::HashMap<String, ExtractedToolResult> {
+    if bytes.is_empty() {
+        return std::collections::HashMap::new();
+    }
+
+    let mut results = std::collections::HashMap::new();
+
+    // Try protobuf decoding — return immediately on success (even if empty)
+    // to avoid JSON fallback misinterpreting valid protobuf with no tool results
+    if let Ok(result) = LlmChatResult::decode(bytes) {
+        for ter in &result.tool_execution_results {
+            let value = if ter.success {
+                serde_json::from_str(&ter.result)
+                    .unwrap_or_else(|_| serde_json::Value::String(ter.result.clone()))
+            } else {
+                serde_json::json!({
+                    "error": ter.error.as_deref().unwrap_or("unknown error"),
+                    "result": ter.result,
+                })
+            };
+            results.insert(
+                ter.call_id.clone(),
+                ExtractedToolResult {
+                    fn_name: ter.fn_name.clone(),
+                    result: value,
+                },
+            );
+        }
+        return results;
+    }
+
+    // Fallback: try JSON decoding
+    if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        let ter_arr = json_value
+            .get("tool_execution_results")
+            .or_else(|| json_value.get("toolExecutionResults"))
+            .and_then(|v| v.as_array());
+
+        if let Some(arr) = ter_arr {
+            for item in arr {
+                let call_id = item
+                    .get("call_id")
+                    .or_else(|| item.get("callId"))
+                    .and_then(|v| v.as_str());
+                let fn_name = item
+                    .get("fn_name")
+                    .or_else(|| item.get("fnName"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let result_str = item.get("result").and_then(|v| v.as_str()).unwrap_or("");
+                let success = item
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
+                if let Some(cid) = call_id {
+                    let value = if success {
+                        serde_json::from_str(result_str)
+                            .unwrap_or_else(|_| serde_json::Value::String(result_str.to_string()))
+                    } else {
+                        let error = item
+                            .get("error")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown error");
+                        serde_json::json!({
+                            "error": error,
+                            "result": result_str,
+                        })
+                    };
+                    results.insert(
+                        cid.to_string(),
+                        ExtractedToolResult {
+                            fn_name: fn_name.to_string(),
+                            result: value,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    results
+}
+
 /// Extract text content from LlmChatResult protobuf bytes.
 ///
 /// LLM_CHAT runner streams serialized LlmChatResult protobuf messages.
@@ -580,6 +679,45 @@ fn result_output_stream_to_ag_ui_events_internal(
     });
 
     start_stream.chain(content_stream)
+}
+
+/// Extract text content from StreamingJobCompleted output for fallback delivery.
+///
+/// When the streaming phase fails to deliver text chunks (e.g., due to timing issues
+/// between stream publish and job completion), this function extracts text from the
+/// completed job's output so the handler can emit a compensating TEXT_MESSAGE_CONTENT.
+///
+/// Supports both snake_case and camelCase JSON keys, and protobuf-style nested content.
+pub fn extract_text_from_completed_output(output: &serde_json::Value) -> Option<String> {
+    let obj = output.as_object()?;
+
+    let content = obj.get("content")?;
+    let content_obj = content.as_object()?;
+
+    // Direct text field: content.text or content.Text
+    if let Some(text) = content_obj
+        .get("text")
+        .or_else(|| content_obj.get("Text"))
+        .and_then(|v| v.as_str())
+        .filter(|t| !t.is_empty())
+    {
+        return Some(text.to_string());
+    }
+
+    // Nested content.content (protobuf oneof serialization)
+    let inner = content_obj.get("content")?;
+    if let Some(inner_obj) = inner.as_object()
+        && let Some(text) = inner_obj
+            .get("Text")
+            .or_else(|| inner_obj.get("text"))
+            .and_then(|v| v.as_str())
+            .filter(|t| !t.is_empty())
+    {
+        return Some(text.to_string());
+    }
+
+    // content.content is a string directly
+    inner.as_str().filter(|t| !t.is_empty()).map(String::from)
 }
 
 /// Container for LLM streaming result with both event stream and collected result.
@@ -1112,6 +1250,83 @@ mod tests {
         assert!(matches!(&events[2], AgUiEvent::TextMessageEnd { .. }));
     }
 
+    // === Tests for extract_text_from_completed_output ===
+
+    #[test]
+    fn test_extract_text_from_completed_output_snake_case() {
+        let output = serde_json::json!({
+            "content": {
+                "text": "Hello from LLM"
+            },
+            "done": true
+        });
+        let text = extract_text_from_completed_output(&output);
+        assert_eq!(text, Some("Hello from LLM".to_string()));
+    }
+
+    #[test]
+    fn test_extract_text_from_completed_output_nested_oneof() {
+        let output = serde_json::json!({
+            "content": {
+                "content": {
+                    "Text": "Nested text response"
+                }
+            },
+            "done": true
+        });
+        let text = extract_text_from_completed_output(&output);
+        assert_eq!(text, Some("Nested text response".to_string()));
+    }
+
+    #[test]
+    fn test_extract_text_from_completed_output_empty() {
+        let output = serde_json::json!({
+            "content": {
+                "text": ""
+            },
+            "done": true
+        });
+        let text = extract_text_from_completed_output(&output);
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn test_extract_text_from_completed_output_no_content() {
+        let output = serde_json::json!({
+            "done": true
+        });
+        let text = extract_text_from_completed_output(&output);
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn test_extract_text_from_completed_output_tool_calls_only() {
+        let output = serde_json::json!({
+            "content": {
+                "content": {
+                    "ToolCalls": {
+                        "calls": [{"call_id": "1", "fn_name": "test"}]
+                    }
+                }
+            },
+            "done": false
+        });
+        let text = extract_text_from_completed_output(&output);
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn test_extract_text_from_completed_output_string_content() {
+        let output = serde_json::json!({
+            "content": {
+                "content": "Direct string content"
+            },
+            "done": true
+        });
+        let text = extract_text_from_completed_output(&output);
+        assert_eq!(text, Some("Direct string content".to_string()));
+    }
+
     #[tokio::test]
     async fn test_final_collected_with_end_guarantee() {
         // Stream with FinalCollected using end guarantee function
@@ -1225,5 +1440,84 @@ mod tests {
 
         let extracted = extract_tool_calls_from_llm_result(&bytes);
         assert!(extracted.is_none());
+    }
+
+    // === Tests for tool execution results extraction ===
+
+    #[test]
+    fn test_extract_tool_execution_results_from_protobuf() {
+        use jobworkerp_runner::jobworkerp::runner::llm::ToolExecutionResult;
+
+        let result = LlmChatResult {
+            content: None,
+            reasoning_content: None,
+            done: true,
+            usage: None,
+            pending_tool_calls: None,
+            requires_tool_execution: None,
+            tool_execution_results: vec![
+                ToolExecutionResult {
+                    call_id: "call_1".to_string(),
+                    fn_name: "http_request".to_string(),
+                    result: r#"{"status":200}"#.to_string(),
+                    error: None,
+                    success: true,
+                },
+                ToolExecutionResult {
+                    call_id: "call_2".to_string(),
+                    fn_name: "command".to_string(),
+                    result: "error output".to_string(),
+                    error: Some("command failed".to_string()),
+                    success: false,
+                },
+            ],
+        };
+        let bytes = result.encode_to_vec();
+
+        let results = extract_tool_execution_results(&bytes);
+        assert_eq!(results.len(), 2);
+
+        // Successful result is parsed as JSON
+        let r1 = results.get("call_1").unwrap();
+        assert_eq!(r1.fn_name, "http_request");
+        assert_eq!(r1.result["status"], 200);
+
+        // Failed result includes error info
+        let r2 = results.get("call_2").unwrap();
+        assert_eq!(r2.fn_name, "command");
+        assert_eq!(r2.result["error"], "command failed");
+    }
+
+    #[test]
+    fn test_extract_tool_execution_results_from_json() {
+        let json = serde_json::json!({
+            "tool_execution_results": [
+                {
+                    "call_id": "call_j1",
+                    "fn_name": "fetch",
+                    "result": r#"{"data":"ok"}"#,
+                    "success": true
+                }
+            ]
+        });
+        let bytes = serde_json::to_vec(&json).unwrap();
+
+        let results = extract_tool_execution_results(&bytes);
+        assert_eq!(results.len(), 1);
+        let r = results.get("call_j1").unwrap();
+        assert_eq!(r.fn_name, "fetch");
+        assert_eq!(r.result["data"], "ok");
+    }
+
+    #[test]
+    fn test_extract_tool_execution_results_empty() {
+        let json = serde_json::json!({
+            "content": { "content": { "Text": "Hello" } },
+            "done": true
+        });
+        let bytes = serde_json::to_vec(&json).unwrap();
+
+        let results = extract_tool_execution_results(&bytes);
+        assert!(results.is_empty());
     }
 }
