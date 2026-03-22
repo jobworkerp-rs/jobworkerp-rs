@@ -6,8 +6,9 @@ use crate::config::AgUiServerConfig;
 use crate::error::{AgUiError, Result};
 use crate::events::{
     AgUiEvent, EventEncoder, InterruptInfo, InterruptPayload, PendingToolCall,
-    SharedWorkflowEventAdapter, extract_text_from_llm_chat_result,
-    extract_tool_calls_from_llm_result, shared_adapter, tool_calls_to_ag_ui_events,
+    SharedWorkflowEventAdapter, extract_text_from_completed_output,
+    extract_text_from_llm_chat_result, extract_tool_calls_from_llm_result,
+    extract_tool_execution_results, shared_adapter, tool_calls_to_ag_ui_events,
 };
 use crate::session::{
     EventStore, HitlWaitingInfo, PendingToolCallInfo, Session, SessionManager, SessionState,
@@ -1287,6 +1288,11 @@ where
             // Track active message IDs for streaming jobs (job_id -> MessageId)
             // Used to correlate StreamingData events with TEXT_MESSAGE_CONTENT
             let mut active_message_ids: HashMap<i64, MessageId> = HashMap::new();
+            // Track sent tool result call_ids to prevent duplicate TOOL_CALL_RESULT events
+            let mut sent_tool_result_ids = std::collections::HashSet::<String>::new();
+            // Track whether text content was sent via StreamingData for each job_id
+            // Used to decide whether to emit compensating TEXT_MESSAGE_CONTENT at StreamingJobCompleted
+            let mut text_content_sent = std::collections::HashSet::<i64>::new();
 
             // Main event loop - process workflow events sequentially
             // StreamingData events are now yielded directly from workflow_stream
@@ -1330,12 +1336,13 @@ where
                             yield (event_id, ag_event);
                         }
 
-                        // Handle StreamingData: emit TEXT_MESSAGE_CONTENT
+                        // Handle StreamingData: emit TEXT_MESSAGE_CONTENT or role=tool messages
                         if let WorkflowStreamEvent::StreamingData { event: ev } = &event {
                             let job_id_value = ev.job_id.as_ref().map(|j| j.value).unwrap_or(0);
                             if let Some(message_id) = active_message_ids.get(&job_id_value) {
                                 // Decode LlmChatResult protobuf and extract text content
                                 if let Some(text) = extract_text_from_llm_chat_result(&ev.data) {
+                                    text_content_sent.insert(job_id_value);
                                     let ag_event = AgUiEvent::text_message_content(
                                         message_id.clone(),
                                         text,
@@ -1343,6 +1350,23 @@ where
                                     let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
                                     event_store.store_event(&run_id, event_id, ag_event.clone()).await;
                                     yield (event_id, ag_event);
+                                }
+
+                                // Check for tool execution results in streaming chunks
+                                // (emitted by LlmChatService during auto-calling)
+                                let tool_results = extract_tool_execution_results(&ev.data);
+                                for (call_id, extracted) in &tool_results {
+                                    if sent_tool_result_ids.contains(call_id.as_str()) {
+                                        continue;
+                                    }
+                                    sent_tool_result_ids.insert(call_id.clone());
+                                    let result_ev = AgUiEvent::tool_call_result(
+                                        call_id.clone(),
+                                        extracted.result.clone(),
+                                    );
+                                    let ev_id = Self::encode_event_with_logging(&encoder, &result_ev);
+                                    event_store.store_event(&run_id, ev_id, result_ev.clone()).await;
+                                    yield (ev_id, result_ev);
                                 }
                             } else {
                                 tracing::warn!(
@@ -1393,7 +1417,55 @@ where
                                         event_store.store_event(&run_id, event_id, tool_event.clone()).await;
                                         yield (event_id, tool_event);
                                     }
+
+                                    // Auto-calling mode: emit TOOL_CALL_END + role=tool TEXT_MESSAGE for each tool
+                                    if !tool_calls.requires_execution {
+                                        let tool_results = extract_tool_execution_results(&output_bytes);
+                                        for call in &tool_calls.tool_calls {
+                                            // TOOL_CALL_END (AG-UI protocol compliant)
+                                            let end_event = AgUiEvent::tool_call_end(call.call_id.clone());
+                                            let end_event_id = Self::encode_event_with_logging(&encoder, &end_event);
+                                            event_store.store_event(&run_id, end_event_id, end_event.clone()).await;
+                                            yield (end_event_id, end_event);
+
+                                            // Emit TOOL_CALL_RESULT (skip if already sent via StreamingData)
+                                            if !sent_tool_result_ids.contains(call.call_id.as_str()) {
+                                                sent_tool_result_ids.insert(call.call_id.clone());
+                                                let result = tool_results.get(&call.call_id)
+                                                    .map(|e| e.result.clone())
+                                                    .unwrap_or(serde_json::Value::Null);
+                                                let result_ev = AgUiEvent::tool_call_result(
+                                                    call.call_id.clone(),
+                                                    result,
+                                                );
+                                                let result_ev_id = Self::encode_event_with_logging(&encoder, &result_ev);
+                                                event_store.store_event(&run_id, result_ev_id, result_ev.clone()).await;
+                                                yield (result_ev_id, result_ev);
+                                            }
+                                        }
+                                    }
                                 }
+
+                            // Compensate for missing text content when StreamingData didn't deliver it
+                            // (e.g., Phase 3 continuation stream started after job completion was published)
+                            if let Some(ref msg_id) = message_id
+                                && !text_content_sent.contains(&job_id_value)
+                                && let Some(text) = extract_text_from_completed_output(&tc.output)
+                                && !text.is_empty()
+                            {
+                                tracing::info!(
+                                    job_id = job_id_value,
+                                    text_len = text.len(),
+                                    "StreamingJobCompleted: compensating missing text from output"
+                                );
+                                let ag_event = AgUiEvent::text_message_content(
+                                    msg_id.clone(),
+                                    text,
+                                );
+                                let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
+                                event_store.store_event(&run_id, event_id, ag_event.clone()).await;
+                                yield (event_id, ag_event);
+                            }
 
                             // Emit TEXT_MESSAGE_END for the text portion
                             if let Some(msg_id) = message_id.clone() {

@@ -300,28 +300,42 @@ impl OllamaChatService {
         let mut messages = Vec::with_capacity(args.messages.len());
         for m in &args.messages {
             let role = Self::role_to_enum(m.role());
-            let (content, images) = match &m.content {
+            let (content, images, tool_calls) = match &m.content {
                 Some(content) => match &content.content {
                     Some(llm::llm_chat_args::message_content::Content::Text(t)) => {
-                        (t.clone(), vec![])
+                        (t.clone(), vec![], vec![])
                     }
                     Some(llm::llm_chat_args::message_content::Content::Image(image)) => {
                         match Self::convert_proto_image_to_ollama(image).await {
-                            Some(ollama_image) => (String::new(), vec![ollama_image]),
+                            Some(ollama_image) => (String::new(), vec![ollama_image], vec![]),
                             None => {
                                 tracing::warn!("Failed to convert image, skipping");
-                                (String::new(), vec![])
+                                (String::new(), vec![], vec![])
                             }
                         }
                     }
-                    _ => (String::new(), vec![]),
+                    Some(llm::llm_chat_args::message_content::Content::ToolCalls(tc)) => {
+                        let calls: Vec<OllamaToolCall> = tc
+                            .calls
+                            .iter()
+                            .map(|call| OllamaToolCall {
+                                function: ollama_rs::generation::tools::ToolCallFunction {
+                                    name: call.fn_name.clone(),
+                                    arguments: serde_json::from_str(&call.fn_arguments)
+                                        .unwrap_or_else(|_| serde_json::json!({})),
+                                },
+                            })
+                            .collect();
+                        (String::new(), vec![], calls)
+                    }
+                    _ => (String::new(), vec![], vec![]),
                 },
-                None => (String::new(), vec![]),
+                None => (String::new(), vec![], vec![]),
             };
             messages.push(ChatMessage {
                 role,
                 content,
-                tool_calls: vec![],
+                tool_calls,
                 images: if images.is_empty() {
                     None
                 } else {
@@ -596,6 +610,21 @@ impl OllamaChatService {
     ) -> Result<LlmChatResult> {
         // Execute each requested tool
         for req in &requests {
+            // TODO: Extract shared selector-tool filtering logic (see docs/issues/genai-ollama-code-dedup.md)
+            // Skip selector pseudo-tools — they cannot be executed as real tools
+            if ToolConverter::is_selector_tool(&req.fn_name) {
+                tracing::warn!(
+                    tool = %req.fn_name,
+                    "Skipping selector pseudo-tool in tool execution"
+                );
+                Self::replace_tool_execution_with_result(
+                    &mut args.messages,
+                    &req.call_id,
+                    "Tool selection completed",
+                );
+                continue;
+            }
+
             let arguments: Option<serde_json::Map<String, serde_json::Value>> =
                 serde_json::from_str(&req.fn_arguments).ok();
 
@@ -812,9 +841,38 @@ impl OllamaChatService {
             }
 
             // Auto mode: process tool calls automatically
-            // Add assistant message with tool calls to conversation history
-            messages.lock().await.push(res.message.clone());
-            let tool_calls = res.message.tool_calls.clone();
+            // Filter out selector pseudo-tools to prevent infinite loops —
+            // LLM may hallucinate selector tool calls from conversation history
+            let tool_calls: Vec<_> = res
+                .message
+                .tool_calls
+                .iter()
+                .filter(|tc| {
+                    if ToolConverter::is_selector_tool(&tc.function.name) {
+                        tracing::warn!(
+                            tool = %tc.function.name,
+                            "Skipping selector pseudo-tool call in auto-calling mode"
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .cloned()
+                .collect();
+
+            // If only selector tools were called, treat as text response or error
+            if tool_calls.is_empty() {
+                tracing::warn!(
+                    "All tool calls were selector pseudo-tools, treating as final response"
+                );
+                return Ok(ChatInternalResult::Final(Box::new(res)));
+            }
+
+            // Add assistant message with filtered tool calls to conversation history
+            let mut filtered_message = res.message.clone();
+            filtered_message.tool_calls = tool_calls.clone();
+            messages.lock().await.push(filtered_message);
 
             // Process tool calls and get updated context for each tool call
             let mut updated_context = current_context;
@@ -1009,32 +1067,141 @@ impl OllamaChatService {
     /// 3. Server executes tools, yields results, then continues LLM conversation
     pub async fn request_stream_chat(
         self: Arc<Self>,
-        args: LlmChatArgs,
+        mut args: LlmChatArgs,
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
-        // auto-select is not supported in streaming mode
-        if args
-            .function_options
-            .as_ref()
-            .is_some_and(|fo| fo.auto_select_function_set.unwrap_or(false))
-        {
-            return Err(JobWorkerError::InvalidParameter(
-                "auto_select_function_set is not supported in streaming mode".to_string(),
-            )
-            .into());
-        }
-
-        let metadata = Arc::new(metadata);
-
-        // Check for tool execution requests in messages (manual mode continuation)
+        // Check for tool execution requests first (highest priority, manual mode continuation)
+        let metadata_arc = Arc::new(metadata);
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
             return self
-                .handle_tool_execution_stream(args, tool_exec_requests, metadata)
+                .handle_tool_execution_stream(args, tool_exec_requests, metadata_arc)
                 .await;
         }
 
+        let is_auto_select = args
+            .function_options
+            .as_ref()
+            .is_some_and(|fo| fo.auto_select_function_set.unwrap_or(false));
+
+        // auto_select_function_set: Phase 1 (non-streaming) selects FunctionSet, Phase 2 streams
+        if is_auto_select {
+            let (tools_vec, auto_select_names) = self.function_list(&args).await?;
+            if auto_select_names.is_empty() {
+                tracing::warn!(
+                    "auto_select_function_set is true but no selector tools available, falling back to normal streaming"
+                );
+                return self.create_streaming_chat(args, metadata_arc).await;
+            }
+            // Insert system_prompt into args before cloning for Phase 2
+            if let Some(ref system_prompt) = self.system_prompt {
+                use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+                    ChatMessage as ProtoChatMessage, MessageContent, message_content,
+                };
+                args.messages.retain(|m| m.role() != ChatRole::System);
+                args.messages.insert(
+                    0,
+                    ProtoChatMessage {
+                        role: ChatRole::System.into(),
+                        content: Some(MessageContent {
+                            content: Some(message_content::Content::Text(system_prompt.clone())),
+                        }),
+                    },
+                );
+            }
+            let original_args = args.clone();
+
+            let options = Self::create_chat_options(&args);
+            let model = args.model.clone().unwrap_or_else(|| self.model.clone());
+            let messages = Arc::new(Mutex::new(Self::convert_messages(&args).await));
+
+            let tools = Arc::new(tools_vec);
+            let think = args.options.as_ref().map(|o| o.extract_reasoning_content());
+            let res = Self::request_chat_internal_with_tracing(
+                self.clone(),
+                model,
+                options,
+                messages,
+                tools,
+                None,
+                metadata_arc.clone(),
+                args.json_schema.clone(),
+                false, // manual mode to intercept selector tool call
+                think,
+                0,
+            )
+            .await?;
+
+            match res {
+                ChatInternalResult::PendingTools { tool_calls } => {
+                    if let Some(selected) = tool_calls
+                        .iter()
+                        .find(|tc| auto_select_names.contains(&tc.function.name))
+                    {
+                        let selected_set_name = selected
+                            .function
+                            .name
+                            .strip_prefix(ToolConverter::SELECTOR_TOOL_PREFIX)
+                            .unwrap_or(&selected.function.name)
+                            .to_string();
+                        tracing::info!(
+                            function_set = %selected_set_name,
+                            "Auto-select (stream): LLM selected FunctionSet"
+                        );
+
+                        let extra_selectors: Vec<&str> = tool_calls
+                            .iter()
+                            .filter(|tc| {
+                                auto_select_names.contains(&tc.function.name)
+                                    && tc.function.name != selected.function.name
+                            })
+                            .map(|tc| tc.function.name.as_str())
+                            .collect();
+                        if !extra_selectors.is_empty() {
+                            tracing::warn!(
+                                selected = %selected.function.name,
+                                ?extra_selectors,
+                                "Auto-select (stream): LLM called multiple selector tools, using the first one"
+                            );
+                        }
+
+                        let mut second_args = original_args;
+                        if let Some(ref mut fo) = second_args.function_options {
+                            fo.function_set_name = Some(selected_set_name);
+                            fo.auto_select_function_set = Some(false);
+                        }
+                        // Use request_stream_chat (not create_streaming_chat) so that
+                        // is_auto_calling and tool execution handling are fully active in Phase 2
+                        return Box::pin(
+                            self.request_stream_chat(second_args, (*metadata_arc).clone()),
+                        )
+                        .await;
+                    }
+
+                    let attempted_names: Vec<&str> = tool_calls
+                        .iter()
+                        .map(|tc| tc.function.name.as_str())
+                        .collect();
+                    tracing::warn!(
+                        ?attempted_names,
+                        "Auto-select (stream): LLM did not call any selector tool"
+                    );
+                    return Err(JobWorkerError::OtherError(format!(
+                        "Auto-select failed: LLM called {:?} instead of selector tools",
+                        attempted_names
+                    ))
+                    .into());
+                }
+                ChatInternalResult::Final(_) => {
+                    return Err(JobWorkerError::OtherError(
+                        "Auto-select failed: LLM did not call any selector tool".to_string(),
+                    )
+                    .into());
+                }
+            }
+        }
+
         // Normal streaming flow (first request or no tool execution)
-        self.create_streaming_chat(args).await
+        self.create_streaming_chat(args, metadata_arc).await
     }
 
     /// Wrapper method for non-Arc callers (backward compatibility)
@@ -1066,8 +1233,24 @@ impl OllamaChatService {
             let mut updated_args = args_clone;
             let mut tool_results_cache: Vec<(String, String, bool)> = Vec::new();
 
+            tracing::debug!("handle_tool_execution_stream: starting Phase 1 with {} tool requests", requests_clone.len());
+
             // Phase 1: Execute tools, yield results, and cache for later
             for req in &requests_clone {
+                // Skip selector pseudo-tools — they cannot be executed as real tools
+                if ToolConverter::is_selector_tool(&req.fn_name) {
+                    tracing::warn!(
+                        tool = %req.fn_name,
+                        "Skipping selector pseudo-tool in tool execution stream"
+                    );
+                    OllamaChatService::replace_tool_execution_with_result(
+                        &mut updated_args.messages,
+                        &req.call_id,
+                        "Tool selection completed",
+                    );
+                    continue;
+                }
+
                 let arguments: Option<serde_json::Map<String, serde_json::Value>> =
                     serde_json::from_str(&req.fn_arguments).ok();
 
@@ -1112,6 +1295,7 @@ impl OllamaChatService {
             }
 
             // Phase 2: Update args with cached tool results
+            tracing::debug!("handle_tool_execution_stream: Phase 2 — updating args with {} tool results", tool_results_cache.len());
             for (call_id, tool_result, _success) in &tool_results_cache {
                 OllamaChatService::replace_tool_execution_with_result(
                     &mut updated_args.messages,
@@ -1121,14 +1305,19 @@ impl OllamaChatService {
             }
 
             // Phase 3: Continue with LLM streaming using updated args
-            match self_clone.clone().create_streaming_chat(updated_args).await {
+            tracing::debug!("handle_tool_execution_stream: Phase 3 — creating continuation stream");
+            match self_clone.clone().create_streaming_chat(updated_args, metadata_clone.clone()).await {
                 Ok(mut continuation_stream) => {
+                    tracing::debug!("handle_tool_execution_stream: Phase 3 — continuation stream created, forwarding chunks");
+                    let mut chunk_count = 0u64;
                     while let Some(chunk) = continuation_stream.next().await {
+                        chunk_count += 1;
                         yield chunk;
                     }
+                    tracing::debug!("handle_tool_execution_stream: Phase 3 — forwarded {} chunks", chunk_count);
                 }
                 Err(e) => {
-                    tracing::error!("Failed to create continuation stream: {}", e);
+                    tracing::error!("handle_tool_execution_stream: Phase 3 — failed to create continuation stream: {}", e);
                     yield LlmChatResult {
                         content: Some(llm::llm_chat_result::MessageContent {
                             content: Some(message_content::Content::Text(
@@ -1153,6 +1342,7 @@ impl OllamaChatService {
     async fn create_streaming_chat(
         self: Arc<Self>,
         args: LlmChatArgs,
+        _metadata: Arc<HashMap<String, String>>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
         let use_function_calling = args
             .function_options
@@ -1246,6 +1436,19 @@ impl OllamaChatService {
                     }
 
                     // After stream ends, process any accumulated tool calls
+                    // Filter out selector pseudo-tools — they are internal to auto-select
+                    // and must not be exposed as pending tool calls to clients/workflows
+                    accumulated_tool_calls.retain(|tc| {
+                        if ToolConverter::is_selector_tool(&tc.function.name) {
+                            tracing::warn!(
+                                tool = %tc.function.name,
+                                "Filtering out selector pseudo-tool from pending tool calls"
+                            );
+                            false
+                        } else {
+                            true
+                        }
+                    });
                     if !accumulated_tool_calls.is_empty() {
                         // Convert to pending tool calls format
                         let pending_calls: Vec<ToolCallRequest> = accumulated_tool_calls

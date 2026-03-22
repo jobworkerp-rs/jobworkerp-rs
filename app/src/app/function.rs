@@ -421,36 +421,7 @@ pub trait FunctionApp:
         rt: RunnerType,
         arguments: Option<serde_json::Map<String, serde_json::Value>>,
     ) -> Option<serde_json::Map<String, serde_json::Value>> {
-        // For CREATE_WORKFLOW runner, process arguments as workflow JSON
-        // When called from LLM, only workflow JSON is expected as arguments for proper workflow creation
-        // Settings are specified via worker options
-        if rt == RunnerType::CreateWorkflow {
-            arguments.map(|mut a| {
-                let args = match a.remove("arguments") {
-                    Some(serde_json::Value::String(v)) => serde_json::from_str(v.as_str()).ok(),
-                    v => v,
-                };
-                let worker_opts = a.remove("settings");
-                tracing::debug!("transforming arguments (CreateWorkflow): {:#?}", args);
-                let n = args.as_ref().map(|v| {
-                    v.get("document")
-                        .and_then(|v| v.get("name"))
-                        .and_then(|n| n.as_str())
-                        .unwrap_or_else(|| rt.as_str_name())
-                });
-                let s = json!({
-                    "name": n,
-                    "workflow_data": args.map(|v| v.to_string()).unwrap_or_default(),
-                    "worker_options": worker_opts,
-                });
-                let mut r = serde_json::Map::new();
-                r.insert("arguments".to_string(), s);
-                tracing::debug!("transformed arguments (CreateWorkflow): {:#?}", r);
-                r
-            })
-        } else {
-            arguments
-        }
+        transform_function_arguments_impl(rt, arguments)
     }
     /// Find a single function by runner ID
     async fn find_function_by_runner_id(
@@ -1107,4 +1078,248 @@ impl infra::workflow::UseWorkflowLoader for FunctionAppImpl {
 
 pub trait UseFunctionApp {
     fn function_app(&self) -> &FunctionAppImpl;
+}
+
+/// Wrap flat JSON arguments into the 'input' field for Workflow/ReusableWorkflow runners.
+/// Used by transform_job_args to ensure args match protobuf schema before serialization.
+pub(crate) fn wrap_workflow_args_if_needed(
+    rt: RunnerType,
+    arg_json: serde_json::Value,
+) -> serde_json::Value {
+    if rt != RunnerType::Workflow && rt != RunnerType::ReusableWorkflow {
+        return arg_json;
+    }
+    match &arg_json {
+        serde_json::Value::Object(map) if !map.contains_key("input") => {
+            let input_json = serde_json::to_string(&arg_json).unwrap_or_else(|_| "{}".to_string());
+            serde_json::json!({"input": input_json})
+        }
+        serde_json::Value::String(s) => {
+            serde_json::json!({"input": s.clone()})
+        }
+        _ => arg_json,
+    }
+}
+
+pub(crate) fn transform_function_arguments_impl(
+    rt: RunnerType,
+    arguments: Option<serde_json::Map<String, serde_json::Value>>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    // For CREATE_WORKFLOW runner, process arguments as workflow JSON
+    // When called from LLM, only workflow JSON is expected as arguments for proper workflow creation
+    // Settings are specified via worker options
+    if rt == RunnerType::CreateWorkflow {
+        arguments.map(|mut a| {
+            let args = match a.remove("arguments") {
+                Some(serde_json::Value::String(v)) => serde_json::from_str(v.as_str()).ok(),
+                v => v,
+            };
+            let worker_opts = a.remove("settings");
+            tracing::debug!("transforming arguments (CreateWorkflow): {:#?}", args);
+            let n = args.as_ref().map(|v| {
+                v.get("document")
+                    .and_then(|v| v.get("name"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_else(|| rt.as_str_name())
+            });
+            let s = json!({
+                "name": n,
+                "workflow_data": args.map(|v| v.to_string()).unwrap_or_default(),
+                "worker_options": worker_opts,
+            });
+            let mut r = serde_json::Map::new();
+            r.insert("arguments".to_string(), s);
+            tracing::debug!("transformed arguments (CreateWorkflow): {:#?}", r);
+            r
+        })
+    } else if rt == RunnerType::Workflow || rt == RunnerType::ReusableWorkflow {
+        // Wrap LLM-generated flat arguments into the 'input' field expected by protobuf
+        arguments.map(|mut args| {
+            if args.contains_key("input") {
+                return args;
+            }
+            // Support {settings:{...}, arguments:{...}} structured format
+            if let Some(inner) = args.remove("arguments") {
+                let mut result = serde_json::Map::new();
+                if let Some(settings) = args.remove("settings") {
+                    result.insert("settings".to_string(), settings);
+                }
+                let input_json = serde_json::to_string(&inner).unwrap_or_else(|_| "{}".to_string());
+                result.insert("input".to_string(), serde_json::Value::String(input_json));
+                result
+            } else {
+                let input_json = serde_json::to_string(&serde_json::Value::Object(args))
+                    .unwrap_or_else(|_| "{}".to_string());
+                let mut result = serde_json::Map::new();
+                result.insert("input".to_string(), serde_json::Value::String(input_json));
+                result
+            }
+        })
+    } else {
+        arguments
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_workflow_wraps_flat_args_into_input() {
+        let args = serde_json::Map::from_iter([
+            ("owner".to_string(), json!("foo")),
+            ("repo".to_string(), json!("bar")),
+        ]);
+        let result = transform_function_arguments_impl(RunnerType::Workflow, Some(args)).unwrap();
+        assert!(result.contains_key("input"));
+        assert_eq!(result.len(), 1);
+        let input_str = result["input"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
+        assert_eq!(parsed["owner"], "foo");
+        assert_eq!(parsed["repo"], "bar");
+    }
+
+    #[test]
+    fn test_reusable_workflow_wraps_flat_args_into_input() {
+        let args = serde_json::Map::from_iter([("query".to_string(), json!("test"))]);
+        let result =
+            transform_function_arguments_impl(RunnerType::ReusableWorkflow, Some(args)).unwrap();
+        assert!(result.contains_key("input"));
+        let input_str = result["input"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
+        assert_eq!(parsed["query"], "test");
+    }
+
+    #[test]
+    fn test_workflow_passthrough_when_input_key_exists() {
+        let args =
+            serde_json::Map::from_iter([("input".to_string(), json!("{\"owner\":\"foo\"}"))]);
+        let result =
+            transform_function_arguments_impl(RunnerType::Workflow, Some(args.clone())).unwrap();
+        assert_eq!(result, args);
+    }
+
+    #[test]
+    fn test_workflow_empty_args() {
+        let args = serde_json::Map::new();
+        let result = transform_function_arguments_impl(RunnerType::Workflow, Some(args)).unwrap();
+        assert_eq!(result["input"].as_str().unwrap(), "{}");
+    }
+
+    #[test]
+    fn test_workflow_none_args() {
+        let result = transform_function_arguments_impl(RunnerType::Workflow, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_other_runner_type_passthrough() {
+        let args = serde_json::Map::from_iter([("key".to_string(), json!("value"))]);
+        let result =
+            transform_function_arguments_impl(RunnerType::Command, Some(args.clone())).unwrap();
+        assert_eq!(result, args);
+    }
+
+    // Tests for structured {settings, arguments} format with Workflow
+    #[test]
+    fn test_workflow_with_structured_format() {
+        let args = serde_json::Map::from_iter([
+            ("settings".to_string(), json!({"timeout": 30})),
+            (
+                "arguments".to_string(),
+                json!({"owner": "foo", "repo": "bar"}),
+            ),
+        ]);
+        let result = transform_function_arguments_impl(RunnerType::Workflow, Some(args)).unwrap();
+        // settings should be preserved
+        assert!(result.contains_key("settings"));
+        assert_eq!(result["settings"], json!({"timeout": 30}));
+        // arguments should be wrapped into input
+        assert!(result.contains_key("input"));
+        let input_str = result["input"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
+        assert_eq!(parsed["owner"], "foo");
+        assert_eq!(parsed["repo"], "bar");
+        // No stale 'arguments' key
+        assert!(!result.contains_key("arguments"));
+    }
+
+    #[test]
+    fn test_workflow_with_structured_format_no_settings() {
+        let args = serde_json::Map::from_iter([("arguments".to_string(), json!({"owner": "foo"}))]);
+        let result = transform_function_arguments_impl(RunnerType::Workflow, Some(args)).unwrap();
+        assert!(result.contains_key("input"));
+        assert!(!result.contains_key("settings"));
+        let input_str = result["input"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
+        assert_eq!(parsed["owner"], "foo");
+    }
+
+    // Tests for wrap_workflow_args_if_needed (gRPC direct path)
+    #[test]
+    fn test_wrap_workflow_args_flat() {
+        let arg = json!({"owner": "foo", "repo": "bar"});
+        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, arg);
+        assert!(result.is_object());
+        let input_str = result["input"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
+        assert_eq!(parsed["owner"], "foo");
+        assert_eq!(parsed["repo"], "bar");
+    }
+
+    #[test]
+    fn test_wrap_workflow_args_already_has_input() {
+        let arg = json!({"input": "{\"owner\":\"foo\"}"});
+        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, arg.clone());
+        assert_eq!(result, arg);
+    }
+
+    #[test]
+    fn test_wrap_workflow_args_non_workflow_passthrough() {
+        let arg = json!({"key": "value"});
+        let result = wrap_workflow_args_if_needed(RunnerType::Command, arg.clone());
+        assert_eq!(result, arg);
+    }
+
+    #[test]
+    fn test_wrap_workflow_args_empty_object() {
+        let arg = json!({});
+        let result = wrap_workflow_args_if_needed(RunnerType::ReusableWorkflow, arg);
+        assert_eq!(result["input"].as_str().unwrap(), "{}");
+    }
+
+    #[test]
+    fn test_wrap_workflow_args_string_value() {
+        let arg = json!("hello world");
+        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, arg);
+        assert_eq!(result["input"].as_str().unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_wrap_workflow_args_string_non_workflow_passthrough() {
+        let arg = json!("hello world");
+        let result = wrap_workflow_args_if_needed(RunnerType::Command, arg.clone());
+        assert_eq!(result, arg);
+    }
+
+    #[test]
+    fn test_workflow_arguments_string_value() {
+        // LLM may return arguments as a JSON string instead of an object.
+        // The string is serialized as-is into the 'input' field (JSON-encoded string).
+        let args = serde_json::Map::from_iter([(
+            "arguments".to_string(),
+            json!("{\"owner\":\"foo\",\"repo\":\"bar\"}"),
+        )]);
+        let result = transform_function_arguments_impl(RunnerType::Workflow, Some(args)).unwrap();
+        assert!(result.contains_key("input"));
+        let input_str = result["input"].as_str().unwrap();
+        // The input contains the JSON string value (which itself is a JSON string)
+        let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
+        // The parsed value is a string containing the original JSON
+        assert!(parsed.is_string());
+        let inner: serde_json::Value = serde_json::from_str(parsed.as_str().unwrap()).unwrap();
+        assert_eq!(inner["owner"], "foo");
+        assert_eq!(inner["repo"], "bar");
+    }
 }

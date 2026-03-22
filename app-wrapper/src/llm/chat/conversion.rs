@@ -183,6 +183,11 @@ impl ToolConverter {
     /// Prefix added to FunctionSet names when used as pseudo-tool names in auto-select mode.
     pub const SELECTOR_TOOL_PREFIX: &'static str = "select_toolset_";
 
+    /// Check if a tool name is a selector pseudo-tool (not a real runner/worker).
+    pub fn is_selector_tool(name: &str) -> bool {
+        name.starts_with(Self::SELECTOR_TOOL_PREFIX)
+    }
+
     /// Convert a FunctionSet to a pseudo-tool for auto-select mode.
     /// The tool name is prefixed with `select_toolset_` to make it clearly
     /// identifiable as a selection action rather than a direct tool invocation.
@@ -1410,5 +1415,14 @@ mod tests {
         let genai_tools = ToolConverter::convert_function_set_selector_tools_to_genai(&tools);
         assert_eq!(genai_tools.len(), 1);
         assert_eq!(genai_tools[0].name, "select_toolset_set-a");
+    }
+
+    #[test]
+    fn test_is_selector_tool() {
+        assert!(ToolConverter::is_selector_tool("select_toolset_web-tools"));
+        assert!(ToolConverter::is_selector_tool("select_toolset_"));
+        assert!(!ToolConverter::is_selector_tool("http_request"));
+        assert!(!ToolConverter::is_selector_tool("select_toolset"));
+        assert!(!ToolConverter::is_selector_tool(""));
     }
 }

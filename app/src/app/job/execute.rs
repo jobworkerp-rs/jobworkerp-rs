@@ -582,8 +582,9 @@ pub trait UseJobExecutor:
         }
     }
 
-    /// Transform job arguments from JSON to Protobuf binary
-    /// Transform job arguments using protobuf schema, supporting method-specific schema resolution
+    /// Transform job arguments from JSON to Protobuf binary.
+    /// Wraps flat args for Workflow/ReusableWorkflow into 'input' field (idempotent — safe to call
+    /// even if upstream already wrapped, guarded by `contains_key("input")` check).
     fn transform_job_args(
         &self,
         rid: &RunnerId,
@@ -592,6 +593,11 @@ pub trait UseJobExecutor:
         using: Option<&str>,          // method name for MCP/Plugin runners
     ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send {
         async move {
+            let job_args = crate::app::function::wrap_workflow_args_if_needed(
+                rdata.runner_type(),
+                job_args.clone(),
+            );
+
             let descriptors = self.parse_proto_with_cache(rid, rdata).await?;
 
             let mut args_descriptor =
@@ -614,9 +620,10 @@ pub trait UseJobExecutor:
             tracing::debug!("job args (using: {:?}): {:#?}", using, &job_args);
             if let Some(desc) = args_descriptor {
                 Ok(
-                    ProtobufDescriptor::json_value_to_message(desc, job_args, true, true).map_err(
-                        |e| anyhow::anyhow!("Failed to parse job_args schema: {:#?}", e),
-                    )?,
+                    ProtobufDescriptor::json_value_to_message(desc, &job_args, true, true)
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to parse job_args schema: {:#?}", e)
+                        })?,
                 )
             } else {
                 // Fallback: serialize as JSON string
