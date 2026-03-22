@@ -123,8 +123,7 @@ pub trait GenericLLMTracingHelper {
                         span.set_status(Status::Ok);
                         span.end();
 
-                        let context = parent_context.unwrap_or(opentelemetry::Context::current());
-                        (result, context)
+                        (result, opentelemetry::Context::current())
                     }
                     Err(e) => {
                         tracing::error!("LLM action failed: {:?}", e);
