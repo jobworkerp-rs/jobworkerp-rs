@@ -540,6 +540,20 @@ impl GenaiChatService {
     ) -> Result<LlmChatResult> {
         // Execute each requested tool
         for req in &requests {
+            // Skip selector pseudo-tools — they cannot be executed as real tools
+            if ToolConverter::is_selector_tool(&req.fn_name) {
+                tracing::warn!(
+                    tool = %req.fn_name,
+                    "Skipping selector pseudo-tool in tool execution"
+                );
+                Self::replace_tool_execution_with_result(
+                    &mut args.messages,
+                    &req.call_id,
+                    "Tool selection completed",
+                );
+                continue;
+            }
+
             let arguments: Option<serde_json::Map<String, serde_json::Value>> =
                 serde_json::from_str(&req.fn_arguments).ok();
 
@@ -713,7 +727,32 @@ impl GenaiChatService {
             }
 
             // Auto mode: process tool calls automatically
-            // Add assistant message with tool calls to conversation history
+            // Filter out selector pseudo-tools to prevent infinite loops —
+            // LLM may hallucinate selector tool calls from conversation history
+            let tool_calls: Vec<_> = tool_calls
+                .into_iter()
+                .filter(|tc| {
+                    if ToolConverter::is_selector_tool(&tc.fn_name) {
+                        tracing::warn!(
+                            tool = %tc.fn_name,
+                            "Skipping selector pseudo-tool call in auto-calling mode"
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+
+            // If only selector tools were called, return as final response
+            if tool_calls.is_empty() {
+                tracing::warn!(
+                    "All tool calls were selector pseudo-tools, treating as final response"
+                );
+                return Ok(ChatInternalResult::Final(Box::new(res)));
+            }
+
+            // Add assistant message with filtered tool calls to conversation history
             messages
                 .lock()
                 .await
@@ -994,7 +1033,9 @@ impl GenaiChatService {
                             fo.function_set_name = Some(selected_set_name);
                             fo.auto_select_function_set = Some(false);
                         }
-                        return self.create_chat_stream(second_args, metadata).await;
+                        // Use request_chat_stream (not create_chat_stream) so that
+                        // is_auto_calling and tool execution handling are fully active in Phase 2
+                        return Box::pin(self.request_chat_stream(second_args, metadata)).await;
                     }
 
                     let attempted_names: Vec<&str> =
@@ -1048,6 +1089,15 @@ impl GenaiChatService {
 
             // Phase 1: Execute tools, yield results, and cache for later
             for req in &requests_clone {
+                // Skip selector pseudo-tools — they cannot be executed as real tools
+                if ToolConverter::is_selector_tool(&req.fn_name) {
+                    tracing::warn!(
+                        tool = %req.fn_name,
+                        "Skipping selector pseudo-tool in tool execution stream"
+                    );
+                    continue;
+                }
+
                 let arguments: Option<serde_json::Map<String, serde_json::Value>> =
                     serde_json::from_str(&req.fn_arguments).ok();
 
@@ -1238,6 +1288,18 @@ impl GenaiChatService {
                             accumulated_tool_calls.push(tool_chunk.tool_call);
                         }
                         ChatStreamEvent::End(end) => {
+                            // Filter out selector pseudo-tools before exposing as pending
+                            accumulated_tool_calls.retain(|tc| {
+                                if ToolConverter::is_selector_tool(&tc.fn_name) {
+                                    tracing::warn!(
+                                        tool = %tc.fn_name,
+                                        "Filtering out selector pseudo-tool from pending tool calls"
+                                    );
+                                    false
+                                } else {
+                                    true
+                                }
+                            });
                             // If we have accumulated tool calls, yield them as pending_tool_calls
                             if !accumulated_tool_calls.is_empty() {
                                 let pending_calls: Vec<ToolCallRequest> = accumulated_tool_calls
