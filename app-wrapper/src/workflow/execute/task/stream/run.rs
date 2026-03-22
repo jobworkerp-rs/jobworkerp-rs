@@ -609,6 +609,11 @@ async fn process_stream(
                 match item.item {
                     Some(Item::Data(data)) => {
                         // Forward to UI for real-time display
+                        tracing::trace!(
+                            "process_stream: received Data chunk for job {}, size={}",
+                            job_id,
+                            data.len()
+                        );
                         let _ = event_tx.send(Ok(WorkflowStreamEvent::streaming_data(
                             JobId { value: job_id },
                             data.clone(),

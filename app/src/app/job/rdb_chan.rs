@@ -729,7 +729,12 @@ impl JobApp for RdbChanJobAppImpl {
         data: &JobResultData,
         stream: Option<BoxStream<'static, ResultOutputItem>>,
     ) -> Result<bool> {
-        tracing::debug!("complete_job: res_id={}", &id.value);
+        tracing::debug!(
+            "complete_job: res_id={}, job_id={:?}, has_stream={}",
+            &id.value,
+            data.job_id.as_ref().map(|j| j.value),
+            stream.is_some()
+        );
         if let Some(jid) = data.job_id.as_ref() {
             // For streaming jobs, don't delete status immediately as the process may still be running
             let res = match ResponseType::try_from(data.response_type) {

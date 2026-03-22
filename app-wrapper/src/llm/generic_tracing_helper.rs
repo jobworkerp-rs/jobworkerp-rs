@@ -89,23 +89,19 @@ pub trait GenericLLMTracingHelper {
     /// Execute chat action with proper parent-child span tracing and response recording
     fn with_chat_response_tracing<F, R>(
         &self,
-        metadata: &HashMap<String, String>,
+        _metadata: &HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
         mut span_attributes: OtelSpanAttributes,
         action: F,
     ) -> impl std::future::Future<Output = Result<(R, opentelemetry::Context)>> + Send
     where
         F: std::future::Future<Output = Result<R, JobWorkerError>> + Send + 'static,
-        R: ChatResponse + Send + 'static + serde::Serialize,
+        R: ChatResponse + Send + 'static,
     {
-        let _session_id = metadata.get("session_id").cloned();
-        let _user_id = metadata.get("user_id").cloned();
         let otel_client = self.get_otel_client().cloned();
-        let _provider = self.get_provider_name().to_string();
 
         async move {
             let (result, context) = if let Some(client) = &otel_client {
-                // Execute action first to get response
                 let result = action.await.map_err(|e| {
                     tracing::error!("LLM action failed: {:?}", e);
                     anyhow::anyhow!("Action failed: {}", e)
@@ -114,28 +110,17 @@ pub trait GenericLLMTracingHelper {
                 let response_output = result.to_json();
                 span_attributes.data.output = Some(response_output);
 
-                let response_parser = |_: &R| -> Option<OtelSpanAttributes> {
-                    None // Return None to skip default output processing
+                let mut span = if let Some(ref ctx) = parent_context {
+                    client.start_with_context(span_attributes, ctx.clone())
+                } else {
+                    client.start_new_span(span_attributes)
                 };
+                use opentelemetry::trace::{Span, Status};
+                span.set_status(Status::Ok);
+                span.end();
 
-                let current_context = parent_context.clone();
-
-                let dummy_action = async move { Ok::<R, JobWorkerError>(result) };
-
-                let final_result = client
-                    .with_span_result_and_response_parser(
-                        span_attributes,
-                        parent_context,
-                        dummy_action,
-                        Some(response_parser),
-                    )
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Error in traced span: {}", e))?;
-
-                (
-                    final_result,
-                    current_context.unwrap_or(opentelemetry::Context::current()),
-                )
+                let context = parent_context.unwrap_or(opentelemetry::Context::current());
+                (result, context)
             } else {
                 let result = action.await?;
                 let context = opentelemetry::Context::current();
