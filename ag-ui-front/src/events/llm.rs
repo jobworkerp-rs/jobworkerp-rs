@@ -389,6 +389,10 @@ pub struct ExtractedToolResult {
 pub fn extract_tool_execution_results(
     bytes: &[u8],
 ) -> std::collections::HashMap<String, ExtractedToolResult> {
+    if bytes.is_empty() {
+        return std::collections::HashMap::new();
+    }
+
     let mut results = std::collections::HashMap::new();
 
     // Try protobuf decoding — return immediately on success (even if empty)
@@ -675,6 +679,45 @@ fn result_output_stream_to_ag_ui_events_internal(
     });
 
     start_stream.chain(content_stream)
+}
+
+/// Extract text content from StreamingJobCompleted output for fallback delivery.
+///
+/// When the streaming phase fails to deliver text chunks (e.g., due to timing issues
+/// between stream publish and job completion), this function extracts text from the
+/// completed job's output so the handler can emit a compensating TEXT_MESSAGE_CONTENT.
+///
+/// Supports both snake_case and camelCase JSON keys, and protobuf-style nested content.
+pub fn extract_text_from_completed_output(output: &serde_json::Value) -> Option<String> {
+    let obj = output.as_object()?;
+
+    let content = obj.get("content")?;
+    let content_obj = content.as_object()?;
+
+    // Direct text field: content.text or content.Text
+    if let Some(text) = content_obj
+        .get("text")
+        .or_else(|| content_obj.get("Text"))
+        .and_then(|v| v.as_str())
+        .filter(|t| !t.is_empty())
+    {
+        return Some(text.to_string());
+    }
+
+    // Nested content.content (protobuf oneof serialization)
+    let inner = content_obj.get("content")?;
+    if let Some(inner_obj) = inner.as_object()
+        && let Some(text) = inner_obj
+            .get("Text")
+            .or_else(|| inner_obj.get("text"))
+            .and_then(|v| v.as_str())
+            .filter(|t| !t.is_empty())
+    {
+        return Some(text.to_string());
+    }
+
+    // content.content is a string directly
+    inner.as_str().filter(|t| !t.is_empty()).map(String::from)
 }
 
 /// Container for LLM streaming result with both event stream and collected result.
@@ -1205,6 +1248,83 @@ mod tests {
         assert!(matches!(&events[0], AgUiEvent::TextMessageStart { .. }));
         assert!(matches!(&events[1], AgUiEvent::TextMessageContent { .. }));
         assert!(matches!(&events[2], AgUiEvent::TextMessageEnd { .. }));
+    }
+
+    // === Tests for extract_text_from_completed_output ===
+
+    #[test]
+    fn test_extract_text_from_completed_output_snake_case() {
+        let output = serde_json::json!({
+            "content": {
+                "text": "Hello from LLM"
+            },
+            "done": true
+        });
+        let text = extract_text_from_completed_output(&output);
+        assert_eq!(text, Some("Hello from LLM".to_string()));
+    }
+
+    #[test]
+    fn test_extract_text_from_completed_output_nested_oneof() {
+        let output = serde_json::json!({
+            "content": {
+                "content": {
+                    "Text": "Nested text response"
+                }
+            },
+            "done": true
+        });
+        let text = extract_text_from_completed_output(&output);
+        assert_eq!(text, Some("Nested text response".to_string()));
+    }
+
+    #[test]
+    fn test_extract_text_from_completed_output_empty() {
+        let output = serde_json::json!({
+            "content": {
+                "text": ""
+            },
+            "done": true
+        });
+        let text = extract_text_from_completed_output(&output);
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn test_extract_text_from_completed_output_no_content() {
+        let output = serde_json::json!({
+            "done": true
+        });
+        let text = extract_text_from_completed_output(&output);
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn test_extract_text_from_completed_output_tool_calls_only() {
+        let output = serde_json::json!({
+            "content": {
+                "content": {
+                    "ToolCalls": {
+                        "calls": [{"call_id": "1", "fn_name": "test"}]
+                    }
+                }
+            },
+            "done": false
+        });
+        let text = extract_text_from_completed_output(&output);
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn test_extract_text_from_completed_output_string_content() {
+        let output = serde_json::json!({
+            "content": {
+                "content": "Direct string content"
+            },
+            "done": true
+        });
+        let text = extract_text_from_completed_output(&output);
+        assert_eq!(text, Some("Direct string content".to_string()));
     }
 
     #[tokio::test]

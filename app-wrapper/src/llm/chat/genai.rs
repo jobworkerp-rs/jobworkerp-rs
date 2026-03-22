@@ -540,6 +540,7 @@ impl GenaiChatService {
     ) -> Result<LlmChatResult> {
         // Execute each requested tool
         for req in &requests {
+            // TODO: Extract shared selector-tool filtering logic (see docs/issues/genai-ollama-code-dedup.md)
             // Skip selector pseudo-tools — they cannot be executed as real tools
             if ToolConverter::is_selector_tool(&req.fn_name) {
                 tracing::warn!(
@@ -1087,6 +1088,8 @@ impl GenaiChatService {
             let mut updated_args = args_clone;
             let mut tool_results_cache: Vec<(String, String, bool)> = Vec::new();
 
+            tracing::debug!("handle_tool_execution_stream: starting Phase 1 with {} tool requests", requests_clone.len());
+
             // Phase 1: Execute tools, yield results, and cache for later
             for req in &requests_clone {
                 // Skip selector pseudo-tools — they cannot be executed as real tools
@@ -1148,6 +1151,7 @@ impl GenaiChatService {
             }
 
             // Phase 2: Update args with cached tool results
+            tracing::debug!("handle_tool_execution_stream: Phase 2 — updating args with {} tool results", tool_results_cache.len());
             for (call_id, tool_result, _success) in &tool_results_cache {
                 GenaiChatService::replace_tool_execution_with_result(
                     &mut updated_args.messages,
@@ -1157,14 +1161,19 @@ impl GenaiChatService {
             }
 
             // Phase 3: Continue with LLM streaming using updated args
+            tracing::debug!("handle_tool_execution_stream: Phase 3 — creating continuation stream");
             match self_clone.create_chat_stream(updated_args, metadata_clone).await {
                 Ok(mut continuation_stream) => {
+                    tracing::debug!("handle_tool_execution_stream: Phase 3 — continuation stream created, forwarding chunks");
+                    let mut chunk_count = 0u64;
                     while let Some(item) = continuation_stream.next().await {
+                        chunk_count += 1;
                         yield item;
                     }
+                    tracing::debug!("handle_tool_execution_stream: Phase 3 — forwarded {} chunks", chunk_count);
                 }
                 Err(e) => {
-                    tracing::error!("Failed to create continuation stream: {}", e);
+                    tracing::error!("handle_tool_execution_stream: Phase 3 — failed to create continuation stream: {}", e);
                     let llm_result = LlmChatResult {
                         content: Some(llm_chat_result::MessageContent {
                             content: Some(message_content::Content::Text(

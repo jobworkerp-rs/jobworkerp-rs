@@ -300,28 +300,42 @@ impl OllamaChatService {
         let mut messages = Vec::with_capacity(args.messages.len());
         for m in &args.messages {
             let role = Self::role_to_enum(m.role());
-            let (content, images) = match &m.content {
+            let (content, images, tool_calls) = match &m.content {
                 Some(content) => match &content.content {
                     Some(llm::llm_chat_args::message_content::Content::Text(t)) => {
-                        (t.clone(), vec![])
+                        (t.clone(), vec![], vec![])
                     }
                     Some(llm::llm_chat_args::message_content::Content::Image(image)) => {
                         match Self::convert_proto_image_to_ollama(image).await {
-                            Some(ollama_image) => (String::new(), vec![ollama_image]),
+                            Some(ollama_image) => (String::new(), vec![ollama_image], vec![]),
                             None => {
                                 tracing::warn!("Failed to convert image, skipping");
-                                (String::new(), vec![])
+                                (String::new(), vec![], vec![])
                             }
                         }
                     }
-                    _ => (String::new(), vec![]),
+                    Some(llm::llm_chat_args::message_content::Content::ToolCalls(tc)) => {
+                        let calls: Vec<OllamaToolCall> = tc
+                            .calls
+                            .iter()
+                            .map(|call| OllamaToolCall {
+                                function: ollama_rs::generation::tools::ToolCallFunction {
+                                    name: call.fn_name.clone(),
+                                    arguments: serde_json::from_str(&call.fn_arguments)
+                                        .unwrap_or_else(|_| serde_json::json!({})),
+                                },
+                            })
+                            .collect();
+                        (String::new(), vec![], calls)
+                    }
+                    _ => (String::new(), vec![], vec![]),
                 },
-                None => (String::new(), vec![]),
+                None => (String::new(), vec![], vec![]),
             };
             messages.push(ChatMessage {
                 role,
                 content,
-                tool_calls: vec![],
+                tool_calls,
                 images: if images.is_empty() {
                     None
                 } else {
@@ -596,6 +610,7 @@ impl OllamaChatService {
     ) -> Result<LlmChatResult> {
         // Execute each requested tool
         for req in &requests {
+            // TODO: Extract shared selector-tool filtering logic (see docs/issues/genai-ollama-code-dedup.md)
             // Skip selector pseudo-tools — they cannot be executed as real tools
             if ToolConverter::is_selector_tool(&req.fn_name) {
                 tracing::warn!(
@@ -1201,6 +1216,8 @@ impl OllamaChatService {
             let mut updated_args = args_clone;
             let mut tool_results_cache: Vec<(String, String, bool)> = Vec::new();
 
+            tracing::debug!("handle_tool_execution_stream: starting Phase 1 with {} tool requests", requests_clone.len());
+
             // Phase 1: Execute tools, yield results, and cache for later
             for req in &requests_clone {
                 // Skip selector pseudo-tools — they cannot be executed as real tools
@@ -1256,6 +1273,7 @@ impl OllamaChatService {
             }
 
             // Phase 2: Update args with cached tool results
+            tracing::debug!("handle_tool_execution_stream: Phase 2 — updating args with {} tool results", tool_results_cache.len());
             for (call_id, tool_result, _success) in &tool_results_cache {
                 OllamaChatService::replace_tool_execution_with_result(
                     &mut updated_args.messages,
@@ -1265,14 +1283,19 @@ impl OllamaChatService {
             }
 
             // Phase 3: Continue with LLM streaming using updated args
+            tracing::debug!("handle_tool_execution_stream: Phase 3 — creating continuation stream");
             match self_clone.clone().create_streaming_chat(updated_args, metadata_clone.clone()).await {
                 Ok(mut continuation_stream) => {
+                    tracing::debug!("handle_tool_execution_stream: Phase 3 — continuation stream created, forwarding chunks");
+                    let mut chunk_count = 0u64;
                     while let Some(chunk) = continuation_stream.next().await {
+                        chunk_count += 1;
                         yield chunk;
                     }
+                    tracing::debug!("handle_tool_execution_stream: Phase 3 — forwarded {} chunks", chunk_count);
                 }
                 Err(e) => {
-                    tracing::error!("Failed to create continuation stream: {}", e);
+                    tracing::error!("handle_tool_execution_stream: Phase 3 — failed to create continuation stream: {}", e);
                     yield LlmChatResult {
                         content: Some(llm::llm_chat_result::MessageContent {
                             content: Some(message_content::Content::Text(
