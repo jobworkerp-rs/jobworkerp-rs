@@ -228,6 +228,7 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                 pending_tool_calls: collected_pending_tool_calls,
                 requires_tool_execution: collected_requires_tool_execution,
                 tool_execution_results: collected_tool_execution_results,
+                tool_execution_started: None,
             };
 
             let bytes = result.encode_to_vec();
@@ -258,6 +259,7 @@ mod tests {
             pending_tool_calls: None,
             requires_tool_execution: None,
             tool_execution_results: vec![],
+            tool_execution_started: None,
         }
     }
 
@@ -277,6 +279,7 @@ mod tests {
             pending_tool_calls: None,
             requires_tool_execution: None,
             tool_execution_results: vec![],
+            tool_execution_started: None,
         }
     }
 
