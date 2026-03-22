@@ -1836,11 +1836,7 @@ mod tests {
         }];
 
         // Replace only call-1
-        ToolConverter::replace_tool_execution_with_result(
-            &mut messages,
-            "call-1",
-            "result-1",
-        );
+        ToolConverter::replace_tool_execution_with_result(&mut messages, "call-1", "result-1");
 
         // Should now have 2 messages: original with only call-2, and new Text with result-1
         assert_eq!(messages.len(), 2);
@@ -1865,11 +1861,7 @@ mod tests {
         }
 
         // Now replace call-2 — should collapse to Text
-        ToolConverter::replace_tool_execution_with_result(
-            &mut messages,
-            "call-2",
-            "result-2",
-        );
+        ToolConverter::replace_tool_execution_with_result(&mut messages, "call-2", "result-2");
 
         // First message should now be Text
         assert_eq!(messages.len(), 2);
@@ -1897,7 +1889,10 @@ mod tests {
         let result = ToolConverter::evaluate_auto_select(&calls, &names, args, "").unwrap();
         assert_eq!(result.selected_set_name, "api-tools");
 
-        let fo = result.second_args.function_options.expect("function_options should be Some");
+        let fo = result
+            .second_args
+            .function_options
+            .expect("function_options should be Some");
         assert_eq!(fo.function_set_name, Some("api-tools".to_string()));
         assert_eq!(fo.auto_select_function_set, Some(false));
         assert!(fo.use_function_calling);
