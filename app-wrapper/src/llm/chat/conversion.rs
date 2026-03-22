@@ -1,10 +1,33 @@
 use app::app::function::helper::McpNameConverter;
 use command_utils::util::json_schema::SchemaCombiner;
+use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequest;
 use proto::jobworkerp::function::data::FunctionSpecs;
 use rmcp::ErrorData as McpError;
 use rmcp::model::{ListToolsResult, Tool};
 use serde_json;
+use std::collections::HashSet;
 use tracing;
+
+/// Abstracts tool name access across different LLM provider ToolCall types.
+pub trait ToolCallName {
+    fn tool_name(&self) -> &str;
+}
+
+impl ToolCallName for ToolExecutionRequest {
+    fn tool_name(&self) -> &str {
+        &self.fn_name
+    }
+}
+
+/// Result of auto-select evaluation.
+#[derive(Debug)]
+pub struct AutoSelectResult {
+    pub selected_set_name: String,
+    pub second_args: LlmChatArgs,
+}
 
 pub struct ToolConverter;
 impl McpNameConverter for ToolConverter {}
@@ -249,6 +272,153 @@ impl ToolConverter {
         selector_tools: &[Tool],
     ) -> Vec<genai::chat::Tool> {
         selector_tools.iter().map(Self::mcp_tool_to_genai).collect()
+    }
+
+    /// Replace a tool execution request message with a text result in the message list.
+    pub fn replace_tool_execution_with_result(
+        messages: &mut [jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage],
+        call_id: &str,
+        result: &str,
+    ) {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::MessageContent;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+
+        for msg in messages.iter_mut() {
+            if msg.role() != ChatRole::Tool {
+                continue;
+            }
+            if let Some(ref content) = msg.content
+                && let Some(ProtoContent::ToolExecutionRequests(reqs)) = &content.content
+                && reqs.requests.iter().any(|r| r.call_id == call_id)
+            {
+                msg.content = Some(MessageContent {
+                    content: Some(ProtoContent::Text(result.to_string())),
+                });
+                return;
+            }
+        }
+    }
+
+    /// Check if a tool execution request is a selector pseudo-tool, and if so,
+    /// replace it with a completion message. Returns true if skipped.
+    pub fn skip_selector_tool_execution(
+        req: &ToolExecutionRequest,
+        messages: &mut [jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage],
+    ) -> bool {
+        if Self::is_selector_tool(&req.fn_name) {
+            tracing::warn!(
+                tool = %req.fn_name,
+                "Skipping selector pseudo-tool in tool execution"
+            );
+            Self::replace_tool_execution_with_result(
+                messages,
+                &req.call_id,
+                "Tool selection completed",
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Filter out selector pseudo-tools from a list, logging warnings.
+    pub fn filter_selector_tools<T: ToolCallName>(tool_calls: Vec<T>) -> Vec<T> {
+        tool_calls
+            .into_iter()
+            .filter(|tc| {
+                if Self::is_selector_tool(tc.tool_name()) {
+                    tracing::warn!(
+                        tool = %tc.tool_name(),
+                        "Skipping selector pseudo-tool call"
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect()
+    }
+
+    /// Retain only non-selector tools in place.
+    pub fn retain_non_selector_tools<T: ToolCallName>(tool_calls: &mut Vec<T>) {
+        tool_calls.retain(|tc| {
+            if Self::is_selector_tool(tc.tool_name()) {
+                tracing::warn!(
+                    tool = %tc.tool_name(),
+                    "Filtering out selector pseudo-tool from pending tool calls"
+                );
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    /// Evaluate auto-select tool calls and prepare Phase 2 arguments.
+    /// Returns Ok(AutoSelectResult) if a selector tool was found,
+    /// or Err if no selector was called.
+    pub fn evaluate_auto_select<T: ToolCallName>(
+        tool_calls: &[T],
+        auto_select_names: &HashSet<String>,
+        original_args: LlmChatArgs,
+        context_label: &str,
+    ) -> anyhow::Result<AutoSelectResult> {
+        let selected = tool_calls
+            .iter()
+            .find(|tc| auto_select_names.contains(tc.tool_name()));
+
+        if let Some(selected) = selected {
+            let selected_name = selected.tool_name();
+            let selected_set_name = selected_name
+                .strip_prefix(Self::SELECTOR_TOOL_PREFIX)
+                .unwrap_or(selected_name)
+                .to_string();
+
+            tracing::info!(
+                function_set = %selected_set_name,
+                "Auto-select{}: LLM selected FunctionSet",
+                context_label
+            );
+
+            let extra_selectors: Vec<&str> = tool_calls
+                .iter()
+                .filter(|tc| {
+                    auto_select_names.contains(tc.tool_name()) && tc.tool_name() != selected_name
+                })
+                .map(|tc| tc.tool_name())
+                .collect();
+            if !extra_selectors.is_empty() {
+                tracing::warn!(
+                    selected = %selected_name,
+                    ?extra_selectors,
+                    "Auto-select{}: LLM called multiple selector tools, using the first one",
+                    context_label
+                );
+            }
+
+            let mut second_args = original_args;
+            if let Some(ref mut fo) = second_args.function_options {
+                fo.function_set_name = Some(selected_set_name.clone());
+                fo.auto_select_function_set = Some(false);
+            }
+
+            Ok(AutoSelectResult {
+                selected_set_name,
+                second_args,
+            })
+        } else {
+            let attempted_names: Vec<&str> = tool_calls.iter().map(|tc| tc.tool_name()).collect();
+            tracing::warn!(
+                ?attempted_names,
+                "Auto-select{}: LLM did not call any selector tool",
+                context_label
+            );
+            Err(JobWorkerError::OtherError(format!(
+                "Auto-select failed: LLM called {:?} instead of selector tools",
+                attempted_names
+            ))
+            .into())
+        }
     }
 
     /// Extract tool name/description summaries from FunctionSpecs.
@@ -1424,5 +1594,198 @@ mod tests {
         assert!(!ToolConverter::is_selector_tool("http_request"));
         assert!(!ToolConverter::is_selector_tool("select_toolset"));
         assert!(!ToolConverter::is_selector_tool(""));
+    }
+
+    // -- Tests for shared selector filtering helpers --
+
+    /// Simple struct implementing ToolCallName for testing
+    struct MockToolCall {
+        name: String,
+    }
+    impl ToolCallName for MockToolCall {
+        fn tool_name(&self) -> &str {
+            &self.name
+        }
+    }
+
+    #[test]
+    fn test_tool_call_name_for_tool_execution_request() {
+        let req = ToolExecutionRequest {
+            call_id: "id1".to_string(),
+            fn_name: "my_tool".to_string(),
+            fn_arguments: "{}".to_string(),
+        };
+        assert_eq!(req.tool_name(), "my_tool");
+    }
+
+    #[test]
+    fn test_filter_selector_tools_removes_selectors() {
+        let calls = vec![
+            MockToolCall {
+                name: "select_toolset_web".to_string(),
+            },
+            MockToolCall {
+                name: "http_request".to_string(),
+            },
+            MockToolCall {
+                name: "select_toolset_data".to_string(),
+            },
+            MockToolCall {
+                name: "command".to_string(),
+            },
+        ];
+        let filtered = ToolConverter::filter_selector_tools(calls);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].tool_name(), "http_request");
+        assert_eq!(filtered[1].tool_name(), "command");
+    }
+
+    #[test]
+    fn test_filter_selector_tools_all_selectors_returns_empty() {
+        let calls = vec![
+            MockToolCall {
+                name: "select_toolset_a".to_string(),
+            },
+            MockToolCall {
+                name: "select_toolset_b".to_string(),
+            },
+        ];
+        let filtered = ToolConverter::filter_selector_tools(calls);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_filter_selector_tools_empty_input() {
+        let calls: Vec<MockToolCall> = vec![];
+        let filtered = ToolConverter::filter_selector_tools(calls);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_retain_non_selector_tools() {
+        let mut calls = vec![
+            MockToolCall {
+                name: "select_toolset_web".to_string(),
+            },
+            MockToolCall {
+                name: "http_request".to_string(),
+            },
+        ];
+        ToolConverter::retain_non_selector_tools(&mut calls);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tool_name(), "http_request");
+    }
+
+    #[test]
+    fn test_evaluate_auto_select_finds_selector() {
+        let calls = vec![
+            MockToolCall {
+                name: "select_toolset_web-tools".to_string(),
+            },
+            MockToolCall {
+                name: "other_tool".to_string(),
+            },
+        ];
+        let mut names = std::collections::HashSet::new();
+        names.insert("select_toolset_web-tools".to_string());
+
+        let args = LlmChatArgs::default();
+        let result = ToolConverter::evaluate_auto_select(&calls, &names, args, "").unwrap();
+        assert_eq!(result.selected_set_name, "web-tools");
+        assert_eq!(
+            result.second_args.function_options,
+            None // default args have no function_options
+        );
+    }
+
+    #[test]
+    fn test_evaluate_auto_select_with_function_options() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::FunctionOptions;
+
+        let calls = vec![MockToolCall {
+            name: "select_toolset_my-set".to_string(),
+        }];
+        let mut names = std::collections::HashSet::new();
+        names.insert("select_toolset_my-set".to_string());
+
+        let args = LlmChatArgs {
+            function_options: Some(FunctionOptions {
+                auto_select_function_set: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result =
+            ToolConverter::evaluate_auto_select(&calls, &names, args, " (stream)").unwrap();
+        assert_eq!(result.selected_set_name, "my-set");
+        let fo = result.second_args.function_options.unwrap();
+        assert_eq!(fo.function_set_name, Some("my-set".to_string()));
+        assert_eq!(fo.auto_select_function_set, Some(false));
+    }
+
+    #[test]
+    fn test_evaluate_auto_select_no_selector_returns_error() {
+        let calls = vec![MockToolCall {
+            name: "http_request".to_string(),
+        }];
+        let mut names = std::collections::HashSet::new();
+        names.insert("select_toolset_web".to_string());
+
+        let args = LlmChatArgs::default();
+        let result = ToolConverter::evaluate_auto_select(&calls, &names, args, "");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Auto-select failed"));
+    }
+
+    #[test]
+    fn test_skip_selector_tool_execution_with_selector() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage as ProtoChatMessage, MessageContent,
+            message_content::Content as ProtoContent,
+        };
+
+        let req = ToolExecutionRequest {
+            call_id: "call-1".to_string(),
+            fn_name: "select_toolset_web".to_string(),
+            fn_arguments: "{}".to_string(),
+        };
+
+        let mut messages = vec![ProtoChatMessage {
+            role: ChatRole::Tool.into(),
+            content: Some(MessageContent {
+                content: Some(ProtoContent::ToolExecutionRequests(
+                    jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequests {
+                        requests: vec![req.clone()],
+                    },
+                )),
+            }),
+        }];
+
+        assert!(ToolConverter::skip_selector_tool_execution(
+            &req,
+            &mut messages
+        ));
+        // Message should have been replaced with text
+        if let Some(ref content) = messages[0].content {
+            match &content.content {
+                Some(ProtoContent::Text(t)) => assert_eq!(t, "Tool selection completed"),
+                other => panic!("Expected Text content, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_skip_selector_tool_execution_with_normal_tool() {
+        let req = ToolExecutionRequest {
+            call_id: "call-1".to_string(),
+            fn_name: "http_request".to_string(),
+            fn_arguments: "{}".to_string(),
+        };
+        let mut messages = vec![];
+        assert!(!ToolConverter::skip_selector_tool_execution(
+            &req,
+            &mut messages
+        ));
     }
 }
