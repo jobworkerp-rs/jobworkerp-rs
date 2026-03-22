@@ -1079,8 +1079,7 @@ where
         Session,
         Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
     )> {
-        let rejection_message =
-            reason.unwrap_or_else(|| "User rejected tool calls".to_string());
+        let rejection_message = reason.unwrap_or_else(|| "User rejected tool calls".to_string());
 
         tracing::info!(
             run_id = %session.run_id,
