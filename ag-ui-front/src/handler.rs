@@ -810,27 +810,35 @@ where
                         reason.unwrap_or_else(|| "User rejected tool calls".to_string());
 
                     let stream = stream! {
-                        let run_finished = AgUiEvent::run_finished(
-                            run_id.clone(),
-                            Some(serde_json::json!({
-                                "status": "rejected",
-                                "message": rejection_message
-                            })),
-                        );
-                        let event_id = Self::encode_event_with_logging(&encoder, &run_finished);
-                        event_store.store_event(&run_id, event_id, run_finished.clone()).await;
-
-                        if !session_manager
+                        if session_manager
                             .resume_from_paused(&session_id, SessionState::Completed)
                             .await
                         {
+                            let run_finished = AgUiEvent::run_finished(
+                                run_id.clone(),
+                                Some(serde_json::json!({
+                                    "status": "rejected",
+                                    "message": rejection_message
+                                })),
+                            );
+                            let event_id = Self::encode_event_with_logging(&encoder, &run_finished);
+                            event_store.store_event(&run_id, event_id, run_finished.clone()).await;
+                            yield (event_id, run_finished);
+                        } else {
                             tracing::warn!(
                                 session_id = %session_id,
-                                "Failed to update session state to Completed after RUN_FINISHED event"
+                                "Failed to update session state to Completed"
                             );
+                            let error_event = AgUiEvent::run_error(
+                                run_id.clone(),
+                                format!("Failed to complete session {}", session_id),
+                                None,
+                                None,
+                            );
+                            let event_id = Self::encode_event_with_logging(&encoder, &error_event);
+                            event_store.store_event(&run_id, event_id, error_event.clone()).await;
+                            yield (event_id, error_event);
                         }
-
-                        yield (event_id, run_finished);
                     };
 
                     Ok((session, Box::pin(stream)))
@@ -1085,11 +1093,11 @@ where
             run_id = %session.run_id,
             interrupt_id = %hitl_info.interrupt_id,
             pending_tool_calls = hitl_info.pending_tool_calls.len(),
-            reason = %rejection_message,
+            reason_len = rejection_message.len(),
             "Handling LLM tool rejection"
         );
 
-        // 1. Build TOOL_CALL_RESULT + TOOL_CALL_END events for each pending tool call
+        // 1. Build TOOL_CALL_RESULT + TOOL_CALL_END events (persist after validation succeeds)
         let mut rejection_events: Vec<(u64, AgUiEvent)> = Vec::new();
         for tc in &hitl_info.pending_tool_calls {
             let result_event = AgUiEvent::tool_call_result(
@@ -1100,16 +1108,10 @@ where
                 }),
             );
             let event_id = Self::encode_event_with_logging(&self.encoder, &result_event);
-            self.event_store
-                .store_event(session.run_id.as_str(), event_id, result_event.clone())
-                .await;
             rejection_events.push((event_id, result_event));
 
             let end_event = AgUiEvent::tool_call_end(tc.call_id.clone());
             let end_id = Self::encode_event_with_logging(&self.encoder, &end_event);
-            self.event_store
-                .store_event(session.run_id.as_str(), end_id, end_event.clone())
-                .await;
             rejection_events.push((end_id, end_event));
         }
 
@@ -1234,14 +1236,21 @@ where
             )));
         }
 
-        // 9. Register executor for cancellation support
+        // 9. Persist rejection events now that all checks have passed
+        for (event_id, event) in &rejection_events {
+            self.event_store
+                .store_event(session.run_id.as_str(), *event_id, event.clone())
+                .await;
+        }
+
+        // 10. Register executor for cancellation support
         let executor = Arc::new(executor);
         {
             let mut registry = self.executor_registry.write().await;
             registry.insert(run_id.to_string(), executor.clone());
         }
 
-        // 10. Create event stream, prepending rejection events
+        // 11. Create event stream, prepending rejection events
         let executor_registry = self.executor_registry.clone();
         let run_id_for_cleanup = run_id.to_string();
         let workflow_stream = self.create_event_stream(
