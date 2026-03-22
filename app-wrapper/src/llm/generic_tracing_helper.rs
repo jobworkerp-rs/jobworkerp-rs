@@ -123,8 +123,10 @@ pub trait GenericLLMTracingHelper {
                         span.set_status(Status::Ok);
                         span.end();
 
-                        let context = parent_context.unwrap_or(opentelemetry::Context::current());
-                        (result, context)
+                        (
+                            result,
+                            parent_context.unwrap_or_else(opentelemetry::Context::current),
+                        )
                     }
                     Err(e) => {
                         tracing::error!("LLM action failed: {:?}", e);
@@ -135,7 +137,7 @@ pub trait GenericLLMTracingHelper {
                 }
             } else {
                 let result = action.await?;
-                let context = opentelemetry::Context::current();
+                let context = parent_context.unwrap_or_else(opentelemetry::Context::current);
                 (result, context)
             };
 
@@ -166,6 +168,7 @@ pub trait GenericLLMTracingHelper {
 
         async move {
             let (result, context) = if let Some(client) = otel_client {
+                let saved_parent_context = parent_context.clone();
                 let response_parser = {
                     let function_name = function_name.clone();
                     let arguments = arguments.clone();
@@ -236,8 +239,7 @@ pub trait GenericLLMTracingHelper {
                     .await
                     .map_err(|e| anyhow::anyhow!("Error in traced tool span: {}", e))?;
 
-                let new_context = opentelemetry::Context::current();
-                (result, new_context)
+                (result, saved_parent_context)
             } else {
                 let result = action.await?;
                 (result, parent_context)
