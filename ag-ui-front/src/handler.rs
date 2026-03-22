@@ -793,44 +793,48 @@ where
                 }
             }
             ResumePayload::Reject { reason } => {
-                // Emit RUN_FINISHED with rejection message
-                // Session state is updated to Completed AFTER event persistence succeeds
-                let run_id = session.run_id.to_string();
-                let session_id = session.session_id.clone();
-                let encoder = self.encoder.clone();
-                let event_store = self.event_store.clone();
-                let session_manager = self.session_manager.clone();
-
-                let rejection_message =
-                    reason.unwrap_or_else(|| "User rejected tool calls".to_string());
-
-                let stream = stream! {
-                    // Emit RUN_FINISHED with success outcome and rejection message
-                    let run_finished = AgUiEvent::run_finished(
-                        run_id.clone(),
-                        Some(serde_json::json!({
-                            "status": "rejected",
-                            "message": rejection_message
-                        })),
-                    );
-                    let event_id = Self::encode_event_with_logging(&encoder, &run_finished);
-                    event_store.store_event(&run_id, event_id, run_finished.clone()).await;
-
-                    // Update session state to Completed only after event persistence succeeds
-                    if !session_manager
-                        .resume_from_paused(&session_id, SessionState::Completed)
+                // Check if this is LLM tool call HITL (pending_tool_calls non-empty)
+                if !hitl_info.pending_tool_calls.is_empty() {
+                    // LLM tool call HITL: Feed rejection back to LLM so it can respond accordingly
+                    self.handle_llm_tool_rejection(input, session, hitl_info, reason)
                         .await
-                    {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            "Failed to update session state to Completed after RUN_FINISHED event"
+                } else {
+                    // Traditional HITL (checkpoint-based): End the run
+                    let run_id = session.run_id.to_string();
+                    let session_id = session.session_id.clone();
+                    let encoder = self.encoder.clone();
+                    let event_store = self.event_store.clone();
+                    let session_manager = self.session_manager.clone();
+
+                    let rejection_message =
+                        reason.unwrap_or_else(|| "User rejected tool calls".to_string());
+
+                    let stream = stream! {
+                        let run_finished = AgUiEvent::run_finished(
+                            run_id.clone(),
+                            Some(serde_json::json!({
+                                "status": "rejected",
+                                "message": rejection_message
+                            })),
                         );
-                    }
+                        let event_id = Self::encode_event_with_logging(&encoder, &run_finished);
+                        event_store.store_event(&run_id, event_id, run_finished.clone()).await;
 
-                    yield (event_id, run_finished);
-                };
+                        if !session_manager
+                            .resume_from_paused(&session_id, SessionState::Completed)
+                            .await
+                        {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                "Failed to update session state to Completed after RUN_FINISHED event"
+                            );
+                        }
 
-                Ok((session, Box::pin(stream)))
+                        yield (event_id, run_finished);
+                    };
+
+                    Ok((session, Box::pin(stream)))
+                }
             }
         }
     }
@@ -1057,6 +1061,205 @@ where
         );
 
         Ok((session, Box::pin(stream)))
+    }
+
+    /// Handle LLM tool call rejection by feeding rejection info back to LLM.
+    ///
+    /// This method follows the same pattern as handle_llm_tool_approval:
+    /// 1. Emits TOOL_CALL_RESULT + TOOL_CALL_END events for each pending tool call (for client/memory)
+    /// 2. Updates workflowContext with rejection text as TOOL message
+    /// 3. Re-executes workflow so LLM receives the rejection and can respond accordingly
+    async fn handle_llm_tool_rejection(
+        &self,
+        mut input: RunAgentInput,
+        session: Session,
+        hitl_info: HitlWaitingInfo,
+        reason: Option<String>,
+    ) -> Result<(
+        Session,
+        Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
+    )> {
+        let rejection_message =
+            reason.unwrap_or_else(|| "User rejected tool calls".to_string());
+
+        tracing::info!(
+            run_id = %session.run_id,
+            interrupt_id = %hitl_info.interrupt_id,
+            pending_tool_calls = hitl_info.pending_tool_calls.len(),
+            reason = %rejection_message,
+            "Handling LLM tool rejection"
+        );
+
+        // 1. Build TOOL_CALL_RESULT + TOOL_CALL_END events for each pending tool call
+        let mut rejection_events: Vec<(u64, AgUiEvent)> = Vec::new();
+        for tc in &hitl_info.pending_tool_calls {
+            let result_event = AgUiEvent::tool_call_result(
+                tc.call_id.clone(),
+                serde_json::json!({
+                    "status": "rejected",
+                    "reason": rejection_message,
+                }),
+            );
+            let event_id = Self::encode_event_with_logging(&self.encoder, &result_event);
+            self.event_store
+                .store_event(session.run_id.as_str(), event_id, result_event.clone())
+                .await;
+            rejection_events.push((event_id, result_event));
+
+            let end_event = AgUiEvent::tool_call_end(tc.call_id.clone());
+            let end_id = Self::encode_event_with_logging(&self.encoder, &end_event);
+            self.event_store
+                .store_event(session.run_id.as_str(), end_id, end_event.clone())
+                .await;
+            rejection_events.push((end_id, end_event));
+        }
+
+        // 2. Update workflowContext with rejection info in runnerMessages
+        let mut found_workflow_inline = false;
+        for ctx in &mut input.context {
+            if let crate::types::Context::WorkflowInline {
+                workflow_context, ..
+            } = ctx
+            {
+                found_workflow_inline = true;
+
+                let mut ctx_value: serde_json::Value = workflow_context
+                    .as_ref()
+                    .and_then(|v| {
+                        if let serde_json::Value::String(s) = v {
+                            serde_json::from_str(s).ok()
+                        } else {
+                            Some(v.clone())
+                        }
+                    })
+                    .unwrap_or_else(|| serde_json::json!({}));
+
+                let runner_messages = ctx_value
+                    .get("runnerMessages")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]));
+
+                let mut messages_array = match runner_messages {
+                    serde_json::Value::Array(arr) => arr,
+                    _ => vec![],
+                };
+
+                // Add Assistant's tool call message (same as approval flow)
+                let tool_calls: Vec<serde_json::Value> = hitl_info
+                    .pending_tool_calls
+                    .iter()
+                    .map(|tc| {
+                        serde_json::json!({
+                            "callId": tc.call_id,
+                            "fnName": tc.fn_name,
+                            "fnArguments": tc.fn_arguments
+                        })
+                    })
+                    .collect();
+
+                messages_array.push(serde_json::json!({
+                    "role": "ASSISTANT",
+                    "content": {
+                        "toolCalls": {
+                            "calls": tool_calls
+                        }
+                    }
+                }));
+
+                // Add TOOL message with rejection text (not toolExecutionRequests)
+                // LLM will see this as tool result text and respond accordingly
+                let rejection_text = format!(
+                    "All tool calls were rejected by the user. Reason: {}. \
+                     Please suggest alternative approaches or ask the user what they would like to do instead.",
+                    rejection_message
+                );
+                messages_array.push(serde_json::json!({
+                    "role": "TOOL",
+                    "content": {
+                        "text": rejection_text
+                    }
+                }));
+
+                if let serde_json::Value::Object(ref mut map) = ctx_value {
+                    map.insert(
+                        "runnerMessages".to_string(),
+                        serde_json::Value::Array(messages_array),
+                    );
+                }
+
+                *workflow_context = Some(serde_json::Value::String(ctx_value.to_string()));
+
+                tracing::debug!(
+                    workflow_context = ?workflow_context,
+                    "Updated workflowContext with rejection in runnerMessages"
+                );
+                break;
+            }
+        }
+
+        if !found_workflow_inline {
+            return Err(AgUiError::InvalidInput(
+                "Missing WorkflowInline context; cannot attach rejection for LLM tool rejection"
+                    .to_string(),
+            ));
+        }
+
+        // 3. Clear resume info to avoid infinite loop
+        input.resume = None;
+
+        // 4. Parse workflow from input
+        let (workflow, workflow_context) = self.parse_workflow_from_input(&input).await?;
+        let workflow_name = workflow.document.name.to_string();
+
+        // 5. Use existing run_id and thread_id from session
+        let run_id = session.run_id.clone();
+        let thread_id = session.thread_id.clone();
+
+        // 6. Create adapter for event conversion
+        let adapter = shared_adapter(run_id.clone(), thread_id.clone());
+
+        // 7. Initialize workflow executor
+        let executor = self
+            .init_workflow_executor(workflow, input, &run_id, adapter.clone(), workflow_context)
+            .await?;
+
+        // 8. Atomically clear HITL info and set session state to Active
+        if !self
+            .session_manager
+            .resume_from_paused(&session.session_id, SessionState::Active)
+            .await
+        {
+            return Err(AgUiError::Internal(anyhow::anyhow!(
+                "Failed to update session state from Paused to Active for session {}",
+                session.session_id
+            )));
+        }
+
+        // 9. Register executor for cancellation support
+        let executor = Arc::new(executor);
+        {
+            let mut registry = self.executor_registry.write().await;
+            registry.insert(run_id.to_string(), executor.clone());
+        }
+
+        // 10. Create event stream, prepending rejection events
+        let executor_registry = self.executor_registry.clone();
+        let run_id_for_cleanup = run_id.to_string();
+        let workflow_stream = self.create_event_stream(
+            executor,
+            adapter,
+            run_id.to_string(),
+            session.session_id.clone(),
+            executor_registry,
+            run_id_for_cleanup,
+            workflow_name,
+            false, // Don't emit RUN_STARTED again
+        );
+
+        let rejection_stream = futures::stream::iter(rejection_events);
+        let combined = rejection_stream.chain(workflow_stream);
+
+        Ok((session, Box::pin(combined)))
     }
 
     /// Parse workflow schema from input context.
