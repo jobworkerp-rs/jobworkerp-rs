@@ -9,7 +9,7 @@ use crate::events::{
     SharedWorkflowEventAdapter, extract_text_from_completed_output,
     extract_text_from_llm_chat_result, extract_tool_calls_from_llm_result,
     extract_tool_execution_results, extract_tool_execution_started, shared_adapter,
-    tool_calls_to_ag_ui_events,
+    tool_calls_to_ag_ui_events, ExtractedToolStarted,
 };
 use crate::session::{
     EventStore, HitlWaitingInfo, PendingToolCallInfo, Session, SessionManager, SessionState,
@@ -720,7 +720,7 @@ where
             executor_registry,
             run_id_for_cleanup,
             workflow_name_for_stream,
-            false, // emit_run_started: false for HITL resume (RUN_STARTED already emitted)
+            true, // emit_run_started: resume is a new run invocation per AG-UI spec
         );
 
         // Prepend the tool_call events to the workflow stream
@@ -1085,7 +1085,7 @@ where
             executor_registry,
             run_id_for_cleanup,
             workflow_name,
-            false, // Don't emit RUN_STARTED again
+            true, // Resume is a new run invocation per AG-UI spec
         );
 
         Ok((session, Box::pin(stream)))
@@ -1528,6 +1528,13 @@ where
             // Track whether text content was sent via StreamingData for each job_id
             // Used to decide whether to emit compensating TEXT_MESSAGE_CONTENT at StreamingJobCompleted
             let mut text_content_sent = std::collections::HashSet::<i64>::new();
+            // Track whether TEXT_MESSAGE_START has been emitted for each job_id
+            // TEXT_MESSAGE_START is deferred until text content actually arrives
+            let mut text_message_started = std::collections::HashSet::<i64>::new();
+            // Buffer ToolExecutionStarted info for real-time TOOL_CALL emission
+            let mut pending_tool_starts = std::collections::HashMap::<String, ExtractedToolStarted>::new();
+            // Track tool calls already emitted via StreamingData (to avoid duplicates at StreamingJobCompleted)
+            let mut sent_tool_call_ids = std::collections::HashSet::<String>::new();
 
             // Channel for nested workflow progress events (from parallel subscriptions)
             let (nested_event_tx, mut nested_event_rx) =
@@ -1552,7 +1559,8 @@ where
                 };
                 match event_result {
                     Ok(event) => {
-                        // Handle StreamingJobStarted: emit TEXT_MESSAGE_START
+                        // Handle StreamingJobStarted: prepare message_id but defer TEXT_MESSAGE_START
+                        // until text content actually arrives (avoids empty START/END for tool-only responses)
                         if let WorkflowStreamEvent::StreamingJobStarted { event: ev } = &event {
                             let job_id_value = ev.job_id.as_ref().map(|j| j.value).unwrap_or(0);
                             let message_id = MessageId::random();
@@ -1561,11 +1569,13 @@ where
                                 job_id = job_id_value,
                                 worker_name = ?ev.worker_name,
                                 position = %ev.position,
-                                "StreamingJobStarted: emitting TEXT_MESSAGE_START"
+                                "StreamingJobStarted: preparing message_id (TEXT_MESSAGE_START deferred)"
                             );
 
                             // Close previous message if exists for this job_id (prevents dangling UI messages)
-                            if let Some(old_message_id) = active_message_ids.remove(&job_id_value) {
+                            if let Some(old_message_id) = active_message_ids.remove(&job_id_value)
+                                && text_message_started.remove(&job_id_value)
+                            {
                                 tracing::warn!(
                                     job_id = job_id_value,
                                     "Received duplicate StreamingJobStarted, closing previous message"
@@ -1577,16 +1587,8 @@ where
                             }
 
                             // Store message_id for correlation with StreamingData
-                            active_message_ids.insert(job_id_value, message_id.clone());
-
-                            // Emit TEXT_MESSAGE_START
-                            let ag_event = AgUiEvent::text_message_start(
-                                message_id,
-                                crate::types::Role::Assistant,
-                            );
-                            let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
-                            event_store.store_event(&run_id, event_id, ag_event.clone()).await;
-                            yield (event_id, ag_event);
+                            // TEXT_MESSAGE_START will be emitted lazily when text content arrives
+                            active_message_ids.insert(job_id_value, message_id);
                         }
 
                         // Handle StreamingData: emit TEXT_MESSAGE_CONTENT or role=tool messages
@@ -1595,6 +1597,17 @@ where
                             if let Some(message_id) = active_message_ids.get(&job_id_value) {
                                 // Decode LlmChatResult protobuf and extract text content
                                 if let Some(text) = extract_text_from_llm_chat_result(&ev.data) {
+                                    // Lazily emit TEXT_MESSAGE_START on first text content
+                                    if !text_message_started.contains(&job_id_value) {
+                                        text_message_started.insert(job_id_value);
+                                        let start_event = AgUiEvent::text_message_start(
+                                            message_id.clone(),
+                                            crate::types::Role::Assistant,
+                                        );
+                                        let start_event_id = Self::encode_event_with_logging(&encoder, &start_event);
+                                        event_store.store_event(&run_id, start_event_id, start_event.clone()).await;
+                                        yield (start_event_id, start_event);
+                                    }
                                     text_content_sent.insert(job_id_value);
                                     let ag_event = AgUiEvent::text_message_content(
                                         message_id.clone(),
@@ -1605,19 +1618,66 @@ where
                                     yield (event_id, ag_event);
                                 }
 
-                                // Buffer tool execution results from streaming chunks
-                                // (emitted by LlmChatService during auto-calling).
-                                // Actual TOOL_CALL_RESULT emission is deferred to StreamingJobCompleted
-                                // to ensure correct AG-UI event ordering: START → ARGS → END → RESULT.
+                                // Detect ToolExecutionStarted: buffer for real-time TOOL_CALL emission
+                                // and spawn nested workflow progress subscription
+                                if let Some(started) = extract_tool_execution_started(&ev.data)
+                                    && started.job_id > 0
+                                {
+                                    pending_tool_starts.insert(started.call_id.clone(), started.clone());
+                                }
+
+                                // Process tool execution results from streaming chunks.
+                                // If we have a matching ToolExecutionStarted, emit TOOL_CALL events
+                                // immediately for real-time delivery and correct ordering.
                                 let tool_results = extract_tool_execution_results(&ev.data);
                                 for (call_id, extracted) in tool_results {
-                                    if !sent_tool_result_ids.contains(call_id.as_str()) {
+                                    if sent_tool_result_ids.contains(call_id.as_str()) {
+                                        continue;
+                                    }
+                                    if let Some(tool_start) = pending_tool_starts.remove(&call_id) {
+                                        // Real-time emission: START → ARGS → END → RESULT
+                                        let parent_msg_id = active_message_ids.get(&job_id_value)
+                                            .map(|m| m.to_string());
+                                        let start_event = AgUiEvent::tool_call_start(
+                                            call_id.clone(),
+                                            tool_start.fn_name.clone(),
+                                            parent_msg_id,
+                                        );
+                                        let start_eid = Self::encode_event_with_logging(&encoder, &start_event);
+                                        event_store.store_event(&run_id, start_eid, start_event.clone()).await;
+                                        yield (start_eid, start_event);
+
+                                        let args_event = AgUiEvent::tool_call_args(
+                                            call_id.clone(),
+                                            tool_start.fn_arguments,
+                                        );
+                                        let args_eid = Self::encode_event_with_logging(&encoder, &args_event);
+                                        event_store.store_event(&run_id, args_eid, args_event.clone()).await;
+                                        yield (args_eid, args_event);
+
+                                        let end_event = AgUiEvent::tool_call_end(call_id.clone());
+                                        let end_eid = Self::encode_event_with_logging(&encoder, &end_event);
+                                        event_store.store_event(&run_id, end_eid, end_event.clone()).await;
+                                        yield (end_eid, end_event);
+
+                                        let result_ev = AgUiEvent::tool_call_result(
+                                            call_id.clone(),
+                                            extracted.result,
+                                        );
+                                        let result_eid = Self::encode_event_with_logging(&encoder, &result_ev);
+                                        event_store.store_event(&run_id, result_eid, result_ev.clone()).await;
+                                        yield (result_eid, result_ev);
+
+                                        sent_tool_call_ids.insert(call_id.clone());
+                                        sent_tool_result_ids.insert(call_id);
+                                    } else {
+                                        // No matching ToolExecutionStarted yet, buffer for later
                                         pending_tool_results.entry(call_id).or_insert(extracted);
                                     }
                                 }
 
-                                // Detect ToolExecutionStarted and spawn parallel subscription
-                                // for nested workflow progress (STEP_STARTED/STEP_FINISHED)
+                                // Spawn nested workflow progress subscription for ToolExecutionStarted
+                                // (re-check pending_tool_starts since some may not have results yet)
                                 if let Some(started) = extract_tool_execution_started(&ev.data)
                                     && started.job_id > 0
                                 {
@@ -1777,22 +1837,35 @@ where
                                         "StreamingJobCompleted: detected LLM tool calls"
                                     );
 
-                                    // Emit TOOL_CALL_START and TOOL_CALL_ARGS for each tool call
-                                    let tool_events = tool_calls_to_ag_ui_events(
-                                        &tool_calls.tool_calls,
-                                        message_id.as_ref(),
-                                    );
-                                    for tool_event in tool_events {
-                                        let event_id = Self::encode_event_with_logging(&encoder, &tool_event);
-                                        event_store.store_event(&run_id, event_id, tool_event.clone()).await;
-                                        yield (event_id, tool_event);
+                                    // Filter out tool calls already emitted in real-time via StreamingData
+                                    let unsent_tool_calls: Vec<_> = tool_calls.tool_calls.iter()
+                                        .filter(|tc| !sent_tool_call_ids.contains(&tc.call_id))
+                                        .cloned()
+                                        .collect();
+
+                                    if !unsent_tool_calls.is_empty() {
+                                        // Emit TOOL_CALL_START and TOOL_CALL_ARGS for unsent tool calls
+                                        let tool_events = tool_calls_to_ag_ui_events(
+                                            &unsent_tool_calls,
+                                            message_id.as_ref(),
+                                        );
+                                        for tool_event in tool_events {
+                                            let event_id = Self::encode_event_with_logging(&encoder, &tool_event);
+                                            event_store.store_event(&run_id, event_id, tool_event.clone()).await;
+                                            yield (event_id, tool_event);
+                                        }
                                     }
 
-                                    // Auto-calling mode: emit TOOL_CALL_END + TOOL_CALL_RESULT for each tool
+                                    // Auto-calling mode: emit TOOL_CALL_END + TOOL_CALL_RESULT for unsent tools
                                     // Order: START → ARGS → END → RESULT (AG-UI protocol compliant)
                                     if !tool_calls.requires_execution {
                                         let tool_results_from_output = extract_tool_execution_results(&output_bytes);
                                         for call in &tool_calls.tool_calls {
+                                            // Skip if already emitted via real-time path
+                                            if sent_tool_call_ids.contains(&call.call_id) {
+                                                continue;
+                                            }
+
                                             // TOOL_CALL_END
                                             let end_event = AgUiEvent::tool_call_end(call.call_id.clone());
                                             let end_event_id = Self::encode_event_with_logging(&encoder, &end_event);
@@ -1852,6 +1925,17 @@ where
                                 && let Some(text) = extract_text_from_completed_output(&tc.output)
                                 && !text.is_empty()
                             {
+                                // Lazily emit TEXT_MESSAGE_START for compensating text
+                                if !text_message_started.contains(&job_id_value) {
+                                    text_message_started.insert(job_id_value);
+                                    let start_event = AgUiEvent::text_message_start(
+                                        msg_id.clone(),
+                                        crate::types::Role::Assistant,
+                                    );
+                                    let start_event_id = Self::encode_event_with_logging(&encoder, &start_event);
+                                    event_store.store_event(&run_id, start_event_id, start_event.clone()).await;
+                                    yield (start_event_id, start_event);
+                                }
                                 tracing::info!(
                                     job_id = job_id_value,
                                     text_len = text.len(),
@@ -1866,17 +1950,24 @@ where
                                 yield (event_id, ag_event);
                             }
 
-                            // Emit TEXT_MESSAGE_END for the text portion
+                            // Emit TEXT_MESSAGE_END only if TEXT_MESSAGE_START was emitted
                             if let Some(msg_id) = message_id.clone() {
-                                tracing::info!(
-                                    job_id = job_id_value,
-                                    "StreamingJobCompleted: emitting TEXT_MESSAGE_END"
-                                );
+                                if text_message_started.remove(&job_id_value) {
+                                    tracing::info!(
+                                        job_id = job_id_value,
+                                        "StreamingJobCompleted: emitting TEXT_MESSAGE_END"
+                                    );
 
-                                let ag_event = AgUiEvent::text_message_end(msg_id);
-                                let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
-                                event_store.store_event(&run_id, event_id, ag_event.clone()).await;
-                                yield (event_id, ag_event);
+                                    let ag_event = AgUiEvent::text_message_end(msg_id);
+                                    let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
+                                    event_store.store_event(&run_id, event_id, ag_event.clone()).await;
+                                    yield (event_id, ag_event);
+                                } else {
+                                    tracing::debug!(
+                                        job_id = job_id_value,
+                                        "StreamingJobCompleted: skipping TEXT_MESSAGE_END (no text content was sent)"
+                                    );
+                                }
                             }
 
                             // HITL mode: If requires_execution is true, pause for client approval
@@ -1989,6 +2080,60 @@ where
                             }
 
                             // Continue to process context for state snapshot
+                        }
+
+                        // Handle TaskStarted: emit STEP_STARTED at task begin time
+                        if let WorkflowStreamEvent::TaskStarted { event: ev } = &event {
+                            let task_position = &ev.position;
+                            if !task_position.is_empty() && prev_position.as_deref() != Some(task_position) {
+                                // Close previous step if position changed
+                                if prev_position.is_some() {
+                                    let mut adapter_lock = adapter.lock().await;
+                                    if let Some(finished_event) = adapter_lock.task_finished(None) {
+                                        let event_id = Self::encode_event_with_logging(&encoder, &finished_event);
+                                        event_store.store_event(&run_id, event_id, finished_event.clone()).await;
+                                        yield (event_id, finished_event);
+                                    }
+                                }
+
+                                let step_name = ev.task_name.rsplit('/').next().unwrap_or(&ev.task_name);
+                                let mut adapter_lock = adapter.lock().await;
+                                let started_event = adapter_lock.task_started(
+                                    step_name,
+                                    Some(&ev.task_type),
+                                    None,
+                                );
+                                drop(adapter_lock);
+                                let event_id = Self::encode_event_with_logging(&encoder, &started_event);
+                                event_store.store_event(&run_id, event_id, started_event.clone()).await;
+                                yield (event_id, started_event);
+
+                                prev_position = Some(task_position.clone());
+                                tracing::debug!(
+                                    task_name = %ev.task_name,
+                                    task_type = %ev.task_type,
+                                    position = %task_position,
+                                    "TaskStarted: emitted STEP_STARTED"
+                                );
+                            }
+                        }
+
+                        // Handle TaskCompleted: emit STEP_FINISHED
+                        if let WorkflowStreamEvent::TaskCompleted { event: ev, .. } = &event {
+                            let task_position = &ev.position;
+                            if !task_position.is_empty() && prev_position.as_deref() == Some(task_position) {
+                                let mut adapter_lock = adapter.lock().await;
+                                if let Some(finished_event) = adapter_lock.task_finished(None) {
+                                    let event_id = Self::encode_event_with_logging(&encoder, &finished_event);
+                                    event_store.store_event(&run_id, event_id, finished_event.clone()).await;
+                                    yield (event_id, finished_event);
+                                }
+                                tracing::debug!(
+                                    task_name = %ev.task_name,
+                                    position = %task_position,
+                                    "TaskCompleted: emitted STEP_FINISHED"
+                                );
+                            }
                         }
 
                         // Extract context from completed events for workflow state updates

@@ -478,6 +478,7 @@ pub struct ExtractedToolStarted {
     pub call_id: String,
     pub fn_name: String,
     pub job_id: i64,
+    pub fn_arguments: String,
 }
 
 /// Extract tool execution started notification from LlmChatResult bytes.
@@ -498,6 +499,7 @@ pub fn extract_tool_execution_started(bytes: &[u8]) -> Option<ExtractedToolStart
                 call_id: started.call_id,
                 fn_name: started.fn_name,
                 job_id: started.job_id,
+                fn_arguments: started.fn_arguments,
             });
         }
         return None;
@@ -530,11 +532,18 @@ pub fn extract_tool_execution_started(bytes: &[u8]) -> Option<ExtractedToolStart
                         .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
                 })
                 .unwrap_or(0);
+            let fn_arguments = s
+                .get("fn_arguments")
+                .or_else(|| s.get("fnArguments"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             if job_id > 0 {
                 return Some(ExtractedToolStarted {
                     call_id,
                     fn_name,
                     job_id,
+                    fn_arguments,
                 });
             }
         }
@@ -1610,6 +1619,7 @@ mod tests {
                 call_id: "call_42".to_string(),
                 fn_name: "github-code-review".to_string(),
                 job_id: 12345,
+                fn_arguments: r#"{"owner":"test"}"#.to_string(),
             }),
             ..Default::default()
         };
@@ -1678,6 +1688,7 @@ mod tests {
                 call_id: "call_1".to_string(),
                 fn_name: "test".to_string(),
                 job_id: 0,
+                fn_arguments: String::new(),
             }),
             ..Default::default()
         };
