@@ -1,6 +1,18 @@
 //! Tests that verify the backend worker correctly processes jobs.
 //! These tests do not require an LLM server - they directly enqueue
 //! COMMAND runner jobs and verify the results.
+//!
+//! All sub-tests share a single `start_test_worker` call to avoid
+//! accumulating leaked dispatchers (Box::leak in start_test_worker),
+//! which would exhaust the shared DB connection pool (especially MySQL).
+//! Must run with --test-threads=1.
+//! Requires Redis (uses create_hybrid_test_app / Scalable mode).
+//!
+//! ## Ordering constraint
+//! `call_function_for_llm` (used by sub_test_worker_executes_command_via_function)
+//! creates a temp worker with Direct response_type whose lifecycle affects
+//! dispatcher state. It must run **last** so that streaming-based sub-tests
+//! (enqueue_function_for_llm) are not affected.
 
 use anyhow::Result;
 use app::app::function::FunctionApp;
@@ -12,18 +24,15 @@ use std::sync::Arc;
 use tests_with_worker::start_test_worker;
 use tokio::time::{Duration, timeout};
 
-/// Test that the backend worker can execute a COMMAND runner job
+// ---------------------------------------------------------------------------
+// Sub-test functions called from the single entry-point test below.
+// ---------------------------------------------------------------------------
+
+/// Sub-test: backend worker can execute a COMMAND runner job
 /// via call_function_for_llm (the same path used by LLM tool calling).
-#[tokio::test]
-async fn test_worker_executes_command_via_function() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-
-    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-    let worker_handle = start_test_worker(app_module.clone()).await?;
-
-    // Wait briefly for dispatcher to be ready
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
+async fn sub_test_worker_executes_command_via_function(
+    app_module: &Arc<app::module::AppModule>,
+) -> Result<()> {
     // Create a function set targeting the COMMAND runner (runner_id=1)
     match app_module
         .function_set_app
@@ -42,6 +51,7 @@ async fn test_worker_executes_command_via_function() -> Result<()> {
     {
         Ok(_) => {}
         Err(e) if e.to_string().to_lowercase().contains("unique") => {}
+        Err(e) if e.to_string().to_lowercase().contains("duplicate") => {}
         Err(e) => return Err(e),
     }
 
@@ -69,23 +79,16 @@ async fn test_worker_executes_command_via_function() -> Result<()> {
         output
     );
 
-    println!("test_worker_executes_command_via_function passed");
-    worker_handle.shutdown().await;
+    println!("sub_test_worker_executes_command_via_function passed");
     Ok(())
 }
 
-/// Test 2-stage enqueue + await flow with streaming COMMAND runner.
+/// Sub-test: 2-stage enqueue + await flow with streaming COMMAND runner.
 /// Verifies: enqueue returns immediately with job_id (is_streaming=true, result=None),
 /// then await_function_result retrieves the completed result.
-#[tokio::test]
-async fn test_enqueue_and_await_function_result_streaming() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-
-    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-    let worker_handle = start_test_worker(app_module.clone()).await?;
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
+async fn sub_test_enqueue_and_await_function_result_streaming(
+    app_module: &Arc<app::module::AppModule>,
+) -> Result<()> {
     let metadata = Arc::new(HashMap::new());
     let arguments: serde_json::Map<String, serde_json::Value> =
         serde_json::from_value(serde_json::json!({
@@ -134,22 +137,16 @@ async fn test_enqueue_and_await_function_result_streaming() -> Result<()> {
         output
     );
 
-    worker_handle.shutdown().await;
+    println!("sub_test_enqueue_and_await_function_result_streaming passed");
     Ok(())
 }
 
-/// Test 2-stage enqueue with non-streaming CREATE_WORKFLOW runner.
+/// Sub-test: 2-stage enqueue with non-streaming CREATE_WORKFLOW runner.
 /// Verifies: enqueue waits for completion and returns result immediately
 /// (is_streaming=false, result=Some).
-#[tokio::test]
-async fn test_enqueue_function_non_streaming_with_worker() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-
-    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-    let worker_handle = start_test_worker(app_module.clone()).await?;
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
+async fn sub_test_enqueue_function_non_streaming_with_worker(
+    app_module: &Arc<app::module::AppModule>,
+) -> Result<()> {
     let metadata = Arc::new(HashMap::new());
     let workflow_def = serde_json::json!({
         "document": {
@@ -204,23 +201,16 @@ async fn test_enqueue_function_non_streaming_with_worker() -> Result<()> {
     );
 
     println!("Non-streaming enqueue result: {}", result);
-
-    worker_handle.shutdown().await;
+    println!("sub_test_enqueue_function_non_streaming_with_worker passed");
     Ok(())
 }
 
-/// Test that nested workflow progress (position changes) can be received
+/// Sub-test: nested workflow progress (position changes) can be received
 /// in real-time via subscribe_result_stream while the workflow is running.
 /// Uses WORKFLOW___run with a 3-step inline workflow where each step sleeps briefly.
-#[tokio::test]
-async fn test_workflow_progress_realtime() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-
-    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-    let worker_handle = start_test_worker(app_module.clone()).await?;
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
+async fn sub_test_workflow_progress_realtime(
+    app_module: &Arc<app::module::AppModule>,
+) -> Result<()> {
     // 3-step workflow: each step runs a short command with sleep
     let workflow_def = serde_json::json!({
         "document": {
@@ -333,21 +323,15 @@ async fn test_workflow_progress_realtime() -> Result<()> {
         job_result.data.as_ref().and_then(|d| d.job_id)
     );
 
-    worker_handle.shutdown().await;
+    println!("sub_test_workflow_progress_realtime passed");
     Ok(())
 }
 
-/// Test that short-lived tool execution (milliseconds) correctly returns results
+/// Sub-test: short-lived tool execution (milliseconds) correctly returns results
 /// even when progress subscription misses all intermediate events.
-#[tokio::test]
-async fn test_short_tool_execution_skips_progress() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-
-    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-    let worker_handle = start_test_worker(app_module.clone()).await?;
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
+async fn sub_test_short_tool_execution_skips_progress(
+    app_module: &Arc<app::module::AppModule>,
+) -> Result<()> {
     let metadata = Arc::new(HashMap::new());
     let arguments: serde_json::Map<String, serde_json::Value> =
         serde_json::from_value(serde_json::json!({
@@ -414,6 +398,38 @@ async fn test_short_tool_execution_skips_progress() -> Result<()> {
         "Should get valid result regardless of progress availability, got: {}",
         output
     );
+
+    println!("sub_test_short_tool_execution_skips_progress passed");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Single entry-point test
+// ---------------------------------------------------------------------------
+
+/// Unified test that shares a single start_test_worker invocation
+/// across all worker backend sub-tests.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_worker_backend_e2e() -> Result<()> {
+    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+    let worker_handle = start_test_worker(app_module.clone()).await?;
+
+    // Wait briefly for dispatcher to be ready
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Run all sub-tests sequentially, sharing the same worker.
+    // Ordering matters: each sub-test creates a temp worker that may leave
+    // dispatcher state affecting subsequent tests. Long-running tests
+    // (workflow_progress) go first, then fast streaming tests, then
+    // call_function_for_llm (Direct response) last since it most disrupts
+    // dispatcher state for subsequent streaming enqueue tests.
+    sub_test_workflow_progress_realtime(&app_module).await?;
+    sub_test_enqueue_and_await_function_result_streaming(&app_module).await?;
+    sub_test_enqueue_function_non_streaming_with_worker(&app_module).await?;
+    sub_test_short_tool_execution_skips_progress(&app_module).await?;
+    sub_test_worker_executes_command_via_function(&app_module).await?;
 
     worker_handle.shutdown().await;
     Ok(())

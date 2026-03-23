@@ -209,6 +209,7 @@ impl AppModule {
                     worker_app.clone(),
                     job_app.clone(),
                     job_result_app.clone(),
+                    id_generator.clone(),
                     descriptor_cache.clone(),
                     config_module.runner_factory.clone(),
                     &mc_config,
@@ -356,6 +357,7 @@ impl AppModule {
                     worker_app.clone(),
                     job_app.clone(),
                     job_result_app.clone(),
+                    id_generator.clone(),
                     descriptor_cache.clone(),
                     config_module.runner_factory.clone(),
                     &mc_config,
@@ -600,7 +602,7 @@ pub mod test {
 
         let job_result_app = Arc::new(HybridJobResultAppImpl::new(
             storage_config,
-            id_generator,
+            id_generator.clone(),
             repositories.clone(),
             worker_app.clone(),
         ));
@@ -610,6 +612,7 @@ pub mod test {
             worker_app.clone(),
             job_app.clone(),
             job_result_app.clone(),
+            id_generator.clone(),
             descriptor_cache.clone(),
             runner_factory.clone(),
             &mc_config,
@@ -770,6 +773,7 @@ pub mod test {
             worker_app.clone(),
             job_app.clone(),
             job_result_app.clone(),
+            id_generator.clone(),
             descriptor_cache.clone(),
             config_module.runner_factory.clone(),
             &mc_config,
