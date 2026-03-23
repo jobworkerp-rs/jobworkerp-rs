@@ -39,6 +39,11 @@ impl WorkflowEventAdapter {
         &self.thread_id
     }
 
+    /// Get the current step ID (if any)
+    pub fn current_step_id(&self) -> Option<&StepId> {
+        self.current_step_id.as_ref()
+    }
+
     // === Lifecycle Events ===
 
     /// Create a RUN_STARTED event
@@ -445,6 +450,45 @@ mod tests {
                 assert_eq!(result["data"], "result");
             }
             _ => panic!("Expected ToolCallResult"),
+        }
+    }
+
+    #[test]
+    fn test_task_finished_idempotent_returns_none_on_second_call() {
+        let mut adapter = WorkflowEventAdapter::new(RunId::new("run_1"), ThreadId::new("thread_1"));
+
+        adapter.task_started("step_a", None, None);
+        // First call should succeed
+        assert!(adapter.task_finished(None).is_some());
+        // Second call without task_started should return None
+        assert!(adapter.task_finished(None).is_none());
+    }
+
+    #[test]
+    fn test_task_started_overwrites_previous_step_id() {
+        let mut adapter = WorkflowEventAdapter::new(RunId::new("run_1"), ThreadId::new("thread_1"));
+
+        let start_a = adapter.task_started("step_a", None, None);
+        let step_a_id = match &start_a {
+            AgUiEvent::StepStarted { step_id, .. } => step_id.clone(),
+            _ => panic!("Expected StepStarted"),
+        };
+
+        // Starting a new task without finishing the previous one overwrites step_id
+        let start_b = adapter.task_started("step_b", None, None);
+        let step_b_id = match &start_b {
+            AgUiEvent::StepStarted { step_id, .. } => step_id.clone(),
+            _ => panic!("Expected StepStarted"),
+        };
+
+        // task_finished should return step_b's id, not step_a's
+        let finished = adapter.task_finished(None).unwrap();
+        match finished {
+            AgUiEvent::StepFinished { step_id, .. } => {
+                assert_eq!(step_id, step_b_id);
+                assert_ne!(step_id, step_a_id);
+            }
+            _ => panic!("Expected StepFinished"),
         }
     }
 }

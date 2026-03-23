@@ -407,6 +407,7 @@ impl GenaiChatService {
                     pending_tool_calls: None,
                     requires_tool_execution: None,
                     tool_execution_results: vec![],
+                    tool_execution_started: None,
                 })
             }
             ChatInternalResult::PendingTools { tool_calls } => {
@@ -462,6 +463,7 @@ impl GenaiChatService {
                     }),
                     requires_tool_execution: Some(true),
                     tool_execution_results: vec![],
+                    tool_execution_started: None,
                 })
             }
         }
@@ -948,7 +950,9 @@ impl GenaiChatService {
         metadata_arc: Arc<HashMap<String, String>>,
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        use jobworkerp_runner::jobworkerp::runner::llm::ToolExecutionResult;
+        use jobworkerp_runner::jobworkerp::runner::llm::{
+            ToolExecutionResult, ToolExecutionStarted,
+        };
 
         let self_clone = self.clone();
         let args_clone = args.clone();
@@ -966,7 +970,7 @@ impl GenaiChatService {
 
             tracing::debug!("handle_tool_execution_stream: starting Phase 1 with {} tool requests", requests_clone.len());
 
-            // Phase 1: Execute tools, yield results, and cache for later
+            // Phase 1: Execute tools with 2-stage split (enqueue → yield started → await → yield result)
             for req in &requests_clone {
                 if ToolConverter::skip_selector_tool_execution(req, &mut updated_args.messages) {
                     continue;
@@ -977,9 +981,10 @@ impl GenaiChatService {
 
                 tracing::debug!("Executing tool: {} with args: {:?}", req.fn_name, arguments);
 
-                let result = self_clone
+                // Phase A: Enqueue and get job_id immediately
+                let enqueued = self_clone
                     .function_app
-                    .call_function_for_llm(
+                    .enqueue_function_for_llm(
                         metadata_arc_clone.clone(),
                         &req.fn_name,
                         arguments,
@@ -987,9 +992,49 @@ impl GenaiChatService {
                     )
                     .await;
 
-                let (tool_result, success) = match result {
-                    Ok(value) => (value.to_string(), true),
-                    Err(e) => (format!("Error: {}", e), false),
+                let (tool_result, success, job_id_opt) = match enqueued {
+                    Ok(enq) => {
+                        // Yield ToolExecutionStarted for streaming runners
+                        if enq.is_streaming {
+                            let started = LlmChatResult {
+                                tool_execution_started: Some(ToolExecutionStarted {
+                                    call_id: req.call_id.clone(),
+                                    fn_name: req.fn_name.clone(),
+                                    job_id: enq.job_id.value,
+                                }),
+                                ..Default::default()
+                            };
+                            let bytes = prost::Message::encode_to_vec(&started);
+                            if !bytes.is_empty() {
+                                yield ResultOutputItem {
+                                    item: Some(result_output_item::Item::Data(bytes)),
+                                };
+                            }
+                        }
+
+                        let job_id_val = enq.job_id.value;
+
+                        // Phase B: Await result
+                        let result = if let Some(val) = enq.result {
+                            Ok(val)
+                        } else if let Some(handle) = enq.result_handle {
+                            self_clone
+                                .function_app
+                                .await_function_result(handle, &enq.runner_name, None)
+                                .await
+                        } else {
+                            Err(anyhow::anyhow!("No result or result_handle available"))
+                        };
+
+                        match result {
+                            Ok(value) => (value.to_string(), true, Some(job_id_val)),
+                            Err(e) => (format!("Error: {}", e), false, Some(job_id_val)),
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to enqueue tool {}: {}", req.fn_name, e);
+                        (format!("Error: {}", e), false, None)
+                    }
                 };
 
                 tracing::debug!("Tool {} result: {}", req.fn_name, tool_result);
@@ -997,21 +1042,17 @@ impl GenaiChatService {
                 // Cache result for Phase 2
                 tool_results_cache.push((req.call_id.clone(), tool_result.clone(), success));
 
-                // Yield tool execution result
+                // Yield tool execution result with job_id
                 let llm_result = LlmChatResult {
-                    content: None,
-                    reasoning_content: None,
-                    done: false,
-                    usage: None,
-                    pending_tool_calls: None,
-                    requires_tool_execution: None,
                     tool_execution_results: vec![ToolExecutionResult {
                         call_id: req.call_id.clone(),
                         fn_name: req.fn_name.clone(),
                         result: tool_result.clone(),
                         error: if success { None } else { Some(tool_result.clone()) },
                         success,
+                        job_id: job_id_opt,
                     }],
+                    ..Default::default()
                 };
                 let bytes = prost::Message::encode_to_vec(&llm_result);
                 if !bytes.is_empty() {

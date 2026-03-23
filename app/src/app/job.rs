@@ -101,6 +101,25 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         Option<BoxStream<'static, ResultOutputItem>>,
     )>;
 
+    /// Enqueue a job with a temporary worker and return immediately without waiting for result.
+    /// Used by enqueue_function_for_llm to get job_id before job completion.
+    /// The caller is responsible for waiting for the result separately
+    /// (e.g., via listen_result_by_job_id).
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_job_with_temp_worker_no_wait<'a>(
+        &'a self,
+        meta: Arc<HashMap<String, String>>,
+        worker_data: WorkerData,
+        arg: Vec<u8>,
+        uniq_key: Option<String>,
+        run_after_time: i64,
+        priority: i32,
+        timeout: u64,
+        streaming_type: StreamingType,
+        with_random_name: bool,
+        using: Option<String>,
+    ) -> Result<JobId>;
+
     async fn update_job(&self, job: &Job) -> Result<()>;
 
     /// Complete job if the job finished

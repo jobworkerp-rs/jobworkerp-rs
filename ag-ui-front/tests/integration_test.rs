@@ -1218,6 +1218,181 @@ async fn test_workflow_stream_event_multiple_task_types() {
     }
 }
 
+/// Test: AG-UI event sequence invariants
+/// Verifies: RUN_FINISHED appears exactly once and is the last lifecycle event
+#[tokio::test]
+async fn test_event_sequence_invariants_run_finished_once() {
+    let event_store = InMemoryEventStore::new(1000, 3600);
+    let run_id = "invariant_test_run";
+
+    // Simulate a normal workflow event sequence
+    let events = [
+        AgUiEvent::run_started(run_id, "thread"),
+        AgUiEvent::step_started("step_1", "First step"),
+        AgUiEvent::text_message_start(MessageId::new("msg_1"), Role::Assistant),
+        AgUiEvent::text_message_content(MessageId::new("msg_1"), "Hello"),
+        AgUiEvent::text_message_end(MessageId::new("msg_1")),
+        AgUiEvent::step_finished("step_1", None),
+        AgUiEvent::step_started("step_2", "Second step"),
+        AgUiEvent::step_finished("step_2", None),
+        AgUiEvent::run_finished(run_id.to_string(), None),
+    ];
+
+    for (i, event) in events.iter().enumerate() {
+        event_store
+            .store_event(run_id, i as u64, event.clone())
+            .await;
+    }
+
+    let all_events = event_store.get_all_events(run_id).await;
+
+    // RUN_FINISHED must appear exactly once
+    let run_finished_count = all_events
+        .iter()
+        .filter(|(_, e)| matches!(e, AgUiEvent::RunFinished { .. }))
+        .count();
+    assert_eq!(
+        run_finished_count, 1,
+        "RUN_FINISHED must appear exactly once, got {}",
+        run_finished_count
+    );
+
+    // RUN_STARTED must appear exactly once
+    let run_started_count = all_events
+        .iter()
+        .filter(|(_, e)| matches!(e, AgUiEvent::RunStarted { .. }))
+        .count();
+    assert_eq!(
+        run_started_count, 1,
+        "RUN_STARTED must appear exactly once, got {}",
+        run_started_count
+    );
+
+    // RUN_FINISHED must be the last lifecycle event
+    let last_event = &all_events.last().unwrap().1;
+    assert!(
+        matches!(last_event, AgUiEvent::RunFinished { .. }),
+        "Last event should be RUN_FINISHED"
+    );
+
+    // RUN_ERROR must not appear alongside RUN_FINISHED
+    let run_error_count = all_events
+        .iter()
+        .filter(|(_, e)| matches!(e, AgUiEvent::RunError { .. }))
+        .count();
+    assert_eq!(
+        run_error_count, 0,
+        "RUN_ERROR and RUN_FINISHED are mutually exclusive"
+    );
+}
+
+/// Test: AG-UI event sequence invariants for error case
+/// Verifies: RUN_ERROR appears exactly once and RUN_FINISHED does not appear
+#[tokio::test]
+async fn test_event_sequence_invariants_run_error_exclusive() {
+    let event_store = InMemoryEventStore::new(1000, 3600);
+    let run_id = "error_invariant_run";
+
+    let events = [
+        AgUiEvent::run_started(run_id, "thread"),
+        AgUiEvent::step_started("step_1", "Failing step"),
+        AgUiEvent::step_finished("step_1", None),
+        AgUiEvent::RunError {
+            run_id: run_id.to_string(),
+            message: "workflow failed".to_string(),
+            code: Some("WORKFLOW_ERROR".to_string()),
+            timestamp: Some(AgUiEvent::now_timestamp()),
+            details: None,
+        },
+    ];
+
+    for (i, event) in events.iter().enumerate() {
+        event_store
+            .store_event(run_id, i as u64, event.clone())
+            .await;
+    }
+
+    let all_events = event_store.get_all_events(run_id).await;
+
+    // RUN_ERROR must appear exactly once
+    let run_error_count = all_events
+        .iter()
+        .filter(|(_, e)| matches!(e, AgUiEvent::RunError { .. }))
+        .count();
+    assert_eq!(run_error_count, 1);
+
+    // RUN_FINISHED must NOT appear when RUN_ERROR is present
+    let run_finished_count = all_events
+        .iter()
+        .filter(|(_, e)| matches!(e, AgUiEvent::RunFinished { .. }))
+        .count();
+    assert_eq!(
+        run_finished_count, 0,
+        "RUN_FINISHED must not appear when RUN_ERROR is present"
+    );
+}
+
+/// Test: STEP_FINISHED events must have matching STEP_STARTED
+/// Verifies: Every StepFinished has a prior StepStarted with the same step_id
+#[tokio::test]
+async fn test_event_sequence_step_matching() {
+    use ag_ui_front::events::WorkflowEventAdapter;
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+
+    let mut adapter = WorkflowEventAdapter::new(RunId::new("step_match_run"), ThreadId::new("t"));
+    let event_store = InMemoryEventStore::new(1000, 3600);
+    let run_id = "step_match_run";
+
+    let run_started = adapter.workflow_started("test", None);
+    event_store.store_event(run_id, 0, run_started).await;
+
+    // Step 1
+    let s1 = adapter.task_started("step_1", None, None);
+    event_store.store_event(run_id, 1, s1).await;
+    let f1 = adapter.task_finished(None).unwrap();
+    event_store.store_event(run_id, 2, f1).await;
+
+    // Step 2
+    let s2 = adapter.task_started("step_2", None, None);
+    event_store.store_event(run_id, 3, s2).await;
+    let f2 = adapter.task_finished(None).unwrap();
+    event_store.store_event(run_id, 4, f2).await;
+
+    let run_finished = adapter.workflow_completed(None);
+    event_store.store_event(run_id, 5, run_finished).await;
+
+    let all_events = event_store.get_all_events(run_id).await;
+
+    // Collect step IDs from StepStarted and StepFinished
+    let mut started_ids = std::collections::HashSet::new();
+    let mut finished_ids = std::collections::HashSet::new();
+
+    for (_, event) in &all_events {
+        match event {
+            AgUiEvent::StepStarted { step_id, .. } => {
+                started_ids.insert(step_id.clone());
+            }
+            AgUiEvent::StepFinished { step_id, .. } => {
+                finished_ids.insert(step_id.clone());
+            }
+            _ => {}
+        }
+    }
+
+    // Every finished step must have a matching started step
+    for fid in &finished_ids {
+        assert!(
+            started_ids.contains(fid),
+            "StepFinished with id {} has no matching StepStarted",
+            fid
+        );
+    }
+
+    // Same number of starts and finishes
+    assert_eq!(started_ids.len(), finished_ids.len());
+    assert_eq!(started_ids.len(), 2);
+}
+
 /// Test: Atomic resume_from_paused method
 /// Verifies: Both state change and HITL info clear happen atomically
 #[tokio::test]

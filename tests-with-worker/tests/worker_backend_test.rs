@@ -73,3 +73,348 @@ async fn test_worker_executes_command_via_function() -> Result<()> {
     worker_handle.shutdown().await;
     Ok(())
 }
+
+/// Test 2-stage enqueue + await flow with streaming COMMAND runner.
+/// Verifies: enqueue returns immediately with job_id (is_streaming=true, result=None),
+/// then await_function_result retrieves the completed result.
+#[tokio::test]
+async fn test_enqueue_and_await_function_result_streaming() -> Result<()> {
+    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+    let worker_handle = start_test_worker(app_module.clone()).await?;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let metadata = Arc::new(HashMap::new());
+    let arguments: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_value(serde_json::json!({
+            "command": "echo",
+            "args": ["hello_2stage_test"]
+        }))?;
+
+    // Phase A: enqueue — should return immediately with job_id
+    let enqueued = timeout(
+        Duration::from_secs(10),
+        app_module
+            .function_app
+            .enqueue_function_for_llm(metadata, "COMMAND", Some(arguments), 30),
+    )
+    .await??;
+
+    assert!(
+        enqueued.is_streaming,
+        "COMMAND runner should be streaming-capable"
+    );
+    assert!(
+        enqueued.result.is_none(),
+        "Streaming enqueue should return None result"
+    );
+    assert!(enqueued.job_id.value > 0, "Job ID should be assigned");
+
+    // Phase B: await result — worker processes the job
+    let result_handle = enqueued
+        .result_handle
+        .expect("Streaming enqueue should provide result_handle");
+    let result = timeout(
+        Duration::from_secs(30),
+        app_module
+            .function_app
+            .await_function_result(result_handle, &enqueued.runner_name, None),
+    )
+    .await??;
+
+    let output = result.to_string();
+    println!("2-stage result: {}", output);
+    // COMMAND runner returns CommandResult protobuf (exitCode, stdout, etc.)
+    // When decoded via decode_job_result_output, it becomes JSON with exitCode field
+    assert!(
+        result.get("exitCode").is_some() || output.contains("hello_2stage_test"),
+        "Output should contain exitCode or echo text, got: {}",
+        output
+    );
+
+    worker_handle.shutdown().await;
+    Ok(())
+}
+
+/// Test 2-stage enqueue with non-streaming CREATE_WORKFLOW runner.
+/// Verifies: enqueue waits for completion and returns result immediately
+/// (is_streaming=false, result=Some).
+#[tokio::test]
+async fn test_enqueue_function_non_streaming_with_worker() -> Result<()> {
+    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+    let worker_handle = start_test_worker(app_module.clone()).await?;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let metadata = Arc::new(HashMap::new());
+    let workflow_def = serde_json::json!({
+        "document": {
+            "dsl": "0.0.1",
+            "namespace": "enqueue-test",
+            "name": "enqueue-non-streaming-test",
+            "version": "1.0.0"
+        },
+        "input": {},
+        "do": [{
+            "step1": {
+                "run": {
+                    "runner": {
+                        "name": "COMMAND",
+                        "arguments": { "command": "echo", "args": ["test"] }
+                    }
+                }
+            }
+        }]
+    });
+
+    let arguments: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_value(serde_json::json!({
+            "arguments": workflow_def.to_string()
+        }))?;
+
+    let enqueued = timeout(
+        Duration::from_secs(30),
+        app_module.function_app.enqueue_function_for_llm(
+            metadata,
+            "CREATE_WORKFLOW",
+            Some(arguments),
+            30,
+        ),
+    )
+    .await??;
+
+    assert!(
+        !enqueued.is_streaming,
+        "CREATE_WORKFLOW should be non-streaming"
+    );
+    assert!(
+        enqueued.result.is_some(),
+        "Non-streaming runner should return immediate result"
+    );
+    assert!(enqueued.job_id.value > 0, "Job ID should be assigned");
+
+    let result = enqueued.result.unwrap();
+    assert!(
+        result.get("workerId").is_some(),
+        "CREATE_WORKFLOW result should contain workerId"
+    );
+
+    println!("Non-streaming enqueue result: {}", result);
+
+    worker_handle.shutdown().await;
+    Ok(())
+}
+
+/// Test that nested workflow progress (position changes) can be received
+/// in real-time via subscribe_result_stream while the workflow is running.
+/// Uses WORKFLOW___run with a 3-step inline workflow where each step sleeps briefly.
+#[tokio::test]
+async fn test_workflow_progress_realtime() -> Result<()> {
+    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+    let worker_handle = start_test_worker(app_module.clone()).await?;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // 3-step workflow: each step runs a short command with sleep
+    let workflow_def = serde_json::json!({
+        "document": {
+            "dsl": "0.0.1",
+            "namespace": "progress-test",
+            "name": "progress-realtime-test",
+            "version": "1.0.0"
+        },
+        "input": {},
+        "do": [
+            { "step_alpha": { "run": { "runner": { "name": "COMMAND", "arguments": { "command": "sleep", "args": ["0.3"] } } } } },
+            { "step_beta":  { "run": { "runner": { "name": "COMMAND", "arguments": { "command": "sleep", "args": ["0.3"] } } } } },
+            { "step_gamma": { "run": { "runner": { "name": "COMMAND", "arguments": { "command": "echo", "args": ["done"] } } } } }
+        ]
+    });
+
+    let metadata = Arc::new(HashMap::new());
+    let arguments: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_value(serde_json::json!({
+            "workflow_data": workflow_def.to_string(),
+            "input": "{}"
+        }))?;
+
+    // Enqueue WORKFLOW___run (streaming-capable)
+    let enqueued = timeout(
+        Duration::from_secs(10),
+        app_module.function_app.enqueue_function_for_llm(
+            metadata,
+            "WORKFLOW___run",
+            Some(arguments),
+            60,
+        ),
+    )
+    .await??;
+
+    assert!(
+        enqueued.is_streaming,
+        "WORKFLOW.run should be streaming-capable"
+    );
+    assert!(enqueued.result.is_none(), "Should return immediately");
+    println!("Workflow enqueued: job_id={}", enqueued.job_id.value);
+
+    // Use the pre-started result_handle to get the stream (avoids race condition
+    // where listen_result_by_job_id called after enqueue misses early events)
+    let result_handle = enqueued.result_handle.expect("Should have result_handle");
+    let (job_result, stream_opt) = timeout(Duration::from_secs(30), result_handle)
+        .await?
+        .map_err(|e| anyhow::anyhow!("Result listener task failed: {}", e))??;
+
+    let mut positions: Vec<String> = Vec::new();
+
+    if let Some(mut stream) = stream_opt {
+        use futures::StreamExt;
+        use prost::Message;
+        use proto::jobworkerp::data::result_output_item;
+
+        while let Ok(Some(item)) =
+            tokio::time::timeout(Duration::from_secs(30), stream.next()).await
+        {
+            match item.item {
+                Some(result_output_item::Item::Data(data)) => {
+                    // Try to decode as WorkflowResult
+                    if let Ok(wf_result) =
+                        jobworkerp_runner::jobworkerp::runner::WorkflowResult::decode(&data[..])
+                        && !wf_result.position.is_empty()
+                    {
+                        println!(
+                            "  Progress: position={}, status={:?}",
+                            wf_result.position, wf_result.status
+                        );
+                        positions.push(wf_result.position);
+                    }
+                }
+                Some(result_output_item::Item::FinalCollected(_)) => {
+                    println!("  FinalCollected received");
+                    break;
+                }
+                Some(result_output_item::Item::End(_)) => {
+                    println!("  End received");
+                    break;
+                }
+                None => {}
+            }
+        }
+    } else {
+        println!("No stream available from result_handle");
+    }
+
+    // Verify we received multiple position changes (at least 2 steps)
+    positions.dedup();
+    println!("Positions received (deduped): {:?}", positions);
+    assert!(
+        positions.len() >= 2,
+        "Should receive at least 2 position changes for 3-step workflow, got {}",
+        positions.len()
+    );
+
+    // Verify positions contain step names
+    let has_step_names = positions.iter().any(|p| p.contains("step_"));
+    assert!(
+        has_step_names,
+        "Positions should contain step names: {:?}",
+        positions
+    );
+
+    // Verify final result is available
+    assert!(job_result.data.is_some(), "Job result should have data");
+    println!(
+        "Final job result received: job_id={:?}",
+        job_result.data.as_ref().and_then(|d| d.job_id)
+    );
+
+    worker_handle.shutdown().await;
+    Ok(())
+}
+
+/// Test that short-lived tool execution (milliseconds) correctly returns results
+/// even when progress subscription misses all intermediate events.
+#[tokio::test]
+async fn test_short_tool_execution_skips_progress() -> Result<()> {
+    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+    let worker_handle = start_test_worker(app_module.clone()).await?;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let metadata = Arc::new(HashMap::new());
+    let arguments: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_value(serde_json::json!({
+            "command": "echo",
+            "args": ["fast_execution"]
+        }))?;
+
+    // Enqueue fast COMMAND
+    let enqueued = timeout(
+        Duration::from_secs(10),
+        app_module
+            .function_app
+            .enqueue_function_for_llm(metadata, "COMMAND", Some(arguments), 30),
+    )
+    .await??;
+
+    assert!(enqueued.is_streaming);
+    assert!(enqueued.result.is_none());
+
+    // Try to subscribe to progress — expect to get nothing or very little
+    // because the command completes in milliseconds
+    let progress_result = tokio::time::timeout(
+        Duration::from_millis(200),
+        app_module
+            .job_result_app
+            .listen_result_by_job_id(&enqueued.job_id, Some(200), true),
+    )
+    .await;
+
+    match progress_result {
+        Ok(Ok((_result, stream_opt))) => {
+            // Stream may or may not be available for fast execution
+            println!(
+                "Short execution: stream available = {}",
+                stream_opt.is_some()
+            );
+        }
+        Ok(Err(e)) => {
+            println!(
+                "Short execution: listen error (expected for fast jobs): {}",
+                e
+            );
+        }
+        Err(_) => {
+            println!("Short execution: listen timed out (expected for fast jobs)");
+        }
+    }
+
+    // The key assertion: final result is always available regardless of progress
+    let result_handle = enqueued.result_handle.expect("Should have result_handle");
+    let result = timeout(
+        Duration::from_secs(30),
+        app_module
+            .function_app
+            .await_function_result(result_handle, &enqueued.runner_name, None),
+    )
+    .await??;
+
+    let output = result.to_string();
+    println!("Short execution result: {}", output);
+    // COMMAND runner returns CommandResult protobuf with exitCode
+    assert!(
+        result.get("exitCode").is_some() || output.contains("fast_execution"),
+        "Should get valid result regardless of progress availability, got: {}",
+        output
+    );
+
+    worker_handle.shutdown().await;
+    Ok(())
+}

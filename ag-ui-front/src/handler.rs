@@ -8,12 +8,13 @@ use crate::events::{
     AgUiEvent, EventEncoder, ExtractedToolResult, InterruptInfo, InterruptPayload, PendingToolCall,
     SharedWorkflowEventAdapter, extract_text_from_completed_output,
     extract_text_from_llm_chat_result, extract_tool_calls_from_llm_result,
-    extract_tool_execution_results, shared_adapter, tool_calls_to_ag_ui_events,
+    extract_tool_execution_results, extract_tool_execution_started, shared_adapter,
+    tool_calls_to_ag_ui_events,
 };
 use crate::session::{
     EventStore, HitlWaitingInfo, PendingToolCallInfo, Session, SessionManager, SessionState,
 };
-use crate::types::ids::MessageId;
+use crate::types::ids::{MessageId, StepId};
 use crate::types::input::ResumePayload;
 use crate::types::{RunAgentInput, RunId, ThreadId, WorkflowState, WorkflowStatus};
 use app::module::AppModule;
@@ -34,6 +35,19 @@ use tokio::sync::RwLock;
 /// Starts from a high value (MSB set) to distinguish from normal event IDs.
 /// This ensures unique, non-zero fallback IDs even when multiple encoding failures occur.
 static FALLBACK_EVENT_ID_COUNTER: AtomicU64 = AtomicU64::new(0x8000_0000_0000_0000);
+
+/// Timeout for nested workflow progress subscriptions (milliseconds).
+// TODO: Make configurable or derive from job timeout
+const NESTED_WF_PROGRESS_TIMEOUT_MS: u64 = 300_000; // 5 min
+
+/// Timeout for draining nested events and joining spawned tasks after the main loop ends.
+const NESTED_DRAIN_TIMEOUT_SECS: u64 = 5;
+
+/// Maximum number of concurrent nested workflow progress subscriptions.
+const MAX_NESTED_SUBSCRIPTIONS: usize = 32;
+
+/// Channel buffer size for nested workflow progress events.
+const NESTED_EVENT_CHANNEL_SIZE: usize = 64;
 
 /// Registry of active workflow executors for cancellation support.
 type ExecutorRegistry = Arc<RwLock<HashMap<String, Arc<WorkflowExecutor>>>>;
@@ -1058,6 +1072,9 @@ where
         }
 
         // 11. Create event stream (emit_run_started: false since RUN_STARTED was already emitted)
+        // TOOL_CALL_END + TOOL_CALL_RESULT are NOT emitted here because tool execution
+        // hasn't happened yet. They will be emitted by StreamingJobCompleted's fallback
+        // logic when the auto-executed tool results arrive via pending_tool_results.
         let executor_registry = self.executor_registry.clone();
         let run_id_for_cleanup = run_id.to_string();
         let stream = self.create_event_stream(
@@ -1475,6 +1492,7 @@ where
         let event_store = self.event_store.clone();
         let encoder = self.encoder.clone();
         let session_manager = self.session_manager.clone();
+        let app_module = self.app_module.clone();
 
         stream! {
             // Emit RUN_STARTED (skip for HITL resume to avoid duplicate)
@@ -1511,10 +1529,28 @@ where
             // Used to decide whether to emit compensating TEXT_MESSAGE_CONTENT at StreamingJobCompleted
             let mut text_content_sent = std::collections::HashSet::<i64>::new();
 
-            // Main event loop - process workflow events sequentially
-            // StreamingData events are now yielded directly from workflow_stream
-            while let Some(result) = workflow_stream.next().await {
-                match result {
+            // Channel for nested workflow progress events (from parallel subscriptions)
+            let (nested_event_tx, mut nested_event_rx) =
+                tokio::sync::mpsc::channel::<(u64, AgUiEvent)>(NESTED_EVENT_CHANNEL_SIZE);
+            // Track spawned nested workflow subscription tasks for cleanup
+            let mut nested_task_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+            // Main event loop - process workflow events and nested progress events
+            // Uses tokio::select! to merge both event sources
+            loop {
+                let event_result = tokio::select! {
+                    result = workflow_stream.next() => {
+                        match result {
+                            Some(r) => r,
+                            None => break, // workflow stream ended
+                        }
+                    }
+                    Some(nested_event) = nested_event_rx.recv() => {
+                        yield nested_event;
+                        continue;
+                    }
+                };
+                match event_result {
                     Ok(event) => {
                         // Handle StreamingJobStarted: emit TEXT_MESSAGE_START
                         if let WorkflowStreamEvent::StreamingJobStarted { event: ev } = &event {
@@ -1577,6 +1613,129 @@ where
                                 for (call_id, extracted) in tool_results {
                                     if !sent_tool_result_ids.contains(call_id.as_str()) {
                                         pending_tool_results.entry(call_id).or_insert(extracted);
+                                    }
+                                }
+
+                                // Detect ToolExecutionStarted and spawn parallel subscription
+                                // for nested workflow progress (STEP_STARTED/STEP_FINISHED)
+                                if let Some(started) = extract_tool_execution_started(&ev.data)
+                                    && started.job_id > 0
+                                {
+                                    if nested_task_handles.len() >= MAX_NESTED_SUBSCRIPTIONS {
+                                        tracing::warn!(
+                                            limit = MAX_NESTED_SUBSCRIPTIONS,
+                                            tool_job_id = started.job_id,
+                                            "Nested workflow subscription limit reached, skipping"
+                                        );
+                                    } else {
+                                        let nested_job_id = proto::jobworkerp::data::JobId { value: started.job_id };
+                                        let job_result_app = app_module.job_result_app.clone();
+                                        let nested_tx = nested_event_tx.clone();
+                                        let nested_encoder = encoder.clone();
+                                        let nested_event_store = event_store.clone();
+                                        let nested_run_id = run_id.clone();
+                                        let timeout_ms = NESTED_WF_PROGRESS_TIMEOUT_MS;
+
+                                        // Capture parent step ID for nested step hierarchy
+                                        let parent_step_id = {
+                                            let adapter_lock = adapter.lock().await;
+                                            adapter_lock.current_step_id().map(|s| s.to_string())
+                                        };
+
+                                        tracing::info!(
+                                            tool_job_id = started.job_id,
+                                            fn_name = %started.fn_name,
+                                            "ToolExecutionStarted: spawning nested workflow progress subscription"
+                                        );
+
+                                        // Use local step_id tracking instead of shared adapter
+                                        // to avoid current_step_id contention with the main loop.
+                                        let handle = tokio::spawn(async move {
+                                            use prost::Message as _;
+                                            let stream_opt = crate::pubsub::subscribe_result_stream_for_job(
+                                                &job_result_app,
+                                                &nested_job_id,
+                                                timeout_ms,
+                                            ).await;
+
+                                            if let Some(mut stream) = stream_opt {
+                                                let mut prev_pos: Option<String> = None;
+                                                let mut prev_step_id: Option<StepId> = None;
+                                                while let Some(item) = stream.next().await {
+                                                    match &item.item {
+                                                        Some(proto::jobworkerp::data::result_output_item::Item::End(_))
+                                                        | Some(proto::jobworkerp::data::result_output_item::Item::FinalCollected(_)) => {
+                                                            break;
+                                                        }
+                                                        Some(proto::jobworkerp::data::result_output_item::Item::Data(data)) => {
+                                                            if let Ok(wf_result) = jobworkerp_runner::jobworkerp::runner::WorkflowResult::decode(&data[..]) {
+                                                            let current_pos = wf_result.position.clone();
+                                                            if prev_pos.as_ref() != Some(&current_pos) && !current_pos.is_empty() {
+                                                                // Position changed: emit STEP_FINISHED for previous, STEP_STARTED for current
+                                                                if let Some(finished_id) = prev_step_id.take() {
+                                                                    let finished_event = AgUiEvent::StepFinished {
+                                                                        step_id: finished_id.to_string(),
+                                                                        timestamp: Some(AgUiEvent::now_timestamp()),
+                                                                        result: None,
+                                                                    };
+                                                                    let eid = Self::encode_event_with_logging(&nested_encoder, &finished_event);
+                                                                    nested_event_store.store_event(&nested_run_id, eid, finished_event.clone()).await;
+                                                                    if nested_tx.send((eid, finished_event)).await.is_err() {
+                                                                        tracing::debug!("Nested event receiver dropped, stopping subscription");
+                                                                        break;
+                                                                    }
+                                                                }
+
+                                                                // Extract step name from position (last segment)
+                                                                let step_name = current_pos.rsplit('/').next().unwrap_or(&current_pos);
+                                                                let step_id = StepId::random();
+                                                                let started_event = AgUiEvent::StepStarted {
+                                                                    step_id: step_id.to_string(),
+                                                                    step_name: Some(step_name.to_string()),
+                                                                    parent_step_id: parent_step_id.clone(),
+                                                                    timestamp: Some(AgUiEvent::now_timestamp()),
+                                                                    metadata: None,
+                                                                };
+                                                                let eid = Self::encode_event_with_logging(&nested_encoder, &started_event);
+                                                                nested_event_store.store_event(&nested_run_id, eid, started_event.clone()).await;
+                                                                if nested_tx.send((eid, started_event)).await.is_err() {
+                                                                    tracing::debug!("Nested event receiver dropped, stopping subscription");
+                                                                    break;
+                                                                }
+                                                                prev_step_id = Some(step_id);
+
+                                                                prev_pos = Some(current_pos);
+                                                            }
+                                                            } else {
+                                                                tracing::trace!(
+                                                                    data_len = data.len(),
+                                                                    "Failed to decode WorkflowResult from nested streaming data, skipping"
+                                                                );
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+
+                                                // Emit final STEP_FINISHED for the last step
+                                                if let Some(finished_id) = prev_step_id.take() {
+                                                    let finished_event = AgUiEvent::StepFinished {
+                                                        step_id: finished_id.to_string(),
+                                                        timestamp: Some(AgUiEvent::now_timestamp()),
+                                                        result: None,
+                                                    };
+                                                    let eid = Self::encode_event_with_logging(&nested_encoder, &finished_event);
+                                                    nested_event_store.store_event(&nested_run_id, eid, finished_event.clone()).await;
+                                                    let _ = nested_tx.send((eid, finished_event)).await;
+                                                }
+                                            } else {
+                                                tracing::warn!(
+                                                    job_id = nested_job_id.value,
+                                                    "subscribe_result_stream_for_job returned None: nested job may have already completed"
+                                                );
+                                            }
+                                        });
+                                        nested_task_handles.push(handle);
                                     }
                                 }
                             } else {
@@ -1658,7 +1817,33 @@ where
                                             }
                                         }
                                     }
+
                                 }
+
+                            // Flush any buffered tool results that haven't been emitted yet.
+                            // This handles two cases:
+                            // 1. auto_calling with requires_execution=true (collect_stream preserves
+                            //    the flag from the initial LLM response even after server-side execution)
+                            // 2. HITL resume: tools were executed during re-run, results arrived via
+                            //    StreamingData, but the final StreamingJobCompleted has no tool_calls
+                            //    (it's the LLM's text response after seeing the tool results)
+                            for (call_id, extracted) in pending_tool_results.drain() {
+                                if !sent_tool_result_ids.contains(call_id.as_str()) {
+                                    sent_tool_result_ids.insert(call_id.clone());
+                                    let end_event = AgUiEvent::tool_call_end(call_id.clone());
+                                    let end_event_id = Self::encode_event_with_logging(&encoder, &end_event);
+                                    event_store.store_event(&run_id, end_event_id, end_event.clone()).await;
+                                    yield (end_event_id, end_event);
+
+                                    let result_ev = AgUiEvent::tool_call_result(
+                                        call_id,
+                                        extracted.result,
+                                    );
+                                    let result_ev_id = Self::encode_event_with_logging(&encoder, &result_ev);
+                                    event_store.store_event(&run_id, result_ev_id, result_ev.clone()).await;
+                                    yield (result_ev_id, result_ev);
+                                }
+                            }
 
                             // Compensate for missing text content when StreamingData didn't deliver it
                             // (e.g., Phase 3 continuation stream started after job completion was published)
@@ -1987,7 +2172,13 @@ where
                         }
 
                         // Emit RUN_ERROR event (mutually exclusive with RUN_FINISHED)
-                        has_error = true;
+                        // Set flag before break so post-loop code skips STEP_FINISHED/RUN_FINISHED
+                        // NOTE: `stream!` macro's control flow analysis cannot see that `has_error`
+                        // is read after the loop, so it warns "unused_assignments".
+                        // The block `{}` is Rust syntax to apply `#[allow]` to a statement.
+                        // TODO: Remove workaround when stream! macro improves
+                        #[allow(unused_assignments)]
+                        { has_error = true; }
                         let adapter_lock = adapter.lock().await;
                         let event = adapter_lock.workflow_error(
                             format!("{:?}", e),
@@ -2005,7 +2196,25 @@ where
                         break;
                     }
                 }
+            } // end of main event loop
+
+            // Drop the sender so spawned tasks' channels close when they finish,
+            // allowing the drain loop to terminate.
+            drop(nested_event_tx);
+
+            // Drain remaining nested events with timeout
+            // (spawned tasks may still be sending final STEP_FINISHED events)
+            let drain_deadline = tokio::time::Instant::now()
+                + tokio::time::Duration::from_secs(NESTED_DRAIN_TIMEOUT_SECS);
+            while let Ok(Some(nested_event)) = tokio::time::timeout_at(drain_deadline, nested_event_rx.recv()).await {
+                yield nested_event;
             }
+
+            // Wait for spawned nested tasks to finish (best-effort)
+            let _ = tokio::time::timeout(
+                tokio::time::Duration::from_secs(NESTED_DRAIN_TIMEOUT_SECS),
+                futures::future::join_all(nested_task_handles),
+            ).await;
 
             // Flush any remaining TEXT_MESSAGE_END for streams that didn't complete normally
             // (safety net for edge cases where StreamingJobCompleted wasn't received)

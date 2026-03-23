@@ -145,8 +145,8 @@ Client                         AG-UI Server                    LLM
    |                              |                             |
    |-- POST /ag-ui/message ------>|                             |
    |   (toolCallResults)          |                             |
-   |<-- TOOL_CALL_RESULT ---------|                             |
    |<-- TOOL_CALL_END ------------|                             |
+   |<-- TOOL_CALL_RESULT ---------|                             |
    |<-- RUN_FINISHED -------------|                             |
    |                              |                             |
    |   [クライアントがツール結果を|                             |
