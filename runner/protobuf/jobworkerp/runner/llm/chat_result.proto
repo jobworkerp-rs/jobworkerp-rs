@@ -103,6 +103,7 @@ message ToolExecutionStarted {
   string call_id = 1;              // Corresponding tool call ID
   string fn_name = 2;              // Function name being executed
   int64 job_id = 3;                // Job ID for subscribing to streaming progress
+  string fn_arguments = 4;         // JSON string of arguments (for AG-UI TOOL_CALL_ARGS)
 }
 
 // Tool execution result (for streaming mode)

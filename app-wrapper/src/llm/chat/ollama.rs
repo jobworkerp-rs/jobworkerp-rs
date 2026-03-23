@@ -1129,6 +1129,7 @@ impl OllamaChatService {
                                     call_id: req.call_id.clone(),
                                     fn_name: req.fn_name.clone(),
                                     job_id: enq.job_id.value,
+                                    fn_arguments: req.fn_arguments.clone(),
                                 }),
                                 ..Default::default()
                             };
