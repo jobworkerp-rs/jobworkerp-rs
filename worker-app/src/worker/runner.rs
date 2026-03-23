@@ -314,50 +314,6 @@ pub trait JobRunner:
         }
     }
 
-    /// Create result for cancelled job
-    fn create_cancelled_job_result(&self, job: Job, worker_data: &WorkerData) -> JobResult {
-        use command_utils::util::datetime;
-        use std::collections::HashMap;
-
-        let data = job.data.unwrap_or_default();
-        let metadata = HashMap::new();
-
-        #[allow(deprecated)]
-        let job_result_data = JobResultData {
-            job_id: job.id,
-            worker_id: data.worker_id,
-            worker_name: worker_data.name.clone(),
-            args: data.args,
-            uniq_key: data.uniq_key,
-            status: ResultStatus::Cancelled as i32,
-            output: Some(ResultOutput {
-                items: b"Job was cancelled before execution".to_vec(),
-            }),
-            retried: data.retried,
-            max_retry: 0, // No retry on cancellation
-            priority: data.priority,
-            timeout: data.timeout,
-            streaming_type: data.streaming_type,
-            enqueue_time: data.enqueue_time,
-            run_after_time: data.run_after_time,
-            start_time: datetime::now_millis(),
-            end_time: datetime::now_millis(),
-            response_type: worker_data.response_type,
-            store_success: false,
-            store_failure: true,
-            using: data.using,
-            broadcast_results: worker_data.broadcast_results,
-        };
-
-        JobResult {
-            id: Some(JobResultId {
-                value: self.id_generator().generate_id().unwrap_or_default(),
-            }),
-            data: Some(job_result_data),
-            metadata,
-        }
-    }
-
     async fn run_job_inner(
         &'static self,
         worker_data: &WorkerData,
@@ -395,6 +351,9 @@ pub trait JobRunner:
         let streaming_type =
             StreamingType::try_from(data.streaming_type).unwrap_or(StreamingType::None);
 
+        // Resolve once, reuse for status check and result construction
+        let resolved = app::app::job::resolve_job_params(worker_data, data.overrides.as_ref());
+
         match streaming_type {
             StreamingType::Response => {
                 // Response streaming: run_stream and return stream to client
@@ -410,7 +369,7 @@ pub trait JobRunner:
                     &name,
                     end - start,
                 );
-                let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
+                let (status, mes) = self.job_result_status(&resolved.retry_policy, data, res);
 
                 // For streaming jobs, DO NOT cleanup cancellation monitoring immediately
                 // The process continues running and needs to receive cancellation signals
@@ -421,9 +380,10 @@ pub trait JobRunner:
                 );
 
                 (
-                    self.job_result_data(
+                    self.job_result_data_from_resolved(
                         job,
                         worker_data,
+                        &resolved,
                         status,
                         mes.result_output(),
                         start,
@@ -448,7 +408,7 @@ pub trait JobRunner:
                     &name,
                     end - start,
                 );
-                let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
+                let (status, mes) = self.job_result_status(&resolved.retry_policy, data, res);
 
                 // For internal streaming jobs, keep cancellation monitoring active
                 // The stream continues and needs to receive cancellation signals
@@ -458,9 +418,10 @@ pub trait JobRunner:
                 );
 
                 (
-                    self.job_result_data(
+                    self.job_result_data_from_resolved(
                         job,
                         worker_data,
+                        &resolved,
                         status,
                         mes.result_output(),
                         start,
@@ -480,16 +441,17 @@ pub trait JobRunner:
                 let end = datetime::now_millis();
                 tracing::debug!("end runner: {}, duration:{}(ms)", &name, end - start);
 
-                let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
+                let (status, mes) = self.job_result_status(&resolved.retry_policy, data, res);
 
                 // Cleanup cancellation monitoring
                 self.cleanup_cancellation_monitoring_if_supported(job_id, runner_impl)
                     .await;
 
                 (
-                    self.job_result_data(
+                    self.job_result_data_from_resolved(
                         job,
                         worker_data,
+                        &resolved,
                         status,
                         mes.result_output(),
                         start,
@@ -603,17 +565,74 @@ pub trait JobRunner:
         metadata: Option<HashMap<String, String>>,
     ) -> JobResult {
         let dat = job.data.unwrap_or_default(); // XXX unwrap or default
+        let resolved = app::app::job::resolve_job_params(worker, dat.overrides.as_ref());
+        Self::build_job_result(
+            self.id_generator(),
+            job.id,
+            dat,
+            worker,
+            &resolved,
+            st,
+            res,
+            start_msec,
+            end_msec,
+            metadata,
+        )
+    }
+
+    /// Build JobResult from pre-resolved params (avoids redundant resolve_job_params calls).
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn job_result_data_from_resolved(
+        &self,
+        job: Job,
+        worker: &WorkerData,
+        resolved: &app::app::job::ResolvedJobParams,
+        st: ResultStatus,
+        res: Option<ResultOutput>,
+        start_msec: i64,
+        end_msec: i64,
+        metadata: Option<HashMap<String, String>>,
+    ) -> JobResult {
+        let dat = job.data.unwrap_or_default(); // XXX unwrap or default
+        Self::build_job_result(
+            self.id_generator(),
+            job.id,
+            dat,
+            worker,
+            resolved,
+            st,
+            res,
+            start_msec,
+            end_msec,
+            metadata,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_job_result(
+        id_gen: &infra::infra::IdGeneratorWrapper,
+        job_id: Option<proto::jobworkerp::data::JobId>,
+        dat: proto::jobworkerp::data::JobData,
+        worker: &WorkerData,
+        resolved: &app::app::job::ResolvedJobParams,
+        st: ResultStatus,
+        res: Option<ResultOutput>,
+        start_msec: i64,
+        end_msec: i64,
+        metadata: Option<HashMap<String, String>>,
+    ) -> JobResult {
         #[allow(deprecated)]
         let data = JobResultData {
-            job_id: job.id,
+            job_id,
             worker_id: dat.worker_id,
             worker_name: worker.name.clone(),
             args: dat.args,
             uniq_key: dat.uniq_key,
             status: st as i32,
-            output: res, // should be None if empty ?
+            output: res,
             retried: dat.retried,
-            max_retry: worker
+            max_retry: resolved
                 .retry_policy
                 .as_ref()
                 .unwrap_or(&Self::DEFAULT_RETRY_POLICY)
@@ -625,18 +644,20 @@ pub trait JobRunner:
             run_after_time: dat.run_after_time,
             start_time: start_msec,
             end_time: end_msec,
-            response_type: worker.response_type,
-            store_success: worker.store_success,
-            store_failure: worker.store_failure,
+            response_type: resolved.response_type,
+            store_success: resolved.store_success,
+            store_failure: resolved.store_failure,
             using: dat.using,
-            broadcast_results: worker.broadcast_results,
+            // Propagated to result_processor::create_job_result_if_necessary
+            broadcast_results: resolved.broadcast_results,
+            resolved_retry_policy: resolved.retry_policy,
         };
         JobResult {
             id: Some(JobResultId {
-                value: self.id_generator().generate_id().unwrap_or_default(), // XXX unwrap or default
+                value: id_gen.generate_id().unwrap_or_default(),
             }),
             data: Some(data),
-            metadata: metadata.unwrap_or_default(), // XXX unwrap or default
+            metadata: metadata.unwrap_or_default(),
         }
     }
 }
@@ -751,6 +772,7 @@ pub(crate) mod tests {
                     grabbed_until_time: None,
                     streaming_type: 0,
                     using: None,
+                    overrides: None,
                 }),
                 ..Default::default()
             };
@@ -868,6 +890,7 @@ pub(crate) mod tests {
                     grabbed_until_time: None,
                     streaming_type: StreamingType::Response as i32, // Response streaming
                     using: None,
+                    overrides: None,
                 }),
                 ..Default::default()
             };
@@ -947,6 +970,7 @@ pub(crate) mod tests {
                     grabbed_until_time: None,
                     streaming_type: StreamingType::Internal as i32, // Internal streaming
                     using: None,
+                    overrides: None,
                 }),
                 ..Default::default()
             };
@@ -1056,6 +1080,7 @@ pub(crate) mod tests {
                     grabbed_until_time: None,
                     streaming_type: StreamingType::None as i32, // Non-streaming
                     using: None,
+                    overrides: None,
                 }),
                 ..Default::default()
             };

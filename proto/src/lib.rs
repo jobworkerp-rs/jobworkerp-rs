@@ -234,8 +234,17 @@ pub trait ProtobufHelper {
     }
 }
 
-/// Extension trait for RetryPolicy to calculate total timeout with retries
+/// Extension trait for RetryPolicy to calculate retry intervals and total timeout
 pub trait RetryPolicyExt {
+    /// Calculate the next retry interval for a given retry attempt.
+    ///
+    /// Returns `None` for `RetryType::None`.
+    /// Applies `max_interval` clamp when `max_interval > 0`.
+    ///
+    /// # Arguments
+    /// * `retry_count` - The retry attempt number (0-based: 0 means first retry)
+    fn calculate_next_interval(&self, retry_count: u32) -> Option<u32>;
+
     /// Calculate total wait timeout including all retries and retry intervals
     ///
     /// This calculates the maximum time needed to wait for a job to complete,
@@ -250,9 +259,26 @@ pub trait RetryPolicyExt {
 }
 
 impl RetryPolicyExt for jobworkerp::data::RetryPolicy {
-    fn calculate_total_timeout_ms(&self, job_timeout_ms: u64) -> u64 {
+    fn calculate_next_interval(&self, retry_count: u32) -> Option<u32> {
         use jobworkerp::data::RetryType;
 
+        let retry_type = RetryType::try_from(self.r#type).unwrap_or(RetryType::None);
+        let raw = match retry_type {
+            RetryType::None => return None,
+            RetryType::Constant => self.interval,
+            RetryType::Linear => self.interval * (retry_count + 1),
+            RetryType::Exponential => {
+                (self.interval as f32 * self.basis.powf(retry_count as f32)).round() as u32
+            }
+        };
+        Some(if self.max_interval > 0 {
+            raw.min(self.max_interval)
+        } else {
+            raw
+        })
+    }
+
+    fn calculate_total_timeout_ms(&self, job_timeout_ms: u64) -> u64 {
         let retry_count = self.max_retry as u64;
         if retry_count == 0 {
             return job_timeout_ms;
@@ -261,33 +287,10 @@ impl RetryPolicyExt for jobworkerp::data::RetryPolicy {
         // Total execution time: job_timeout × (retry_count + 1)
         let total_execution_time = job_timeout_ms * (retry_count + 1);
 
-        // Calculate sum of all retry intervals
-        let retry_type = RetryType::try_from(self.r#type).unwrap_or(RetryType::None);
-        let total_interval: u64 = match retry_type {
-            RetryType::None => 0,
-            RetryType::Constant => {
-                // interval × retry_count
-                self.interval as u64 * retry_count
-            }
-            RetryType::Linear => {
-                // interval×1 + interval×2 + ... + interval×n = interval × n(n+1)/2
-                let sum = retry_count * (retry_count + 1) / 2;
-                self.interval as u64 * sum
-            }
-            RetryType::Exponential => {
-                // interval×basis^0 + interval×basis^1 + ... + interval×basis^(n-1)
-                // = interval × (basis^n - 1) / (basis - 1)
-                let mut sum: u64 = 0;
-                for i in 0..retry_count {
-                    let interval =
-                        (self.interval as f32 * self.basis.powf(i as f32)).round() as u64;
-                    // Apply max_interval cap
-                    let capped_interval = interval.min(self.max_interval as u64);
-                    sum += capped_interval;
-                }
-                sum
-            }
-        };
+        // Sum of all retry intervals
+        let total_interval: u64 = (0..retry_count)
+            .filter_map(|i| self.calculate_next_interval(i as u32).map(|v| v as u64))
+            .sum();
 
         total_execution_time + total_interval
     }

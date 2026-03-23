@@ -72,6 +72,7 @@ mod rdb_chan_cancellation_tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
 
@@ -303,6 +304,7 @@ mod rdb_chan_cancellation_tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
 
@@ -644,6 +646,7 @@ mod rdb_chan_cancellation_tests {
                 worker_name: "test_worker".to_string(),
                 using: None,
                 broadcast_results: false,
+                resolved_retry_policy: None,
             };
 
             // Call complete_job() (which should call cleanup_job internally)

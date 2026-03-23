@@ -172,3 +172,71 @@ fn test_calculate_direct_response_timeout_zero_means_unlimited() {
     let total_with_policy = calculate_direct_response_timeout_ms(job_timeout, Some(&policy));
     assert_eq!(total_with_policy, None);
 }
+
+#[test]
+fn test_calculate_next_interval_none_type() {
+    let policy = RetryPolicy {
+        r#type: RetryType::None as i32,
+        interval: 1000,
+        max_interval: 0,
+        max_retry: 3,
+        basis: 2.0,
+    };
+    assert_eq!(policy.calculate_next_interval(0), None);
+}
+
+#[test]
+fn test_calculate_next_interval_constant() {
+    let policy = RetryPolicy {
+        r#type: RetryType::Constant as i32,
+        interval: 1000,
+        max_interval: 0,
+        max_retry: 3,
+        basis: 2.0,
+    };
+    assert_eq!(policy.calculate_next_interval(0), Some(1000));
+    assert_eq!(policy.calculate_next_interval(2), Some(1000));
+}
+
+#[test]
+fn test_calculate_next_interval_linear() {
+    let policy = RetryPolicy {
+        r#type: RetryType::Linear as i32,
+        interval: 1000,
+        max_interval: 0,
+        max_retry: 5,
+        basis: 2.0,
+    };
+    assert_eq!(policy.calculate_next_interval(0), Some(1000));
+    assert_eq!(policy.calculate_next_interval(2), Some(3000));
+}
+
+#[test]
+fn test_calculate_next_interval_exponential() {
+    let policy = RetryPolicy {
+        r#type: RetryType::Exponential as i32,
+        interval: 1000,
+        max_interval: 0,
+        max_retry: 10,
+        basis: 2.0,
+    };
+    // 1000 * 2^0 = 1000
+    assert_eq!(policy.calculate_next_interval(0), Some(1000));
+    // 1000 * 2^3 = 8000
+    assert_eq!(policy.calculate_next_interval(3), Some(8000));
+}
+
+#[test]
+fn test_calculate_next_interval_exponential_with_max_interval() {
+    let policy = RetryPolicy {
+        r#type: RetryType::Exponential as i32,
+        interval: 1000,
+        max_interval: 10000,
+        max_retry: 10,
+        basis: 2.0,
+    };
+    // 1000 * 2^5 = 32000, clamped to 10000
+    assert_eq!(policy.calculate_next_interval(5), Some(10000));
+    // 1000 * 2^2 = 4000, no clamp
+    assert_eq!(policy.calculate_next_interval(2), Some(4000));
+}

@@ -865,6 +865,8 @@ pub trait FunctionApp:
             .as_ref()
             .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
         let supports_streaming = check_method_supports_streaming(rdata, tool_name_opt.as_deref());
+        // Internal: results streamed via server-side channel, not exposed to client.
+        // None: non-streaming runners return results in a single response.
         let streaming_type = if supports_streaming {
             StreamingType::Internal
         } else {
@@ -904,9 +906,12 @@ pub trait FunctionApp:
                     .await
             });
 
+            // Use overrides to set NoResult response_type so enqueue returns immediately
+            let streaming_overrides = streaming_no_wait_overrides();
+
             let enqueue_result = self
                 .job_app()
-                .enqueue_job_with_temp_worker_no_wait(
+                .enqueue_job_with_temp_worker(
                     meta,
                     worker_data,
                     job_args,
@@ -918,6 +923,7 @@ pub trait FunctionApp:
                     streaming_type,
                     true,
                     tool_name_opt,
+                    streaming_overrides,
                 )
                 .await;
             if let Err(e) = enqueue_result {
@@ -1011,23 +1017,28 @@ pub trait FunctionApp:
                     JobWorkerError::WorkerNotFound(format!("worker or method not found: {name}"))
                 })?;
 
-                // Worker path: cannot modify existing worker's response_type,
-                // so streaming is not supported (always synchronous wait)
-                let (runner_name, runner_type_opt) =
+                let (runner_name, runner_type_opt, supports_streaming, runner_for_args) =
                     if let Some(runner_id) = worker_data.runner_id.as_ref() {
                         if let Some(RunnerWithSchema {
-                            data: Some(rdata), ..
+                            id: Some(rid),
+                            data: Some(rdata),
+                            ..
                         }) = self.runner_app().find_runner(runner_id).await?
                         {
-                            (rdata.name.clone(), Some(rdata.runner_type()))
+                            let streaming =
+                                check_method_supports_streaming(&rdata, tool_name_opt.as_deref());
+                            (
+                                rdata.name.clone(),
+                                Some(rdata.runner_type()),
+                                streaming,
+                                Some((rid, rdata)),
+                            )
                         } else {
-                            (name.to_string(), None)
+                            (name.to_string(), None, false, None)
                         }
                     } else {
-                        (name.to_string(), None)
+                        (name.to_string(), None, false, None)
                     };
-                let supports_streaming = false;
-                let streaming_type = StreamingType::None;
 
                 // Transform arguments (e.g. wrap into 'input' for Workflow runners)
                 let arguments = if let Some(rt) = runner_type_opt {
@@ -1043,52 +1054,117 @@ pub trait FunctionApp:
                         (name.to_string(), tool_name_opt)
                     };
                 let tool_name_for_decode = tool_name_for_worker.clone();
-                let (job_id, job_result, _stream) = self
-                    .enqueue_with_worker_name(
-                        meta,
-                        &worker_name,
-                        &request_args,
-                        None,
-                        timeout_sec,
-                        streaming_type,
-                        tool_name_for_worker,
-                    )
-                    .await?;
 
-                let result = if let Some(jr) = job_result {
-                    match self.extract_job_result_output(jr) {
-                        Ok(bytes) => {
-                            match self
-                                .decode_job_result_output(
-                                    None,
-                                    Some(&runner_name),
-                                    &bytes,
-                                    tool_name_for_decode.as_deref(),
-                                )
-                                .await
-                            {
-                                Ok(json) => Some(json),
-                                Err(_) => Some(serde_json::Value::String(
-                                    String::from_utf8_lossy(&bytes).to_string(),
-                                )),
+                if supports_streaming {
+                    let (rid, rdata) = runner_for_args.ok_or_else(|| {
+                        JobWorkerError::NotFound(
+                            "Runner data required for streaming args serialization".to_string(),
+                        )
+                    })?;
+
+                    // Streaming path: use overrides + pre-started listener
+                    let streaming_overrides = streaming_no_wait_overrides();
+
+                    let job_args = self
+                        .transform_job_args(
+                            &rid,
+                            &rdata,
+                            &request_args,
+                            tool_name_for_worker.as_deref(),
+                        )
+                        .await?;
+
+                    let job_id = proto::jobworkerp::data::JobId {
+                        value: self.id_generator().generate_id()?,
+                    };
+                    let job_result_app = self.job_result_app().clone();
+                    let listen_job_id = job_id;
+                    let listen_timeout = (timeout_sec as u64) * 1000;
+                    let result_handle = tokio::spawn(async move {
+                        job_result_app
+                            .listen_result_by_job_id(&listen_job_id, Some(listen_timeout), true)
+                            .await
+                    });
+
+                    let enqueue_result = self
+                        .job_app()
+                        .enqueue_job(
+                            meta,
+                            None,
+                            Some(&worker_name),
+                            job_args,
+                            None,
+                            0,
+                            proto::jobworkerp::data::Priority::Medium as i32,
+                            (timeout_sec as u64) * 1000,
+                            Some(job_id),
+                            StreamingType::Internal,
+                            tool_name_for_worker,
+                            streaming_overrides,
+                        )
+                        .await;
+
+                    if let Err(e) = enqueue_result {
+                        result_handle.abort();
+                        return Err(e);
+                    }
+
+                    Ok(EnqueuedFunction {
+                        job_id,
+                        runner_name,
+                        result: None,
+                        is_streaming: true,
+                        result_handle: Some(result_handle),
+                    })
+                } else {
+                    // Non-streaming: synchronous wait via enqueue_with_worker_name
+                    let (job_id, job_result, _stream) = self
+                        .enqueue_with_worker_name(
+                            meta,
+                            &worker_name,
+                            &request_args,
+                            None,
+                            timeout_sec,
+                            StreamingType::None,
+                            tool_name_for_worker,
+                        )
+                        .await?;
+
+                    let result = if let Some(jr) = job_result {
+                        match self.extract_job_result_output(jr) {
+                            Ok(bytes) => {
+                                match self
+                                    .decode_job_result_output(
+                                        None,
+                                        Some(&runner_name),
+                                        &bytes,
+                                        tool_name_for_decode.as_deref(),
+                                    )
+                                    .await
+                                {
+                                    Ok(json) => Some(json),
+                                    Err(_) => Some(serde_json::Value::String(
+                                        String::from_utf8_lossy(&bytes).to_string(),
+                                    )),
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to extract worker result: {:?}", e);
+                                None
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!("Failed to extract worker result: {:?}", e);
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
+                    } else {
+                        None
+                    };
 
-                Ok(EnqueuedFunction {
-                    job_id,
-                    runner_name,
-                    result,
-                    is_streaming: supports_streaming,
-                    result_handle: None,
-                })
+                    Ok(EnqueuedFunction {
+                        job_id,
+                        runner_name,
+                        result,
+                        is_streaming: false,
+                        result_handle: None,
+                    })
+                }
             }
             Err(e) => {
                 tracing::error!("enqueue_function_for_llm error: {:#?}", &e);
@@ -1282,6 +1358,33 @@ pub trait FunctionApp:
             }
         })
     }
+}
+
+/// Create overrides for streaming no-wait pattern used by `enqueue_function_for_llm`.
+///
+/// This intentionally overrides the worker's `response_type` (typically `Direct`) to `NoResult`
+/// so that `enqueue_job` / `enqueue_job_with_temp_worker` returns immediately without blocking.
+/// The caller then listens for results via a pre-started `listen_result_by_job_id` handle.
+///
+/// `store_success: true` is required so that `complete_job` persists the `job_result` record,
+/// which `listen_result_by_job_id` reads as a fallback when pubsub delivery is missed.
+/// Note: `complete_job` → `cleanup_job` deletes the *job* record, but the `job_result` row
+/// remains. Accumulated result rows should be cleaned up via the `delete_bulk` API.
+///
+/// `broadcast_results: true` enables pubsub notification so the pre-started listener can
+/// receive the result in real-time without polling.
+///
+/// Note: These overrides propagate to retry/periodic re-enqueue via `build_retry_job()` /
+/// `build_next_periodic_job()`, which snapshot resolved values. This is intentional — the
+/// caller manages result delivery independently of the worker's default response_type.
+fn streaming_no_wait_overrides() -> Option<proto::jobworkerp::data::JobExecutionOverrides> {
+    Some(proto::jobworkerp::data::JobExecutionOverrides {
+        response_type: Some(proto::jobworkerp::data::ResponseType::NoResult as i32),
+        store_success: Some(true),
+        store_failure: Some(true),
+        broadcast_results: Some(true),
+        retry_policy: None, // Falls back to worker's default retry_policy via resolve_job_params
+    })
 }
 
 /// Check if the runner method supports streaming output.

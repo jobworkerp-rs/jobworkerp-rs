@@ -266,6 +266,7 @@ async fn redis_test() -> Result<()> {
         timeout: 1000,
         streaming_type: 1,
         using: None,
+        overrides: None,
     };
     // clear first
     repo.delete(&id).await?;
@@ -350,6 +351,7 @@ async fn redis_individual_ttl_test() -> Result<()> {
         timeout: 5000, // 5 seconds
         streaming_type: 0,
         using: None,
+        overrides: None,
     };
 
     // Test create_with_expire and find

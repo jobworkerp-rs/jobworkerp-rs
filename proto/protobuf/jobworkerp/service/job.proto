@@ -8,6 +8,7 @@ import "jobworkerp/data/worker.proto";
 import "jobworkerp/data/job.proto";
 import "jobworkerp/service/common.proto";
 
+
 message CreateJobResponse {
   jobworkerp.data.JobId id = 1; // generated id
   optional jobworkerp.data.JobResult result =
@@ -37,6 +38,9 @@ message JobRequest {
   // - Required: For multi-tool MCP runners
   // - Auto-selected: When omitted for single-tool MCP runners
   optional string using = 8;
+  // Per-job execution overrides (response_type, store_success, etc.)
+  // When present, these settings override the worker's defaults.
+  optional jobworkerp.data.JobExecutionOverrides overrides = 9;
 }
 
 // # Client Stream Request

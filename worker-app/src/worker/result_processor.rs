@@ -70,10 +70,12 @@ impl ResultProcessorImpl {
             let retried = self
                 .process_complete_or_retry_condition(&id, &data, st_data, &w, &metadata)
                 .await;
-            // Store result if necessary by result status and worker setting
+            // Store result if necessary by result status and worker setting.
+            // data.broadcast_results is already resolved by resolve_job_params()
+            // in runner.rs (merging worker defaults with job-level overrides).
             match self
                 .job_result_app()
-                .create_job_result_if_necessary(&id, &data, w.broadcast_results)
+                .create_job_result_if_necessary(&id, &data, data.broadcast_results)
                 .await
             {
                 Ok(_r) => {
@@ -135,7 +137,8 @@ impl ResultProcessorImpl {
                         pj.timeout,
                         dat.job_id, // use same job id for periodic job if possible
                         StreamingType::try_from(pj.streaming_type).unwrap_or(StreamingType::None),
-                        pj.using, // preserve using for periodic re-execution
+                        pj.using,     // preserve using for periodic re-execution
+                        pj.overrides, // preserve resolved overrides for periodic re-execution
                     )
                     .await?;
                 tracing::info!(

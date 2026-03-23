@@ -33,6 +33,7 @@ CREATE TABLE `worker` (
 
 -- optional table for db jobqueue
 -- TODO create by new channel
+DROP TABLE IF EXISTS job_execution_overrides;
 DROP TABLE IF EXISTS job;
 CREATE TABLE `job` (
   `id` BIGINT(20) PRIMARY KEY, -- the type of snowflake id is i64.
@@ -51,6 +52,23 @@ CREATE TABLE `job` (
   KEY `find_job_key` (`run_after_time`, `grabbed_until_time`, `worker_id`, `priority`),
   KEY `find_job_key2` (`run_after_time`, `grabbed_until_time`, `priority`),
   UNIQUE KEY `uniq_key_idx` (`uniq_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- No FK to job/job_result: overrides outlive the job record (job_result
+-- rows reference overrides for display after cleanup_job deletes the job).
+-- Cleanup paths: job.delete() atomically removes overrides; delete_bulk()
+-- removes orphaned overrides where no job or job_result references remain.
+CREATE TABLE `job_execution_overrides` (
+  `job_id` BIGINT(20) PRIMARY KEY,
+  `response_type` INT(10) DEFAULT NULL,
+  `store_success` TINYINT(1) DEFAULT NULL,
+  `store_failure` TINYINT(1) DEFAULT NULL,
+  `broadcast_results` TINYINT(1) DEFAULT NULL,
+  `retry_type` INT(10) DEFAULT NULL,
+  `retry_interval` INT(10) UNSIGNED DEFAULT NULL,
+  `retry_max_interval` INT(10) UNSIGNED DEFAULT NULL,
+  `retry_max_retry` INT(10) UNSIGNED DEFAULT NULL,
+  `retry_basis` FLOAT DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 DROP TABLE IF EXISTS job_result;

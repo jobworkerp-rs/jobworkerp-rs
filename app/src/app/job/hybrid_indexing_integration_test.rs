@@ -94,6 +94,7 @@ mod hybrid_indexing_integration_tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
 
@@ -251,6 +252,7 @@ mod hybrid_indexing_integration_tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
 
@@ -391,6 +393,7 @@ mod hybrid_indexing_integration_tests {
                         None,
                         StreamingType::None,
                         None, // using
+                        None, // overrides
                     )
                     .await?;
                 job_ids.push(job_id);
@@ -495,6 +498,7 @@ mod hybrid_indexing_integration_tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
 

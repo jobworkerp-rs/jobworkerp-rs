@@ -1,6 +1,6 @@
 use super::super::JobBuilder;
 use super::super::worker::{UseWorkerApp, WorkerApp};
-use super::{JobApp, JobCacheKeys};
+use super::{JobApp, JobCacheKeys, resolve_job_params};
 use crate::app::{UseWorkerConfig, WorkerConfig};
 use crate::module::AppConfigModule;
 use anyhow::Result;
@@ -26,8 +26,9 @@ use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::stretto::{self as memory, MemoryCacheConfig, UseMemoryCache};
 use memory_utils::lock::RwLockWithKey;
 use proto::jobworkerp::data::{
-    Job, JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
-    ResponseType, ResultOutputItem, ResultStatus, StreamingType, Worker, WorkerData, WorkerId,
+    Job, JobData, JobExecutionOverrides, JobId, JobProcessingStatus, JobResult, JobResultData,
+    JobResultId, QueueType, ResponseType, ResultOutputItem, ResultStatus, StreamingType, Worker,
+    WorkerData, WorkerId,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -361,7 +362,7 @@ impl RdbChanJobAppImpl {
     async fn enqueue_job_with_worker(
         &self,
         metadata: Arc<HashMap<String, String>>,
-        worker: Worker,
+        worker: &Worker,
         args: Vec<u8>,
         uniq_key: Option<String>,
         run_after_time: i64,
@@ -370,6 +371,7 @@ impl RdbChanJobAppImpl {
         reserved_job_id: Option<JobId>,
         streaming_type: StreamingType,
         using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -378,7 +380,7 @@ impl RdbChanJobAppImpl {
         if let Worker {
             id: Some(wid),
             data: Some(w),
-        } = &worker
+        } = worker
         {
             // Check streaming output type only; client stream validation is the gRPC layer's responsibility
             let request_streaming = streaming_type != StreamingType::None;
@@ -386,6 +388,7 @@ impl RdbChanJobAppImpl {
                 .check_worker_streaming(wid, request_streaming, None, using.as_deref())
                 .await?;
 
+            let resolved = resolve_job_params(w, overrides.as_ref());
             let job_data = JobData {
                 worker_id: Some(*wid),
                 args,
@@ -398,11 +401,12 @@ impl RdbChanJobAppImpl {
                 timeout,
                 streaming_type: streaming_type as i32,
                 using,
+                overrides,
             };
             // TODO validate argument types
             // self.validate_worker_and_job_args(w, job_data.args.as_ref())?;
             // cannot wait for direct response
-            if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
+            if run_after_time > 0 && resolved.response_type == ResponseType::Direct as i32 {
                 return Err(JobWorkerError::InvalidParameter(format!(
                     "run_after_time must be 0 for worker response_type=Direct: {:?}",
                     &job_data
@@ -424,7 +428,7 @@ impl RdbChanJobAppImpl {
             } else {
                 job_data
             };
-            if w.response_type == ResponseType::Direct as i32 {
+            if resolved.response_type == ResponseType::Direct as i32 {
                 // use chan only for direct response (not restore)
                 // TODO create backup for queue_type == RdbChan ?
                 let job = Job {
@@ -444,7 +448,7 @@ impl RdbChanJobAppImpl {
                     priority,
                     data.enqueue_time,
                     request_streaming,
-                    w.broadcast_results,
+                    resolved.broadcast_results,
                 );
 
                 Ok(result)
@@ -469,7 +473,7 @@ impl RdbChanJobAppImpl {
                         priority,
                         data.enqueue_time,
                         request_streaming,
-                        w.broadcast_results,
+                        resolved.broadcast_results,
                     );
 
                     Ok((jid, None, None))
@@ -501,7 +505,7 @@ impl RdbChanJobAppImpl {
                                 priority,
                                 data.enqueue_time,
                                 request_streaming,
-                                w.broadcast_results,
+                                resolved.broadcast_results,
                             );
 
                             Ok(result)
@@ -521,7 +525,7 @@ impl RdbChanJobAppImpl {
                             priority,
                             data.enqueue_time,
                             request_streaming,
-                            w.broadcast_results,
+                            resolved.broadcast_results,
                         );
 
                         Ok((job.id.unwrap(), None, None))
@@ -546,7 +550,7 @@ impl RdbChanJobAppImpl {
                         priority,
                         data.enqueue_time,
                         request_streaming,
-                        w.broadcast_results,
+                        resolved.broadcast_results,
                     );
 
                     Ok(result)
@@ -577,6 +581,7 @@ impl JobApp for RdbChanJobAppImpl {
         streaming_type: StreamingType,
         with_random_name: bool,
         using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -592,7 +597,7 @@ impl JobApp for RdbChanJobAppImpl {
         };
         self.enqueue_job_with_worker(
             meta,
-            worker,
+            &worker,
             args,
             uniq_key,
             run_after_time,
@@ -601,59 +606,10 @@ impl JobApp for RdbChanJobAppImpl {
             reserved_job_id,
             streaming_type,
             using,
+            overrides,
         )
         .await
     }
-    // TODO: Extract shared logic with hybrid.rs (requires unifying enqueue_job_with_worker signature)
-    async fn enqueue_job_with_temp_worker_no_wait<'a>(
-        &'a self,
-        meta: Arc<HashMap<String, String>>,
-        worker_data: WorkerData,
-        args: Vec<u8>,
-        uniq_key: Option<String>,
-        run_after_time: i64,
-        priority: i32,
-        timeout: u64,
-        reserved_job_id: Option<JobId>,
-        streaming_type: StreamingType,
-        with_random_name: bool,
-        using: Option<String>,
-    ) -> Result<JobId> {
-        let wid = self
-            .worker_app()
-            .create_temp(worker_data.clone(), with_random_name)
-            .await?;
-        // Enqueue with NoResult response_type to return immediately.
-        // The original worker_data.response_type (Direct) is preserved for the
-        // worker's processing behavior, but we override it here to skip
-        // _wait_job_for_direct_response. The caller retrieves the result
-        // separately via listen_result_by_job_id.
-        let mut enqueue_worker_data = worker_data;
-        enqueue_worker_data.response_type = ResponseType::NoResult as i32;
-        enqueue_worker_data.broadcast_results = true;
-        enqueue_worker_data.store_success = true;
-        enqueue_worker_data.store_failure = true;
-        let worker = Worker {
-            id: Some(wid),
-            data: Some(enqueue_worker_data),
-        };
-        let (job_id, _result, _stream) = self
-            .enqueue_job_with_worker(
-                meta,
-                worker,
-                args,
-                uniq_key,
-                run_after_time,
-                priority,
-                timeout,
-                reserved_job_id,
-                streaming_type,
-                using,
-            )
-            .await?;
-        Ok(job_id)
-    }
-
     async fn enqueue_job<'a>(
         &'a self,
         metadata: Arc<HashMap<String, String>>,
@@ -667,6 +623,7 @@ impl JobApp for RdbChanJobAppImpl {
         reserved_job_id: Option<JobId>,
         streaming_type: StreamingType,
         using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -682,7 +639,7 @@ impl JobApp for RdbChanJobAppImpl {
             )
             .into());
         };
-        if let Some(w) = worker_res {
+        if let Some(ref w) = worker_res {
             self.enqueue_job_with_worker(
                 metadata,
                 w,
@@ -694,6 +651,7 @@ impl JobApp for RdbChanJobAppImpl {
                 reserved_job_id,
                 streaming_type,
                 using,
+                overrides,
             )
             .await
         } else {
@@ -726,6 +684,11 @@ impl JobApp for RdbChanJobAppImpl {
                 {
                     // XXX should compare grabbed_until_time and update if not changed or not (now not compared)
                     // TODO store metadata
+                    // NOTE: Does not update the job_execution_overrides table.
+                    // This is safe for retry: build_retry_job() snapshots resolved values
+                    // into JobData.overrides, which resolve_job_params() uses at next execution.
+                    // The RDB overrides row (from initial enqueue) is only used as a display
+                    // fallback in _fill_worker_data_to_data_inner().
                     self.rdb_job_repository().upsert(jid, data).await
                 } else {
                     Ok(false)
@@ -787,6 +750,8 @@ impl JobApp for RdbChanJobAppImpl {
         );
         if let Some(jid) = data.job_id.as_ref() {
             // For streaming jobs, don't delete status immediately as the process may still be running
+            // data.response_type is already resolved via resolve_job_params() in runner.rs,
+            // reflecting any per-job overrides applied at enqueue time.
             let res = match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     let res = self
@@ -1332,13 +1297,17 @@ where
                     .upsert_status(&job_id, &JobProcessingStatus::Pending)
                     .await?;
                 // wait for result if direct response type
-                if worker.response_type == ResponseType::Direct as i32 {
+                let resolved = resolve_job_params(
+                    worker,
+                    job.data.as_ref().and_then(|d| d.overrides.as_ref()),
+                );
+                if resolved.response_type == ResponseType::Direct as i32 {
                     // XXX keep chan connection until response
                     // Calculate total timeout including retries (None means unlimited)
                     let job_timeout = job.data.as_ref().map(|d| d.timeout).unwrap_or(0);
                     let total_timeout = proto::calculate_direct_response_timeout_ms(
                         job_timeout,
-                        worker.retry_policy.as_ref(),
+                        resolved.retry_policy.as_ref(),
                     );
                     self._wait_job_for_direct_response(
                         &job_id,
@@ -1574,6 +1543,7 @@ mod tests {
                         Some(reserved_jid1),
                         StreamingType::None,
                         None, // using
+                        None, // overrides
                     )
                     .await;
                 let (jid, job_res, _) = res.unwrap();
@@ -1655,6 +1625,7 @@ mod tests {
                     store_failure: false,
                     using: None,
                     broadcast_results: false,
+                    resolved_retry_policy: None,
                 }),
                 ..Default::default()
             };
@@ -1725,6 +1696,7 @@ mod tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?
                 .0;
@@ -1742,6 +1714,7 @@ mod tests {
                     timeout: 0,
                     streaming_type: 0,
                     using: None,
+                    overrides: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1779,6 +1752,7 @@ mod tests {
                     store_failure: true,
                     using: None,
                     broadcast_results: true,
+                    resolved_retry_policy: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1858,6 +1832,7 @@ mod tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -1905,6 +1880,7 @@ mod tests {
                     store_failure: false,
                     using: None,
                     broadcast_results: false,
+                    resolved_retry_policy: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1984,6 +1960,7 @@ mod tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -2002,6 +1979,7 @@ mod tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
             assert!(job_id2.value > 0);
@@ -2201,6 +2179,7 @@ mod tests {
                 store_failure: false,
                 using: None,
                 broadcast_results: false,
+                resolved_retry_policy: None,
             };
             let rid = JobResultId { value: 99001 };
             subscriber.publish_result(&rid, &result_data, true).await?;
@@ -2274,6 +2253,7 @@ mod tests {
                 store_failure: false,
                 using: None,
                 broadcast_results: false,
+                resolved_retry_policy: None,
             };
             let rid = JobResultId { value: 99002 };
             subscriber.publish_result(&rid, &result_data, true).await?;
@@ -2343,6 +2323,7 @@ mod tests {
                 store_failure: false,
                 using: None,
                 broadcast_results: false,
+                resolved_retry_policy: None,
             };
             let rid = JobResultId { value: 99003 };
             subscriber.publish_result(&rid, &result_data, true).await?;

@@ -270,6 +270,7 @@ pub trait UseJobExecutor:
                         None,
                         streaming_type,
                         using,
+                        None,
                     )
                     .await
             } else {
@@ -287,6 +288,7 @@ pub trait UseJobExecutor:
                         streaming_type,
                         true,
                         using,
+                        None,
                     )
                     .await
             }

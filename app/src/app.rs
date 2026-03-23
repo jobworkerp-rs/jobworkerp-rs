@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use infra::infra::job::rows::UseJobqueueAndCodec;
+use proto::RetryPolicyExt;
 use proto::jobworkerp::data::{
     Job, JobData, JobResultData, ResultStatus, RetryType, StorageType, WorkerData,
 };
@@ -120,26 +121,31 @@ pub trait JobBuilder {
         if dat.status != ResultStatus::ErrorAndRetry as i32 {
             return None;
         }
-        if let Some(policy) = worker.retry_policy.as_ref() {
+        // Use resolved retry policy stored in JobResultData;
+        // fall back to worker.retry_policy for legacy data without resolved_retry_policy.
+        let policy = dat
+            .resolved_retry_policy
+            .as_ref()
+            .or(worker.retry_policy.as_ref());
+        if let Some(policy) = policy {
             // not retry (perhaps above 'if dat.status' condition is enough)
             if policy.r#type == RetryType::None as i32 || dat.retried >= policy.max_retry {
                 return None;
             }
             let previous_retry_count = dat.retried;
-            let retry_interval = policy.interval;
-            let rtype = RetryType::try_from(policy.r#type).unwrap_or(RetryType::None);
-            let next_interval_msec: Option<u32> = match rtype {
-                RetryType::None => None,
-                RetryType::Exponential => Some(
-                    (retry_interval as f32 * policy.basis.powf(previous_retry_count as f32)).round()
-                        as u32,
-                ),
-                RetryType::Linear => Some(retry_interval * (previous_retry_count + 1)),
-                RetryType::Constant => Some(retry_interval),
-            };
+            let next_interval_msec = policy.calculate_next_interval(previous_retry_count);
             let run_after_time = next_interval_msec
                 .map(|n| dat.end_time + n as i64)
                 .unwrap_or(0);
+            // Snapshot resolved values as explicit overrides so that retries
+            // behave consistently even if the worker config changes mid-chain.
+            let overrides = Some(proto::jobworkerp::data::JobExecutionOverrides {
+                response_type: Some(dat.response_type),
+                store_success: Some(dat.store_success),
+                store_failure: Some(dat.store_failure),
+                broadcast_results: Some(dat.broadcast_results),
+                retry_policy: dat.resolved_retry_policy,
+            });
             #[allow(deprecated)]
             Some(Job {
                 id: dat.job_id,
@@ -155,6 +161,7 @@ pub trait JobBuilder {
                     timeout: dat.timeout,
                     streaming_type: dat.streaming_type,
                     using: dat.using.clone(), // preserve using for retry
+                    overrides,
                 }),
                 metadata: metadata.clone(),
             })
@@ -173,6 +180,15 @@ pub trait JobBuilder {
                 dat.run_after_time,
                 worker.periodic_interval as i64,
             );
+            // Snapshot resolved values as explicit overrides so that periodic
+            // re-executions behave consistently even if the worker config changes.
+            let overrides = Some(proto::jobworkerp::data::JobExecutionOverrides {
+                response_type: Some(dat.response_type),
+                store_success: Some(dat.store_success),
+                store_failure: Some(dat.store_failure),
+                broadcast_results: Some(dat.broadcast_results),
+                retry_policy: dat.resolved_retry_policy,
+            });
             Some(JobData {
                 worker_id: dat.worker_id,
                 args: dat.args.clone(),
@@ -185,6 +201,7 @@ pub trait JobBuilder {
                 timeout: dat.timeout,
                 streaming_type: dat.streaming_type,
                 using: dat.using.clone(), // preserve using for periodic re-execution
+                overrides,
             })
         }
     }
@@ -263,5 +280,316 @@ mod tests {
         // less than 1 sec
         // assert!(((start_time + periodic_interval) - run_after_time2).abs() < 1000);
         assert_eq!(start_time + periodic_interval, run_after_time2);
+    }
+
+    mod build_retry_job_tests {
+        use super::*;
+        use proto::jobworkerp::data::{JobId, Priority, RetryPolicy, RetryType, WorkerId};
+
+        struct TestImpl;
+        impl JobBuilder for TestImpl {}
+
+        fn constant_retry_policy(max_retry: u32, interval: u32) -> RetryPolicy {
+            RetryPolicy {
+                r#type: RetryType::Constant as i32,
+                max_retry,
+                interval,
+                basis: 2.0,
+                max_interval: 0,
+            }
+        }
+
+        fn make_worker(retry_policy: Option<RetryPolicy>) -> WorkerData {
+            WorkerData {
+                name: "test-worker".to_string(),
+                retry_policy,
+                ..Default::default()
+            }
+        }
+
+        fn make_result_data(
+            status: ResultStatus,
+            retried: u32,
+            resolved_retry_policy: Option<RetryPolicy>,
+        ) -> JobResultData {
+            JobResultData {
+                job_id: Some(JobId { value: 1 }),
+                worker_id: Some(WorkerId { value: 1 }),
+                status: status as i32,
+                retried,
+                end_time: 1000,
+                priority: Priority::Medium as i32,
+                resolved_retry_policy,
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn test_no_retry_on_success() {
+            let worker = make_worker(Some(constant_retry_policy(3, 1000)));
+            // resolved_retry_policy is set but status is Success → no retry
+            let dat = make_result_data(
+                ResultStatus::Success,
+                0,
+                Some(constant_retry_policy(3, 1000)),
+            );
+            assert!(TestImpl::build_retry_job(&dat, &worker, &HashMap::new()).is_none());
+        }
+
+        #[test]
+        fn test_retry_with_worker_policy() {
+            let policy = Some(constant_retry_policy(3, 1000));
+            let worker = make_worker(policy);
+            let dat = make_result_data(ResultStatus::ErrorAndRetry, 0, policy);
+            let job = TestImpl::build_retry_job(&dat, &worker, &HashMap::new());
+            assert!(job.is_some());
+            let job = job.unwrap();
+            assert_eq!(job.data.as_ref().unwrap().retried, 1);
+            assert_eq!(job.data.as_ref().unwrap().run_after_time, 2000); // end_time(1000) + interval(1000)
+        }
+
+        #[test]
+        fn test_override_increases_max_retry() {
+            // Worker: max_retry=1, already retried=1 → would stop with worker policy
+            let worker = make_worker(Some(constant_retry_policy(1, 500)));
+            // resolved_retry_policy: max_retry=5 → should allow retry
+            let dat = make_result_data(
+                ResultStatus::ErrorAndRetry,
+                1,
+                Some(constant_retry_policy(5, 500)),
+            );
+            let job = TestImpl::build_retry_job(&dat, &worker, &HashMap::new());
+            assert!(
+                job.is_some(),
+                "resolved max_retry=5 should allow retry when retried=1"
+            );
+        }
+
+        #[test]
+        fn test_override_disables_retry() {
+            // Worker: max_retry=10
+            let worker = make_worker(Some(constant_retry_policy(10, 1000)));
+            // resolved_retry_policy: RetryType::None → should stop retry
+            let dat = make_result_data(
+                ResultStatus::ErrorAndRetry,
+                0,
+                Some(RetryPolicy {
+                    r#type: RetryType::None as i32,
+                    max_retry: 0,
+                    interval: 0,
+                    basis: 0.0,
+                    max_interval: 0,
+                }),
+            );
+            let job = TestImpl::build_retry_job(&dat, &worker, &HashMap::new());
+            assert!(
+                job.is_none(),
+                "resolved RetryType::None should disable retry"
+            );
+        }
+
+        #[test]
+        fn test_override_reduces_max_retry() {
+            // Worker: max_retry=10, retried=1
+            let worker = make_worker(Some(constant_retry_policy(10, 1000)));
+            // resolved_retry_policy: max_retry=0 → should stop
+            let dat = make_result_data(
+                ResultStatus::ErrorAndRetry,
+                1,
+                Some(constant_retry_policy(0, 1000)),
+            );
+            let job = TestImpl::build_retry_job(&dat, &worker, &HashMap::new());
+            assert!(job.is_none(), "resolved max_retry=0 should stop retry");
+        }
+
+        #[test]
+        fn test_no_worker_policy_no_resolved() {
+            let worker = make_worker(None);
+            let dat = make_result_data(ResultStatus::ErrorAndRetry, 0, None);
+            assert!(TestImpl::build_retry_job(&dat, &worker, &HashMap::new()).is_none());
+        }
+
+        #[test]
+        fn test_resolved_policy_adds_retry_to_worker_without_policy() {
+            // Worker has no retry policy
+            let worker = make_worker(None);
+            // resolved_retry_policy adds one
+            let dat = make_result_data(
+                ResultStatus::ErrorAndRetry,
+                0,
+                Some(constant_retry_policy(3, 200)),
+            );
+            let job = TestImpl::build_retry_job(&dat, &worker, &HashMap::new());
+            assert!(
+                job.is_some(),
+                "resolved_retry_policy should enable retry when worker has none"
+            );
+            assert_eq!(job.unwrap().data.unwrap().run_after_time, 1200); // 1000 + 200
+        }
+
+        #[test]
+        fn test_retry_job_carries_overrides() {
+            // Verify retry job reconstructs overrides from resolved fields
+            let worker = make_worker(None);
+            let mut dat = make_result_data(
+                ResultStatus::ErrorAndRetry,
+                0,
+                Some(constant_retry_policy(3, 100)),
+            );
+            dat.response_type = 1; // Direct
+            dat.store_success = true;
+            dat.store_failure = true;
+            dat.broadcast_results = true;
+
+            let job = TestImpl::build_retry_job(&dat, &worker, &HashMap::new());
+            assert!(job.is_some());
+            let overrides = job.unwrap().data.unwrap().overrides.unwrap();
+            assert_eq!(overrides.response_type, Some(1));
+            assert_eq!(overrides.store_success, Some(true));
+            assert_eq!(overrides.store_failure, Some(true));
+            assert_eq!(overrides.broadcast_results, Some(true));
+            assert!(overrides.retry_policy.is_some());
+        }
+
+        #[test]
+        fn test_exponential_max_interval_clamp() {
+            let worker = make_worker(None);
+            // basis=2.0, interval=1000, retried=5 → unclamped = 1000 * 2^5 = 32000
+            // max_interval=10000 → clamped to 10000
+            let dat = make_result_data(
+                ResultStatus::ErrorAndRetry,
+                5,
+                Some(RetryPolicy {
+                    r#type: RetryType::Exponential as i32,
+                    max_retry: 10,
+                    interval: 1000,
+                    basis: 2.0,
+                    max_interval: 10000,
+                }),
+            );
+            let job = TestImpl::build_retry_job(&dat, &worker, &HashMap::new());
+            assert!(job.is_some());
+            // run_after_time = end_time(1000) + clamped_interval(10000) = 11000
+            assert_eq!(job.unwrap().data.unwrap().run_after_time, 11000);
+        }
+
+        #[test]
+        fn test_exponential_no_clamp_when_max_interval_zero() {
+            let worker = make_worker(None);
+            // basis=2.0, interval=1000, retried=3 → 1000 * 2^3 = 8000
+            let dat = make_result_data(
+                ResultStatus::ErrorAndRetry,
+                3,
+                Some(RetryPolicy {
+                    r#type: RetryType::Exponential as i32,
+                    max_retry: 10,
+                    interval: 1000,
+                    basis: 2.0,
+                    max_interval: 0,
+                }),
+            );
+            let job = TestImpl::build_retry_job(&dat, &worker, &HashMap::new());
+            assert!(job.is_some());
+            // run_after_time = end_time(1000) + 8000 = 9000
+            assert_eq!(job.unwrap().data.unwrap().run_after_time, 9000);
+        }
+    }
+
+    mod build_next_periodic_job_tests {
+        use super::*;
+        use proto::jobworkerp::data::{
+            JobId, Priority, ResponseType, RetryPolicy, RetryType, WorkerId,
+        };
+
+        struct TestImpl;
+        impl JobBuilder for TestImpl {}
+
+        fn make_periodic_worker(periodic_interval: u32) -> WorkerData {
+            WorkerData {
+                name: "periodic-worker".to_string(),
+                periodic_interval,
+                ..Default::default()
+            }
+        }
+
+        fn make_result_data_for_periodic(
+            resolved_retry_policy: Option<RetryPolicy>,
+        ) -> JobResultData {
+            JobResultData {
+                job_id: Some(JobId { value: 1 }),
+                worker_id: Some(WorkerId { value: 1 }),
+                status: ResultStatus::Success as i32,
+                retried: 0,
+                start_time: 1000,
+                run_after_time: 0,
+                priority: Priority::Medium as i32,
+                response_type: ResponseType::Direct as i32,
+                store_success: true,
+                store_failure: true,
+                broadcast_results: true,
+                resolved_retry_policy,
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn test_non_periodic_worker_returns_none() {
+            let worker = make_periodic_worker(0);
+            let dat = make_result_data_for_periodic(None);
+            assert!(TestImpl::build_next_periodic_job(&dat, &worker).is_none());
+        }
+
+        #[test]
+        fn test_periodic_job_reconstructs_overrides() {
+            let worker = make_periodic_worker(60000); // 1 minute
+            let policy = Some(RetryPolicy {
+                r#type: RetryType::Constant as i32,
+                max_retry: 3,
+                interval: 500,
+                basis: 2.0,
+                max_interval: 0,
+            });
+            let dat = make_result_data_for_periodic(policy);
+
+            let pj = TestImpl::build_next_periodic_job(&dat, &worker);
+            assert!(pj.is_some(), "periodic worker should produce next job");
+
+            let pj = pj.unwrap();
+            let overrides = pj
+                .overrides
+                .expect("periodic job must carry reconstructed overrides");
+            assert_eq!(
+                overrides.response_type,
+                Some(ResponseType::Direct as i32),
+                "response_type should be reconstructed from result"
+            );
+            assert_eq!(overrides.store_success, Some(true));
+            assert_eq!(overrides.store_failure, Some(true));
+            assert_eq!(overrides.broadcast_results, Some(true));
+
+            let rp = overrides
+                .retry_policy
+                .expect("retry_policy should be carried");
+            assert_eq!(rp.r#type, RetryType::Constant as i32);
+            assert_eq!(rp.max_retry, 3);
+            assert_eq!(rp.interval, 500);
+        }
+
+        #[test]
+        fn test_periodic_job_overrides_without_retry_policy() {
+            let worker = make_periodic_worker(10000);
+            let dat = make_result_data_for_periodic(None);
+
+            let pj = TestImpl::build_next_periodic_job(&dat, &worker).unwrap();
+            let overrides = pj
+                .overrides
+                .expect("periodic job must carry overrides even without retry_policy");
+            assert_eq!(overrides.response_type, Some(ResponseType::Direct as i32));
+            assert_eq!(overrides.store_success, Some(true));
+            assert!(
+                overrides.retry_policy.is_none(),
+                "retry_policy should be None when resolved was None"
+            );
+        }
     }
 }

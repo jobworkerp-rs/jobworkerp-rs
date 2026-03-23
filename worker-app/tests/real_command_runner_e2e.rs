@@ -118,6 +118,7 @@ fn create_command_job(command: &str, args: Vec<String>, timeout_ms: u64) -> Job 
             grabbed_until_time: None,
             streaming_type: 0,
             using: None,
+            overrides: None,
         }),
         ..Default::default()
     }
@@ -488,6 +489,7 @@ async fn test_real_command_working_directory() -> Result<()> {
             grabbed_until_time: None,
             streaming_type: 0,
             using: None,
+            overrides: None,
         }),
         ..Default::default()
     };
