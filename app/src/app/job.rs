@@ -115,6 +115,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         run_after_time: i64,
         priority: i32,
         timeout: u64,
+        reserved_job_id: Option<JobId>,
         streaming_type: StreamingType,
         with_random_name: bool,
         using: Option<String>,

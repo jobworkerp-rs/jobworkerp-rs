@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use core::fmt;
 use helper::{FunctionCallHelper, McpNameConverter};
 use infra::infra::runner::rows::RunnerWithSchema;
+use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
@@ -63,6 +64,7 @@ impl std::fmt::Debug for EnqueuedFunction {
 pub trait FunctionApp:
     UseWorkerApp
     + UseRunnerApp
+    + UseIdGenerator
     + UseMokaCache<Arc<String>, Vec<FunctionSpecs>>
     + converter::FunctionSpecConverter
     + FunctionCallHelper
@@ -875,7 +877,6 @@ pub trait FunctionApp:
         let worker_data = self.create_worker_data(&runner, settings, None).await?;
 
         if supports_streaming {
-            // Streaming: enqueue without waiting, start listener immediately
             let rid_ref = runner
                 .id
                 .as_ref()
@@ -887,7 +888,23 @@ pub trait FunctionApp:
             let job_args = self
                 .transform_job_args(rid_ref, rdata_ref, &args, tool_name_opt.as_deref())
                 .await?;
-            let job_id = self
+
+            // Pre-generate job_id and start listening BEFORE enqueue to avoid
+            // race condition where the job completes and publishes results via
+            // pubsub before the listener subscribes.
+            let job_id = proto::jobworkerp::data::JobId {
+                value: self.id_generator().generate_id()?,
+            };
+            let job_result_app = self.job_result_app().clone();
+            let listen_job_id = job_id;
+            let listen_timeout = (timeout_sec as u64) * 1000;
+            let result_handle = tokio::spawn(async move {
+                job_result_app
+                    .listen_result_by_job_id(&listen_job_id, Some(listen_timeout), true)
+                    .await
+            });
+
+            let enqueue_result = self
                 .job_app()
                 .enqueue_job_with_temp_worker_no_wait(
                     meta,
@@ -897,21 +914,17 @@ pub trait FunctionApp:
                     0,
                     proto::jobworkerp::data::Priority::Medium as i32,
                     (timeout_sec as u64) * 1000,
+                    Some(job_id),
                     streaming_type,
                     true,
                     tool_name_opt,
                 )
-                .await?;
-
-            // Start listening immediately after enqueue to avoid missing pubsub events
-            let job_result_app = self.job_result_app().clone();
-            let listen_job_id = job_id;
-            let listen_timeout = (timeout_sec as u64) * 1000;
-            let result_handle = tokio::spawn(async move {
-                job_result_app
-                    .listen_result_by_job_id(&listen_job_id, Some(listen_timeout), true)
-                    .await
-            });
+                .await;
+            if let Err(e) = enqueue_result {
+                // Abort the pre-started listener to avoid orphaned tasks
+                result_handle.abort();
+                return Err(e);
+            }
 
             Ok(EnqueuedFunction {
                 job_id,
@@ -955,8 +968,7 @@ pub trait FunctionApp:
                         .await?,
                     ),
                     Err(e) => {
-                        tracing::warn!("Failed to extract job result: {:?}", e);
-                        None
+                        return Err(e);
                     }
                 }
             } else {
@@ -1292,12 +1304,13 @@ pub struct FunctionAppImpl {
     worker_app: Arc<dyn crate::app::worker::WorkerApp>,
     job_app: Arc<dyn crate::app::job::JobApp>,
     job_result_app: Arc<dyn crate::app::job_result::JobResultApp>,
+    id_generator: Arc<IdGeneratorWrapper>,
     function_cache: memory_utils::cache::moka::MokaCacheImpl<Arc<String>, Vec<FunctionSpecs>>,
     descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     runner_factory: Arc<jobworkerp_runner::runner::factory::RunnerSpecFactory>,
     job_queue_config: infra::infra::JobQueueConfig,
     worker_config: crate::app::WorkerConfig,
-    workflow_loader: Arc<infra::workflow::WorkflowLoader>, // Workflow definition loader (DI pattern)
+    workflow_loader: Arc<infra::workflow::WorkflowLoader>,
 }
 
 impl FunctionAppImpl {
@@ -1307,6 +1320,7 @@ impl FunctionAppImpl {
         worker_app: Arc<dyn crate::app::worker::WorkerApp>,
         job_app: Arc<dyn crate::app::job::JobApp>,
         job_result_app: Arc<dyn crate::app::job_result::JobResultApp>,
+        id_generator: Arc<IdGeneratorWrapper>,
         descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         runner_factory: Arc<jobworkerp_runner::runner::factory::RunnerSpecFactory>,
         mc_config: &memory_utils::cache::stretto::MemoryCacheConfig,
@@ -1326,6 +1340,7 @@ impl FunctionAppImpl {
             worker_app,
             job_app,
             job_result_app,
+            id_generator,
             function_cache,
             descriptor_cache,
             runner_factory,
@@ -1355,6 +1370,11 @@ impl UseJobApp for FunctionAppImpl {
 impl UseJobResultApp for FunctionAppImpl {
     fn job_result_app(&self) -> &Arc<dyn crate::app::job_result::JobResultApp + 'static> {
         &self.job_result_app
+    }
+}
+impl UseIdGenerator for FunctionAppImpl {
+    fn id_generator(&self) -> &IdGeneratorWrapper {
+        &self.id_generator
     }
 }
 
