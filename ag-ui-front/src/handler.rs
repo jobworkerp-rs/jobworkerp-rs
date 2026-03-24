@@ -1537,8 +1537,10 @@ where
             let mut sent_tool_call_ids = std::collections::HashSet::<String>::new();
 
             // Channel for nested workflow progress events (from parallel subscriptions)
-            let (nested_event_tx, mut nested_event_rx) =
+            // Wrapped in Option so early-return paths can drop the sender to unblock receivers.
+            let (nested_event_tx_raw, mut nested_event_rx) =
                 tokio::sync::mpsc::channel::<(u64, AgUiEvent)>(NESTED_EVENT_CHANNEL_SIZE);
+            let mut nested_event_tx = Some(nested_event_tx_raw);
             // Track spawned nested workflow subscription tasks for cleanup
             let mut nested_task_handles: std::collections::HashMap<i64, tokio::task::JoinHandle<()>> = std::collections::HashMap::new();
 
@@ -1713,7 +1715,7 @@ where
                                     } else {
                                         let nested_job_id = proto::jobworkerp::data::JobId { value: started.job_id };
                                         let job_result_app = app_module.job_result_app.clone();
-                                        let nested_tx = nested_event_tx.clone();
+                                        let nested_tx = nested_event_tx.as_ref().expect("nested_event_tx should be Some during event loop").clone();
                                         let nested_encoder = encoder.clone();
                                         let nested_event_store = event_store.clone();
                                         let nested_run_id = run_id.clone();
@@ -1884,20 +1886,23 @@ where
                                     if !tool_calls.requires_execution {
                                         let tool_results_from_output = extract_tool_execution_results(&output_bytes);
                                         for call in &tool_calls.tool_calls {
-                                            // Skip if already emitted via real-time path
-                                            if sent_tool_call_ids.contains(&call.call_id) {
-                                                continue;
+                                            // Emit START/ARGS only if not already sent via real-time path
+                                            if !sent_tool_call_ids.contains(&call.call_id) {
+                                                // START/ARGS were already emitted in tool_calls_to_ag_ui_events above
+                                                // for unsent_tool_calls, so just mark as sent here
+                                                sent_tool_call_ids.insert(call.call_id.clone());
                                             }
 
-                                            // TOOL_CALL_END
-                                            let end_event = AgUiEvent::tool_call_end(call.call_id.clone());
-                                            let end_event_id = Self::encode_event_with_logging(&encoder, &end_event);
-                                            event_store.store_event(&run_id, end_event_id, end_event.clone()).await;
-                                            yield (end_event_id, end_event);
-
-                                            // TOOL_CALL_RESULT: buffered result (from StreamingData) takes priority,
-                                            // then fall back to output bytes, then Null
+                                            // Always try to emit END/RESULT (guarded by sent_tool_result_ids)
                                             if !sent_tool_result_ids.contains(call.call_id.as_str()) {
+                                                // TOOL_CALL_END
+                                                let end_event = AgUiEvent::tool_call_end(call.call_id.clone());
+                                                let end_event_id = Self::encode_event_with_logging(&encoder, &end_event);
+                                                event_store.store_event(&run_id, end_event_id, end_event.clone()).await;
+                                                yield (end_event_id, end_event);
+
+                                                // TOOL_CALL_RESULT: buffered result (from StreamingData) takes priority,
+                                                // then fall back to output bytes, then Null
                                                 sent_tool_result_ids.insert(call.call_id.clone());
                                                 let result = pending_tool_results.remove(&call.call_id)
                                                     .or_else(|| tool_results_from_output.get(&call.call_id).cloned())
@@ -2079,6 +2084,8 @@ where
                                         yield (error_event_id, error_event);
 
                                         session_manager.set_session_state(&session_id, SessionState::Error).await;
+                                        // Drop sender so nested subscription tasks can terminate
+                                        nested_event_tx.take();
                                         return;
                                     }
 
@@ -2122,6 +2129,8 @@ where
                                         "Workflow paused for LLM tool call approval, session {} is now Paused",
                                         session_id
                                     );
+                                    // Drop sender so nested subscription tasks can terminate
+                                    nested_event_tx.take();
                                     return;
                                 }
                             }
@@ -2135,8 +2144,11 @@ where
                             if !task_position.is_empty() && prev_position.as_deref() != Some(task_position) {
                                 // Close previous step if position changed
                                 if prev_position.is_some() {
-                                    let mut adapter_lock = adapter.lock().await;
-                                    if let Some(finished_event) = adapter_lock.task_finished(None) {
+                                    let finished_event = {
+                                        let mut adapter_lock = adapter.lock().await;
+                                        adapter_lock.task_finished(None)
+                                    };
+                                    if let Some(finished_event) = finished_event {
                                         let event_id = Self::encode_event_with_logging(&encoder, &finished_event);
                                         event_store.store_event(&run_id, event_id, finished_event.clone()).await;
                                         yield (event_id, finished_event);
@@ -2165,24 +2177,30 @@ where
                             }
                         }
 
-                        // Handle TaskCompleted: emit STEP_FINISHED
+                        // Handle TaskCompleted: emit STEP_FINISHED and skip context() fallback
+                        // to avoid duplicate STEP_STARTED for the same position.
                         if let WorkflowStreamEvent::TaskCompleted { event: ev, .. } = &event {
                             let task_position = &ev.position;
                             if !task_position.is_empty() && prev_position.as_deref() == Some(task_position) {
-                                let mut adapter_lock = adapter.lock().await;
-                                if let Some(finished_event) = adapter_lock.task_finished(None) {
+                                let finished_event = {
+                                    let mut adapter_lock = adapter.lock().await;
+                                    adapter_lock.task_finished(None)
+                                };
+                                if let Some(finished_event) = finished_event {
                                     let event_id = Self::encode_event_with_logging(&encoder, &finished_event);
                                     event_store.store_event(&run_id, event_id, finished_event.clone()).await;
                                     yield (event_id, finished_event);
                                 }
-                                // Clear prev_position so the context fallback below
-                                // does not redundantly attempt task_finished() again.
                                 prev_position = None;
                                 tracing::debug!(
                                     task_name = %ev.task_name,
                                     position = %task_position,
                                     "TaskCompleted: emitted STEP_FINISHED"
                                 );
+                                // Skip context() fallback — prev_position is now None but
+                                // the completed position's STEP_FINISHED was already emitted;
+                                // falling through would emit a spurious STEP_STARTED.
+                                continue;
                             }
                         }
 
@@ -2195,8 +2213,11 @@ where
                             if prev_position.as_ref() != Some(&current_position) {
                                 // Position changed - emit STEP_FINISHED for previous step if exists
                                 if prev_position.is_some() {
-                                    let mut adapter_lock = adapter.lock().await;
-                                    if let Some(event) = adapter_lock.task_finished(None) {
+                                    let finished_event = {
+                                        let mut adapter_lock = adapter.lock().await;
+                                        adapter_lock.task_finished(None)
+                                    };
+                                    if let Some(event) = finished_event {
                                         let event_id = Self::encode_event_with_logging(&encoder, &event);
                                         event_store.store_event(&run_id, event_id, event.clone()).await;
                                         yield (event_id, event);
@@ -2205,8 +2226,10 @@ where
 
                                 // Emit STEP_STARTED for new step if we have a step name
                                 if let Some(step_name) = current_step_name.as_ref() {
-                                    let mut adapter_lock = adapter.lock().await;
-                                    let event = adapter_lock.task_started(step_name, None, None);
+                                    let event = {
+                                        let mut adapter_lock = adapter.lock().await;
+                                        adapter_lock.task_started(step_name, None, None)
+                                    };
                                     let event_id = Self::encode_event_with_logging(&encoder, &event);
                                     event_store.store_event(&run_id, event_id, event.clone()).await;
                                     yield (event_id, event);
@@ -2311,6 +2334,8 @@ where
                                     yield (error_event_id, error_event);
 
                                     session_manager.set_session_state(&session_id, SessionState::Error).await;
+                                    // Drop sender so nested subscription tasks can terminate
+                                    nested_event_tx.take();
                                     return;
                                 }
 
@@ -2326,6 +2351,9 @@ where
 
                                 // Flush TEXT_MESSAGE_END for any active streaming messages before pausing
                                 for (job_id, message_id) in active_message_ids.drain() {
+                                    if !text_message_started.remove(&job_id) {
+                                        continue;
+                                    }
                                     tracing::debug!(
                                         job_id = job_id,
                                         "HITL pause: flushing TEXT_MESSAGE_END for interrupted stream"
@@ -2338,6 +2366,8 @@ where
 
                                 // Exit stream without emitting RUN_FINISHED
                                 tracing::info!("Workflow paused for HITL, session {} is now Paused", session_id);
+                                // Drop sender so nested subscription tasks can terminate
+                                nested_event_tx.take();
                                 return;
                             }
                         }
@@ -2346,6 +2376,9 @@ where
                     Err(e) => {
                         // Flush any remaining TEXT_MESSAGE_END for interrupted streams
                         for (job_id, message_id) in active_message_ids.drain() {
+                            if !text_message_started.remove(&job_id) {
+                                continue;
+                            }
                             tracing::debug!(
                                 job_id = job_id,
                                 "Error path: flushing TEXT_MESSAGE_END for interrupted stream"
@@ -2358,8 +2391,11 @@ where
 
                         // Emit STEP_FINISHED for current step before error
                         if prev_position.is_some() {
-                            let mut adapter_lock = adapter.lock().await;
-                            if let Some(event) = adapter_lock.task_finished(None) {
+                            let finished_event = {
+                                let mut adapter_lock = adapter.lock().await;
+                                adapter_lock.task_finished(None)
+                            };
+                            if let Some(event) = finished_event {
                                 let event_id = Self::encode_event_with_logging(&encoder, &event);
                                 event_store.store_event(&run_id, event_id, event.clone()).await;
                                 yield (event_id, event);
@@ -2395,7 +2431,7 @@ where
 
             // Drop the sender so spawned tasks' channels close when they finish,
             // allowing the drain loop to terminate.
-            drop(nested_event_tx);
+            nested_event_tx.take();
 
             // Drain remaining nested events with timeout
             // (spawned tasks may still be sending final STEP_FINISHED events)
@@ -2414,6 +2450,9 @@ where
             // Flush any remaining TEXT_MESSAGE_END for streams that didn't complete normally
             // (safety net for edge cases where StreamingJobCompleted wasn't received)
             for (job_id, message_id) in active_message_ids.drain() {
+                if !text_message_started.remove(&job_id) {
+                    continue;
+                }
                 tracing::debug!(
                     job_id = job_id,
                     "Normal completion: flushing TEXT_MESSAGE_END for unclosed stream"
@@ -2426,8 +2465,11 @@ where
 
             // Emit STEP_FINISHED for final step if exists
             if prev_position.is_some() && !has_error {
-                let mut adapter_lock = adapter.lock().await;
-                if let Some(event) = adapter_lock.task_finished(None) {
+                let finished_event = {
+                    let mut adapter_lock = adapter.lock().await;
+                    adapter_lock.task_finished(None)
+                };
+                if let Some(event) = finished_event {
                     let event_id = Self::encode_event_with_logging(&encoder, &event);
                     event_store.store_event(&run_id, event_id, event.clone()).await;
                     yield (event_id, event);
@@ -2436,8 +2478,10 @@ where
 
             // Emit RUN_FINISHED only if no error occurred (AG-UI spec: RUN_FINISHED and RUN_ERROR are mutually exclusive)
             if !has_error {
-                let adapter_lock = adapter.lock().await;
-                let event = adapter_lock.workflow_completed(None);
+                let event = {
+                    let adapter_lock = adapter.lock().await;
+                    adapter_lock.workflow_completed(None)
+                };
                 let event_id = Self::encode_event_with_logging(&encoder, &event);
                 event_store.store_event(&run_id, event_id, event.clone()).await;
                 yield (event_id, event);
