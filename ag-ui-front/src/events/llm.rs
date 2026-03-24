@@ -512,12 +512,15 @@ pub fn extract_tool_execution_started(bytes: &[u8]) -> Option<ExtractedToolStart
             .get("tool_execution_started")
             .or_else(|| json_value.get("toolExecutionStarted"));
         if let Some(s) = started {
-            let call_id = s
+            let call_id = match s
                 .get("call_id")
                 .or_else(|| s.get("callId"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                .filter(|s| !s.is_empty())
+            {
+                Some(id) => id.to_string(),
+                None => return None,
+            };
             let fn_name = s
                 .get("fn_name")
                 .or_else(|| s.get("fnName"))
