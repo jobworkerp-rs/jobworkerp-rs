@@ -1712,10 +1712,9 @@ where
                                             tool_job_id = started.job_id,
                                             "Nested workflow subscription limit reached, skipping"
                                         );
-                                    } else {
+                                    } else if let Some(nested_tx) = nested_event_tx.as_ref().cloned() {
                                         let nested_job_id = proto::jobworkerp::data::JobId { value: started.job_id };
                                         let job_result_app = app_module.job_result_app.clone();
-                                        let nested_tx = nested_event_tx.as_ref().expect("nested_event_tx should be Some during event loop").clone();
                                         let nested_encoder = encoder.clone();
                                         let nested_event_store = event_store.clone();
                                         let nested_run_id = run_id.clone();
@@ -2441,11 +2440,12 @@ where
                 yield nested_event;
             }
 
-            // Wait for spawned nested tasks to finish (best-effort)
-            let _ = tokio::time::timeout(
-                tokio::time::Duration::from_secs(NESTED_DRAIN_TIMEOUT_SECS),
-                futures::future::join_all(nested_task_handles.into_values()),
-            ).await;
+            // Abort remaining nested tasks — channel drop already signals graceful
+            // exit, but abort ensures cleanup even if a task is stuck waiting on
+            // subscribe_result_stream_for_job (up to NESTED_WF_PROGRESS_TIMEOUT_MS).
+            for handle in nested_task_handles.into_values() {
+                handle.abort();
+            }
 
             // Flush any remaining TEXT_MESSAGE_END for streams that didn't complete normally
             // (safety net for edge cases where StreamingJobCompleted wasn't received)
