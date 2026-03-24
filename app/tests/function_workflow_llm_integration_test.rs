@@ -472,3 +472,73 @@ fn test_workflow_function_discovery_via_find_functions() -> Result<()> {
         Ok(())
     })
 }
+
+// === Tests for enqueue_function_for_llm / await_function_result (2-stage split) ===
+
+#[test]
+fn test_enqueue_function_for_llm_streaming_runner() -> Result<()> {
+    // COMMAND runner supports streaming (output_type=Both)
+    // enqueue_function_for_llm should return is_streaming=true and result=None
+    TEST_RUNTIME.block_on(async {
+        let app = Arc::new(create_hybrid_test_app().await?);
+        let meta = Arc::new(HashMap::new());
+
+        let enqueued = app
+            .function_app
+            .enqueue_function_for_llm(
+                meta,
+                "COMMAND",
+                Some(
+                    json!({"command": "echo", "args": ["hello"]})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                3,
+            )
+            .await?;
+
+        assert!(
+            enqueued.is_streaming,
+            "COMMAND runner should be detected as streaming-capable"
+        );
+        assert!(
+            enqueued.result.is_none(),
+            "Streaming runner should return None result (deferred to await_function_result)"
+        );
+        assert!(enqueued.job_id.value > 0, "Job ID should be assigned");
+        assert_eq!(
+            enqueued.runner_name, "COMMAND",
+            "Runner name should be COMMAND"
+        );
+        assert!(
+            enqueued.result_handle.is_some(),
+            "Streaming runner should have result_handle"
+        );
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_enqueue_function_for_llm_nonexistent() -> Result<()> {
+    // Non-existent runner/worker should return error
+    TEST_RUNTIME.block_on(async {
+        let app = Arc::new(create_hybrid_test_app().await?);
+        let meta = Arc::new(HashMap::new());
+
+        let result = app
+            .function_app
+            .enqueue_function_for_llm(
+                meta,
+                "NONEXISTENT_RUNNER_NAME",
+                Some(json!({"key": "value"}).as_object().unwrap().clone()),
+                3,
+            )
+            .await;
+
+        assert!(result.is_err(), "Non-existent runner should return error");
+
+        Ok(())
+    })
+}

@@ -24,9 +24,12 @@ use std::sync::Arc;
 use tests_with_worker::start_test_worker;
 use tokio::time::{Duration, timeout};
 
-const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
+const DEFAULT_OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
+fn ollama_host() -> String {
+    std::env::var("OLLAMA_HOST").unwrap_or_else(|_| DEFAULT_OLLAMA_HOST.to_string())
+}
 const TEST_MODEL: &str = "qwen3.5:9b";
-const OTLP_ADDR: &str = "http://otel-collector.default.svc.cluster.local:4317";
+//const OTLP_ADDR: &str = "http://otel-collector.default.svc.cluster.local:4317";
 /// Shorter timeout to avoid hanging on tool execution failures.
 const TEST_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -42,13 +45,13 @@ do something manually.";
 async fn create_auto_select_test_service()
 -> Result<(OllamaChatService, tests_with_worker::TestWorkerHandle)> {
     // SAFETY: called in test setup before spawning threads
-    unsafe { std::env::set_var("OTLP_ADDR", OTLP_ADDR) };
+    // unsafe { std::env::set_var("OTLP_ADDR", OTLP_ADDR) };
     let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
     let worker_handle = start_test_worker(app_module.clone()).await?;
 
     let settings = OllamaRunnerSettings {
         model: TEST_MODEL.to_string(),
-        base_url: Some(OLLAMA_HOST.to_string()),
+        base_url: Some(ollama_host()),
         system_prompt: Some(AGENT_SYSTEM_PROMPT.to_string()),
         pull_model: Some(true),
     };
@@ -261,13 +264,13 @@ async fn test_auto_select_streaming_picks_function_set() -> Result<()> {
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_auto_select_without_function_sets_falls_back() -> Result<()> {
     // SAFETY: called in test setup before spawning threads
-    unsafe { std::env::set_var("OTLP_ADDR", OTLP_ADDR) };
+    // unsafe { std::env::set_var("OTLP_ADDR", OTLP_ADDR) };
     let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
     let worker_handle = start_test_worker(app_module.clone()).await?;
 
     let settings = OllamaRunnerSettings {
         model: TEST_MODEL.to_string(),
-        base_url: Some(OLLAMA_HOST.to_string()),
+        base_url: Some(ollama_host()),
         system_prompt: Some(AGENT_SYSTEM_PROMPT.to_string()),
         pull_model: Some(true),
     };

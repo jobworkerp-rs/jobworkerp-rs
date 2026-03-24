@@ -472,6 +472,89 @@ pub fn extract_tool_execution_results(
     results
 }
 
+/// Extracted tool execution started info for nested workflow progress tracking.
+#[derive(Debug, Clone)]
+pub struct ExtractedToolStarted {
+    pub call_id: String,
+    pub fn_name: String,
+    pub job_id: i64,
+    pub fn_arguments: String,
+}
+
+/// Extract tool execution started notification from LlmChatResult bytes.
+/// Returns Some when a ToolExecutionStarted message is present (streaming runners only).
+pub fn extract_tool_execution_started(bytes: &[u8]) -> Option<ExtractedToolStarted> {
+    if bytes.is_empty() {
+        return None;
+    }
+
+    // Try protobuf decoding — return immediately on success (even if field is missing)
+    // to avoid JSON fallback misinterpreting valid protobuf bytes.
+    // proto3 int64 defaults to 0 when unset, so reject job_id == 0
+    if let Ok(result) = LlmChatResult::decode(bytes) {
+        if let Some(started) = result.tool_execution_started
+            && started.job_id > 0
+        {
+            return Some(ExtractedToolStarted {
+                call_id: started.call_id,
+                fn_name: started.fn_name,
+                job_id: started.job_id,
+                fn_arguments: started.fn_arguments,
+            });
+        }
+        return None;
+    }
+
+    // Fallback: try JSON decoding (only when protobuf decode itself fails)
+    // proto3 JSON mapping may encode int64 as string, so handle both
+    if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        let started = json_value
+            .get("tool_execution_started")
+            .or_else(|| json_value.get("toolExecutionStarted"));
+        if let Some(s) = started {
+            let call_id = match s
+                .get("call_id")
+                .or_else(|| s.get("callId"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                Some(id) => id.to_string(),
+                None => return None,
+            };
+            let fn_name = s
+                .get("fn_name")
+                .or_else(|| s.get("fnName"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let job_id = s
+                .get("job_id")
+                .or_else(|| s.get("jobId"))
+                .and_then(|v| {
+                    v.as_i64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+                })
+                .unwrap_or(0);
+            let fn_arguments = s
+                .get("fn_arguments")
+                .or_else(|| s.get("fnArguments"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if job_id > 0 {
+                return Some(ExtractedToolStarted {
+                    call_id,
+                    fn_name,
+                    job_id,
+                    fn_arguments,
+                });
+            }
+        }
+    }
+
+    None
+}
+
 /// Extract text content from LlmChatResult protobuf bytes.
 ///
 /// LLM_CHAT runner streams serialized LlmChatResult protobuf messages.
@@ -766,6 +849,7 @@ mod tests {
             pending_tool_calls: None,
             requires_tool_execution: None,
             tool_execution_results: vec![],
+            tool_execution_started: None,
         };
         let bytes = result.encode_to_vec();
         ResultOutputItem {
@@ -800,6 +884,7 @@ mod tests {
             }),
             requires_tool_execution: Some(true),
             tool_execution_results: vec![],
+            tool_execution_started: None,
         };
         let bytes = result.encode_to_vec();
 
@@ -836,6 +921,7 @@ mod tests {
             done: false,
             usage: None,
             pending_tool_calls: None,
+            tool_execution_started: None,
             requires_tool_execution: None,
             tool_execution_results: vec![],
         };
@@ -922,6 +1008,7 @@ mod tests {
             pending_tool_calls: None,
             requires_tool_execution: None,
             tool_execution_results: vec![],
+            tool_execution_started: None,
         };
         let bytes = result.encode_to_vec();
 
@@ -1462,6 +1549,7 @@ mod tests {
                     result: r#"{"status":200}"#.to_string(),
                     error: None,
                     success: true,
+                    job_id: None,
                 },
                 ToolExecutionResult {
                     call_id: "call_2".to_string(),
@@ -1469,8 +1557,10 @@ mod tests {
                     result: "error output".to_string(),
                     error: Some("command failed".to_string()),
                     success: false,
+                    job_id: None,
                 },
             ],
+            tool_execution_started: None,
         };
         let bytes = result.encode_to_vec();
 
@@ -1519,5 +1609,115 @@ mod tests {
 
         let results = extract_tool_execution_results(&bytes);
         assert!(results.is_empty());
+    }
+
+    // === Tests for tool execution started extraction ===
+
+    #[test]
+    fn test_extract_tool_execution_started_from_protobuf() {
+        use jobworkerp_runner::jobworkerp::runner::llm::ToolExecutionStarted;
+
+        let result = LlmChatResult {
+            tool_execution_started: Some(ToolExecutionStarted {
+                call_id: "call_42".to_string(),
+                fn_name: "github-code-review".to_string(),
+                job_id: 12345,
+                fn_arguments: r#"{"owner":"test"}"#.to_string(),
+            }),
+            ..Default::default()
+        };
+        let bytes = result.encode_to_vec();
+
+        let extracted = extract_tool_execution_started(&bytes);
+        assert!(extracted.is_some());
+        let started = extracted.unwrap();
+        assert_eq!(started.call_id, "call_42");
+        assert_eq!(started.fn_name, "github-code-review");
+        assert_eq!(started.job_id, 12345);
+    }
+
+    #[test]
+    fn test_extract_tool_execution_started_from_json() {
+        let json = serde_json::json!({
+            "tool_execution_started": {
+                "call_id": "call_99",
+                "fn_name": "my-workflow",
+                "job_id": 67890
+            }
+        });
+        let bytes = serde_json::to_vec(&json).unwrap();
+
+        let extracted = extract_tool_execution_started(&bytes);
+        assert!(extracted.is_some());
+        let started = extracted.unwrap();
+        assert_eq!(started.call_id, "call_99");
+        assert_eq!(started.fn_name, "my-workflow");
+        assert_eq!(started.job_id, 67890);
+    }
+
+    #[test]
+    fn test_extract_tool_execution_started_none_when_absent() {
+        let result = LlmChatResult {
+            tool_execution_started: None,
+            ..Default::default()
+        };
+        let bytes = result.encode_to_vec();
+
+        let extracted = extract_tool_execution_started(&bytes);
+        assert!(extracted.is_none());
+    }
+
+    #[test]
+    fn test_extract_tool_execution_started_none_for_zero_job_id_json() {
+        let json = serde_json::json!({
+            "tool_execution_started": {
+                "call_id": "call_1",
+                "fn_name": "test",
+                "job_id": 0
+            }
+        });
+        let bytes = serde_json::to_vec(&json).unwrap();
+
+        let extracted = extract_tool_execution_started(&bytes);
+        assert!(extracted.is_none());
+    }
+
+    #[test]
+    fn test_extract_tool_execution_started_none_for_zero_job_id_protobuf() {
+        use jobworkerp_runner::jobworkerp::runner::llm::ToolExecutionStarted;
+
+        let result = LlmChatResult {
+            tool_execution_started: Some(ToolExecutionStarted {
+                call_id: "call_1".to_string(),
+                fn_name: "test".to_string(),
+                job_id: 0,
+                fn_arguments: String::new(),
+            }),
+            ..Default::default()
+        };
+        let bytes = result.encode_to_vec();
+
+        let extracted = extract_tool_execution_started(&bytes);
+        assert!(extracted.is_none());
+    }
+
+    #[test]
+    fn test_extract_tool_execution_started_json_string_job_id() {
+        // proto3 JSON mapping may encode int64 as string
+        let json = serde_json::json!({
+            "tool_execution_started": {
+                "call_id": "call_str",
+                "fn_name": "workflow",
+                "job_id": "99999"
+            }
+        });
+        let bytes = serde_json::to_vec(&json).unwrap();
+
+        let extracted = extract_tool_execution_started(&bytes);
+        assert!(extracted.is_some());
+        let started = extracted.unwrap();
+        assert_eq!(started.call_id, "call_str");
+        assert_eq!(started.fn_name, "workflow");
+        assert_eq!(started.job_id, 99999);
     }
 }

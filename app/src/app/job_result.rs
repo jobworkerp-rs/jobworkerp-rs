@@ -158,6 +158,19 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
     where
         Self: Send + 'static;
 
+    /// Subscribe to the streaming data for a job without waiting for final result.
+    ///
+    /// Unlike `listen_result_by_job_id`, this returns the stream immediately
+    /// so callers can process intermediate data in real-time (e.g., nested
+    /// workflow progress tracking).
+    async fn subscribe_stream_by_job_id(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+    ) -> Result<Option<BoxStream<'static, ResultOutputItem>>>
+    where
+        Self: Send + 'static;
+
     async fn listen_result_stream_by_worker(
         &self,
         worker_id: Option<&WorkerId>,

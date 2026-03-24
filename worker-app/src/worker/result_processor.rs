@@ -60,11 +60,17 @@ impl ResultProcessorImpl {
             metadata,
         } = jr
         {
-            // retry first if necessary
+            // Retry/complete first: complete_job publishes result via pubsub.
+            // IMPORTANT: This must happen BEFORE create_job_result_if_necessary.
+            // For streaming jobs (StreamingType != None), JobResultData.output is None
+            // because the actual output is delivered via the stream. If we stored
+            // the result to Redis/RDB first, listen_result's find_job_result_by_job_id
+            // would find a cached entry with output=None and return it immediately
+            // without the stream, causing callers to see empty output.
             let retried = self
                 .process_complete_or_retry_condition(&id, &data, st_data, &w, &metadata)
                 .await;
-            // store result if necessary by result status and worker setting
+            // Store result if necessary by result status and worker setting
             match self
                 .job_result_app()
                 .create_job_result_if_necessary(&id, &data, w.broadcast_results)
