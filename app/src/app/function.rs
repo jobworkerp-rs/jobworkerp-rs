@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use core::fmt;
 use helper::{FunctionCallHelper, McpNameConverter};
 use infra::infra::runner::rows::RunnerWithSchema;
+use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
@@ -27,10 +28,43 @@ pub mod converter;
 pub mod function_set;
 pub mod helper;
 
+/// Result type from listen_result_by_job_id: (JobResult, Option<stream>).
+pub type JobListenResult = Result<(
+    proto::jobworkerp::data::JobResult,
+    Option<futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>>,
+)>;
+
+/// Result of enqueuing a function for LLM tool execution (Phase A of 2-stage split).
+/// When `is_streaming` is true, the job was enqueued with StreamingType::Internal
+/// and `result` is None — caller must use `await_function_result()` to get the result.
+/// When `is_streaming` is false, `result` contains the already-completed value.
+pub struct EnqueuedFunction {
+    pub job_id: proto::jobworkerp::data::JobId,
+    pub runner_name: String,
+    pub result: Option<serde_json::Value>,
+    pub is_streaming: bool,
+    /// Pre-started result listener for streaming jobs (started immediately after enqueue
+    /// to avoid missing pubsub events). None for non-streaming jobs.
+    pub result_handle: Option<tokio::task::JoinHandle<JobListenResult>>,
+}
+
+impl std::fmt::Debug for EnqueuedFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnqueuedFunction")
+            .field("job_id", &self.job_id)
+            .field("runner_name", &self.runner_name)
+            .field("result", &self.result)
+            .field("is_streaming", &self.is_streaming)
+            .field("result_handle", &self.result_handle.as_ref().map(|_| "..."))
+            .finish()
+    }
+}
+
 #[async_trait]
 pub trait FunctionApp:
     UseWorkerApp
     + UseRunnerApp
+    + UseIdGenerator
     + UseMokaCache<Arc<String>, Vec<FunctionSpecs>>
     + converter::FunctionSpecConverter
     + FunctionCallHelper
@@ -816,6 +850,317 @@ pub trait FunctionApp:
         }
     }
 
+    /// Common logic for enqueuing a runner-based function for LLM tool execution.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_enqueue_for_llm(
+        &self,
+        meta: Arc<HashMap<String, String>>,
+        runner: RunnerWithSchema,
+        tool_name_opt: Option<String>,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+        timeout_sec: u32,
+    ) -> Result<EnqueuedFunction> {
+        let rdata = runner
+            .data
+            .as_ref()
+            .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
+        let supports_streaming = check_method_supports_streaming(rdata, tool_name_opt.as_deref());
+        let streaming_type = if supports_streaming {
+            StreamingType::Internal
+        } else {
+            StreamingType::None
+        };
+        let runner_name = rdata.name.clone();
+        let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
+        let (settings, args) =
+            Self::prepare_runner_call_arguments(arguments.unwrap_or_default()).await?;
+        let worker_data = self.create_worker_data(&runner, settings, None).await?;
+
+        if supports_streaming {
+            let rid_ref = runner
+                .id
+                .as_ref()
+                .ok_or_else(|| JobWorkerError::NotFound("Runner id not found".to_string()))?;
+            let rdata_ref = runner
+                .data
+                .as_ref()
+                .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
+            let job_args = self
+                .transform_job_args(rid_ref, rdata_ref, &args, tool_name_opt.as_deref())
+                .await?;
+
+            // Pre-generate job_id and start listening BEFORE enqueue to avoid
+            // race condition where the job completes and publishes results via
+            // pubsub before the listener subscribes.
+            let job_id = proto::jobworkerp::data::JobId {
+                value: self.id_generator().generate_id()?,
+            };
+            let job_result_app = self.job_result_app().clone();
+            let listen_job_id = job_id;
+            let listen_timeout = (timeout_sec as u64) * 1000;
+            let result_handle = tokio::spawn(async move {
+                job_result_app
+                    .listen_result_by_job_id(&listen_job_id, Some(listen_timeout), true)
+                    .await
+            });
+
+            let enqueue_result = self
+                .job_app()
+                .enqueue_job_with_temp_worker_no_wait(
+                    meta,
+                    worker_data,
+                    job_args,
+                    None,
+                    0,
+                    proto::jobworkerp::data::Priority::Medium as i32,
+                    (timeout_sec as u64) * 1000,
+                    Some(job_id),
+                    streaming_type,
+                    true,
+                    tool_name_opt,
+                )
+                .await;
+            if let Err(e) = enqueue_result {
+                // Abort the pre-started listener to avoid orphaned tasks
+                result_handle.abort();
+                return Err(e);
+            }
+
+            Ok(EnqueuedFunction {
+                job_id,
+                runner_name,
+                result: None,
+                is_streaming: true,
+                result_handle: Some(result_handle),
+            })
+        } else {
+            // Non-streaming: enqueue and wait for result (Direct response)
+            let tool_name_for_decode = tool_name_opt.clone();
+            let (job_id, job_result, _stream) = self
+                .setup_worker_and_enqueue_with_json_full_output(
+                    meta,
+                    &runner_name,
+                    worker_data,
+                    args,
+                    None,
+                    timeout_sec,
+                    streaming_type,
+                    tool_name_opt,
+                )
+                .await?;
+
+            let result = if let Some(jr) = job_result {
+                let rid = runner
+                    .id
+                    .ok_or_else(|| JobWorkerError::NotFound("Runner id not found".to_string()))?;
+                let rdata = runner
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
+                match self.extract_job_result_output(jr) {
+                    Ok(bytes) => Some(
+                        self.transform_raw_output(
+                            &rid,
+                            rdata,
+                            &bytes,
+                            tool_name_for_decode.as_deref(),
+                        )
+                        .await?,
+                    ),
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            } else {
+                None
+            };
+
+            Ok(EnqueuedFunction {
+                job_id,
+                runner_name,
+                result,
+                is_streaming: false,
+                result_handle: None,
+            })
+        }
+    }
+
+    /// Phase A: Enqueue a function for LLM tool execution and return immediately.
+    /// For streaming-capable runners, enqueues with StreamingType::Internal (returns immediately).
+    /// For non-streaming runners, enqueues with StreamingType::None (waits for completion).
+    async fn enqueue_function_for_llm(
+        &self,
+        meta: Arc<HashMap<String, String>>,
+        name: &str,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+        timeout_sec: u32,
+    ) -> Result<EnqueuedFunction> {
+        tracing::debug!("enqueue_function_for_llm: {}: {:?}", name, &arguments);
+
+        match self.find_runner_by_name_with_mcp(name).await {
+            Ok(Some((runner, tool_name_opt))) => {
+                self.handle_enqueue_for_llm(meta, runner, tool_name_opt, arguments, timeout_sec)
+                    .await
+            }
+            Ok(None) => {
+                // Worker path: find worker and enqueue
+                let (worker_data, tool_name_opt) = self
+                    .find_worker_by_name_with_mcp(name)
+                    .await?
+                    .ok_or_else(|| {
+                    JobWorkerError::WorkerNotFound(format!("worker or method not found: {name}"))
+                })?;
+
+                // Worker path: cannot modify existing worker's response_type,
+                // so streaming is not supported (always synchronous wait)
+                let (runner_name, runner_type_opt) =
+                    if let Some(runner_id) = worker_data.runner_id.as_ref() {
+                        if let Some(RunnerWithSchema {
+                            data: Some(rdata), ..
+                        }) = self.runner_app().find_runner(runner_id).await?
+                        {
+                            (rdata.name.clone(), Some(rdata.runner_type()))
+                        } else {
+                            (name.to_string(), None)
+                        }
+                    } else {
+                        (name.to_string(), None)
+                    };
+                let supports_streaming = false;
+                let streaming_type = StreamingType::None;
+
+                // Transform arguments (e.g. wrap into 'input' for Workflow runners)
+                let arguments = if let Some(rt) = runner_type_opt {
+                    transform_function_arguments_impl(rt, arguments)
+                } else {
+                    arguments
+                };
+                let request_args = serde_json::Value::Object(arguments.unwrap_or_default());
+                let (worker_name, tool_name_for_worker) =
+                    if let Some((server_name, tool_name)) = Self::divide_names(name) {
+                        (server_name, Some(tool_name))
+                    } else {
+                        (name.to_string(), tool_name_opt)
+                    };
+                let tool_name_for_decode = tool_name_for_worker.clone();
+                let (job_id, job_result, _stream) = self
+                    .enqueue_with_worker_name(
+                        meta,
+                        &worker_name,
+                        &request_args,
+                        None,
+                        timeout_sec,
+                        streaming_type,
+                        tool_name_for_worker,
+                    )
+                    .await?;
+
+                let result = if let Some(jr) = job_result {
+                    match self.extract_job_result_output(jr) {
+                        Ok(bytes) => {
+                            match self
+                                .decode_job_result_output(
+                                    None,
+                                    Some(&runner_name),
+                                    &bytes,
+                                    tool_name_for_decode.as_deref(),
+                                )
+                                .await
+                            {
+                                Ok(json) => Some(json),
+                                Err(_) => Some(serde_json::Value::String(
+                                    String::from_utf8_lossy(&bytes).to_string(),
+                                )),
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to extract worker result: {:?}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                Ok(EnqueuedFunction {
+                    job_id,
+                    runner_name,
+                    result,
+                    is_streaming: supports_streaming,
+                    result_handle: None,
+                })
+            }
+            Err(e) => {
+                tracing::error!("enqueue_function_for_llm error: {:#?}", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Phase B: Await the result of a previously enqueued streaming function.
+    /// Uses the pre-started result_handle from EnqueuedFunction to receive
+    /// the job result via listen_result_by_job_id (pubsub with DB fallback).
+    /// Collects FinalCollected or last Data chunk from the stream.
+    async fn await_function_result(
+        &self,
+        result_handle: tokio::task::JoinHandle<JobListenResult>,
+        runner_name: &str,
+        using: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        use futures::StreamExt;
+        use proto::jobworkerp::data::result_output_item;
+
+        let (job_result, stream_opt) = result_handle
+            .await
+            .map_err(|e| anyhow::anyhow!("Result listener task failed: {}", e))??;
+
+        // For streaming jobs: collect from stream (FinalCollected is authoritative)
+        if let Some(mut stream) = stream_opt {
+            let mut last_data: Option<Vec<u8>> = None;
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::FinalCollected(data)) => {
+                        last_data = Some(data);
+                        break;
+                    }
+                    Some(result_output_item::Item::Data(data)) => {
+                        last_data = Some(data);
+                    }
+                    Some(result_output_item::Item::End(_)) => break,
+                    None => {}
+                }
+            }
+            if let Some(data) = last_data {
+                return self
+                    .decode_job_result_output(None, Some(runner_name), &data, using)
+                    .await;
+            }
+        }
+
+        // Fallback: use direct output from job result (non-streaming)
+        let output = job_result
+            .data
+            .as_ref()
+            .and_then(|r| r.output.as_ref().map(|o| &o.items));
+
+        if let Some(output_bytes) = output {
+            if !output_bytes.is_empty() {
+                self.decode_job_result_output(None, Some(runner_name), output_bytes, using)
+                    .await
+            } else {
+                Err(
+                    JobWorkerError::RuntimeError("Job completed but output is empty".to_string())
+                        .into(),
+                )
+            }
+        } else {
+            Err(
+                JobWorkerError::RuntimeError("Job completed but no output found".to_string())
+                    .into(),
+            )
+        }
+    }
+
     /// Streaming version of call_function_for_llm.
     ///
     /// Returns a stream of FunctionResult items for progressive output.
@@ -959,12 +1304,13 @@ pub struct FunctionAppImpl {
     worker_app: Arc<dyn crate::app::worker::WorkerApp>,
     job_app: Arc<dyn crate::app::job::JobApp>,
     job_result_app: Arc<dyn crate::app::job_result::JobResultApp>,
+    id_generator: Arc<IdGeneratorWrapper>,
     function_cache: memory_utils::cache::moka::MokaCacheImpl<Arc<String>, Vec<FunctionSpecs>>,
     descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     runner_factory: Arc<jobworkerp_runner::runner::factory::RunnerSpecFactory>,
     job_queue_config: infra::infra::JobQueueConfig,
     worker_config: crate::app::WorkerConfig,
-    workflow_loader: Arc<infra::workflow::WorkflowLoader>, // Workflow definition loader (DI pattern)
+    workflow_loader: Arc<infra::workflow::WorkflowLoader>,
 }
 
 impl FunctionAppImpl {
@@ -974,6 +1320,7 @@ impl FunctionAppImpl {
         worker_app: Arc<dyn crate::app::worker::WorkerApp>,
         job_app: Arc<dyn crate::app::job::JobApp>,
         job_result_app: Arc<dyn crate::app::job_result::JobResultApp>,
+        id_generator: Arc<IdGeneratorWrapper>,
         descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         runner_factory: Arc<jobworkerp_runner::runner::factory::RunnerSpecFactory>,
         mc_config: &memory_utils::cache::stretto::MemoryCacheConfig,
@@ -993,6 +1340,7 @@ impl FunctionAppImpl {
             worker_app,
             job_app,
             job_result_app,
+            id_generator,
             function_cache,
             descriptor_cache,
             runner_factory,
@@ -1022,6 +1370,11 @@ impl UseJobApp for FunctionAppImpl {
 impl UseJobResultApp for FunctionAppImpl {
     fn job_result_app(&self) -> &Arc<dyn crate::app::job_result::JobResultApp + 'static> {
         &self.job_result_app
+    }
+}
+impl UseIdGenerator for FunctionAppImpl {
+    fn id_generator(&self) -> &IdGeneratorWrapper {
+        &self.id_generator
     }
 }
 
@@ -1321,5 +1674,46 @@ mod tests {
         let inner: serde_json::Value = serde_json::from_str(parsed.as_str().unwrap()).unwrap();
         assert_eq!(inner["owner"], "foo");
         assert_eq!(inner["repo"], "bar");
+    }
+
+    /// Regression test: Worker path must use transform_function_arguments_impl,
+    /// not just wrap_workflow_args_if_needed.
+    ///
+    /// When LLM generates {"arguments": {"owner": "...", "repo": "...", "pull_number": 42}},
+    /// transform_function_arguments_impl extracts the inner object from "arguments" key
+    /// and wraps it into "input". Without this, wrap_workflow_args_if_needed would wrap
+    /// the entire {"arguments": {...}} as-is, causing workflow input validation to fail
+    /// because "owner" is not at the top level.
+    #[test]
+    fn test_workflow_arguments_key_must_be_unwrapped_by_transform() {
+        let args = serde_json::Map::from_iter([(
+            "arguments".to_string(),
+            json!({"owner": "jobworkerp-rs", "repo": "jobworkerp-rs", "pull_number": 187}),
+        )]);
+
+        // transform_function_arguments_impl correctly unwraps "arguments" → "input"
+        let transformed =
+            transform_function_arguments_impl(RunnerType::ReusableWorkflow, Some(args.clone()))
+                .unwrap();
+        assert!(transformed.contains_key("input"));
+        assert!(!transformed.contains_key("arguments"));
+        let input_str = transformed["input"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
+        assert_eq!(parsed["owner"], "jobworkerp-rs");
+        assert_eq!(parsed["pull_number"], 187);
+
+        // wrap_workflow_args_if_needed does NOT unwrap "arguments" — it wraps everything
+        let wrapped = wrap_workflow_args_if_needed(
+            RunnerType::ReusableWorkflow,
+            serde_json::Value::Object(args),
+        );
+        let wrapped_input_str = wrapped["input"].as_str().unwrap();
+        let wrapped_parsed: serde_json::Value = serde_json::from_str(wrapped_input_str).unwrap();
+        // The "arguments" key is still present (this was the bug)
+        assert!(
+            wrapped_parsed.get("arguments").is_some(),
+            "wrap_workflow_args_if_needed should NOT unwrap 'arguments' key — \
+             that's why transform_function_arguments_impl must be called in worker path"
+        );
     }
 }

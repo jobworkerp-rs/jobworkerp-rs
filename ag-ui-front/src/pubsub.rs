@@ -147,6 +147,40 @@ where
     }
 }
 
+/// Subscribe to a job's result stream for nested workflow progress tracking.
+///
+/// Returns the raw ResultOutputItem stream, allowing callers to decode
+/// WorkflowResult protobuf messages and extract position changes for
+/// STEP_STARTED/STEP_FINISHED event generation.
+///
+/// # Arguments
+/// * `job_result_app` - JobResultApp for listening to results
+/// * `job_id` - The job ID to subscribe to
+/// * `timeout` - Timeout in milliseconds
+///
+/// # Returns
+/// Optional stream of ResultOutputItem (None if job already completed or subscription failed)
+pub async fn subscribe_result_stream_for_job(
+    job_result_app: &Arc<dyn JobResultApp>,
+    job_id: &JobId,
+    timeout: u64,
+) -> Option<BoxStream<'static, ResultOutputItem>> {
+    match job_result_app
+        .subscribe_stream_by_job_id(job_id, Some(timeout))
+        .await
+    {
+        Ok(stream_opt) => stream_opt,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to subscribe to result stream for job {}: {:?}",
+                job_id.value,
+                e
+            );
+            None
+        }
+    }
+}
+
 /// Helper to convert ResultOutputItem stream to AG-UI events with custom message ID.
 ///
 /// # Arguments

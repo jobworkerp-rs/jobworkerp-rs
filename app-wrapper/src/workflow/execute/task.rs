@@ -403,6 +403,25 @@ impl TaskExecutor {
         let deadline = tokio::time::Instant::now() + timeout_duration;
         let task_name_for_timeout = self.task_name.clone();
 
+        // Determine task type name for TaskStarted event
+        let task_type_name = match &*self.task {
+            Task::DoTask(_) => "doTask",
+            Task::ForTask(_) => "forTask",
+            Task::ForkTask(_) => "forkTask",
+            Task::RaiseTask(_) => "raiseTask",
+            Task::RunTask(_) => "runTask",
+            Task::SetTask(_) => "setTask",
+            Task::SwitchTask(_) => "switchTask",
+            Task::TryTask(_) => "tryTask",
+            Task::WaitTask(_) => "waitTask",
+        };
+        let task_started_position = task_context.position.read().await.as_json_pointer();
+        let task_started_event = WorkflowStreamEvent::task_started(
+            task_type_name,
+            &self.task_name,
+            &task_started_position,
+        );
+
         let res = self
             .execute_task(cx, task_context, execution_id.clone())
             .await;
@@ -410,6 +429,9 @@ impl TaskExecutor {
         // NOTE: For streaming events (StreamingJobStarted, StreamingData), we yield immediately
         // to ensure real-time delivery. Only the final completed event needs position cleanup.
         Box::pin(stream! {
+            // Emit TaskStarted at the beginning of task execution
+            yield Ok(task_started_event);
+
             pin_mut!(res);
             // Track non-streaming events to find the final one for position cleanup
             let mut previous_item: Option<Result<WorkflowStreamEvent, Box<workflow::Error>>> = None;

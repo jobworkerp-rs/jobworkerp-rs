@@ -604,6 +604,56 @@ impl JobApp for RdbChanJobAppImpl {
         )
         .await
     }
+    // TODO: Extract shared logic with hybrid.rs (requires unifying enqueue_job_with_worker signature)
+    async fn enqueue_job_with_temp_worker_no_wait<'a>(
+        &'a self,
+        meta: Arc<HashMap<String, String>>,
+        worker_data: WorkerData,
+        args: Vec<u8>,
+        uniq_key: Option<String>,
+        run_after_time: i64,
+        priority: i32,
+        timeout: u64,
+        reserved_job_id: Option<JobId>,
+        streaming_type: StreamingType,
+        with_random_name: bool,
+        using: Option<String>,
+    ) -> Result<JobId> {
+        let wid = self
+            .worker_app()
+            .create_temp(worker_data.clone(), with_random_name)
+            .await?;
+        // Enqueue with NoResult response_type to return immediately.
+        // The original worker_data.response_type (Direct) is preserved for the
+        // worker's processing behavior, but we override it here to skip
+        // _wait_job_for_direct_response. The caller retrieves the result
+        // separately via listen_result_by_job_id.
+        let mut enqueue_worker_data = worker_data;
+        enqueue_worker_data.response_type = ResponseType::NoResult as i32;
+        enqueue_worker_data.broadcast_results = true;
+        enqueue_worker_data.store_success = true;
+        enqueue_worker_data.store_failure = true;
+        let worker = Worker {
+            id: Some(wid),
+            data: Some(enqueue_worker_data),
+        };
+        let (job_id, _result, _stream) = self
+            .enqueue_job_with_worker(
+                meta,
+                worker,
+                args,
+                uniq_key,
+                run_after_time,
+                priority,
+                timeout,
+                reserved_job_id,
+                streaming_type,
+                using,
+            )
+            .await?;
+        Ok(job_id)
+    }
+
     async fn enqueue_job<'a>(
         &'a self,
         metadata: Arc<HashMap<String, String>>,

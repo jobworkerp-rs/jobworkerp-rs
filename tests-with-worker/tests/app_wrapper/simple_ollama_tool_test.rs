@@ -1,5 +1,5 @@
 //! Simple integration test for Ollama tool call functionality
-//! This test requires an Ollama server running at http://ollama.ollama.svc.cluster.local:11434
+//! This test requires an Ollama server
 
 #![allow(clippy::uninlined_format_args)]
 #![allow(clippy::collapsible_match)]
@@ -21,21 +21,24 @@ use tests_with_worker::start_test_worker;
 use tokio::time::{Duration, timeout};
 
 /// Test configuration
-const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
+const DEFAULT_OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
+fn ollama_host() -> String {
+    std::env::var("OLLAMA_HOST").unwrap_or_else(|_| DEFAULT_OLLAMA_HOST.to_string())
+}
 const TEST_MODEL: &str = "qwen3.5:9b"; // Use qwen3.5:9b model
-const OTLP_ADDR: &str = "http://otel-collector.default.svc.cluster.local:4317";
+// const OTLP_ADDR: &str = "http://otel-collector.default.svc.cluster.local:4317";
 const TEST_TIMEOUT: Duration = Duration::from_secs(100);
 
 /// Create Ollama chat service for testing (with backend worker)
 async fn create_test_service() -> Result<(OllamaChatService, tests_with_worker::TestWorkerHandle)> {
     // SAFETY: called in test setup before spawning threads
-    unsafe { std::env::set_var("OTLP_ADDR", OTLP_ADDR) };
+    // unsafe { std::env::set_var("OTLP_ADDR", OTLP_ADDR) };
     let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
     let worker_handle = start_test_worker(app_module.clone()).await?;
 
     let settings = OllamaRunnerSettings {
         model: TEST_MODEL.to_string(),
-        base_url: Some(OLLAMA_HOST.to_string()),
+        base_url: Some(ollama_host()),
         system_prompt: Some(
             "You are a helpful assistant. When asked to run commands, you MUST use the available tools to execute them. Always call the runTask function when users ask for command execution. Do not explain or think - just execute the function call immediately."
                 .to_string(),

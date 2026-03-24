@@ -418,6 +418,29 @@ impl JobResultApp for RdbJobResultAppImpl {
         }
     }
 
+    async fn subscribe_stream_by_job_id(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+    ) -> Result<Option<BoxStream<'static, ResultOutputItem>>>
+    where
+        Self: Send + 'static,
+    {
+        // Run find and subscribe in parallel to avoid race condition where
+        // the job completes between find and subscribe calls.
+        let find_future = self.find_job_result_list_by_job_id(job_id);
+        let subscribe_future = self
+            .job_result_pubsub_repository()
+            .subscribe_result_stream(job_id, timeout);
+        let (find_res, subscribe_res) = tokio::join!(find_future, subscribe_future);
+
+        let res = find_res?.into_iter().next();
+        if matches!(&res, Some(v) if self.is_finished(v)) {
+            return Ok(None);
+        }
+        subscribe_res.map(Some)
+    }
+
     async fn listen_result_stream_by_worker(
         &self,
         worker_id: Option<&WorkerId>,
