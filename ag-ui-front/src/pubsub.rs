@@ -166,10 +166,10 @@ pub async fn subscribe_result_stream_for_job(
     timeout: u64,
 ) -> Option<BoxStream<'static, ResultOutputItem>> {
     match job_result_app
-        .listen_result_by_job_id(job_id, Some(timeout), true)
+        .subscribe_stream_by_job_id(job_id, Some(timeout))
         .await
     {
-        Ok((_job_result, stream_opt)) => stream_opt,
+        Ok(stream_opt) => stream_opt,
         Err(e) => {
             tracing::warn!(
                 "Failed to subscribe to result stream for job {}: {:?}",

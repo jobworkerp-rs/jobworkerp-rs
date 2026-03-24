@@ -5,11 +5,11 @@
 use crate::config::AgUiServerConfig;
 use crate::error::{AgUiError, Result};
 use crate::events::{
-    AgUiEvent, EventEncoder, ExtractedToolResult, InterruptInfo, InterruptPayload, PendingToolCall,
-    SharedWorkflowEventAdapter, extract_text_from_completed_output,
-    extract_text_from_llm_chat_result, extract_tool_calls_from_llm_result,
-    extract_tool_execution_results, extract_tool_execution_started, shared_adapter,
-    tool_calls_to_ag_ui_events, ExtractedToolStarted,
+    AgUiEvent, EventEncoder, ExtractedToolResult, ExtractedToolStarted, InterruptInfo,
+    InterruptPayload, PendingToolCall, SharedWorkflowEventAdapter,
+    extract_text_from_completed_output, extract_text_from_llm_chat_result,
+    extract_tool_calls_from_llm_result, extract_tool_execution_results,
+    extract_tool_execution_started, shared_adapter, tool_calls_to_ag_ui_events,
 };
 use crate::session::{
     EventStore, HitlWaitingInfo, PendingToolCallInfo, Session, SessionManager, SessionState,
@@ -1071,7 +1071,7 @@ where
             registry.insert(run_id.to_string(), executor.clone());
         }
 
-        // 11. Create event stream (emit_run_started: false since RUN_STARTED was already emitted)
+        // 11. Create event stream (emit_run_started: true — resume is a new run per AG-UI spec)
         // TOOL_CALL_END + TOOL_CALL_RESULT are NOT emitted here because tool execution
         // hasn't happened yet. They will be emitted by StreamingJobCompleted's fallback
         // logic when the auto-executed tool results arrive via pending_tool_results.
@@ -1495,7 +1495,7 @@ where
         let app_module = self.app_module.clone();
 
         stream! {
-            // Emit RUN_STARTED (skip for HITL resume to avoid duplicate)
+            // Emit RUN_STARTED if requested (resume passes true per AG-UI spec: each resume is a new run)
             if emit_run_started {
                 let adapter_lock = adapter.lock().await;
                 let event = adapter_lock.workflow_started("workflow", None);
@@ -1540,7 +1540,7 @@ where
             let (nested_event_tx, mut nested_event_rx) =
                 tokio::sync::mpsc::channel::<(u64, AgUiEvent)>(NESTED_EVENT_CHANNEL_SIZE);
             // Track spawned nested workflow subscription tasks for cleanup
-            let mut nested_task_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+            let mut nested_task_handles: std::collections::HashMap<i64, tokio::task::JoinHandle<()>> = std::collections::HashMap::new();
 
             // Main event loop - process workflow events and nested progress events
             // Uses tokio::select! to merge both event sources
@@ -1618,43 +1618,66 @@ where
                                     yield (event_id, ag_event);
                                 }
 
-                                // Detect ToolExecutionStarted: buffer for real-time TOOL_CALL emission
-                                // and spawn nested workflow progress subscription
-                                if let Some(started) = extract_tool_execution_started(&ev.data)
-                                    && started.job_id > 0
-                                {
-                                    pending_tool_starts.insert(started.call_id.clone(), started.clone());
+                                // Detect ToolExecutionStarted: emit TOOL_CALL_START/ARGS immediately
+                                // so the UI sees them up-front, and buffer for correlating the result.
+                                let tool_started_opt = extract_tool_execution_started(&ev.data)
+                                    .filter(|s| s.job_id > 0);
+                                if let Some(ref started) = tool_started_opt {
+                                    // Emit START/ARGS immediately for real-time UI feedback
+                                    let parent_msg_id = active_message_ids.get(&job_id_value)
+                                        .map(|m| m.to_string());
+                                    let start_event = AgUiEvent::tool_call_start(
+                                        started.call_id.clone(),
+                                        started.fn_name.clone(),
+                                        parent_msg_id,
+                                    );
+                                    let start_eid = Self::encode_event_with_logging(&encoder, &start_event);
+                                    event_store.store_event(&run_id, start_eid, start_event.clone()).await;
+                                    yield (start_eid, start_event);
+
+                                    let args_event = AgUiEvent::tool_call_args(
+                                        started.call_id.clone(),
+                                        started.fn_arguments.clone(),
+                                    );
+                                    let args_eid = Self::encode_event_with_logging(&encoder, &args_event);
+                                    event_store.store_event(&run_id, args_eid, args_event.clone()).await;
+                                    yield (args_eid, args_event);
+
+                                    sent_tool_call_ids.insert(started.call_id.clone());
+
+                                    // Check if a result was already buffered (arrived before Started)
+                                    if let Some(extracted) = pending_tool_results.remove(&started.call_id) {
+                                        // Emit END → RESULT immediately
+                                        let end_event = AgUiEvent::tool_call_end(started.call_id.clone());
+                                        let end_eid = Self::encode_event_with_logging(&encoder, &end_event);
+                                        event_store.store_event(&run_id, end_eid, end_event.clone()).await;
+                                        yield (end_eid, end_event);
+
+                                        let result_ev = AgUiEvent::tool_call_result(
+                                            started.call_id.clone(),
+                                            extracted.result,
+                                        );
+                                        let result_eid = Self::encode_event_with_logging(&encoder, &result_ev);
+                                        event_store.store_event(&run_id, result_eid, result_ev.clone()).await;
+                                        yield (result_eid, result_ev);
+
+                                        sent_tool_result_ids.insert(started.call_id.clone());
+                                    } else {
+                                        // Keep in pending_tool_starts for correlating the eventual result
+                                        pending_tool_starts.insert(started.call_id.clone(), started.clone());
+                                    }
                                 }
 
                                 // Process tool execution results from streaming chunks.
-                                // If we have a matching ToolExecutionStarted, emit TOOL_CALL events
-                                // immediately for real-time delivery and correct ordering.
+                                // START/ARGS were already emitted at ToolExecutionStarted time,
+                                // so only emit END/RESULT here.
                                 let tool_results = extract_tool_execution_results(&ev.data);
                                 for (call_id, extracted) in tool_results {
                                     if sent_tool_result_ids.contains(call_id.as_str()) {
                                         continue;
                                     }
-                                    if let Some(tool_start) = pending_tool_starts.remove(&call_id) {
-                                        // Real-time emission: START → ARGS → END → RESULT
-                                        let parent_msg_id = active_message_ids.get(&job_id_value)
-                                            .map(|m| m.to_string());
-                                        let start_event = AgUiEvent::tool_call_start(
-                                            call_id.clone(),
-                                            tool_start.fn_name.clone(),
-                                            parent_msg_id,
-                                        );
-                                        let start_eid = Self::encode_event_with_logging(&encoder, &start_event);
-                                        event_store.store_event(&run_id, start_eid, start_event.clone()).await;
-                                        yield (start_eid, start_event);
-
-                                        let args_event = AgUiEvent::tool_call_args(
-                                            call_id.clone(),
-                                            tool_start.fn_arguments,
-                                        );
-                                        let args_eid = Self::encode_event_with_logging(&encoder, &args_event);
-                                        event_store.store_event(&run_id, args_eid, args_event.clone()).await;
-                                        yield (args_eid, args_event);
-
+                                    if let Some(_tool_start) = pending_tool_starts.remove(&call_id) {
+                                        // START/ARGS already emitted; emit only END → RESULT
                                         let end_event = AgUiEvent::tool_call_end(call_id.clone());
                                         let end_eid = Self::encode_event_with_logging(&encoder, &end_event);
                                         event_store.store_event(&run_id, end_eid, end_event.clone()).await;
@@ -1668,7 +1691,6 @@ where
                                         event_store.store_event(&run_id, result_eid, result_ev.clone()).await;
                                         yield (result_eid, result_ev);
 
-                                        sent_tool_call_ids.insert(call_id.clone());
                                         sent_tool_result_ids.insert(call_id);
                                     } else {
                                         // No matching ToolExecutionStarted yet, buffer for later
@@ -1677,11 +1699,12 @@ where
                                 }
 
                                 // Spawn nested workflow progress subscription for ToolExecutionStarted
-                                // (re-check pending_tool_starts since some may not have results yet)
-                                if let Some(started) = extract_tool_execution_started(&ev.data)
-                                    && started.job_id > 0
-                                {
-                                    if nested_task_handles.len() >= MAX_NESTED_SUBSCRIPTIONS {
+                                if let Some(ref started) = tool_started_opt {
+                                    // Evict finished handles to keep active count accurate
+                                    nested_task_handles.retain(|_, h| !h.is_finished());
+                                    if nested_task_handles.contains_key(&started.job_id) {
+                                        // Already subscribed to this job_id
+                                    } else if nested_task_handles.len() >= MAX_NESTED_SUBSCRIPTIONS {
                                         tracing::warn!(
                                             limit = MAX_NESTED_SUBSCRIPTIONS,
                                             tool_job_id = started.job_id,
@@ -1795,7 +1818,7 @@ where
                                                 );
                                             }
                                         });
-                                        nested_task_handles.push(handle);
+                                        nested_task_handles.insert(started.job_id, handle);
                                     }
                                 }
                             } else {
@@ -1903,6 +1926,30 @@ where
                             for (call_id, extracted) in pending_tool_results.drain() {
                                 if !sent_tool_result_ids.contains(call_id.as_str()) {
                                     sent_tool_result_ids.insert(call_id.clone());
+
+                                    // Ensure START/ARGS were emitted before END/RESULT
+                                    if !sent_tool_call_ids.contains(call_id.as_str()) {
+                                        if let Some(tool_start) = pending_tool_starts.remove(&call_id) {
+                                            let start_event = AgUiEvent::tool_call_start(
+                                                call_id.clone(),
+                                                tool_start.fn_name.clone(),
+                                                None,
+                                            );
+                                            let start_eid = Self::encode_event_with_logging(&encoder, &start_event);
+                                            event_store.store_event(&run_id, start_eid, start_event.clone()).await;
+                                            yield (start_eid, start_event);
+
+                                            let args_event = AgUiEvent::tool_call_args(
+                                                call_id.clone(),
+                                                tool_start.fn_arguments,
+                                            );
+                                            let args_eid = Self::encode_event_with_logging(&encoder, &args_event);
+                                            event_store.store_event(&run_id, args_eid, args_event.clone()).await;
+                                            yield (args_eid, args_event);
+                                        }
+                                        sent_tool_call_ids.insert(call_id.clone());
+                                    }
+
                                     let end_event = AgUiEvent::tool_call_end(call_id.clone());
                                     let end_event_id = Self::encode_event_with_logging(&encoder, &end_event);
                                     event_store.store_event(&run_id, end_event_id, end_event.clone()).await;
@@ -2128,6 +2175,9 @@ where
                                     event_store.store_event(&run_id, event_id, finished_event.clone()).await;
                                     yield (event_id, finished_event);
                                 }
+                                // Clear prev_position so the context fallback below
+                                // does not redundantly attempt task_finished() again.
+                                prev_position = None;
                                 tracing::debug!(
                                     task_name = %ev.task_name,
                                     position = %task_position,
@@ -2358,7 +2408,7 @@ where
             // Wait for spawned nested tasks to finish (best-effort)
             let _ = tokio::time::timeout(
                 tokio::time::Duration::from_secs(NESTED_DRAIN_TIMEOUT_SECS),
-                futures::future::join_all(nested_task_handles),
+                futures::future::join_all(nested_task_handles.into_values()),
             ).await;
 
             // Flush any remaining TEXT_MESSAGE_END for streams that didn't complete normally

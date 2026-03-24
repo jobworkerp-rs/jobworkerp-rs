@@ -610,6 +610,7 @@ impl JobApp for HybridJobAppImpl {
         run_after_time: i64,
         priority: i32,
         timeout: u64,
+        reserved_job_id: Option<JobId>,
         streaming_type: StreamingType,
         with_random_name: bool,
         using: Option<String>,
@@ -641,7 +642,7 @@ impl JobApp for HybridJobAppImpl {
                 run_after_time,
                 priority,
                 timeout,
-                None,
+                reserved_job_id,
                 streaming_type,
                 using,
             )

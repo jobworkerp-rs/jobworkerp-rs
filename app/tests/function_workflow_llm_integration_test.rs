@@ -511,6 +511,10 @@ fn test_enqueue_function_for_llm_streaming_runner() -> Result<()> {
             enqueued.runner_name, "COMMAND",
             "Runner name should be COMMAND"
         );
+        assert!(
+            enqueued.result_handle.is_some(),
+            "Streaming runner should have result_handle"
+        );
 
         Ok(())
     })
