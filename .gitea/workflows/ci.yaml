@@ -49,8 +49,8 @@ jobs:
     services:
       db:
         image: mysql:8.4
-        ports:
-          - 3306:3306
+#        ports:
+#          - 3306:3306
         env:
           MYSQL_HOST: db
           MYSQL_USER: mysql
@@ -64,8 +64,8 @@ jobs:
         image: redis:7
         env:
           REDIS_HOST: redis
-        ports:
-          - 6379:6379
+#        ports:
+#          - 6379:6379
         # Set health checks to wait until redis has started
         options: >-
           --health-cmd "redis-cli ping"
@@ -79,13 +79,13 @@ jobs:
           IP: 127.0.0.1
           INITIAL_PORT: 7000
           BIND_ADDRESS: 0.0.0.0
-        ports:
-          - 7000:7000
-          - 7001:7001
-          - 7002:7002
-          - 7003:7003
-          - 7004:7004
-          - 7005:7005
+#        ports:
+#          - 7000:7000
+#          - 7001:7001
+#          - 7002:7002
+#          - 7003:7003
+#          - 7004:7004
+#          - 7005:7005
 
     steps:
       - name: apt upgrade
@@ -128,7 +128,7 @@ jobs:
         env:
           PLUGINS_RUNNER_DIR: "./target/debug/"
           TEST_REDIS_URL: "redis://redis:6379"
-          TEST_MYSQL_URL: "mysql://mysql:mysqlpw@db:3306/test"
+          TEST_MYSQL_URL: "mysql://db:mysqlpw@db:3306/test"
           UV_VENV_CLEAR: 1
           RUST_BACKTRACE: 1
       - name: Run test with mysql
@@ -143,6 +143,6 @@ jobs:
         env:
           PLUGINS_RUNNER_DIR: "./target/debug/"
           TEST_REDIS_URL: "redis://redis:6379"
-          TEST_MYSQL_URL: "mysql://mysql:mysqlpw@db:3306/test"
+          TEST_MYSQL_URL: "mysql://db:mysqlpw@db:3306/test"
           UV_VENV_CLEAR: 1
           RUST_BACKTRACE: 1
