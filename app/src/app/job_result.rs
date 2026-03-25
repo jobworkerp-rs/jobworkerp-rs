@@ -34,19 +34,22 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
             .filter_map(|r| r.data.as_ref()?.job_id.as_ref().map(|j| j.value))
             .collect();
         let overrides_map =
-            find_overrides_batch_tx(self.rdb_job_result_repository().db_pool(), &job_ids)
-                .await
-                .unwrap_or_default();
+            find_overrides_batch_tx(self.rdb_job_result_repository().db_pool(), &job_ids).await?;
 
         let mut rv = Vec::new();
         for it in v {
+            let original = it.clone();
             match self
                 ._fill_worker_data_with_overrides(it, &overrides_map)
                 .await
             {
                 Ok(filled) => rv.push(filled),
                 Err(e) => {
-                    tracing::warn!("Skipping job_result in batch fill: {:?}", e);
+                    tracing::warn!(
+                        "Failed to fill worker data in batch fill, returning original: {:?}",
+                        e
+                    );
+                    rv.push(original);
                 }
             }
         }
@@ -86,8 +89,7 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
         let overrides = if let Some(job_id) = data.job_id.as_ref() {
             self.rdb_job_result_repository()
                 .find_overrides_by_job_id(job_id)
-                .await
-                .unwrap_or(None)
+                .await?
         } else {
             None
         };

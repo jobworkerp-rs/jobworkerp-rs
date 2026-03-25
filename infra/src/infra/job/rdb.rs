@@ -243,7 +243,7 @@ pub trait RdbJobRepository:
             .map_err(JobWorkerError::DBError)?;
         // Clean up per-job overrides atomically with job deletion.
         // After this, _fill_worker_data falls back to worker defaults.
-        let _ = delete_overrides_tx(&mut *tx, id).await;
+        delete_overrides_tx(&mut *tx, id).await?;
         let res = self.delete_tx(&mut *tx, id).await?;
         tx.commit().await.map_err(JobWorkerError::DBError)?;
         Ok(res)
