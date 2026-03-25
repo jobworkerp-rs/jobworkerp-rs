@@ -304,7 +304,9 @@ pub trait ChanJobDispatcher:
             return self.result_processor().process_result(cancelled_result, None, wdat).await;
         }
 
-        if wdat.response_type != ResponseType::Direct as i32
+        let resolved =
+            app::app::job::resolve_job_params(&wdat, jdat.overrides.as_ref());
+        if resolved.response_type != ResponseType::Direct as i32
             && wdat.queue_type == QueueType::WithBackup as i32
         {
             // grab job in db (only for record as in progress)
@@ -327,7 +329,7 @@ pub trait ChanJobDispatcher:
                     let priority = jdat.priority;
                     let enqueue_time = jdat.enqueue_time;
                     let is_streamable = jdat.streaming_type != 0;
-                    let broadcast_results = wdat.broadcast_results;
+                    let broadcast_results = resolved.broadcast_results;
 
                     if let Err(e) = index_repo
                         .index_status(
@@ -370,7 +372,7 @@ pub trait ChanJobDispatcher:
                 let priority = jdat.priority;
                 let enqueue_time = jdat.enqueue_time;
                 let is_streamable = jdat.streaming_type != 0;
-                let broadcast_results = wdat.broadcast_results;
+                let broadcast_results = resolved.broadcast_results;
 
                 if let Err(e) = index_repo
                     .index_status(
@@ -399,7 +401,7 @@ pub trait ChanJobDispatcher:
         let priority_for_indexing = jdat.priority;
         let enqueue_time_for_indexing = jdat.enqueue_time;
         let is_streamable_for_indexing = jdat.streaming_type != 0;
-        let broadcast_results_for_indexing = wdat.broadcast_results;
+        let broadcast_results_for_indexing = resolved.broadcast_results;
 
         // run job
         let r = self
@@ -416,32 +418,34 @@ pub trait ChanJobDispatcher:
                 .await;
             // TODO execute and return result to result channel.
             tracing::trace!("send result id: {:?}, data: {:?}", &r.0.id, &r.0.data);
-            // change status to wait handling result
-            self.job_processing_status_repository()
-                .upsert_status(&jid, &JobProcessingStatus::WaitResult)
-                .await?;
+            // change status to wait handling result (skip for Direct response)
+            if resolved.response_type != ResponseType::Direct as i32 {
+                self.job_processing_status_repository()
+                    .upsert_status(&jid, &JobProcessingStatus::WaitResult)
+                    .await?;
 
-            // Index WAIT_RESULT status in RDB (if enabled) with full metadata
-            if let Some(index_repo) = self.rdb_job_processing_status_index_repository()
-                && let Err(e) = index_repo
-                    .index_status(
-                        &jid,
-                        &JobProcessingStatus::WaitResult,
-                        &wid,
-                        &channel_for_indexing,
-                        priority_for_indexing,
-                        enqueue_time_for_indexing,
-                        is_streamable_for_indexing,
-                        broadcast_results_for_indexing,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        "Failed to index WAIT_RESULT status in RDB for job {}: {:?}",
-                        jid.value,
-                        e
-                    );
-                }
+                // Index WAIT_RESULT status in RDB (if enabled) with full metadata
+                if let Some(index_repo) = self.rdb_job_processing_status_index_repository()
+                    && let Err(e) = index_repo
+                        .index_status(
+                            &jid,
+                            &JobProcessingStatus::WaitResult,
+                            &wid,
+                            &channel_for_indexing,
+                            priority_for_indexing,
+                            enqueue_time_for_indexing,
+                            is_streamable_for_indexing,
+                            broadcast_results_for_indexing,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to index WAIT_RESULT status in RDB for job {}: {:?}",
+                            jid.value,
+                            e
+                        );
+                    }
+            }
 
             self.result_processor().process_result(r.0, r.1, wdat).await
     }

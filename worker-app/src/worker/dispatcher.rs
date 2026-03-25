@@ -145,8 +145,10 @@ pub trait JobDispatcher:
                     job_id.value
                 );
 
-                // Directly create cancellation result
+                // Resolve job params (merge worker defaults with per-job overrides)
                 use command_utils::util::datetime;
+                let resolved =
+                    app::app::job::resolve_job_params(worker_data, job_data.overrides.as_ref());
                 #[allow(deprecated)]
                 let job_result_data = JobResultData {
                     job_id: Some(*job_id),
@@ -166,12 +168,17 @@ pub trait JobDispatcher:
                     streaming_type: job_data.streaming_type,
                     enqueue_time: job_data.enqueue_time,
                     run_after_time: job_data.run_after_time,
-                    response_type: worker_data.response_type,
-                    store_success: false,
-                    store_failure: true,
+                    response_type: resolved.response_type,
+                    // Cancellation is a failure-path; store_success is effectively unused
+                    // but we use the resolved value for consistency with other fields.
+                    store_success: resolved.store_success,
+                    store_failure: resolved.store_failure,
                     worker_name: worker_data.name.clone(),
                     using: job_data.using.clone(),
-                    broadcast_results: worker_data.broadcast_results,
+                    broadcast_results: resolved.broadcast_results,
+                    // Cancellation is handled by status (Cancelled); build_retry_job()
+                    // returns None for non-ErrorAndRetry status regardless of policy.
+                    resolved_retry_policy: resolved.retry_policy,
                 };
 
                 let cancelled_result = JobResult {

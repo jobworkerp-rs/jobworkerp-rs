@@ -103,6 +103,7 @@ mod purge_stale_status_tests {
                     None,
                     StreamingType::None,
                     None,
+                    None, // overrides
                 )
                 .await?;
 
@@ -249,6 +250,7 @@ mod purge_stale_status_tests {
                     None,
                     StreamingType::None,
                     None,
+                    None, // overrides
                 )
                 .await?;
 

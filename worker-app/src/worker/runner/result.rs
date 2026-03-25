@@ -375,6 +375,7 @@ mod tests {
                 run_after_time: 0,
                 grabbed_until_time: None,
                 using: None,
+                overrides: None,
             }),
             metadata: HashMap::new(),
         };

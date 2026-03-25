@@ -1,4 +1,5 @@
 use super::rows::JobResultRow;
+use crate::infra::job::overrides::{delete_overrides_tx, find_overrides_tx};
 use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -6,7 +7,9 @@ use command_utils::util::datetime;
 use infra_utils::infra::rdb::{Rdb, RdbPool, UseRdbPool};
 use itertools::Itertools;
 use jobworkerp_base::error::JobWorkerError;
-use proto::jobworkerp::data::{JobId, JobResult, JobResultData, JobResultId, JobResultSortField};
+use proto::jobworkerp::data::{
+    JobExecutionOverrides, JobId, JobResult, JobResultData, JobResultId, JobResultSortField,
+};
 use sqlx::{Executor, Transaction};
 
 #[async_trait]
@@ -121,8 +124,56 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         ))
     }
 
+    /// Fetch job execution overrides for a given job_id.
+    /// Used by _fill_worker_data_to_data to restore resolved override values.
+    async fn find_overrides_by_job_id(
+        &self,
+        job_id: &JobId,
+    ) -> Result<Option<JobExecutionOverrides>> {
+        find_overrides_tx(self.db_pool(), job_id).await
+    }
+
+    /// Delete job execution overrides for a given job_id.
+    /// Called when job_result is deleted to clean up orphaned overrides.
+    async fn delete_overrides_by_job_id(&self, job_id: &JobId) -> Result<bool> {
+        delete_overrides_tx(self.db_pool(), job_id).await
+    }
+
     async fn delete(&self, id: &JobResultId) -> Result<bool> {
-        self.delete_tx(self.db_pool(), id).await
+        let mut tx = self
+            .db_pool()
+            .begin()
+            .await
+            .map_err(JobWorkerError::DBError)?;
+
+        // Look up job_id before deleting so we can clean up orphaned overrides
+        let job_id_opt: Option<i64> =
+            sqlx::query_scalar("SELECT job_id FROM job_result WHERE id = ?")
+                .bind(id.value)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(JobWorkerError::DBError)?;
+
+        let del = self.delete_tx(&mut *tx, id).await?;
+
+        // Only delete overrides when no other job or job_result references them
+        // (unlike delete_bulk's table-wide orphan scan, this targets a specific job_id)
+        if del && let Some(jid) = job_id_opt {
+            sqlx::query(
+                "DELETE FROM job_execution_overrides WHERE job_id = ? \
+                 AND NOT EXISTS (SELECT 1 FROM job WHERE job.id = ?) \
+                 AND NOT EXISTS (SELECT 1 FROM job_result WHERE job_result.job_id = ?)",
+            )
+            .bind(jid)
+            .bind(jid)
+            .bind(jid)
+            .execute(&mut *tx)
+            .await
+            .map_err(JobWorkerError::DBError)?;
+        }
+
+        tx.commit().await.map_err(JobWorkerError::DBError)?;
+        Ok(del)
     }
 
     async fn delete_tx<'c, E: Executor<'c, Database = Rdb>>(
@@ -479,6 +530,18 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
 
         let deleted_count = result.rows_affected() as i64;
 
+        // Clean up orphaned overrides: only delete where neither job nor job_result
+        // references the override, avoiding incorrect deletion when delete_bulk
+        // removes only some job_result rows for a given job_id.
+        sqlx::query(
+            "DELETE FROM job_execution_overrides \
+             WHERE NOT EXISTS (SELECT 1 FROM job WHERE job.id = job_execution_overrides.job_id) \
+               AND NOT EXISTS (SELECT 1 FROM job_result WHERE job_result.job_id = job_execution_overrides.job_id)",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(JobWorkerError::DBError)?;
+
         // Commit transaction
         tx.commit().await.map_err(JobWorkerError::DBError)?;
 
@@ -572,6 +635,7 @@ mod test {
             store_failure: false, // fixed
             using: None,
             broadcast_results: false, // fixed
+            resolved_retry_policy: None,
         });
 
         let id = JobResultId { value: 111 };
@@ -618,6 +682,7 @@ mod test {
             store_failure: false,
             using: None,
             broadcast_results: false,
+            resolved_retry_policy: None,
         };
         let updated = repository.update(&mut tx, &id, &update).await?;
         assert!(updated);
@@ -703,6 +768,7 @@ mod test {
             store_failure: false,
             using: None,
             broadcast_results: false,
+            resolved_retry_policy: None,
         }
     }
 
@@ -2014,6 +2080,7 @@ mod test {
                 store_failure: false,
                 using: None,
                 broadcast_results: false,
+                resolved_retry_policy: None,
             };
 
             // Create job result
@@ -2070,6 +2137,148 @@ mod test {
         }
 
         Ok(())
+    }
+
+    /// Test that delete() also removes the corresponding job_execution_overrides row
+    async fn _test_delete_cleans_up_overrides(pool: &'static RdbPool) -> Result<()> {
+        use crate::infra::job::overrides::{create_overrides_tx, find_overrides_tx};
+        use proto::jobworkerp::data::{JobExecutionOverrides, ResponseType};
+
+        let repository = RdbJobResultRepositoryImpl::new(pool);
+
+        let job_id = JobId { value: 50001 };
+        let result_id = JobResultId { value: 50001 };
+        let data = create_test_job_result_data(
+            job_id.value,
+            1,
+            ResultStatus::Success,
+            1000,
+            2000,
+            0,
+            None,
+        );
+        repository.create(&result_id, &data).await?;
+
+        // Create an overrides row for the same job_id
+        let overrides = JobExecutionOverrides {
+            response_type: Some(ResponseType::NoResult as i32),
+            store_success: Some(true),
+            store_failure: Some(true),
+            broadcast_results: Some(true),
+            retry_policy: None,
+        };
+        create_overrides_tx(pool, &job_id, &overrides).await?;
+
+        // Verify overrides exist
+        let found = find_overrides_tx(pool, &job_id).await?;
+        assert!(found.is_some(), "overrides should exist before delete");
+
+        // Delete the job_result
+        let deleted = repository.delete(&result_id).await?;
+        assert!(deleted, "job_result should be deleted");
+
+        // Verify overrides are also deleted
+        let found_after = find_overrides_tx(pool, &job_id).await?;
+        assert!(
+            found_after.is_none(),
+            "overrides should be cleaned up after job_result delete"
+        );
+
+        Ok(())
+    }
+
+    /// Test that delete_bulk() also removes corresponding job_execution_overrides rows
+    async fn _test_delete_bulk_cleans_up_overrides(pool: &'static RdbPool) -> Result<()> {
+        use crate::infra::job::overrides::{create_overrides_tx, find_overrides_tx};
+        use proto::jobworkerp::data::{JobExecutionOverrides, ResponseType};
+
+        let repository = RdbJobResultRepositoryImpl::new(pool);
+
+        let now = command_utils::util::datetime::now_millis();
+        let two_days_ago = now - (48 * 60 * 60 * 1000);
+
+        // Create two old job_results with overrides
+        let job_ids = [60001i64, 60002];
+        let overrides = JobExecutionOverrides {
+            response_type: Some(ResponseType::NoResult as i32),
+            store_success: Some(true),
+            store_failure: None,
+            broadcast_results: Some(true),
+            retry_policy: None,
+        };
+
+        for (i, &jid) in job_ids.iter().enumerate() {
+            let data = create_test_job_result_data(
+                jid,
+                1,
+                ResultStatus::Success,
+                two_days_ago - ((i as i64) * 1000),
+                two_days_ago - ((i as i64) * 500),
+                0,
+                None,
+            );
+            repository
+                .create(&JobResultId { value: jid }, &data)
+                .await?;
+            create_overrides_tx(pool, &JobId { value: jid }, &overrides).await?;
+        }
+
+        // Verify overrides exist
+        for &jid in &job_ids {
+            let found = find_overrides_tx(pool, &JobId { value: jid }).await?;
+            assert!(
+                found.is_some(),
+                "overrides for job_id={jid} should exist before bulk delete"
+            );
+        }
+
+        // Bulk delete old results
+        let delete_before = now - (25 * 60 * 60 * 1000);
+        let deleted_count = repository
+            .delete_bulk(Some(delete_before), vec![], vec![])
+            .await?;
+        assert_eq!(deleted_count, 2, "should delete both old results");
+
+        // Verify overrides are also deleted
+        for &jid in &job_ids {
+            let found_after = find_overrides_tx(pool, &JobId { value: jid }).await?;
+            assert!(
+                found_after.is_none(),
+                "overrides for job_id={jid} should be cleaned up after bulk delete"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(feature = "mysql"))]
+    #[test]
+    fn test_delete_cleans_up_overrides() -> Result<()> {
+        use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_rdb_from("sql/sqlite").await;
+            sqlx::query("DELETE FROM job_execution_overrides;")
+                .execute(pool)
+                .await?;
+            sqlx::query("DELETE FROM job_result;").execute(pool).await?;
+            _test_delete_cleans_up_overrides(pool).await
+        })
+    }
+
+    #[cfg(not(feature = "mysql"))]
+    #[test]
+    fn test_delete_bulk_cleans_up_overrides() -> Result<()> {
+        use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_rdb_from("sql/sqlite").await;
+            sqlx::query("DELETE FROM job_execution_overrides;")
+                .execute(pool)
+                .await?;
+            sqlx::query("DELETE FROM job_result;").execute(pool).await?;
+            _test_delete_bulk_cleans_up_overrides(pool).await
+        })
     }
 
     #[cfg(not(feature = "mysql"))]

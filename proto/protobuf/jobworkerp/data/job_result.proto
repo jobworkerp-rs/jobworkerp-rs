@@ -99,6 +99,11 @@ message JobResultData {
   // from worker.data.broadcast_results
   // Controls whether job results are published to broadcast channels
   bool broadcast_results = 22;
+
+  // # Resolved Retry Policy
+  // Retry policy resolved from worker defaults and per-job overrides
+  // Used for retry decisions and periodic job re-enqueue
+  optional jobworkerp.data.RetryPolicy resolved_retry_policy = 23;
 }
 
 // # Job Result ID

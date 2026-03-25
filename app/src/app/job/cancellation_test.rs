@@ -86,6 +86,7 @@ mod tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
 
@@ -155,6 +156,7 @@ mod tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
 
@@ -304,6 +306,7 @@ mod tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
 
@@ -394,6 +397,7 @@ mod tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
 

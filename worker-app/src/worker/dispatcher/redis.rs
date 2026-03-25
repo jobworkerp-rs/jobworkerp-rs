@@ -259,7 +259,8 @@ pub trait RedisJobDispatcher:
                 .await;
         }
 
-        if wdat.response_type != ResponseType::Direct as i32
+        let resolved = app::app::job::resolve_job_params(&wdat, jdat.overrides.as_ref());
+        if resolved.response_type != ResponseType::Direct as i32
             && wdat.queue_type == QueueType::WithBackup as i32
         {
             if let Some(repo) = self.rdb_job_repository_opt() {
@@ -286,7 +287,7 @@ pub trait RedisJobDispatcher:
                         let priority = jdat.priority;
                         let enqueue_time = jdat.enqueue_time;
                         let is_streamable = jdat.streaming_type != 0;
-                        let broadcast_results = wdat.broadcast_results;
+                        let broadcast_results = resolved.broadcast_results;
                         tokio::spawn(async move {
                             if let Err(e) = index_repo
                                 .index_status(
@@ -338,7 +339,7 @@ pub trait RedisJobDispatcher:
                 let priority = jdat.priority;
                 let enqueue_time = jdat.enqueue_time;
                 let is_streamable = jdat.streaming_type != 0;
-                let broadcast_results = wdat.broadcast_results;
+                let broadcast_results = resolved.broadcast_results;
                 tokio::spawn(async move {
                     if let Err(e) = index_repo
                         .index_status(
@@ -398,7 +399,7 @@ pub trait RedisJobDispatcher:
             &r.1.is_some()
         );
         // change status to wait handling result
-        if wdat.response_type != ResponseType::Direct as i32 {
+        if resolved.response_type != ResponseType::Direct as i32 {
             self.redis_job_repository()
                 .job_processing_status_repository()
                 .upsert_status(&jid, &JobProcessingStatus::WaitResult)
@@ -412,7 +413,7 @@ pub trait RedisJobDispatcher:
                 let priority = jdat_priority;
                 let enqueue_time = jdat_enqueue_time;
                 let is_streamable = jdat_request_streaming;
-                let broadcast_results = wdat.broadcast_results;
+                let broadcast_results = resolved.broadcast_results;
                 tokio::spawn(async move {
                     if let Err(e) = index_repo
                         .index_status(

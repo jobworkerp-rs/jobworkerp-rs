@@ -147,6 +147,7 @@ fn create_grpc_job(
             grabbed_until_time: None,
             streaming_type: 0,
             using: using.map(|s| s.to_string()),
+            overrides: None,
         }),
         ..Default::default()
     }
@@ -741,6 +742,7 @@ async fn test_grpc_unary_with_settings_defaults() -> Result<()> {
             grabbed_until_time: None,
             streaming_type: 0,
             using: Some("unary".to_string()),
+            overrides: None,
         }),
         ..Default::default()
     };

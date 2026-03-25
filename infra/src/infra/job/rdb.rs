@@ -1,6 +1,10 @@
 use std::{collections::HashSet, sync::Arc};
 
 use super::{
+    overrides::{
+        build_in_placeholders, create_overrides_tx, delete_overrides_tx, find_overrides_batch_tx,
+        find_overrides_tx,
+    },
     queue::{chan::UseChanQueueBuffer, rdb::RdbJobQueueRepository},
     rows::{JobRow, UseJobqueueAndCodec},
 };
@@ -23,7 +27,16 @@ pub trait RdbJobRepository:
     RdbJobQueueRepository + UseJobqueueAndCodec + UseRdbPool + Sync + Send
 {
     async fn create(&self, job: &Job) -> Result<bool> {
-        self.create_tx(self.db_pool(), job).await
+        let mut tx = self.db_pool().begin().await?;
+        let res = self.create_tx(&mut *tx, job).await?;
+        // persist per-job overrides atomically with the job row
+        if let (Some(id), Some(data)) = (job.id.as_ref(), job.data.as_ref())
+            && let Some(overrides) = data.overrides.as_ref()
+        {
+            create_overrides_tx(&mut *tx, id, overrides).await?;
+        }
+        tx.commit().await?;
+        Ok(res)
     }
     #[inline]
     async fn create_tx<'c, E: Executor<'c, Database = Rdb>>(
@@ -70,7 +83,15 @@ pub trait RdbJobRepository:
     }
 
     async fn upsert(&self, id: &JobId, job: &JobData) -> Result<bool> {
-        self.upsert_tx(self.db_pool(), id, job).await
+        let mut tx = self.db_pool().begin().await?;
+        let res = self.upsert_tx(&mut *tx, id, job).await?;
+        // replace per-job overrides atomically with the job row
+        delete_overrides_tx(&mut *tx, id).await?;
+        if let Some(overrides) = job.overrides.as_ref() {
+            create_overrides_tx(&mut *tx, id, overrides).await?;
+        }
+        tx.commit().await?;
+        Ok(res)
     }
     // filepath: [rdb.rs](http://_vscodecontentref_/0)
     #[inline]
@@ -172,6 +193,8 @@ pub trait RdbJobRepository:
         self.update_tx(self.db_pool(), id, job).await
     }
     #[inline]
+    // NOTE: Does not update the job_execution_overrides table.
+    // Callers needing override persistence must handle it separately.
     async fn update_tx<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
@@ -213,7 +236,17 @@ pub trait RdbJobRepository:
     }
 
     async fn delete(&self, id: &JobId) -> Result<bool> {
-        self.delete_tx(self.db_pool(), id).await
+        let mut tx = self
+            .db_pool()
+            .begin()
+            .await
+            .map_err(JobWorkerError::DBError)?;
+        // Clean up per-job overrides atomically with job deletion.
+        // After this, _fill_worker_data falls back to worker defaults.
+        delete_overrides_tx(&mut *tx, id).await?;
+        let res = self.delete_tx(&mut *tx, id).await?;
+        tx.commit().await.map_err(JobWorkerError::DBError)?;
+        Ok(res)
     }
     #[inline]
     async fn delete_tx<'c, E: Executor<'c, Database = Rdb>>(
@@ -230,9 +263,14 @@ pub trait RdbJobRepository:
     }
 
     async fn find(&self, id: &JobId) -> Result<Option<Job>> {
-        self.find_row_tx(self.db_pool(), id)
-            .await
-            .map(|r| r.map(|r2| r2.to_proto()))
+        let row = self.find_row_tx(self.db_pool(), id).await?;
+        match row {
+            Some(r) => {
+                let overrides = find_overrides_tx(self.db_pool(), id).await?;
+                Ok(Some(r.to_proto(overrides)))
+            }
+            None => Ok(None),
+        }
     }
     #[inline]
     async fn find_row_tx<'c, E: Executor<'c, Database = Rdb>>(
@@ -279,25 +317,36 @@ pub trait RdbJobRepository:
     }
 
     async fn find_list(&self, limit: Option<&i32>, offset: Option<&i64>) -> Result<Vec<Job>> {
-        self.find_row_list_tx(self.db_pool(), limit, offset)
-            .await
-            .map(|r| r.iter().map(|r2| r2.to_proto()).collect_vec())
+        let rows = self.find_row_list_tx(self.db_pool(), limit, offset).await?;
+        let job_ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        let mut overrides_map = find_overrides_batch_tx(self.db_pool(), &job_ids).await?;
+        let jobs = rows
+            .iter()
+            .map(|row| row.to_proto(overrides_map.remove(&row.id)))
+            .collect();
+        Ok(jobs)
     }
 
     // XXX id is primitive (use only for restore)
     async fn find_list_in(&self, ids: &[&i64]) -> Result<Vec<Job>> {
-        let params = format!("?{}", ", ?".repeat(ids.len() - 1));
+        let params = build_in_placeholders(ids.len())?;
         let query_str = format!("SELECT * FROM job WHERE id IN ( {params} )");
         let mut query = sqlx::query_as::<_, JobRow>(query_str.as_str());
         for i in ids.iter() {
             query = query.bind(i);
         }
-        query
+        let rows = query
             .fetch_all(self.db_pool())
             .await
             .map_err(JobWorkerError::DBError)
-            .context(format!("error in find_list_in: ({ids:?})"))
-            .map(|r| r.iter().map(|r2| r2.to_proto()).collect_vec())
+            .context(format!("error in find_list_in: ({ids:?})"))?;
+        let job_ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        let mut overrides_map = find_overrides_batch_tx(self.db_pool(), &job_ids).await?;
+        let jobs = rows
+            .iter()
+            .map(|row| row.to_proto(overrides_map.remove(&row.id)))
+            .collect();
+        Ok(jobs)
     }
 
     /// find instant job id set
@@ -438,6 +487,7 @@ mod test {
     use super::RdbChanJobRepositoryImpl;
     use super::RdbJobRepository;
     use crate::infra::JobQueueConfig;
+    use crate::infra::job::overrides::find_overrides_tx;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
@@ -468,6 +518,7 @@ mod test {
             timeout: 10000,
             streaming_type: 0,
             using: Some("hoge".to_string()),
+            overrides: None,
         });
         let job = Job {
             id: Some(id),
@@ -501,6 +552,7 @@ mod test {
             timeout: 10000,
             streaming_type: 1,
             using: Some("fuga".to_string()),
+            overrides: None,
         };
         let updated = repository.upsert(&expect.id.unwrap(), &update).await?;
         assert!(updated);
@@ -533,6 +585,7 @@ mod test {
             timeout: 10000,
             streaming_type: 0,
             using: None,
+            overrides: None,
         });
         let job = Job {
             id: Some(JobId { value: 1 }),
@@ -557,6 +610,7 @@ mod test {
             timeout: 10000,
             streaming_type: 0,
             using: None,
+            overrides: None,
         });
         let job = Job {
             id: Some(JobId { value: 2 }),
@@ -580,6 +634,7 @@ mod test {
             timeout: 10000,
             streaming_type: 0,
             using: None,
+            overrides: None,
         });
         let job = Job {
             id: Some(JobId { value: 3 }),
@@ -625,6 +680,7 @@ mod test {
                 timeout: 5000,
                 streaming_type: streaming_type_value,
                 using: None,
+                overrides: None,
             };
 
             let job = Job {
@@ -682,6 +738,257 @@ mod test {
         Ok(())
     }
 
+    use proto::jobworkerp::data::{JobExecutionOverrides, ResponseType, RetryPolicy, RetryType};
+
+    fn full_overrides() -> JobExecutionOverrides {
+        JobExecutionOverrides {
+            response_type: Some(ResponseType::Direct as i32),
+            store_success: Some(true),
+            store_failure: Some(false),
+            broadcast_results: Some(true),
+            retry_policy: Some(RetryPolicy {
+                r#type: RetryType::Exponential as i32,
+                interval: 1000,
+                max_interval: 60000,
+                max_retry: 5,
+                basis: 2.0,
+            }),
+        }
+    }
+
+    fn alt_overrides() -> JobExecutionOverrides {
+        JobExecutionOverrides {
+            response_type: Some(ResponseType::NoResult as i32),
+            store_success: Some(false),
+            store_failure: Some(true),
+            broadcast_results: Some(false),
+            retry_policy: None,
+        }
+    }
+
+    fn make_job_data(
+        args_str: &str,
+        uniq: &str,
+        overrides: Option<JobExecutionOverrides>,
+    ) -> JobData {
+        let args = RdbChanJobRepositoryImpl::serialize_message(&proto::TestArgs {
+            args: vec![args_str.to_string()],
+        })
+        .unwrap();
+        JobData {
+            worker_id: Some(WorkerId { value: 1 }),
+            args,
+            uniq_key: Some(uniq.to_string()),
+            enqueue_time: 100,
+            grabbed_until_time: None,
+            run_after_time: 0,
+            retried: 0,
+            priority: 0,
+            timeout: 5000,
+            streaming_type: 0,
+            using: None,
+            overrides,
+        }
+    }
+
+    /// Test create/find/upsert/delete with overrides
+    async fn _test_overrides_crud(pool: &'static RdbPool) -> Result<()> {
+        let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
+
+        let id = JobId { value: 701 };
+        let data = make_job_data("ov_crud", "ov_crud_1", Some(full_overrides()));
+        let job = Job {
+            id: Some(id),
+            data: Some(data.clone()),
+            metadata: HashMap::new(),
+        };
+
+        // create with overrides
+        let created = repository.create(&job).await?;
+        assert!(created);
+
+        // find: overrides should be present
+        let found = repository.find(&id).await?.expect("job not found");
+        let found_data = found.data.as_ref().unwrap();
+        let found_ov = found_data
+            .overrides
+            .as_ref()
+            .expect("overrides missing after create");
+        assert_eq!(found_ov.response_type, Some(ResponseType::Direct as i32));
+        assert_eq!(found_ov.store_success, Some(true));
+        assert!(found_ov.retry_policy.is_some());
+        assert_eq!(found_ov.retry_policy.unwrap().max_retry, 5);
+
+        // upsert with different overrides
+        let updated_data = make_job_data("ov_crud_up", "ov_crud_1", Some(alt_overrides()));
+        let upserted = repository.upsert(&id, &updated_data).await?;
+        assert!(upserted);
+
+        let found2 = repository
+            .find(&id)
+            .await?
+            .expect("job not found after upsert");
+        let found2_ov = found2
+            .data
+            .as_ref()
+            .unwrap()
+            .overrides
+            .as_ref()
+            .expect("overrides missing after upsert");
+        assert_eq!(found2_ov.response_type, Some(ResponseType::NoResult as i32));
+        assert_eq!(found2_ov.store_failure, Some(true));
+        assert!(found2_ov.retry_policy.is_none());
+
+        // upsert with overrides: None → overrides removed
+        let no_ov_data = make_job_data("ov_crud_no", "ov_crud_1", None);
+        repository.upsert(&id, &no_ov_data).await?;
+
+        let found3 = repository
+            .find(&id)
+            .await?
+            .expect("job not found after upsert none");
+        assert!(found3.data.as_ref().unwrap().overrides.is_none());
+
+        // delete job (overrides are atomically deleted with the job)
+        repository.delete(&id).await?;
+        assert!(repository.find(&id).await?.is_none());
+        // Verify overrides are also cleaned up
+        let orphan_ov: Option<proto::jobworkerp::data::JobExecutionOverrides> =
+            find_overrides_tx(pool, &id).await?;
+        assert!(orphan_ov.is_none(), "overrides should be deleted with job");
+
+        Ok(())
+    }
+
+    /// Test find_list returns overrides via batch fetch
+    async fn _test_find_list_with_overrides(pool: &'static RdbPool) -> Result<()> {
+        let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
+
+        // 3 jobs: id 801 with overrides, 802 and 803 without
+        for (id_val, uniq, ov) in [
+            (801i64, "fl_ov1", Some(full_overrides())),
+            (802, "fl_ov2", None),
+            (803, "fl_ov3", None),
+        ] {
+            let data = make_job_data(&format!("fl_{}", id_val), uniq, ov);
+            let job = Job {
+                id: Some(JobId { value: id_val }),
+                data: Some(data),
+                metadata: HashMap::new(),
+            };
+            repository.create(&job).await?;
+        }
+
+        let jobs = repository.find_list(None, None).await?;
+        assert_eq!(jobs.len(), 3);
+
+        for job in &jobs {
+            let jid = job.id.as_ref().unwrap().value;
+            let ov = &job.data.as_ref().unwrap().overrides;
+            if jid == 801 {
+                assert!(ov.is_some(), "job 801 should have overrides");
+                assert_eq!(
+                    ov.as_ref().unwrap().response_type,
+                    Some(ResponseType::Direct as i32)
+                );
+            } else {
+                assert!(ov.is_none(), "job {} should not have overrides", jid);
+            }
+        }
+
+        // cleanup
+        for id in [801, 802, 803] {
+            repository.delete(&JobId { value: id }).await?;
+        }
+        Ok(())
+    }
+
+    /// Test find_list_in returns overrides via batch fetch
+    async fn _test_find_list_in_with_overrides(pool: &'static RdbPool) -> Result<()> {
+        let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
+
+        // 3 jobs: 901 full overrides, 902 alt overrides, 903 no overrides
+        for (id_val, uniq, ov) in [
+            (901i64, "fli_ov1", Some(full_overrides())),
+            (902, "fli_ov2", Some(alt_overrides())),
+            (903, "fli_ov3", None),
+        ] {
+            let data = make_job_data(&format!("fli_{}", id_val), uniq, ov);
+            let job = Job {
+                id: Some(JobId { value: id_val }),
+                data: Some(data),
+                metadata: HashMap::new(),
+            };
+            repository.create(&job).await?;
+        }
+
+        let ids: Vec<i64> = vec![901, 902, 903];
+        let id_refs: Vec<&i64> = ids.iter().collect();
+        let jobs = repository.find_list_in(&id_refs).await?;
+        assert_eq!(jobs.len(), 3);
+
+        for job in &jobs {
+            let jid = job.id.as_ref().unwrap().value;
+            let ov = &job.data.as_ref().unwrap().overrides;
+            match jid {
+                901 => {
+                    let o = ov.as_ref().expect("job 901 should have overrides");
+                    assert_eq!(o.response_type, Some(ResponseType::Direct as i32));
+                    assert!(o.retry_policy.is_some());
+                }
+                902 => {
+                    let o = ov.as_ref().expect("job 902 should have overrides");
+                    assert_eq!(o.response_type, Some(ResponseType::NoResult as i32));
+                    assert!(o.retry_policy.is_none());
+                }
+                903 => {
+                    assert!(ov.is_none(), "job 903 should not have overrides");
+                }
+                _ => panic!("unexpected job id {}", jid),
+            }
+        }
+
+        // cleanup
+        for id in [901, 902, 903] {
+            repository.delete(&JobId { value: id }).await?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "mysql"))]
+    #[test]
+    fn test_sqlite_overrides() -> Result<()> {
+        use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_rdb_from("sql/sqlite").await;
+            sqlx::query("DELETE FROM job_execution_overrides;")
+                .execute(pool)
+                .await?;
+            sqlx::query("DELETE FROM job;").execute(pool).await?;
+            _test_overrides_crud(pool).await?;
+            _test_find_list_with_overrides(pool).await?;
+            _test_find_list_in_with_overrides(pool).await
+        })
+    }
+
+    #[cfg(feature = "mysql")]
+    #[test]
+    fn test_mysql_overrides() -> Result<()> {
+        use infra_utils::infra::test::TEST_RUNTIME;
+        use infra_utils::infra::test::setup_test_rdb_from;
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_rdb_from("sql/mysql").await;
+            sqlx::query("DELETE FROM job_execution_overrides;")
+                .execute(pool)
+                .await?;
+            sqlx::query("DELETE FROM job;").execute(pool).await?;
+            _test_overrides_crud(pool).await?;
+            _test_find_list_with_overrides(pool).await?;
+            _test_find_list_in_with_overrides(pool).await
+        })
+    }
+
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sqlite() -> Result<()> {
@@ -714,13 +1021,17 @@ mod test {
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let mysql_pool = setup_test_rdb_from("sql/mysql").await;
-            sqlx::query("TRUNCATE TABLE job;")
-                .execute(mysql_pool)
-                .await?;
+            sqlx::raw_sql(
+                "SET FOREIGN_KEY_CHECKS = 0; TRUNCATE TABLE job; SET FOREIGN_KEY_CHECKS = 1;",
+            )
+            .execute(mysql_pool)
+            .await?;
             _test_repository(mysql_pool).await?;
-            sqlx::query("TRUNCATE TABLE job;")
-                .execute(mysql_pool)
-                .await?;
+            sqlx::raw_sql(
+                "SET FOREIGN_KEY_CHECKS = 0; TRUNCATE TABLE job; SET FOREIGN_KEY_CHECKS = 1;",
+            )
+            .execute(mysql_pool)
+            .await?;
             _test_find_id_set_in_instant(mysql_pool).await
         })
     }
@@ -732,9 +1043,11 @@ mod test {
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let mysql_pool = setup_test_rdb_from("sql/mysql").await;
-            sqlx::query("TRUNCATE TABLE job;")
-                .execute(mysql_pool)
-                .await?;
+            sqlx::raw_sql(
+                "SET FOREIGN_KEY_CHECKS = 0; TRUNCATE TABLE job; SET FOREIGN_KEY_CHECKS = 1;",
+            )
+            .execute(mysql_pool)
+            .await?;
             _test_streaming_type_all_values(mysql_pool).await
         })
     }

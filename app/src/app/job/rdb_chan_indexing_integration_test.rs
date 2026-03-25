@@ -88,6 +88,7 @@ mod rdb_chan_indexing_integration_tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
 
@@ -226,6 +227,7 @@ mod rdb_chan_indexing_integration_tests {
                         None,
                         StreamingType::None,
                         None, // using
+                        None, // overrides
                     )
                     .await?;
                 job_ids.push(job_id);
@@ -355,6 +357,7 @@ mod rdb_chan_indexing_integration_tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
 
@@ -477,6 +480,7 @@ mod rdb_chan_indexing_integration_tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
 

@@ -121,6 +121,7 @@ fn create_inline_workflow_job(workflow_yaml: &str, timeout_ms: u64) -> Job {
             grabbed_until_time: None,
             streaming_type: 0,
             using: None,
+            overrides: None,
         }),
         ..Default::default()
     }

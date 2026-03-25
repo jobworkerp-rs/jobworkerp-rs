@@ -5,6 +5,22 @@ package jobworkerp.data;
 import "jobworkerp/data/common.proto";
 import "jobworkerp/data/worker.proto";
 
+// # Job Execution Overrides
+// Per-job overrides for execution settings normally defined at the worker level.
+// All fields are optional; when omitted, the worker's default is used.
+message JobExecutionOverrides {
+  // # Response Type Override
+  optional jobworkerp.data.ResponseType response_type = 1;
+  // # Store Success Override
+  optional bool store_success = 2;
+  // # Store Failure Override
+  optional bool store_failure = 3;
+  // # Broadcast Results Override
+  optional bool broadcast_results = 4;
+  // # Retry Policy Override
+  optional jobworkerp.data.RetryPolicy retry_policy = 5;
+}
+
 // # Job Data
 // Configuration and state for a job that will be executed by a worker
 message JobData {
@@ -67,6 +83,11 @@ message JobData {
   // - Auto-selected: When omitted for single-method runners
   // - Ignored: For single-method runners
   optional string using = 11;
+
+  // # Execution Overrides
+  // Per-job overrides for worker-level execution settings.
+  // When present, these settings override the worker's defaults.
+  optional JobExecutionOverrides overrides = 13;
 }
 
 // # Job ID
