@@ -183,6 +183,7 @@ async fn sub_test_normal_flow(
                     Some(jid),
                     StreamingType::Response,
                     Some("feed_hello".to_string()),
+                    None, // overrides
                 )
                 .await
         }
@@ -292,6 +293,7 @@ async fn sub_test_empty_feed(
                     Some(jid),
                     StreamingType::Response,
                     Some("feed_hello".to_string()),
+                    None, // overrides
                 )
                 .await
         }

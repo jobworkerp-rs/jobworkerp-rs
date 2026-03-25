@@ -329,6 +329,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                             StreamingType::None,
                             !temp_worker_data.use_static,
                             using, // Pass using parameter to job execution (moved here)
+                            None,
                         )
                         .await
                         .map(|res| {

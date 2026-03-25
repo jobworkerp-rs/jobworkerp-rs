@@ -3,7 +3,7 @@ use crate::module::AppConfigModule;
 
 use super::super::JobBuilder;
 use super::super::worker::{UseWorkerApp, WorkerApp};
-use super::{JobApp, JobCacheKeys, RedisJobAppHelper};
+use super::{JobApp, JobCacheKeys, RedisJobAppHelper, resolve_job_params};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
@@ -25,8 +25,9 @@ use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::jobworkerp::data::{
-    Job, JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, Priority,
-    QueueType, ResponseType, ResultOutputItem, StreamingType, Worker, WorkerData, WorkerId,
+    Job, JobData, JobExecutionOverrides, JobId, JobProcessingStatus, JobResult, JobResultData,
+    JobResultId, Priority, QueueType, ResponseType, ResultOutputItem, StreamingType, Worker,
+    WorkerData, WorkerId,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -205,6 +206,7 @@ impl HybridJobAppImpl {
         reserved_job_id: Option<JobId>,
         streaming_type: StreamingType,
         using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -221,6 +223,7 @@ impl HybridJobAppImpl {
                 .check_worker_streaming(wid, request_streaming, None, using.as_deref())
                 .await?;
 
+            let resolved = resolve_job_params(w, overrides.as_ref());
             let job_data = JobData {
                 worker_id: Some(*wid),
                 args,
@@ -233,12 +236,13 @@ impl HybridJobAppImpl {
                 timeout,
                 streaming_type: streaming_type as i32,
                 using,
+                overrides,
             };
 
             // TODO validate argument types (using Runner)
             // self.validate_worker_and_job_arg(w, job_data.arg.as_ref())?;
             // cannot wait for direct response
-            if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
+            if run_after_time > 0 && resolved.response_type == ResponseType::Direct as i32 {
                 return Err(JobWorkerError::InvalidParameter(format!(
                     "run_after_time must be 0 for worker response_type=Direct. job: {:?}",
                     &job_data
@@ -260,7 +264,7 @@ impl HybridJobAppImpl {
             } else {
                 job_data
             };
-            if w.response_type == ResponseType::Direct as i32 {
+            if resolved.response_type == ResponseType::Direct as i32 {
                 // use redis only for direct response (not restore)
                 // TODO create backup for queue_type == Hybrid ?
                 let job = Job {
@@ -290,7 +294,7 @@ impl HybridJobAppImpl {
                         priority,
                         data.enqueue_time,
                         request_streaming,
-                        w.broadcast_results,
+                        resolved.broadcast_results,
                     );
                     Ok((jid, None, None))
                 } else {
@@ -332,7 +336,7 @@ impl HybridJobAppImpl {
                             priority,
                             data.enqueue_time,
                             request_streaming,
-                            w.broadcast_results,
+                            resolved.broadcast_results,
                         );
                         Ok((job.id.unwrap(), None, None))
                     } else {
@@ -573,6 +577,7 @@ impl JobApp for HybridJobAppImpl {
         streaming_type: StreamingType,
         with_random_name: bool,
         using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -597,59 +602,10 @@ impl JobApp for HybridJobAppImpl {
             reserved_job_id,
             streaming_type,
             using,
+            overrides,
         )
         .await
     }
-    // TODO: Extract shared logic with rdb_chan.rs (requires unifying enqueue_job_with_worker signature)
-    async fn enqueue_job_with_temp_worker_no_wait<'a>(
-        &'a self,
-        meta: Arc<HashMap<String, String>>,
-        worker_data: WorkerData,
-        args: Vec<u8>,
-        uniq_key: Option<String>,
-        run_after_time: i64,
-        priority: i32,
-        timeout: u64,
-        reserved_job_id: Option<JobId>,
-        streaming_type: StreamingType,
-        with_random_name: bool,
-        using: Option<String>,
-    ) -> Result<JobId> {
-        let id = self
-            .worker_app()
-            .create_temp(worker_data.clone(), with_random_name)
-            .await?;
-        // Enqueue with NoResult response_type to return immediately.
-        // The original worker_data.response_type (Direct) is preserved for the
-        // worker's processing behavior, but we override it here to skip
-        // _wait_job_for_direct_response. The caller retrieves the result
-        // separately via listen_result_by_job_id.
-        let mut enqueue_worker_data = worker_data;
-        enqueue_worker_data.response_type = proto::jobworkerp::data::ResponseType::NoResult as i32;
-        enqueue_worker_data.broadcast_results = true;
-        enqueue_worker_data.store_success = true;
-        enqueue_worker_data.store_failure = true;
-        let worker = Worker {
-            id: Some(id),
-            data: Some(enqueue_worker_data),
-        };
-        let (job_id, _result, _stream) = self
-            .enqueue_job_with_worker(
-                meta,
-                &worker,
-                args,
-                uniq_key,
-                run_after_time,
-                priority,
-                timeout,
-                reserved_job_id,
-                streaming_type,
-                using,
-            )
-            .await?;
-        Ok(job_id)
-    }
-
     async fn enqueue_job<'a>(
         &'a self,
         meta: Arc<HashMap<String, String>>,
@@ -663,6 +619,7 @@ impl JobApp for HybridJobAppImpl {
         reserved_job_id: Option<JobId>,
         streaming_type: StreamingType,
         using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -690,6 +647,7 @@ impl JobApp for HybridJobAppImpl {
                 .check_worker_streaming(wid, request_streaming, None, using.as_deref())
                 .await?;
 
+            let resolved = resolve_job_params(w, overrides.as_ref());
             let job_data = JobData {
                 worker_id: Some(*wid),
                 args,
@@ -702,12 +660,13 @@ impl JobApp for HybridJobAppImpl {
                 timeout,
                 streaming_type: streaming_type as i32,
                 using,
+                overrides,
             };
 
             // TODO validate argument types (using Runner)
             // self.validate_worker_and_job_arg(w, job_data.arg.as_ref())?;
             // cannot wait for direct response
-            if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
+            if run_after_time > 0 && resolved.response_type == ResponseType::Direct as i32 {
                 return Err(JobWorkerError::InvalidParameter(format!(
                     "run_after_time must be 0 for worker response_type=Direct. job: {:?}",
                     &job_data
@@ -729,7 +688,7 @@ impl JobApp for HybridJobAppImpl {
             } else {
                 job_data
             };
-            if w.response_type == ResponseType::Direct as i32 {
+            if resolved.response_type == ResponseType::Direct as i32 {
                 // use redis only for direct response (not restore)
                 // TODO create backup for queue_type == Hybrid ?
                 let job = Job {
@@ -897,6 +856,8 @@ impl JobApp for HybridJobAppImpl {
     ) -> Result<bool> {
         tracing::debug!("complete_job: res_id={}", &id.value);
         if let Some(jid) = data.job_id.as_ref() {
+            // data.response_type is already resolved via resolve_job_params() in runner.rs,
+            // reflecting any per-job overrides applied at enqueue time.
             let res = match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     // send result immediately (don't wait for stream to complete)
@@ -1398,6 +1359,8 @@ impl RedisJobAppHelper for HybridJobAppImpl {
             && let Some(job_data) = &job.data
         {
             let request_streaming = streaming_type == StreamingType::Response;
+            // Resolve overrides to get correct broadcast_results value
+            let resolved = resolve_job_params(worker, job_data.overrides.as_ref());
             self.index_job_status_async(
                 job_id,
                 JobProcessingStatus::Pending,
@@ -1406,7 +1369,7 @@ impl RedisJobAppHelper for HybridJobAppImpl {
                 job_data.priority,
                 job_data.enqueue_time,
                 request_streaming,
-                worker.broadcast_results,
+                resolved.broadcast_results,
             );
         }
     }
@@ -1597,6 +1560,7 @@ pub mod tests {
                         None,
                         StreamingType::None,
                         None, // using
+                        None, // overrides
                     )
                     .await;
                 let (jid, job_res, _) = res.unwrap();
@@ -1664,6 +1628,7 @@ pub mod tests {
                     store_failure: false,
                     using: None,
                     broadcast_results: false,
+                    resolved_retry_policy: None,
                 }),
                 ..Default::default()
             };
@@ -1734,6 +1699,7 @@ pub mod tests {
                     None,
                     StreamingType::Response, // STREAMING NOT SUPPORTED by runner -> error
                     None,                    // using
+                    None,                    // overrides
                 )
                 .await;
             assert!(res.is_err());
@@ -1788,6 +1754,7 @@ pub mod tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?
                 .0;
@@ -1805,6 +1772,7 @@ pub mod tests {
                     timeout: 0,
                     streaming_type: 1,
                     using: None,
+                    overrides: None,
                 }),
                 ..Default::default()
             };
@@ -1842,6 +1810,7 @@ pub mod tests {
                     store_failure: false,
                     using: None,
                     broadcast_results: true,
+                    resolved_retry_policy: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1923,6 +1892,7 @@ pub mod tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -1970,6 +1940,7 @@ pub mod tests {
                     store_failure: false,
                     using: None,
                     broadcast_results: false,
+                    resolved_retry_policy: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -2050,6 +2021,7 @@ pub mod tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -2068,6 +2040,7 @@ pub mod tests {
                     None,
                     StreamingType::None,
                     None, // using
+                    None, // overrides
                 )
                 .await?;
             assert!(job_id2.value > 0);

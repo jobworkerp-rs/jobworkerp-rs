@@ -40,6 +40,7 @@ impl JobRow {
                 timeout: self.timeout as u64,
                 streaming_type: self.streaming_type,
                 using: self.using.clone(),
+                overrides: None,
             }),
             ..Default::default()
         }
@@ -125,6 +126,7 @@ mod tests {
                 timeout: 1000,
                 streaming_type: 0, // StreamingType::None
                 using: None,
+                overrides: None,
             }),
             metadata: HashMap::new(),
         };
@@ -167,6 +169,7 @@ mod tests {
             store_failure: true,
             using: None,
             broadcast_results: false,
+            resolved_retry_policy: None,
         };
         struct JobQueueImpl {}
         impl UseProstCodec for JobQueueImpl {}

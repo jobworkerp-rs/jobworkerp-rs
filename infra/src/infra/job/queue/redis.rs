@@ -583,6 +583,7 @@ mod test {
                 timeout: 1000,
                 streaming_type: 0,
                 using: None,
+                overrides: None,
             }),
             metadata: HashMap::new(),
         };

@@ -549,6 +549,7 @@ pub mod tests {
             store_failure: false,
             using: None,
             broadcast_results: false,
+            resolved_retry_policy: None,
         };
         assert!(!HybridJobResultAppImpl::_should_store(&job_result_data));
 
@@ -684,6 +685,7 @@ pub mod tests {
                 store_failure: worker_data.store_failure,
                 using: None,
                 broadcast_results: worker_data.broadcast_results,
+                resolved_retry_policy: None,
             };
             let result = JobResult {
                 id: Some(id),

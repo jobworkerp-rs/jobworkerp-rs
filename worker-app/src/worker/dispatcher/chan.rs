@@ -304,7 +304,9 @@ pub trait ChanJobDispatcher:
             return self.result_processor().process_result(cancelled_result, None, wdat).await;
         }
 
-        if wdat.response_type != ResponseType::Direct as i32
+        let resolved =
+            app::app::job::resolve_job_params(&wdat, jdat.overrides.as_ref());
+        if resolved.response_type != ResponseType::Direct as i32
             && wdat.queue_type == QueueType::WithBackup as i32
         {
             // grab job in db (only for record as in progress)
@@ -327,7 +329,7 @@ pub trait ChanJobDispatcher:
                     let priority = jdat.priority;
                     let enqueue_time = jdat.enqueue_time;
                     let is_streamable = jdat.streaming_type != 0;
-                    let broadcast_results = wdat.broadcast_results;
+                    let broadcast_results = resolved.broadcast_results;
 
                     if let Err(e) = index_repo
                         .index_status(
@@ -370,7 +372,7 @@ pub trait ChanJobDispatcher:
                 let priority = jdat.priority;
                 let enqueue_time = jdat.enqueue_time;
                 let is_streamable = jdat.streaming_type != 0;
-                let broadcast_results = wdat.broadcast_results;
+                let broadcast_results = resolved.broadcast_results;
 
                 if let Err(e) = index_repo
                     .index_status(
@@ -399,7 +401,7 @@ pub trait ChanJobDispatcher:
         let priority_for_indexing = jdat.priority;
         let enqueue_time_for_indexing = jdat.enqueue_time;
         let is_streamable_for_indexing = jdat.streaming_type != 0;
-        let broadcast_results_for_indexing = wdat.broadcast_results;
+        let broadcast_results_for_indexing = resolved.broadcast_results;
 
         // run job
         let r = self

@@ -2190,6 +2190,8 @@ where
                                     event_store.store_event(&run_id, event_id, finished_event.clone()).await;
                                     yield (event_id, finished_event);
                                 }
+                                // Clear prev_position so the context fallback below
+                                // does not redundantly attempt task_finished() again.
                                 prev_position = None;
                                 tracing::debug!(
                                     task_name = %ev.task_name,
