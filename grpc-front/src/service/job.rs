@@ -205,6 +205,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         None,
                         StreamingType::None,
                         req.using,
+                        req.overrides,
                     )
                     .await
             }
@@ -222,6 +223,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         None,
                         StreamingType::None,
                         req.using,
+                        req.overrides,
                     )
                     .await
             }
@@ -317,6 +319,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         None,
                         StreamingType::Response,
                         req.using,
+                        req.overrides,
                     )
                     .await
             }
@@ -334,6 +337,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         None,
                         StreamingType::Response,
                         req.using,
+                        req.overrides,
                     )
                     .await
             }
@@ -523,6 +527,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                 // are not supported for client-streaming jobs yet.
                 StreamingType::Response,
                 job_request_clone.using,
+                job_request_clone.overrides,
             )
             .await
         });

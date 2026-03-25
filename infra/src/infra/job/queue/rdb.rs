@@ -1,4 +1,4 @@
-use crate::infra::job::rows::JobRow;
+use crate::infra::job::{overrides::find_overrides_batch_tx, rows::JobRow};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use command_utils::util::datetime;
@@ -73,24 +73,29 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
             .await
             .map_err(JobWorkerError::DBError)
             .context("failed to find_job query")?;
-        let mut jobs = Vec::new();
+        let mut parsed_rows = Vec::new();
         for row in rows.drain(..) {
             match JobRow::from_row(&row) {
-                Ok(r) => jobs.push(r.to_proto()),
+                Ok(r) => parsed_rows.push(r),
                 Err(e) => {
-                    // skip invalid row
                     tracing::error!("failed to parse row: {:?}", e);
                     continue;
                 }
             }
         }
+        let job_ids: Vec<i64> = parsed_rows.iter().map(|r| r.id).collect();
+        let mut overrides_map = find_overrides_batch_tx(self.db_pool(), &job_ids).await?;
+        let jobs = parsed_rows
+            .iter()
+            .map(|r| r.to_proto(overrides_map.remove(&r.id)))
+            .collect();
         Ok(jobs)
     }
     /// fetch timeouted jobs for recovery to redis queue in hybrid storage
     /// (from backuped records)
     async fn fetch_timeouted_backup_jobs(&self, limit: u32, offset: i64) -> Result<Vec<Job>> {
         let now = datetime::now_millis();
-        sqlx::query_as::<Rdb, JobRow>(
+        let rows = sqlx::query_as::<Rdb, JobRow>(
             r#"
             SELECT * FROM job
             WHERE grabbed_until_time > 0 AND grabbed_until_time <= ? AND run_after_time = 0
@@ -102,9 +107,18 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
         .bind(offset)
         .fetch_all(self.db_pool())
         .await
-        .map(|r| r.into_iter().map(|r2| r2.to_proto()).collect_vec())
         .map_err(JobWorkerError::DBError)
-        .context("failed to find_job query")
+        .context("failed to find_job query")?;
+        let job_ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        let mut overrides_map = find_overrides_batch_tx(self.db_pool(), &job_ids).await?;
+        let jobs = rows
+            .into_iter()
+            .map(|r| {
+                let ov = overrides_map.remove(&r.id);
+                r.to_proto(ov)
+            })
+            .collect_vec();
+        Ok(jobs)
     }
     /// grab(lock) job to prevent other worker to process the job
     ///
@@ -329,7 +343,11 @@ mod test {
         use infra_utils::infra::test::{setup_test_rdb_from, truncate_tables};
         TEST_RUNTIME.block_on(async {
             let sqlite_pool = setup_test_rdb_from("sql/sqlite").await;
-            truncate_tables(sqlite_pool, vec!["job", "worker", "job_result"]).await;
+            truncate_tables(
+                sqlite_pool,
+                vec!["job_execution_overrides", "job", "worker", "job_result"],
+            )
+            .await;
             sqlx::query("DELETE FROM job;").execute(sqlite_pool).await?;
             _test_job_queue_repository(sqlite_pool).await
         })
@@ -341,7 +359,11 @@ mod test {
         use infra_utils::infra::test::{setup_test_rdb_from, truncate_tables};
         TEST_RUNTIME.block_on(async {
             let mysql_pool = setup_test_rdb_from("sql/mysql").await;
-            truncate_tables(mysql_pool, vec!["job", "worker", "job_result"]).await;
+            truncate_tables(
+                mysql_pool,
+                vec!["job_execution_overrides", "job", "worker", "job_result"],
+            )
+            .await;
             _test_job_queue_repository(mysql_pool).await
         })
     }
@@ -353,7 +375,11 @@ mod test {
         use proto::jobworkerp::data::WorkerId;
         TEST_RUNTIME.block_on(async {
             let rdb_pool = setup_test_rdb().await;
-            truncate_tables(rdb_pool, vec!["job", "worker", "job_result"]).await;
+            truncate_tables(
+                rdb_pool,
+                vec!["job_execution_overrides", "job", "worker", "job_result"],
+            )
+            .await;
             let repo = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), rdb_pool);
             let worker_id = WorkerId { value: 11 };
             let worker_id2 = WorkerId { value: 21 };

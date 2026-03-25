@@ -316,6 +316,7 @@ mod tests {
                     timeout: 30,
                     streaming_type: 0,
                     using: None,
+                    overrides: None,
                 },
             )
         }
@@ -373,6 +374,7 @@ mod tests {
                         timeout: 30,
                         streaming_type: 0,
                         using: None,
+                        overrides: None,
                     },
                 );
 
@@ -462,6 +464,7 @@ mod tests {
                             timeout: 30,
                             streaming_type: 0,
                             using: None,
+                            overrides: None,
                         },
                     );
 

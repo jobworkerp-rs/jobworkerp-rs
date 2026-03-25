@@ -294,6 +294,7 @@ mod process_deque_job_cleanup_tests {
                     None,
                     StreamingType::None,
                     None,
+                    None, // overrides
                 )
                 .await?;
 
@@ -403,6 +404,7 @@ mod process_deque_job_cleanup_tests {
                     None,
                     StreamingType::None,
                     None,
+                    None, // overrides
                 )
                 .await?;
 

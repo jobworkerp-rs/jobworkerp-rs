@@ -55,6 +55,7 @@ pub mod jobworkerp {
         pub type WorkerInstanceId = data::WorkerInstanceId;
         pub type WorkerInstanceData = data::WorkerInstanceData;
         pub type WorkerInstance = data::WorkerInstance;
+        pub type JobExecutionOverrides = data::JobExecutionOverrides;
     }
     pub mod service {
         tonic::include_proto!("jobworkerp.service");

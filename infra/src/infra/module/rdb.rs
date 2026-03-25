@@ -220,7 +220,13 @@ pub mod test {
         // not runner
         truncate_tables(
             pool,
-            vec!["job", "worker", "job_result", "job_processing_status"],
+            vec![
+                "job_execution_overrides",
+                "job",
+                "worker",
+                "job_result",
+                "job_processing_status",
+            ],
         )
         .await;
         // for test

@@ -1,3 +1,4 @@
+pub mod overrides;
 pub mod queue;
 pub mod rdb;
 pub mod redis;

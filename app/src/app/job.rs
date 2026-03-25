@@ -34,11 +34,49 @@ use infra::infra::{
 };
 use proto::calculate_direct_response_timeout_ms;
 use proto::jobworkerp::data::{
-    Job, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
-    ResponseType, ResultOutputItem, ResultStatus, StreamingType, Trailer, WorkerData, WorkerId,
-    result_output_item,
+    Job, JobExecutionOverrides, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId,
+    QueueType, ResponseType, ResultOutputItem, ResultStatus, RetryPolicy, StreamingType, Trailer,
+    WorkerData, WorkerId, result_output_item,
 };
 use std::{collections::HashMap, fmt, sync::Arc};
+
+/// Resolved execution settings after merging worker defaults with per-job overrides.
+#[derive(Debug, Clone)]
+pub struct ResolvedJobParams {
+    pub response_type: i32,
+    pub store_success: bool,
+    pub store_failure: bool,
+    pub broadcast_results: bool,
+    pub retry_policy: Option<RetryPolicy>,
+}
+
+/// Merge worker-level settings with optional per-job overrides.
+/// Each override field, when present, replaces the worker default.
+pub fn resolve_job_params(
+    worker: &WorkerData,
+    overrides: Option<&JobExecutionOverrides>,
+) -> ResolvedJobParams {
+    match overrides {
+        None => ResolvedJobParams {
+            response_type: worker.response_type,
+            store_success: worker.store_success,
+            store_failure: worker.store_failure,
+            broadcast_results: worker.broadcast_results,
+            retry_policy: worker.retry_policy,
+        },
+        Some(o) => ResolvedJobParams {
+            response_type: o.response_type.unwrap_or(worker.response_type),
+            store_success: o.store_success.unwrap_or(worker.store_success),
+            store_failure: o.store_failure.unwrap_or(worker.store_failure),
+            broadcast_results: o.broadcast_results.unwrap_or(worker.broadcast_results),
+            retry_policy: if o.retry_policy.is_some() {
+                o.retry_policy
+            } else {
+                worker.retry_policy
+            },
+        },
+    }
+}
 
 pub trait JobCacheKeys {
     fn find_cache_key(id: &JobId) -> String {
@@ -75,12 +113,15 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         reserved_job_id: Option<JobId>,
         streaming_type: StreamingType,
         using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
         Option<BoxStream<'static, ResultOutputItem>>,
     )>;
 
+    // NOTE: Both rdb_chan.rs and hybrid.rs impl accept `worker: &Worker` (by reference).
+    // Keep signatures consistent when modifying.
     #[allow(clippy::too_many_arguments)]
     async fn enqueue_job_with_temp_worker<'a>(
         &'a self,
@@ -95,31 +136,12 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         streaming_type: StreamingType,
         with_random_name: bool,
         using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
         Option<BoxStream<'static, ResultOutputItem>>,
     )>;
-
-    /// Enqueue a job with a temporary worker and return immediately without waiting for result.
-    /// Used by enqueue_function_for_llm to get job_id before job completion.
-    /// The caller is responsible for waiting for the result separately
-    /// (e.g., via listen_result_by_job_id).
-    #[allow(clippy::too_many_arguments)]
-    async fn enqueue_job_with_temp_worker_no_wait<'a>(
-        &'a self,
-        meta: Arc<HashMap<String, String>>,
-        worker_data: WorkerData,
-        arg: Vec<u8>,
-        uniq_key: Option<String>,
-        run_after_time: i64,
-        priority: i32,
-        timeout: u64,
-        reserved_job_id: Option<JobId>,
-        streaming_type: StreamingType,
-        with_random_name: bool,
-        using: Option<String>,
-    ) -> Result<JobId>;
 
     async fn update_job(&self, job: &Job) -> Result<()>;
 
@@ -423,7 +445,11 @@ where
                 // chunk. This is typically used by workflow steps that need the final result but
                 // want to leverage streaming-capable runners for better resource management.
                 // The caller subscribes to the stream, collects chunks, and receives FinalCollected.
-                if worker.response_type == ResponseType::Direct as i32 {
+                let resolved = resolve_job_params(
+                    worker,
+                    job.data.as_ref().and_then(|d| d.overrides.as_ref()),
+                );
+                if resolved.response_type == ResponseType::Direct as i32 {
                     if streaming_type == StreamingType::Internal {
                         // For Internal streaming jobs with Direct response_type:
                         // Return immediately without waiting for job completion.
@@ -444,7 +470,7 @@ where
                         let job_timeout = job.data.as_ref().map(|d| d.timeout).unwrap_or(0);
                         let total_timeout = calculate_direct_response_timeout_ms(
                             job_timeout,
-                            worker.retry_policy.as_ref(),
+                            resolved.retry_policy.as_ref(),
                         );
                         self._wait_job_for_direct_response(
                             &job_id,
@@ -473,5 +499,140 @@ where
         self.redis_job_repository()
             .wait_for_result_queue_for_response(job_id, timeout, request_streaming)
             .await
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+    use proto::jobworkerp::data::{RetryPolicy, RetryType, RunnerId};
+
+    fn test_worker() -> WorkerData {
+        WorkerData {
+            name: "test".to_string(),
+            description: String::new(),
+            runner_id: Some(RunnerId { value: 1 }),
+            runner_settings: vec![],
+            channel: None,
+            response_type: ResponseType::NoResult as i32,
+            periodic_interval: 0,
+            retry_policy: Some(RetryPolicy {
+                r#type: RetryType::Constant as i32,
+                interval: 1000,
+                max_interval: 0,
+                max_retry: 3,
+                basis: 0.0,
+            }),
+            queue_type: 0,
+            store_success: false,
+            store_failure: true,
+            use_static: false,
+            broadcast_results: false,
+        }
+    }
+
+    #[test]
+    fn test_resolve_none_returns_worker_defaults() {
+        let w = test_worker();
+        let eff = resolve_job_params(&w, None);
+        assert_eq!(eff.response_type, ResponseType::NoResult as i32);
+        assert!(!eff.store_success);
+        assert!(eff.store_failure);
+        assert!(!eff.broadcast_results);
+        assert_eq!(eff.retry_policy.as_ref().unwrap().max_retry, 3);
+    }
+
+    #[test]
+    fn test_resolve_full_override() {
+        let w = test_worker();
+        let o = JobExecutionOverrides {
+            response_type: Some(ResponseType::Direct as i32),
+            store_success: Some(true),
+            store_failure: Some(false),
+            broadcast_results: Some(true),
+            retry_policy: Some(RetryPolicy {
+                r#type: RetryType::Exponential as i32,
+                interval: 2000,
+                max_interval: 60000,
+                max_retry: 10,
+                basis: 2.0,
+            }),
+        };
+        let eff = resolve_job_params(&w, Some(&o));
+        assert_eq!(eff.response_type, ResponseType::Direct as i32);
+        assert!(eff.store_success);
+        assert!(!eff.store_failure);
+        assert!(eff.broadcast_results);
+        let rp = eff.retry_policy.unwrap();
+        assert_eq!(rp.r#type, RetryType::Exponential as i32);
+        assert_eq!(rp.max_retry, 10);
+    }
+
+    #[test]
+    fn test_resolve_partial_override() {
+        let w = test_worker();
+        let o = JobExecutionOverrides {
+            response_type: Some(ResponseType::Direct as i32),
+            store_success: None,
+            store_failure: None,
+            broadcast_results: Some(true),
+            retry_policy: None,
+        };
+        let eff = resolve_job_params(&w, Some(&o));
+        assert_eq!(eff.response_type, ResponseType::Direct as i32);
+        // Not overridden: use worker defaults
+        assert!(!eff.store_success);
+        assert!(eff.store_failure);
+        assert!(eff.broadcast_results);
+        // retry_policy not overridden: worker's policy
+        assert_eq!(eff.retry_policy.as_ref().unwrap().max_retry, 3);
+    }
+
+    #[test]
+    fn test_resolve_empty_override() {
+        let w = test_worker();
+        let o = JobExecutionOverrides {
+            response_type: None,
+            store_success: None,
+            store_failure: None,
+            broadcast_results: None,
+            retry_policy: None,
+        };
+        let eff = resolve_job_params(&w, Some(&o));
+        // All None: same as worker defaults
+        assert_eq!(eff.response_type, ResponseType::NoResult as i32);
+        assert!(!eff.store_success);
+        assert!(eff.store_failure);
+        assert!(!eff.broadcast_results);
+        assert_eq!(eff.retry_policy.as_ref().unwrap().max_retry, 3);
+    }
+
+    /// Verify the streaming overrides pattern used by worker-path streaming.
+    #[test]
+    fn test_resolve_streaming_overrides_on_direct_worker() {
+        // Worker configured as Direct response_type (typical for streaming)
+        let w = WorkerData {
+            response_type: ResponseType::Direct as i32,
+            store_success: false,
+            store_failure: false,
+            broadcast_results: false,
+            ..test_worker()
+        };
+        // Overrides set NoResult + broadcast (streaming pattern)
+        let o = JobExecutionOverrides {
+            response_type: Some(ResponseType::NoResult as i32),
+            store_success: Some(true),
+            store_failure: Some(true),
+            broadcast_results: Some(true),
+            retry_policy: None,
+        };
+        let eff = resolve_job_params(&w, Some(&o));
+        // response_type overridden to NoResult
+        assert_eq!(eff.response_type, ResponseType::NoResult as i32);
+        assert!(eff.store_success);
+        assert!(eff.store_failure);
+        assert!(eff.broadcast_results);
+        // retry_policy not overridden: worker's policy
+        assert_eq!(eff.retry_policy.as_ref().unwrap().max_retry, 3);
     }
 }
