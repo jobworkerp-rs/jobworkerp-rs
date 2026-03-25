@@ -684,9 +684,8 @@ impl JobApp for RdbChanJobAppImpl {
                 {
                     // XXX should compare grabbed_until_time and update if not changed or not (now not compared)
                     // TODO store metadata
-                    // NOTE: Does not update the job_execution_overrides table.
-                    // This is safe for retry: build_retry_job() snapshots resolved values
-                    // into JobData.overrides, which resolve_job_params() uses at next execution.
+                    // NOTE: upsert() persists job data including any overrides snapshot from
+                    // build_retry_job(). No separate overrides table manipulation needed here.
                     // The RDB overrides row (from initial enqueue) is only used as a display
                     // fallback in _fill_worker_data_to_data_inner().
                     self.rdb_job_repository().upsert(jid, data).await

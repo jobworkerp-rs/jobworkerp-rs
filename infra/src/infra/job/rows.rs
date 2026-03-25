@@ -1,5 +1,5 @@
 use jobworkerp_base::codec::UseProstCodec;
-use proto::jobworkerp::data::{Job, JobData, JobId, WorkerId};
+use proto::jobworkerp::data::{Job, JobData, JobExecutionOverrides, JobId, WorkerId};
 
 // db row definitions
 #[derive(sqlx::FromRow)]
@@ -23,7 +23,7 @@ pub struct JobRow {
 
 impl JobRow {
     #[allow(deprecated)]
-    pub fn to_proto(&self) -> Job {
+    pub fn to_proto(&self, overrides: Option<JobExecutionOverrides>) -> Job {
         Job {
             id: Some(JobId { value: self.id }),
             data: Some(JobData {
@@ -40,7 +40,7 @@ impl JobRow {
                 timeout: self.timeout as u64,
                 streaming_type: self.streaming_type,
                 using: self.using.clone(),
-                overrides: None,
+                overrides,
             }),
             ..Default::default()
         }

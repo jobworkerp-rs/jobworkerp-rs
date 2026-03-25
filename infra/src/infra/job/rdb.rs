@@ -266,11 +266,8 @@ pub trait RdbJobRepository:
         let row = self.find_row_tx(self.db_pool(), id).await?;
         match row {
             Some(r) => {
-                let mut job = r.to_proto();
-                if let Some(data) = job.data.as_mut() {
-                    data.overrides = find_overrides_tx(self.db_pool(), id).await?;
-                }
-                Ok(Some(job))
+                let overrides = find_overrides_tx(self.db_pool(), id).await?;
+                Ok(Some(r.to_proto(overrides)))
             }
             None => Ok(None),
         }
@@ -323,14 +320,10 @@ pub trait RdbJobRepository:
         let rows = self.find_row_list_tx(self.db_pool(), limit, offset).await?;
         let job_ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
         let mut overrides_map = find_overrides_batch_tx(self.db_pool(), &job_ids).await?;
-        let mut jobs = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let mut job = row.to_proto();
-            if let Some(data) = job.data.as_mut() {
-                data.overrides = overrides_map.remove(&row.id);
-            }
-            jobs.push(job);
-        }
+        let jobs = rows
+            .iter()
+            .map(|row| row.to_proto(overrides_map.remove(&row.id)))
+            .collect();
         Ok(jobs)
     }
 
@@ -349,14 +342,10 @@ pub trait RdbJobRepository:
             .context(format!("error in find_list_in: ({ids:?})"))?;
         let job_ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
         let mut overrides_map = find_overrides_batch_tx(self.db_pool(), &job_ids).await?;
-        let mut jobs = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let mut job = row.to_proto();
-            if let Some(data) = job.data.as_mut() {
-                data.overrides = overrides_map.remove(&row.id);
-            }
-            jobs.push(job);
-        }
+        let jobs = rows
+            .iter()
+            .map(|row| row.to_proto(overrides_map.remove(&row.id)))
+            .collect();
         Ok(jobs)
     }
 
