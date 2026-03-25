@@ -69,10 +69,15 @@ impl JobExecutionOverridesRow {
 
 /// Build comma-separated SQL bind placeholders for IN clauses.
 /// e.g. count=3 → "?, ?, ?"
-pub fn build_in_placeholders(count: usize) -> String {
-    std::iter::repeat_n("?", count)
+///
+/// Returns an error if count is 0, which would produce invalid SQL (`IN ()`).
+pub fn build_in_placeholders(count: usize) -> Result<String> {
+    if count == 0 {
+        anyhow::bail!("build_in_placeholders called with count=0 would produce invalid SQL");
+    }
+    Ok(std::iter::repeat_n("?", count)
         .collect::<Vec<_>>()
-        .join(", ")
+        .join(", "))
 }
 
 pub async fn create_overrides_tx<'c, E: Executor<'c, Database = Rdb>>(
@@ -130,7 +135,7 @@ pub async fn find_overrides_batch_tx(
     const CHUNK_SIZE: usize = 500;
     let mut result_map = std::collections::HashMap::new();
     for chunk in job_ids.chunks(CHUNK_SIZE) {
-        let params = build_in_placeholders(chunk.len());
+        let params = build_in_placeholders(chunk.len())?;
         let query_str = format!(
             "SELECT job_id, response_type, store_success, store_failure, broadcast_results,
                     retry_type, retry_interval, retry_max_interval, retry_max_retry, retry_basis

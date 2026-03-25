@@ -336,7 +336,7 @@ pub trait RdbJobRepository:
 
     // XXX id is primitive (use only for restore)
     async fn find_list_in(&self, ids: &[&i64]) -> Result<Vec<Job>> {
-        let params = build_in_placeholders(ids.len());
+        let params = build_in_placeholders(ids.len())?;
         let query_str = format!("SELECT * FROM job WHERE id IN ( {params} )");
         let mut query = sqlx::query_as::<_, JobRow>(query_str.as_str());
         for i in ids.iter() {
