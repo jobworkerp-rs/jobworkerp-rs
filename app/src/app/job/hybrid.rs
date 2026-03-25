@@ -176,16 +176,21 @@ impl HybridJobAppImpl {
                 // not restore use rdb jobs (periodic worker or run after jobs)(should not exists in 'restores')
                 if w.periodic_interval > 0 {
                     tracing::debug!("not restore use rdb job to redis: {:?}", &job);
-                } else if w.response_type == ResponseType::Direct as i32 {
-                    // not need to store to redis (should not reach here because direct response job shouldnot stored to rdb)
-                    tracing::warn!(
-                        "restore jobs from db: not restore direct response job: {:?}",
-                        &job
-                    );
                 } else {
-                    // need to store to redis
-                    self.enqueue_job_to_redis_with_wait_if_needed(job, &w, StreamingType::None)
-                        .await?;
+                    // Resolve effective response_type considering per-job overrides
+                    let overrides = job.data.as_ref().and_then(|d| d.overrides.as_ref());
+                    let resolved = resolve_job_params(&w, overrides);
+                    if resolved.response_type == ResponseType::Direct as i32 {
+                        // not need to store to redis (should not reach here because direct response job should not be stored to rdb)
+                        tracing::warn!(
+                            "restore jobs from db: not restore direct response job: {:?}",
+                            &job
+                        );
+                    } else {
+                        // need to store to redis
+                        self.enqueue_job_to_redis_with_wait_if_needed(job, &w, StreamingType::None)
+                            .await?;
+                    }
                 }
             } else {
                 tracing::warn!("restore jobs from db: worker not found for job: {:?}", &job);
