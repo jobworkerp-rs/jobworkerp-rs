@@ -59,7 +59,15 @@ jobs:
           MYSQL_ROOT_PASSWORD: ""
           MYSQL_ALLOW_EMPTY_PASSWORD: yes
           MYSQL_ROOT_HOST: "0.0.0.0"
-        options: --health-cmd "mysqladmin ping" --health-interval 10s --health-timeout 5s --health-retries 10
+        # options: --health-cmd "mysqladmin ping" --health-interval 10s --health-timeout 5s --health-retries 10 --mysql-native-password=ON
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+          --
+          --mysql-native-password=ON
+
       redis:
         image: redis:7
         env:
@@ -128,7 +136,7 @@ jobs:
         env:
           PLUGINS_RUNNER_DIR: "./target/debug/"
           TEST_REDIS_URL: "redis://redis:6379"
-          TEST_MYSQL_URL: "mysql://db:mysqlpw@db:3306/test"
+          TEST_MYSQL_URL: "mysql://mysql:mysqlpw@db:3306/test"
           UV_VENV_CLEAR: 1
           RUST_BACKTRACE: 1
       - name: Run test with mysql
@@ -143,6 +151,6 @@ jobs:
         env:
           PLUGINS_RUNNER_DIR: "./target/debug/"
           TEST_REDIS_URL: "redis://redis:6379"
-          TEST_MYSQL_URL: "mysql://db:mysqlpw@db:3306/test"
+          TEST_MYSQL_URL: "mysql://mysql:mysqlpw@db:3306/test"
           UV_VENV_CLEAR: 1
           RUST_BACKTRACE: 1
