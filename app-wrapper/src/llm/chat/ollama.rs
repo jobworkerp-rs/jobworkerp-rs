@@ -1143,7 +1143,7 @@ impl OllamaChatService {
                         } else if let Some(handle) = enq.result_handle {
                             self_clone
                                 .function_app
-                                .await_function_result(handle, &enq.runner_name, None)
+                                .await_function_result(handle, &enq.runner_name, enq.using.as_deref())
                                 .await
                         } else {
                             Err(anyhow::anyhow!("No result or result_handle available"))
