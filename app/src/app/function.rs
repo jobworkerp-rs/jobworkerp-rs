@@ -14,7 +14,8 @@ use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
+use jobworkerp_runner::jobworkerp::runner::WorkflowRunnerSettings;
+use jobworkerp_runner::jobworkerp::runner::workflow_runner_settings::WorkflowSource;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::ProtobufHelper;
 use proto::jobworkerp::data::RunnerData;
@@ -752,13 +753,13 @@ pub trait FunctionApp:
             JobWorkerError::InvalidParameter(format!("Failed to serialize workflow schema: {}", e))
         })?;
 
-        let runner_settings = ReusableWorkflowRunnerSettings {
-            json_data: workflow_json_str,
+        let runner_settings = WorkflowRunnerSettings {
+            workflow_source: Some(WorkflowSource::WorkflowData(workflow_json_str)),
         };
         let runner_settings_bytes = ProstMessageCodec::serialize_message(&runner_settings)?;
 
         let runner_id = proto::jobworkerp::data::RunnerId {
-            value: proto::jobworkerp::data::RunnerType::ReusableWorkflow as i64,
+            value: proto::jobworkerp::data::RunnerType::Workflow as i64,
         };
 
         // Build WorkerData
