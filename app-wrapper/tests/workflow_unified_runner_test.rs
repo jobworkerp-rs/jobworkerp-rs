@@ -17,6 +17,7 @@ use jobworkerp_runner::jobworkerp::runner::{
 };
 use jobworkerp_runner::runner::RunnerTrait;
 use prost::Message;
+use proto::jobworkerp::data::RunnerType;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -53,9 +54,17 @@ fn create_simple_workflow_json() -> String {
 
 /// Create test workflow unified runner
 async fn create_test_unified_runner() -> Result<WorkflowUnifiedRunnerImpl> {
+    let (_, runner) = create_test_unified_runner_with_app().await?;
+    Ok(runner)
+}
+
+/// Create test workflow unified runner with app module access (for DB verification)
+async fn create_test_unified_runner_with_app(
+) -> Result<(Arc<app::module::AppModule>, WorkflowUnifiedRunnerImpl)> {
     let app_module = Arc::new(create_hybrid_test_app().await?);
     let app_wrapper_module = Arc::new(AppWrapperModule::new_by_env(None));
-    WorkflowUnifiedRunnerImpl::new(app_wrapper_module, app_module)
+    let runner = WorkflowUnifiedRunnerImpl::new(app_wrapper_module, app_module.clone())?;
+    Ok((app_module, runner))
 }
 
 /// Create runner settings with workflow definition (using new WorkflowRunnerSettings)
@@ -286,6 +295,85 @@ fn test_unified_runner_create_empty_name_error() -> Result<()> {
         );
 
         tracing::info!("Empty name error test passed!");
+        Ok(())
+    })
+}
+
+/// E2E test: WORKFLOW.create → verify RunnerType::Workflow in DB → WORKFLOW.run
+#[test]
+#[ignore = "need backend with same db"]
+fn test_workflow_create_verify_and_run_e2e() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+        let (app_module, mut runner) = create_test_unified_runner_with_app().await?;
+        runner.load(vec![]).await?;
+
+        // --- Phase 1: Create workflow via WORKFLOW.create ---
+        let workflow_json = create_simple_workflow_json();
+        let worker_name = "e2e-create-verify-run-workflow";
+        let create_args = CreateWorkflowArgs {
+            name: worker_name.to_string(),
+            workflow_source: Some(CreateWorkflowSource::WorkflowData(workflow_json.clone())),
+            worker_options: None,
+        };
+        let create_bytes = create_args.encode_to_vec();
+
+        let (result, _) = runner
+            .run(&create_bytes, HashMap::new(), Some("create"))
+            .await;
+        let output = result?;
+        let create_result = CreateWorkflowResult::decode(&output[..])?;
+        assert!(create_result.worker_id.is_some());
+        let created_id = create_result.worker_id.unwrap().value;
+        tracing::info!("Phase 1: Workflow created with worker_id={}", created_id);
+
+        // --- Phase 2: Retrieve from DB and verify RunnerType is WORKFLOW ---
+        let found_worker = app_module.worker_app.find_by_name(worker_name).await?;
+        assert!(found_worker.is_some(), "Created worker not found in DB");
+        let found_worker = found_worker.unwrap();
+        let worker_data = found_worker.data.as_ref().expect("WorkerData should exist");
+
+        assert_eq!(worker_data.name, worker_name);
+        assert_eq!(
+            worker_data.runner_id.as_ref().unwrap().value,
+            RunnerType::Workflow as i64,
+            "Worker must be registered as RunnerType::Workflow, got {:?}",
+            RunnerType::try_from(worker_data.runner_id.as_ref().unwrap().value as i32)
+        );
+        tracing::info!("Phase 2: Worker verified as RunnerType::Workflow in DB");
+
+        // --- Phase 3: Execute via WORKFLOW.run with the created workflow's settings ---
+        // Load settings from the created worker (simulating what the worker process does)
+        let mut run_runner = {
+            let (_, r) = create_test_unified_runner_with_app().await?;
+            r
+        };
+        run_runner.load(worker_data.runner_settings.clone()).await?;
+
+        let run_args = WorkflowRunArgs {
+            workflow_source: None, // Uses settings from load()
+            input: r#"{"testInput": "E2E test input"}"#.to_string(),
+            ..Default::default()
+        };
+        let run_bytes = run_args.encode_to_vec();
+
+        let (run_result, _) = run_runner.run(&run_bytes, HashMap::new(), Some("run")).await;
+        let run_output = run_result?;
+        let workflow_result = WorkflowResult::decode(&run_output[..])?;
+
+        assert!(
+            !workflow_result.output.is_empty() && workflow_result.status == 0,
+            "Expected successful workflow execution, got output='{}', status={}",
+            workflow_result.output,
+            workflow_result.status
+        );
+        tracing::info!(
+            "Phase 3: Workflow executed successfully, output={}",
+            workflow_result.output
+        );
+
+        tracing::info!("E2E test passed: create -> verify RunnerType::Workflow -> run");
         Ok(())
     })
 }
