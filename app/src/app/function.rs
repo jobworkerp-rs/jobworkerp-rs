@@ -46,6 +46,9 @@ pub struct EnqueuedFunction {
     /// Pre-started result listener for streaming jobs (started immediately after enqueue
     /// to avoid missing pubsub events). None for non-streaming jobs.
     pub result_handle: Option<tokio::task::JoinHandle<JobListenResult>>,
+    /// Method name for multi-method runners (e.g. "streaming" from "jwp-list-workers___streaming").
+    /// Used to decode job results with the correct proto schema.
+    pub using: Option<String>,
 }
 
 impl std::fmt::Debug for EnqueuedFunction {
@@ -56,6 +59,7 @@ impl std::fmt::Debug for EnqueuedFunction {
             .field("result", &self.result)
             .field("is_streaming", &self.is_streaming)
             .field("result_handle", &self.result_handle.as_ref().map(|_| "..."))
+            .field("using", &self.using)
             .finish()
     }
 }
@@ -909,6 +913,7 @@ pub trait FunctionApp:
             // Use overrides to set NoResult response_type so enqueue returns immediately
             let streaming_overrides = streaming_no_wait_overrides();
 
+            let using_for_result = tool_name_opt.clone();
             let enqueue_result = self
                 .job_app()
                 .enqueue_job_with_temp_worker(
@@ -938,6 +943,7 @@ pub trait FunctionApp:
                 result: None,
                 is_streaming: true,
                 result_handle: Some(result_handle),
+                using: using_for_result,
             })
         } else {
             // Non-streaming: enqueue and wait for result (Direct response)
@@ -987,6 +993,7 @@ pub trait FunctionApp:
                 result,
                 is_streaming: false,
                 result_handle: None,
+                using: tool_name_for_decode,
             })
         }
     }
@@ -1115,6 +1122,7 @@ pub trait FunctionApp:
                         result: None,
                         is_streaming: true,
                         result_handle: Some(result_handle),
+                        using: tool_name_for_decode,
                     })
                 } else {
                     // Non-streaming: synchronous wait via enqueue_with_worker_name
@@ -1163,6 +1171,7 @@ pub trait FunctionApp:
                         result,
                         is_streaming: false,
                         result_handle: None,
+                        using: tool_name_for_decode,
                     })
                 }
             }
