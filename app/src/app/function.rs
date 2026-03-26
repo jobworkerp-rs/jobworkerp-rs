@@ -948,7 +948,7 @@ pub trait FunctionApp:
             })
         } else {
             // Non-streaming: enqueue and wait for result (Direct response)
-            let tool_name_for_decode = tool_name_opt.clone();
+            let using_for_result = tool_name_opt.clone();
             let (job_id, job_result, _stream) = self
                 .setup_worker_and_enqueue_with_json_full_output(
                     meta,
@@ -976,7 +976,7 @@ pub trait FunctionApp:
                             &rid,
                             rdata,
                             &bytes,
-                            tool_name_for_decode.as_deref(),
+                            using_for_result.as_deref(),
                         )
                         .await?,
                     ),
@@ -994,7 +994,7 @@ pub trait FunctionApp:
                 result,
                 is_streaming: false,
                 result_handle: None,
-                using: tool_name_for_decode,
+                using: using_for_result,
             })
         }
     }
@@ -1061,7 +1061,7 @@ pub trait FunctionApp:
                     } else {
                         (name.to_string(), tool_name_opt)
                     };
-                let tool_name_for_decode = tool_name_for_worker.clone();
+                let using_for_result = tool_name_for_worker.clone();
 
                 if supports_streaming {
                     let (rid, rdata) = runner_for_args.ok_or_else(|| {
@@ -1123,7 +1123,7 @@ pub trait FunctionApp:
                         result: None,
                         is_streaming: true,
                         result_handle: Some(result_handle),
-                        using: tool_name_for_decode,
+                        using: using_for_result,
                     })
                 } else {
                     // Non-streaming: synchronous wait via enqueue_with_worker_name
@@ -1147,7 +1147,7 @@ pub trait FunctionApp:
                                         None,
                                         Some(&runner_name),
                                         &bytes,
-                                        tool_name_for_decode.as_deref(),
+                                        using_for_result.as_deref(),
                                     )
                                     .await
                                 {
@@ -1172,7 +1172,7 @@ pub trait FunctionApp:
                         result,
                         is_streaming: false,
                         result_handle: None,
-                        using: tool_name_for_decode,
+                        using: using_for_result,
                     })
                 }
             }
