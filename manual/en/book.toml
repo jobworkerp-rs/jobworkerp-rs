@@ -1,8 +1,8 @@
 [book]
-title = "jobworkerp-rs ドキュメント"
-description = "Rustで実装されたスケーラブルなジョブワーカーシステム"
+title = "jobworkerp-rs Documentation"
+description = "A scalable job worker system implemented in Rust"
 authors = ["jobworkerp-rs contributors"]
-language = "ja"
+language = "en"
 src = "src"
 
 [build]
@@ -11,8 +11,8 @@ build-dir = "book"
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "ayu"
-site-url = "/jobworkerp-rs/ja/"
-edit-url-template = "https://github.com/jobworkerp-rs/jobworkerp-rs/edit/main/docs/ja/src/{path}"
+site-url = "/jobworkerp-rs/en/"
+edit-url-template = "https://github.com/jobworkerp-rs/jobworkerp-rs/edit/main/manual/en/src/{path}"
 git-repository-url = "https://github.com/jobworkerp-rs/jobworkerp-rs"
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
