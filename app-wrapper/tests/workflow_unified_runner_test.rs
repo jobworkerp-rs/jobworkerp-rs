@@ -346,8 +346,8 @@ fn test_workflow_create_verify_and_run_e2e() -> Result<()> {
         // --- Phase 3: Execute via WORKFLOW.run with the created workflow's settings ---
         // Load settings from the created worker (simulating what the worker process does)
         let mut run_runner = {
-            let (_, r) = create_test_unified_runner_with_app().await?;
-            r
+            let app_wrapper_module = Arc::new(AppWrapperModule::new_by_env(None));
+            WorkflowUnifiedRunnerImpl::new(app_wrapper_module, app_module.clone())?
         };
         run_runner.load(worker_data.runner_settings.clone()).await?;
 
