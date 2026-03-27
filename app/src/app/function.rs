@@ -14,7 +14,8 @@ use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
+use jobworkerp_runner::jobworkerp::runner::WorkflowRunnerSettings;
+use jobworkerp_runner::jobworkerp::runner::workflow_runner_settings::WorkflowSource;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::ProtobufHelper;
 use proto::jobworkerp::data::RunnerData;
@@ -46,6 +47,9 @@ pub struct EnqueuedFunction {
     /// Pre-started result listener for streaming jobs (started immediately after enqueue
     /// to avoid missing pubsub events). None for non-streaming jobs.
     pub result_handle: Option<tokio::task::JoinHandle<JobListenResult>>,
+    /// Method name for multi-method runners (e.g. "streaming" from "jwp-list-workers___streaming").
+    /// Used to decode job results with the correct proto schema.
+    pub using: Option<String>,
 }
 
 impl std::fmt::Debug for EnqueuedFunction {
@@ -56,6 +60,7 @@ impl std::fmt::Debug for EnqueuedFunction {
             .field("result", &self.result)
             .field("is_streaming", &self.is_streaming)
             .field("result_handle", &self.result_handle.as_ref().map(|_| "..."))
+            .field("using", &self.using)
             .finish()
     }
 }
@@ -748,13 +753,13 @@ pub trait FunctionApp:
             JobWorkerError::InvalidParameter(format!("Failed to serialize workflow schema: {}", e))
         })?;
 
-        let runner_settings = ReusableWorkflowRunnerSettings {
-            json_data: workflow_json_str,
+        let runner_settings = WorkflowRunnerSettings {
+            workflow_source: Some(WorkflowSource::WorkflowData(workflow_json_str)),
         };
         let runner_settings_bytes = ProstMessageCodec::serialize_message(&runner_settings)?;
 
         let runner_id = proto::jobworkerp::data::RunnerId {
-            value: proto::jobworkerp::data::RunnerType::ReusableWorkflow as i64,
+            value: proto::jobworkerp::data::RunnerType::Workflow as i64,
         };
 
         // Build WorkerData
@@ -909,6 +914,7 @@ pub trait FunctionApp:
             // Use overrides to set NoResult response_type so enqueue returns immediately
             let streaming_overrides = streaming_no_wait_overrides();
 
+            let using_for_result = tool_name_opt.clone();
             let enqueue_result = self
                 .job_app()
                 .enqueue_job_with_temp_worker(
@@ -938,10 +944,11 @@ pub trait FunctionApp:
                 result: None,
                 is_streaming: true,
                 result_handle: Some(result_handle),
+                using: using_for_result,
             })
         } else {
             // Non-streaming: enqueue and wait for result (Direct response)
-            let tool_name_for_decode = tool_name_opt.clone();
+            let using_for_result = tool_name_opt.clone();
             let (job_id, job_result, _stream) = self
                 .setup_worker_and_enqueue_with_json_full_output(
                     meta,
@@ -965,13 +972,8 @@ pub trait FunctionApp:
                     .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
                 match self.extract_job_result_output(jr) {
                     Ok(bytes) => Some(
-                        self.transform_raw_output(
-                            &rid,
-                            rdata,
-                            &bytes,
-                            tool_name_for_decode.as_deref(),
-                        )
-                        .await?,
+                        self.transform_raw_output(&rid, rdata, &bytes, using_for_result.as_deref())
+                            .await?,
                     ),
                     Err(e) => {
                         return Err(e);
@@ -987,6 +989,7 @@ pub trait FunctionApp:
                 result,
                 is_streaming: false,
                 result_handle: None,
+                using: using_for_result,
             })
         }
     }
@@ -1053,7 +1056,7 @@ pub trait FunctionApp:
                     } else {
                         (name.to_string(), tool_name_opt)
                     };
-                let tool_name_for_decode = tool_name_for_worker.clone();
+                let using_for_result = tool_name_for_worker.clone();
 
                 if supports_streaming {
                     let (rid, rdata) = runner_for_args.ok_or_else(|| {
@@ -1115,6 +1118,7 @@ pub trait FunctionApp:
                         result: None,
                         is_streaming: true,
                         result_handle: Some(result_handle),
+                        using: using_for_result,
                     })
                 } else {
                     // Non-streaming: synchronous wait via enqueue_with_worker_name
@@ -1138,7 +1142,7 @@ pub trait FunctionApp:
                                         None,
                                         Some(&runner_name),
                                         &bytes,
-                                        tool_name_for_decode.as_deref(),
+                                        using_for_result.as_deref(),
                                     )
                                     .await
                                 {
@@ -1163,6 +1167,7 @@ pub trait FunctionApp:
                         result,
                         is_streaming: false,
                         result_handle: None,
+                        using: using_for_result,
                     })
                 }
             }

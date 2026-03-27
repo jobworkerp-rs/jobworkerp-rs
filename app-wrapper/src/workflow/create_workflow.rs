@@ -151,23 +151,24 @@ impl CreateWorkflowRunnerImpl {
         // Set default options
         let opts = worker_options.unwrap_or_default();
 
-        // Build RunnerId for REUSABLE_WORKFLOW (using 65532 according to design document)
+        // Build RunnerId for WORKFLOW (unified workflow runner)
         let runner_id = RunnerId {
-            value: RunnerType::ReusableWorkflow as i64, // Use i64 type
+            value: RunnerType::Workflow as i64,
         };
 
-        // Serialize runner_settings in proto format (REUSABLE_WORKFLOW settings format)
+        // Serialize runner_settings in proto format (WorkflowRunnerSettings format)
         let runner_settings = {
-            use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
+            use jobworkerp_runner::jobworkerp::runner::WorkflowRunnerSettings;
+            use jobworkerp_runner::jobworkerp::runner::workflow_runner_settings::WorkflowSource;
 
-            let proto_settings = ReusableWorkflowRunnerSettings {
-                json_data: workflow_def.to_string(),
+            let proto_settings = WorkflowRunnerSettings {
+                workflow_source: Some(WorkflowSource::WorkflowData(workflow_def.to_string())),
             };
 
             let mut buf = Vec::new();
             proto_settings
                 .encode(&mut buf)
-                .context("Failed to encode ReusableWorkflowRunnerSettings")?;
+                .context("Failed to encode WorkflowRunnerSettings")?;
             buf
         };
 
