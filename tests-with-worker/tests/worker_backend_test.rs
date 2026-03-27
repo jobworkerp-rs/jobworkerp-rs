@@ -121,9 +121,11 @@ async fn sub_test_enqueue_and_await_function_result_streaming(
         .expect("Streaming enqueue should provide result_handle");
     let result = timeout(
         Duration::from_secs(30),
-        app_module
-            .function_app
-            .await_function_result(result_handle, &enqueued.runner_name, enqueued.using.as_deref()),
+        app_module.function_app.await_function_result(
+            result_handle,
+            &enqueued.runner_name,
+            enqueued.using.as_deref(),
+        ),
     )
     .await??;
 
@@ -384,9 +386,11 @@ async fn sub_test_short_tool_execution_skips_progress(
     let result_handle = enqueued.result_handle.expect("Should have result_handle");
     let result = timeout(
         Duration::from_secs(30),
-        app_module
-            .function_app
-            .await_function_result(result_handle, &enqueued.runner_name, enqueued.using.as_deref()),
+        app_module.function_app.await_function_result(
+            result_handle,
+            &enqueued.runner_name,
+            enqueued.using.as_deref(),
+        ),
     )
     .await??;
 

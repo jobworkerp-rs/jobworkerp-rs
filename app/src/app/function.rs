@@ -972,13 +972,8 @@ pub trait FunctionApp:
                     .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
                 match self.extract_job_result_output(jr) {
                     Ok(bytes) => Some(
-                        self.transform_raw_output(
-                            &rid,
-                            rdata,
-                            &bytes,
-                            using_for_result.as_deref(),
-                        )
-                        .await?,
+                        self.transform_raw_output(&rid, rdata, &bytes, using_for_result.as_deref())
+                            .await?,
                     ),
                     Err(e) => {
                         return Err(e);

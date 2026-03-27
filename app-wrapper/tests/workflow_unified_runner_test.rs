@@ -59,8 +59,8 @@ async fn create_test_unified_runner() -> Result<WorkflowUnifiedRunnerImpl> {
 }
 
 /// Create test workflow unified runner with app module access (for DB verification)
-async fn create_test_unified_runner_with_app(
-) -> Result<(Arc<app::module::AppModule>, WorkflowUnifiedRunnerImpl)> {
+async fn create_test_unified_runner_with_app()
+-> Result<(Arc<app::module::AppModule>, WorkflowUnifiedRunnerImpl)> {
     let app_module = Arc::new(create_hybrid_test_app().await?);
     let app_wrapper_module = Arc::new(AppWrapperModule::new_by_env(None));
     let runner = WorkflowUnifiedRunnerImpl::new(app_wrapper_module, app_module.clone())?;
@@ -358,7 +358,9 @@ fn test_workflow_create_verify_and_run_e2e() -> Result<()> {
         };
         let run_bytes = run_args.encode_to_vec();
 
-        let (run_result, _) = run_runner.run(&run_bytes, HashMap::new(), Some("run")).await;
+        let (run_result, _) = run_runner
+            .run(&run_bytes, HashMap::new(), Some("run"))
+            .await;
         let run_output = run_result?;
         let workflow_result = WorkflowResult::decode(&run_output[..])?;
 
