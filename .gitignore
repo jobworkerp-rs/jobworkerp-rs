@@ -344,9 +344,9 @@ ASALocalRun/
 node_modules
 
 # mdBook build output
-docs/en/book/
-docs/ja/book/
-docs/site/
+manual/en/book/
+manual/ja/book/
+manual/site/
 
 # spec docs
 spec-docs/
