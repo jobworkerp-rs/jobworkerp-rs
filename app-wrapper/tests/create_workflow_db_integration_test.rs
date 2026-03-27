@@ -8,7 +8,7 @@ use jobworkerp_runner::jobworkerp::runner::create_workflow_args::{
 };
 use jobworkerp_runner::jobworkerp::runner::{CreateWorkflowArgs, CreateWorkflowResult};
 use jobworkerp_runner::runner::RunnerTrait;
-use proto::jobworkerp::data::{ResponseType, RetryType};
+use proto::jobworkerp::data::{ResponseType, RetryType, RunnerType};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -123,7 +123,11 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
 
                 assert_eq!(worker_data.name, worker_name);
                 assert_eq!(found_worker.id.as_ref().unwrap().value, worker_id.value);
-                assert!(worker_data.runner_id.as_ref().unwrap().value > 0);
+                assert_eq!(
+                    worker_data.runner_id.as_ref().unwrap().value,
+                    RunnerType::Workflow as i64,
+                    "Created worker should have RunnerType::Workflow, not ReusableWorkflow"
+                );
                 assert_eq!(worker_data.channel.as_deref(), Some("db-test-channel"));
                 assert!(worker_data.store_success);
                 assert!(worker_data.store_failure);
