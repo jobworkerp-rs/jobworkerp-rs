@@ -14,9 +14,8 @@ use crate::proto::jobworkerp::function::data::{
 };
 use crate::proto::jobworkerp::function::service::function_service_server::FunctionService;
 use crate::proto::jobworkerp::function::service::{
-    CreateWorkerRequest, CreateWorkerResponse, CreateWorkflowRequest, CreateWorkflowResponse,
-    FindFunctionByNameRequest, FindFunctionRequest, FindFunctionSetRequest, FunctionCallRequest,
-    OptionalFunctionSpecsResponse,
+    CreateWorkerRequest, CreateWorkerResponse, FindFunctionByNameRequest, FindFunctionRequest,
+    FindFunctionSetRequest, FunctionCallRequest, OptionalFunctionSpecsResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
@@ -190,58 +189,6 @@ pub trait FunctionRequestValidator {
                 "Worker name '{}' is invalid. Must start with a letter (a-z, A-Z) and contain only alphanumeric characters, underscores, and hyphens",
                 req.name
             )));
-        }
-
-        Ok(())
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn validate_create_workflow_request(
-        &self,
-        req: &CreateWorkflowRequest,
-    ) -> Result<(), tonic::Status> {
-        use crate::proto::jobworkerp::function::service::create_workflow_request;
-
-        if req.workflow_source.is_none() {
-            return Err(tonic::Status::invalid_argument(
-                "either workflow_data or workflow_url must be specified",
-            ));
-        }
-
-        if let Some(create_workflow_request::WorkflowSource::WorkflowData(data)) =
-            &req.workflow_source
-            && data.is_empty()
-        {
-            return Err(tonic::Status::invalid_argument(
-                "workflow_data cannot be empty",
-            ));
-        }
-
-        if let Some(create_workflow_request::WorkflowSource::WorkflowUrl(url)) =
-            &req.workflow_source
-            && url.is_empty()
-        {
-            return Err(tonic::Status::invalid_argument(
-                "workflow_url cannot be empty",
-            ));
-        }
-
-        if let Some(name) = &req.name {
-            if name.is_empty() {
-                return Err(tonic::Status::invalid_argument("name cannot be empty"));
-            }
-            if name.len() > 255 {
-                return Err(tonic::Status::invalid_argument(
-                    "name too long (max 255 characters)",
-                ));
-            }
-            // Naming convention check (must start with letter, contain only alphanumeric, underscore, hyphen)
-            if !WORKER_NAME_PATTERN.is_match(name) {
-                return Err(tonic::Status::invalid_argument(format!(
-                    "Worker name '{}' is invalid. Must start with a letter (a-z, A-Z) and contain only alphanumeric characters, underscores, and hyphens",
-                    name
-                )));
-            }
         }
 
         Ok(())
@@ -503,49 +450,6 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
             Err(e) => Err(handle_error(&e)),
         }
     }
-
-    #[tracing::instrument(
-        level = "info",
-        skip(self, request),
-        fields(method = "create_workflow")
-    )]
-    async fn create_workflow(
-        &self,
-        request: tonic::Request<CreateWorkflowRequest>,
-    ) -> Result<tonic::Response<CreateWorkflowResponse>, tonic::Status> {
-        let _s = Self::trace_request("function", "create_workflow", &request);
-        let req = request.into_inner();
-
-        self.validate_create_workflow_request(&req)?;
-
-        use crate::proto::jobworkerp::function::service::create_workflow_request;
-        let (workflow_data, workflow_url) = match req.workflow_source {
-            Some(create_workflow_request::WorkflowSource::WorkflowData(data)) => (Some(data), None),
-            Some(create_workflow_request::WorkflowSource::WorkflowUrl(url)) => (None, Some(url)),
-            None => unreachable!("Validation should catch this case"),
-        };
-
-        // Call FunctionApp::create_workflow_from_definition
-        match self
-            .function_app()
-            .create_workflow_from_definition(
-                workflow_data,
-                workflow_url,
-                req.name,
-                req.worker_options,
-            )
-            .await
-        {
-            Ok((worker_id, worker_name, workflow_name)) => {
-                Ok(Response::new(CreateWorkflowResponse {
-                    worker_id: Some(worker_id),
-                    worker_name,
-                    workflow_name,
-                }))
-            }
-            Err(e) => Err(handle_error(&e)),
-        }
-    }
 }
 
 #[derive(DebugStub)]
@@ -579,7 +483,6 @@ impl Tracing for FunctionGrpcImpl {}
 mod tests {
     use super::*;
     use crate::proto::jobworkerp::function::service::create_worker_request;
-    use crate::proto::jobworkerp::function::service::create_workflow_request;
 
     struct TestValidator;
     impl FunctionRequestValidator for TestValidator {}
@@ -646,73 +549,6 @@ mod tests {
             };
 
             let result = validator.validate_create_worker_request(&req);
-            assert!(
-                result.is_ok(),
-                "Should succeed with valid name: {}, error: {:?}",
-                valid_name,
-                result
-            );
-        }
-    }
-
-    #[test]
-    fn test_validate_create_workflow_request_with_invalid_names() {
-        let validator = TestValidator;
-
-        let too_long = "a".repeat(256);
-        let invalid_names = vec![
-            "",             // Empty
-            "123invalid",   // Starts with number
-            "invalid name", // Contains space
-            "invalid@name", // Contains special char
-            "invalid.name", // Contains dot
-            &too_long,      // Too long (>255 chars)
-        ];
-
-        for invalid_name in invalid_names {
-            let req = CreateWorkflowRequest {
-                workflow_source: Some(create_workflow_request::WorkflowSource::WorkflowData(
-                    r#"{"document":{"dsl":"1.0.0","namespace":"test","name":"test"},"do":[]}"#
-                        .to_string(),
-                )),
-                name: Some(invalid_name.to_string()),
-                worker_options: None,
-            };
-
-            let result = validator.validate_create_workflow_request(&req);
-            assert!(
-                result.is_err(),
-                "Should fail with invalid name: {}",
-                invalid_name
-            );
-        }
-    }
-
-    #[test]
-    fn test_validate_create_workflow_request_with_valid_names() {
-        let validator = TestValidator;
-
-        let max_length = "a".repeat(255);
-        let valid_names = vec![
-            "validName",
-            "valid_name",
-            "valid-name",
-            "ValidName123",
-            "a",         // Single char
-            &max_length, // Max length (255 chars)
-        ];
-
-        for valid_name in valid_names {
-            let req = CreateWorkflowRequest {
-                workflow_source: Some(create_workflow_request::WorkflowSource::WorkflowData(
-                    r#"{"document":{"dsl":"1.0.0","namespace":"test","name":"test"},"do":[]}"#
-                        .to_string(),
-                )),
-                name: Some(valid_name.to_string()),
-                worker_options: None,
-            };
-
-            let result = validator.validate_create_workflow_request(&req);
             assert!(
                 result.is_ok(),
                 "Should succeed with valid name: {}, error: {:?}",
