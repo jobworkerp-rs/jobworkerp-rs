@@ -696,6 +696,23 @@ pub trait FunctionApp:
             })
             .transpose()?;
 
+        // WORKFLOW runner: delegate to workflow-specific path with validation
+        if runner
+            .data
+            .as_ref()
+            .is_some_and(|d| d.runner_type() == RunnerType::Workflow)
+        {
+            return self
+                .create_workflow_worker(
+                    &runner,
+                    name,
+                    description,
+                    runner_settings_value,
+                    worker_options,
+                )
+                .await;
+        }
+
         let runner_settings_bytes = self
             .setup_runner_and_settings(&runner, runner_settings_value)
             .await?;
@@ -704,6 +721,115 @@ pub trait FunctionApp:
         let worker_data = self.build_worker_data_from_options(
             name.clone(),
             description.unwrap_or_default(),
+            runner.id.unwrap(),
+            runner_settings_bytes,
+            worker_options,
+        )?;
+
+        self.validate_worker_options(&worker_data)?;
+
+        let worker_id = self.worker_app().create(&worker_data).await?;
+
+        Ok((worker_id, name))
+    }
+
+    /// Create a Worker for WORKFLOW runner with workflow-specific validation.
+    ///
+    /// Parses and validates the workflow definition, extracts `document.summary`
+    /// as the worker description (when not explicitly provided), and encodes the
+    /// workflow into `WorkflowRunnerSettings` protobuf for storage.
+    async fn create_workflow_worker(
+        &self,
+        runner: &infra::infra::runner::rows::RunnerWithSchema,
+        name: String,
+        description: Option<String>,
+        settings_json: Option<serde_json::Value>,
+        worker_options: Option<WorkerOptions>,
+    ) -> Result<(WorkerId, String)> {
+        use jobworkerp_runner::jobworkerp::runner::WorkflowRunnerSettings;
+        use jobworkerp_runner::jobworkerp::runner::workflow_runner_settings::WorkflowSource;
+        use prost::Message;
+
+        let settings = settings_json.ok_or_else(|| {
+            JobWorkerError::InvalidParameter(
+                "settings_json is required for WORKFLOW runner".to_string(),
+            )
+        })?;
+
+        // Extract workflow_source and workflow_context from settings JSON
+        let (workflow_url, workflow_data) = (
+            settings
+                .get("workflow_url")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            settings
+                .get("workflow_data")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        );
+        let workflow_context = settings
+            .get("workflow_context")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        if workflow_url.is_none() && workflow_data.is_none() {
+            return Err(JobWorkerError::InvalidParameter(
+                "Either workflow_url or workflow_data is required in settings_json for WORKFLOW runner"
+                    .to_string(),
+            )
+            .into());
+        }
+
+        // Load and validate workflow definition via WorkflowLoader
+        let workflow_schema = self
+            .workflow_loader()
+            .load_workflow(
+                workflow_url.as_deref(),
+                workflow_data.as_deref(),
+                true, // validate
+            )
+            .await?;
+
+        // Extract summary for description fallback
+        let summary = if workflow_schema.document.summary.is_some() {
+            workflow_schema
+                .document
+                .summary
+                .as_ref()
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+        let resolved_description = description.or(summary).unwrap_or_default();
+
+        // Validate workflow_context if provided
+        if let Some(ref ctx) = workflow_context {
+            let parsed: serde_json::Value = serde_json::from_str(ctx).map_err(|e| {
+                JobWorkerError::InvalidParameter(format!("Invalid workflow_context JSON: {}", e))
+            })?;
+            if !parsed.is_object() {
+                return Err(JobWorkerError::InvalidParameter(
+                    "workflow_context must be a JSON object".to_string(),
+                )
+                .into());
+            }
+        }
+
+        // Serialize validated workflow as JSON for storage
+        let workflow_json = serde_json::to_string(&workflow_schema)?;
+
+        // Encode WorkflowRunnerSettings to protobuf bytes
+        let proto_settings = WorkflowRunnerSettings {
+            workflow_source: Some(WorkflowSource::WorkflowData(workflow_json)),
+            workflow_context,
+        };
+        let mut runner_settings_bytes = Vec::new();
+        proto_settings.encode(&mut runner_settings_bytes)?;
+
+        // Build WorkerData
+        let worker_data = self.build_worker_data_from_options(
+            name.clone(),
+            resolved_description,
             runner.id.unwrap(),
             runner_settings_bytes,
             worker_options,
