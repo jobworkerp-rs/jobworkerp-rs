@@ -34,6 +34,7 @@ Settings configured in `worker.runner_settings` for the `run` method:
 |-------|------|-------------|
 | `workflow_url` | string (oneof) | Path or URL to the workflow definition file (JSON or YAML) |
 | `workflow_data` | string (oneof) | Inline workflow definition as JSON or YAML string |
+| `workflow_context` | string (optional) | Context variables (JSON object string). If set, `workflow_context` in runtime args is ignored |
 
 > `workflow_url` and `workflow_data` are mutually exclusive (`oneof workflow_source`). Settings are optional when workflow source is provided in job arguments.
 
@@ -46,7 +47,7 @@ Settings configured in `worker.runner_settings` for the `run` method:
 | `workflow_url` | string (oneof, optional) | Override workflow source with URL/path |
 | `workflow_data` | string (oneof, optional) | Override workflow source with inline definition |
 | `input` | string | Input for the workflow context (JSON or plain string) |
-| `workflow_context` | string (optional) | Additional context information (JSON) |
+| `workflow_context` | string (optional) | Additional context information (JSON). Ignored if `workflow_context` is set in runner settings |
 | `execution_id` | string (optional) | Unique identifier for the workflow execution instance |
 | `from_checkpoint` | Checkpoint (optional) | Data for resuming from a specific checkpoint |
 
@@ -191,6 +192,95 @@ Workflows support two types of variable expansion:
 
 - **jq syntax** (`${...}`): Standard jq expressions for JSON data manipulation
 - **Liquid template syntax** (`$${...}`): [Liquid](https://shopify.github.io/liquid/) template expressions for string manipulation and control flow
+
+### Environment Variable Access
+
+In jq syntax, you can access process environment variables via the built-in `env` function (provided by the jaq crate):
+
+```yaml
+# Accessing environment variables in jq syntax
+botToken: ${env.SLACK_BOT_TOKEN}
+apiKey: ${env.API_KEY}
+```
+
+> **Note**: Environment variable access is only available in jq syntax (`${...}`). Liquid template syntax (`$${...}`) does not support direct environment variable access.
+
+### Context Variables
+
+You can pass global variables via the `workflow_context` parameter separately from `input` when executing a workflow. Each key of the provided JSON object becomes a top-level variable accessible throughout the entire workflow.
+
+#### How to Pass
+
+**Via runner settings (WorkflowRunnerSettings):**
+
+Set `workflow_context` as a JSON string in `runner_settings` when creating the worker. When set in settings, `workflow_context` in runtime args is ignored.
+
+```shell
+# Set context variables in worker settings
+$ ./target/release/jobworkerp-client worker create \
+    --name "MyWorkflow" \
+    --runner-name WORKFLOW \
+    --response-type DIRECT \
+    --settings '{"workflow_url":"./my-workflow.yaml", "workflow_context":"{\"api_url\":\"https://api.example.com\",\"slack_token\":\"xoxb-xxx\"}"}'
+```
+
+**Via job arguments (WorkflowRunArgs):**
+
+Only effective when `workflow_context` is not set in runner settings.
+
+```shell
+# Pass context variables at runtime
+$ ./target/release/jobworkerp-client job enqueue \
+    --worker "MyWorkflow" \
+    --args '{"input":"/home", "workflow_context":"{\"api_url\":\"https://api.example.com\",\"max_retries\":3}"}'
+```
+
+#### How to Reference
+
+In jq syntax use `$variable_name`, in Liquid template syntax use `{{ variable_name }}`:
+
+```yaml
+do:
+  - callApi:
+      run:
+        function:
+          runnerName: HTTP_REQUEST
+          arguments:
+            # jq syntax: reference with $variable_name
+            url: ${"$api_url" + "/data"}
+            maxRetries: ${$max_retries}
+  - notify:
+      run:
+        function:
+          runnerName: COMMAND
+          arguments:
+            # Liquid template syntax: reference with {{ variable_name }}
+            command: "echo"
+            args: ["$${API URL is {{ api_url }}}"]
+```
+
+#### Adding Context Variables with export.as
+
+Use `export.as` on a task to save task output as context variables, making them available to subsequent tasks:
+
+```yaml
+do:
+  - checkStatus:
+      run:
+        function:
+          runnerName: COMMAND
+          arguments:
+            command: "test"
+            args: ["-d", "/data"]
+            treat_nonzero_as_error: false
+      export:
+        as:
+          dir_exists: "${.exitCode == 0}"
+  - processIfExists:
+      if: "${$dir_exists == true}"
+      run:
+        # ...
+```
 
 ## Schema Definition
 
