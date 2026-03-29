@@ -755,6 +755,7 @@ pub trait FunctionApp:
 
         let runner_settings = WorkflowRunnerSettings {
             workflow_source: Some(WorkflowSource::WorkflowData(workflow_json_str)),
+            workflow_context: None,
         };
         let runner_settings_bytes = ProstMessageCodec::serialize_message(&runner_settings)?;
 

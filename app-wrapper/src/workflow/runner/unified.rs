@@ -50,6 +50,8 @@ pub struct WorkflowUnifiedRunnerImpl {
     app_module: Arc<AppModule>,
     /// Workflow from settings (optional, used by 'run' method if args don't specify workflow_source)
     settings_workflow: Option<Arc<WorkflowSchema>>,
+    /// Workflow context from settings (optional, pre-parsed in load()). If set, args.workflow_context is ignored.
+    settings_workflow_context: Option<Arc<serde_json::Value>>,
     /// Create runner for 'create' method
     create_runner: CreateWorkflowRunnerImpl,
     spec: WorkflowUnifiedRunnerSpecImpl,
@@ -65,6 +67,7 @@ impl WorkflowUnifiedRunnerImpl {
             app_wrapper_module,
             app_module: app_module.clone(),
             settings_workflow: None,
+            settings_workflow_context: None,
             create_runner: CreateWorkflowRunnerImpl::new(app_module)?,
             spec: WorkflowUnifiedRunnerSpecImpl::new(),
             cancel_helper: None,
@@ -80,6 +83,7 @@ impl WorkflowUnifiedRunnerImpl {
             app_wrapper_module,
             app_module: app_module.clone(),
             settings_workflow: None,
+            settings_workflow_context: None,
             create_runner: CreateWorkflowRunnerImpl::new_with_cancel_monitoring(
                 app_module,
                 cancel_helper.clone(),
@@ -123,6 +127,27 @@ impl WorkflowUnifiedRunnerImpl {
             .ok_or_else(|| anyhow!("No workflow_source specified in settings or args"))
     }
 
+    /// Resolve workflow context: pre-parsed settings takes precedence over args
+    fn resolve_workflow_context(
+        &self,
+        args_context: &Option<String>,
+    ) -> Result<Arc<serde_json::Value>> {
+        if let Some(ctx) = &self.settings_workflow_context {
+            return Ok(Arc::clone(ctx));
+        }
+        match args_context.as_deref() {
+            Some(s) => {
+                let v: serde_json::Value = serde_json::from_str(s)
+                    .map_err(|e| anyhow!("Invalid workflow_context JSON in args: {}", e))?;
+                if !v.is_object() {
+                    return Err(anyhow!("workflow_context in args must be a JSON object"));
+                }
+                Ok(Arc::new(v))
+            }
+            None => Ok(Arc::new(serde_json::Value::Object(Default::default()))),
+        }
+    }
+
     /// Execute workflow run (implementation for 'run' method)
     async fn execute_run(
         &self,
@@ -151,12 +176,7 @@ impl WorkflowUnifiedRunnerImpl {
 
         let input_json = serde_json::from_str(&args.input)
             .unwrap_or_else(|_| serde_json::Value::String(args.input.clone()));
-        let context_json = Arc::new(
-            args.workflow_context
-                .as_deref()
-                .map(serde_json::from_str)
-                .unwrap_or_else(|| Ok(serde_json::Value::Object(Default::default())))?,
-        );
+        let context_json = self.resolve_workflow_context(&args.workflow_context)?;
         let chpoint = if let Some(ch) = args.from_checkpoint.as_ref() {
             Some(CheckPointContext::from_workflow_run(ch)?)
         } else {
@@ -238,12 +258,7 @@ impl WorkflowUnifiedRunnerImpl {
 
         let input_json = serde_json::from_str(&args.input)
             .unwrap_or_else(|_| serde_json::Value::String(args.input.clone()));
-        let context_json = Arc::new(
-            args.workflow_context
-                .as_deref()
-                .map(serde_json::from_str)
-                .unwrap_or_else(|| Ok(serde_json::Value::Object(Default::default())))?,
-        );
+        let context_json = self.resolve_workflow_context(&args.workflow_context)?;
         let chpoint = if let Some(ch) = args.from_checkpoint.as_ref() {
             Some(CheckPointContext::from_workflow_run(ch)?)
         } else {
@@ -377,6 +392,17 @@ impl RunnerTrait for WorkflowUnifiedRunnerImpl {
                     .await?;
                 tracing::debug!("Workflow loaded from settings: {:#?}", &workflow);
                 self.settings_workflow = Some(Arc::new(workflow));
+            }
+            // Parse, validate and store workflow_context from settings
+            if let Some(ref ctx) = parsed_settings.workflow_context {
+                let v: serde_json::Value = serde_json::from_str(ctx)
+                    .map_err(|e| anyhow!("Invalid workflow_context JSON in settings: {}", e))?;
+                if !v.is_object() {
+                    return Err(anyhow!(
+                        "workflow_context in settings must be a JSON object"
+                    ));
+                }
+                self.settings_workflow_context = Some(Arc::new(v));
             }
         }
         // create_runner.load() is a no-op but call it for consistency

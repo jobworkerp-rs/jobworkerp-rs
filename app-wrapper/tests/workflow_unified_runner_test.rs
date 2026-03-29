@@ -69,10 +69,16 @@ async fn create_test_unified_runner_with_app()
 
 /// Create runner settings with workflow definition (using new WorkflowRunnerSettings)
 fn create_workflow_settings(workflow_json: &str) -> Vec<u8> {
+    create_workflow_settings_with_context(workflow_json, None)
+}
+
+/// Create runner settings with workflow definition and optional context
+fn create_workflow_settings_with_context(workflow_json: &str, context: Option<&str>) -> Vec<u8> {
     let settings = WorkflowRunnerSettings {
         workflow_source: Some(SettingsWorkflowSource::WorkflowData(
             workflow_json.to_string(),
         )),
+        workflow_context: context.map(|s| s.to_string()),
     };
     settings.encode_to_vec()
 }
@@ -81,7 +87,7 @@ fn create_workflow_settings(workflow_json: &str) -> Vec<u8> {
 #[ignore = "need backend with same db"]
 fn test_unified_runner_run_method_default() -> Result<()> {
     TEST_RUNTIME.block_on(async {
-        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
         let mut runner = create_test_unified_runner().await?;
         let workflow_json = create_simple_workflow_json();
@@ -122,7 +128,7 @@ fn test_unified_runner_run_method_default() -> Result<()> {
 #[ignore = "need backend with same db"]
 fn test_unified_runner_run_method_explicit() -> Result<()> {
     TEST_RUNTIME.block_on(async {
-        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
         let mut runner = create_test_unified_runner().await?;
         let workflow_json = create_simple_workflow_json();
@@ -162,7 +168,7 @@ fn test_unified_runner_run_method_explicit() -> Result<()> {
 #[test]
 fn test_unified_runner_create_method() -> Result<()> {
     TEST_RUNTIME.block_on(async {
-        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
         let mut runner = create_test_unified_runner().await?;
         // Create method doesn't need settings loaded
@@ -173,6 +179,7 @@ fn test_unified_runner_create_method() -> Result<()> {
             name: "test-created-workflow".to_string(),
             workflow_source: Some(CreateWorkflowSource::WorkflowData(workflow_json)),
             worker_options: None,
+            workflow_context: None,
         };
 
         let args_bytes = args.encode_to_vec();
@@ -196,7 +203,7 @@ fn test_unified_runner_create_method() -> Result<()> {
 #[test]
 fn test_unified_runner_unknown_method_error() -> Result<()> {
     TEST_RUNTIME.block_on(async {
-        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
         let mut runner = create_test_unified_runner().await?;
         runner.load(vec![]).await?;
@@ -232,7 +239,7 @@ fn test_unified_runner_unknown_method_error() -> Result<()> {
 #[test]
 fn test_unified_runner_create_invalid_workflow() -> Result<()> {
     TEST_RUNTIME.block_on(async {
-        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
         let mut runner = create_test_unified_runner().await?;
         runner.load(vec![]).await?;
@@ -245,6 +252,7 @@ fn test_unified_runner_create_invalid_workflow() -> Result<()> {
                 invalid_workflow.to_string(),
             )),
             worker_options: None,
+            workflow_context: None,
         };
 
         let args_bytes = args.encode_to_vec();
@@ -268,7 +276,7 @@ fn test_unified_runner_create_invalid_workflow() -> Result<()> {
 #[test]
 fn test_unified_runner_create_empty_name_error() -> Result<()> {
     TEST_RUNTIME.block_on(async {
-        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
         let mut runner = create_test_unified_runner().await?;
         runner.load(vec![]).await?;
@@ -278,6 +286,7 @@ fn test_unified_runner_create_empty_name_error() -> Result<()> {
             name: "".to_string(), // Empty name should fail
             workflow_source: Some(CreateWorkflowSource::WorkflowData(workflow_json)),
             worker_options: None,
+            workflow_context: None,
         };
 
         let args_bytes = args.encode_to_vec();
@@ -304,7 +313,7 @@ fn test_unified_runner_create_empty_name_error() -> Result<()> {
 #[ignore = "need backend with same db"]
 fn test_workflow_create_verify_and_run_e2e() -> Result<()> {
     TEST_RUNTIME.block_on(async {
-        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
         let (app_module, mut runner) = create_test_unified_runner_with_app().await?;
         runner.load(vec![]).await?;
@@ -316,6 +325,7 @@ fn test_workflow_create_verify_and_run_e2e() -> Result<()> {
             name: worker_name.to_string(),
             workflow_source: Some(CreateWorkflowSource::WorkflowData(workflow_json.clone())),
             worker_options: None,
+            workflow_context: None,
         };
         let create_bytes = create_args.encode_to_vec();
 
@@ -376,6 +386,212 @@ fn test_workflow_create_verify_and_run_e2e() -> Result<()> {
         );
 
         tracing::info!("E2E test passed: create -> verify RunnerType::Workflow -> run");
+        Ok(())
+    })
+}
+
+/// Test: settings workflow_context is loaded and available during run
+#[test]
+#[ignore = "need backend with same db"]
+fn test_workflow_run_with_settings_context() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+        let mut runner = create_test_unified_runner().await?;
+        let workflow_json = create_simple_workflow_json();
+        runner
+            .load(create_workflow_settings_with_context(
+                &workflow_json,
+                Some(r#"{"env":"test","version":"1.0"}"#),
+            ))
+            .await?;
+
+        let args = WorkflowRunArgs {
+            workflow_source: None,
+            input: r#"{"testInput": "with settings context"}"#.to_string(),
+            workflow_context: None,
+            ..Default::default()
+        };
+        let args_bytes = args.encode_to_vec();
+
+        let (result, _) = runner.run(&args_bytes, HashMap::new(), Some("run")).await;
+        let output = result?;
+        let response = WorkflowResult::decode(&output[..])?;
+
+        assert!(
+            !response.output.is_empty() && response.status == 0,
+            "Expected successful execution with settings context, got output='{}', status={}",
+            response.output,
+            response.status
+        );
+
+        tracing::info!("Settings context test passed!");
+        Ok(())
+    })
+}
+
+/// Test: settings workflow_context takes precedence over args workflow_context
+#[test]
+#[ignore = "need backend with same db"]
+fn test_workflow_settings_context_overrides_args() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+        let mut runner = create_test_unified_runner().await?;
+        let workflow_json = create_simple_workflow_json();
+        runner
+            .load(create_workflow_settings_with_context(
+                &workflow_json,
+                Some(r#"{"source":"settings"}"#),
+            ))
+            .await?;
+
+        // args has different context, but settings should take precedence
+        let args = WorkflowRunArgs {
+            workflow_source: None,
+            input: r#"{"testInput": "context override test"}"#.to_string(),
+            workflow_context: Some(r#"{"source":"args"}"#.to_string()),
+            ..Default::default()
+        };
+        let args_bytes = args.encode_to_vec();
+
+        let (result, _) = runner.run(&args_bytes, HashMap::new(), Some("run")).await;
+        let output = result?;
+        let response = WorkflowResult::decode(&output[..])?;
+
+        assert!(
+            !response.output.is_empty() && response.status == 0,
+            "Expected successful execution with settings context override, got output='{}', status={}",
+            response.output,
+            response.status
+        );
+
+        tracing::info!("Settings context overrides args test passed!");
+        Ok(())
+    })
+}
+
+/// Test: args workflow_context is used when settings has no context
+#[test]
+#[ignore = "need backend with same db"]
+fn test_workflow_run_with_args_context() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+        let mut runner = create_test_unified_runner().await?;
+        let workflow_json = create_simple_workflow_json();
+        // No workflow_context in settings
+        runner
+            .load(create_workflow_settings(&workflow_json))
+            .await?;
+
+        let args = WorkflowRunArgs {
+            workflow_source: None,
+            input: r#"{"testInput": "with args context"}"#.to_string(),
+            workflow_context: Some(r#"{"env":"from_args"}"#.to_string()),
+            ..Default::default()
+        };
+        let args_bytes = args.encode_to_vec();
+
+        let (result, _) = runner.run(&args_bytes, HashMap::new(), Some("run")).await;
+        let output = result?;
+        let response = WorkflowResult::decode(&output[..])?;
+
+        assert!(
+            !response.output.is_empty() && response.status == 0,
+            "Expected successful execution with args context, got output='{}', status={}",
+            response.output,
+            response.status
+        );
+
+        tracing::info!("Args context test passed!");
+        Ok(())
+    })
+}
+
+/// Test: invalid workflow_context JSON is rejected
+#[test]
+fn test_workflow_context_invalid_json_rejected() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+        let mut runner = create_test_unified_runner().await?;
+        let workflow_json = create_simple_workflow_json();
+
+        // Invalid JSON in settings → load() should fail
+        let result = runner
+            .load(create_workflow_settings_with_context(
+                &workflow_json,
+                Some("not valid json"),
+            ))
+            .await;
+        assert!(
+            result.is_err(),
+            "load() should reject invalid JSON in settings"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("settings"),
+            "Error should mention 'settings': {err_msg}"
+        );
+
+        // Reset runner for next test
+        let mut runner = create_test_unified_runner().await?;
+        runner
+            .load(create_workflow_settings(&workflow_json))
+            .await?;
+
+        // Invalid JSON in args → run() should fail
+        let args = WorkflowRunArgs {
+            workflow_source: None,
+            input: r#"{"testInput": "test"}"#.to_string(),
+            workflow_context: Some("bad json".to_string()),
+            ..Default::default()
+        };
+        let (result, _) = runner
+            .run(&args.encode_to_vec(), HashMap::new(), Some("run"))
+            .await;
+        assert!(result.is_err(), "run() should reject invalid JSON in args");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("args"),
+            "Error should mention 'args': {err_msg}"
+        );
+
+        // Non-object JSON in args → run() should fail
+        let args = WorkflowRunArgs {
+            workflow_source: None,
+            input: r#"{"testInput": "test"}"#.to_string(),
+            workflow_context: Some("[1,2,3]".to_string()),
+            ..Default::default()
+        };
+        let (result, _) = runner
+            .run(&args.encode_to_vec(), HashMap::new(), Some("run"))
+            .await;
+        assert!(
+            result.is_err(),
+            "run() should reject non-object JSON in args"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("JSON object"),
+            "Error should mention 'JSON object': {err_msg}"
+        );
+
+        // Non-object JSON in settings → load() should fail
+        let mut runner = create_test_unified_runner().await?;
+        let result = runner
+            .load(create_workflow_settings_with_context(
+                &workflow_json,
+                Some(r#""just a string""#),
+            ))
+            .await;
+        assert!(
+            result.is_err(),
+            "load() should reject non-object JSON in settings"
+        );
+
+        tracing::info!("Invalid JSON rejection tests passed!");
         Ok(())
     })
 }

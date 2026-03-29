@@ -460,6 +460,7 @@ mod tests {
                     workflow_json,
                 ),
             ),
+            workflow_context: None,
         };
         let runner_settings = ProstMessageCodec::serialize_message(&settings).unwrap();
 
@@ -556,6 +557,7 @@ mod tests {
                     workflow_json,
                 ),
             ),
+            workflow_context: None,
         };
         let runner_settings = ProstMessageCodec::serialize_message(&settings).unwrap();
 
@@ -599,6 +601,7 @@ mod tests {
                     workflow_json,
                 ),
             ),
+            workflow_context: None,
         };
         let runner_settings = ProstMessageCodec::serialize_message(&settings).unwrap();
 
