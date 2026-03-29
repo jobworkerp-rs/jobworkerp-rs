@@ -718,9 +718,9 @@ pub trait FunctionApp:
             .await?;
 
         // Build WorkerData from WorkerOptions
-        let runner_id = runner.id.ok_or_else(|| {
-            JobWorkerError::InvalidParameter("Runner ID is missing".to_string())
-        })?;
+        let runner_id = runner
+            .id
+            .ok_or_else(|| JobWorkerError::InvalidParameter("Runner ID is missing".to_string()))?;
         let worker_data = self.build_worker_data_from_options(
             name.clone(),
             description.unwrap_or_default(),
@@ -779,7 +779,8 @@ pub trait FunctionApp:
 
         if workflow_url.is_some() && workflow_data.is_some() {
             return Err(JobWorkerError::InvalidParameter(
-                "Only one of workflow_url or workflow_data should be specified, not both".to_string(),
+                "Only one of workflow_url or workflow_data should be specified, not both"
+                    .to_string(),
             )
             .into());
         }
@@ -836,9 +837,9 @@ pub trait FunctionApp:
         proto_settings.encode(&mut runner_settings_bytes)?;
 
         // Build WorkerData
-        let runner_id = runner.id.ok_or_else(|| {
-            JobWorkerError::InvalidParameter("Runner ID is missing".to_string())
-        })?;
+        let runner_id = runner
+            .id
+            .ok_or_else(|| JobWorkerError::InvalidParameter("Runner ID is missing".to_string()))?;
         let worker_data = self.build_worker_data_from_options(
             name.clone(),
             resolved_description,
