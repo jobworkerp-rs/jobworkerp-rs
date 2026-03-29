@@ -131,26 +131,6 @@ INSERT IGNORE INTO runner (id, name, description, definition, type) VALUES (
   'Executes Python scripts or commands with specified arguments and environment.',
   'builtin6', 6
 ), (
-  65533, 'LLM_CHAT',
-  'Generates chat interactions using large language models with specified messages and configuration parameters.',
-  'builtin65533', 65533
-), (
-  65534, 'LLM_COMPLETION',
-  'Generates text completions using large language models with specified prompts and configuration parameters.',
-  'builtin65534', 65534
-), (
-  65535, 'INLINE_WORKFLOW',
-  'Executes a workflow defined directly within the job request. Steps are run sequentially and the definition is not stored for future reuse. Uses the same schema as REUSABLE_WORKFLOW for workflow definition.',
-  'builtin65535', 65535
-), (
-  65532, 'REUSABLE_WORKFLOW',
-  'Defines and saves workflow definitions that can be executed multiple times using their ID reference. These workflows can be reused across different job requests.',
-  'builtin65532', 65532
-), (
-  -1, 'CREATE_WORKFLOW',
-  'Creates a new REUSABLE_WORKFLOW worker from a workflow definition. The workflow is validated and stored as a worker that can be executed multiple times.',
-  'builtin-1', -1
-), (
   32768, 'LLM',
   'Unified LLM runner with multiple methods: completion (text completion) and chat (conversation with history). Requires using parameter to specify method.',
   'builtin32768', 32768

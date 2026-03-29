@@ -90,38 +90,6 @@ message CreateWorkerResponse {
   string worker_name = 2;
 }
 
-// # Create Workflow Request
-// Create a REUSABLE_WORKFLOW Worker from workflow definition
-message CreateWorkflowRequest {
-  // Workflow definition source (either data or url required)
-  oneof workflow_source {
-    // Workflow definition as JSON or YAML string
-    string workflow_data = 1;
-
-    // URL to workflow definition file (JSON or YAML)
-    string workflow_url = 2;
-  }
-
-  // Worker name (unique identifier)
-  // If omitted, uses workflow's document.name field
-  optional string name = 3;
-
-  // Worker options (execution configuration)
-  optional jobworkerp.function.data.WorkerOptions worker_options = 4;
-}
-
-// # Create Workflow Response
-message CreateWorkflowResponse {
-  // Created worker ID
-  jobworkerp.data.WorkerId worker_id = 1;
-
-  // Created worker name
-  string worker_name = 2;
-
-  // Workflow document name (from definition)
-  optional string workflow_name = 3;
-}
-
 service FunctionService {
   rpc FindList(FindFunctionRequest)
       returns (stream jobworkerp.function.data.FunctionSpecs);
@@ -138,7 +106,4 @@ service FunctionService {
 
   // Create a Worker from any Runner with detailed configuration
   rpc CreateWorker(CreateWorkerRequest) returns (CreateWorkerResponse);
-
-  // Create a REUSABLE_WORKFLOW Worker from workflow definition
-  rpc CreateWorkflow(CreateWorkflowRequest) returns (CreateWorkflowResponse);
 }

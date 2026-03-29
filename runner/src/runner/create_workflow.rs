@@ -1,6 +1,5 @@
 use crate::{jobworkerp::runner::create_workflow_args::WorkerOptions, schema_to_json_string};
 use proto::DEFAULT_METHOD_NAME;
-use proto::jobworkerp::data::RunnerType;
 use std::collections::HashMap;
 
 use super::RunnerSpec;
@@ -23,7 +22,7 @@ impl Default for CreateWorkflowRunnerSpecImpl {
 
 pub trait CreateWorkflowRunnerSpec {
     fn name(&self) -> String {
-        RunnerType::CreateWorkflow.as_str_name().to_string()
+        "CREATE_WORKFLOW".to_string()
     }
 
     fn runner_settings_proto(&self) -> String {

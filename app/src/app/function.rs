@@ -12,10 +12,7 @@ use core::fmt;
 use helper::{FunctionCallHelper, McpNameConverter};
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
-use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_runner::jobworkerp::runner::WorkflowRunnerSettings;
-use jobworkerp_runner::jobworkerp::runner::workflow_runner_settings::WorkflowSource;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::ProtobufHelper;
 use proto::jobworkerp::data::RunnerData;
@@ -699,15 +696,35 @@ pub trait FunctionApp:
             })
             .transpose()?;
 
+        // WORKFLOW runner: delegate to workflow-specific path with validation
+        if runner
+            .data
+            .as_ref()
+            .is_some_and(|d| d.runner_type() == RunnerType::Workflow)
+        {
+            return self
+                .create_workflow_worker(
+                    &runner,
+                    name,
+                    description,
+                    runner_settings_value,
+                    worker_options,
+                )
+                .await;
+        }
+
         let runner_settings_bytes = self
             .setup_runner_and_settings(&runner, runner_settings_value)
             .await?;
 
         // Build WorkerData from WorkerOptions
+        let runner_id = runner
+            .id
+            .ok_or_else(|| JobWorkerError::InvalidParameter("Runner ID is missing".to_string()))?;
         let worker_data = self.build_worker_data_from_options(
             name.clone(),
             description.unwrap_or_default(),
-            runner.id.unwrap(),
+            runner_id,
             runner_settings_bytes,
             worker_options,
         )?;
@@ -719,56 +736,113 @@ pub trait FunctionApp:
         Ok((worker_id, name))
     }
 
-    /// Create a REUSABLE_WORKFLOW Worker from workflow definition
-    async fn create_workflow_from_definition(
+    /// Create a Worker for WORKFLOW runner with workflow-specific validation.
+    ///
+    /// Parses and validates the workflow definition, extracts `document.summary`
+    /// as the worker description (when not explicitly provided), and encodes the
+    /// workflow into `WorkflowRunnerSettings` protobuf for storage.
+    async fn create_workflow_worker(
         &self,
-        workflow_data: Option<String>,
-        workflow_url: Option<String>,
-        name: Option<String>,
+        runner: &infra::infra::runner::rows::RunnerWithSchema,
+        name: String,
+        description: Option<String>,
+        settings_json: Option<serde_json::Value>,
         worker_options: Option<WorkerOptions>,
-    ) -> Result<(WorkerId, String, Option<String>)> {
-        // Load workflow definition (data or URL)
-        let workflow_schema = if let Some(data) = workflow_data {
-            self.workflow_loader()
-                .load_workflow(None, Some(&data), true)
-                .await?
-        } else if let Some(url) = workflow_url {
-            self.workflow_loader()
-                .load_workflow(Some(&url), None, true)
-                .await?
-        } else {
-            return Err(JobWorkerError::InvalidParameter(
-                "Either workflow_data or workflow_url is required".to_string(),
+    ) -> Result<(WorkerId, String)> {
+        use jobworkerp_runner::jobworkerp::runner::WorkflowRunnerSettings;
+        use jobworkerp_runner::jobworkerp::runner::workflow_runner_settings::WorkflowSource;
+        use prost::Message;
+
+        let settings = settings_json.ok_or_else(|| {
+            JobWorkerError::InvalidParameter(
+                "settings_json is required for WORKFLOW runner".to_string(),
             )
-            .into());
-        };
-
-        let workflow_name = workflow_schema.document.name.to_string();
-
-        // Determine worker name (from name parameter or workflow definition)
-        let worker_name = name.unwrap_or_else(|| workflow_name.clone());
-
-        // Serialize workflow_schema to JSON string
-        let workflow_json_str = serde_json::to_string(&workflow_schema).map_err(|e| {
-            JobWorkerError::InvalidParameter(format!("Failed to serialize workflow schema: {}", e))
         })?;
 
-        let runner_settings = WorkflowRunnerSettings {
-            workflow_source: Some(WorkflowSource::WorkflowData(workflow_json_str)),
-            workflow_context: None,
-        };
-        let runner_settings_bytes = ProstMessageCodec::serialize_message(&runner_settings)?;
+        // Extract workflow_source and workflow_context from settings JSON
+        let (workflow_url, workflow_data) = (
+            settings
+                .get("workflow_url")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
+            settings
+                .get("workflow_data")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
+        );
+        let workflow_context = settings
+            .get("workflow_context")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
-        let runner_id = proto::jobworkerp::data::RunnerId {
-            value: proto::jobworkerp::data::RunnerType::Workflow as i64,
+        if workflow_url.is_some() && workflow_data.is_some() {
+            return Err(JobWorkerError::InvalidParameter(
+                "Only one of workflow_url or workflow_data should be specified, not both"
+                    .to_string(),
+            )
+            .into());
+        }
+        if workflow_url.is_none() && workflow_data.is_none() {
+            return Err(JobWorkerError::InvalidParameter(
+                "Either workflow_url or workflow_data is required in settings_json for WORKFLOW runner"
+                    .to_string(),
+            )
+            .into());
+        }
+
+        // Load and validate workflow definition via WorkflowLoader
+        let workflow_schema = self
+            .workflow_loader()
+            .load_workflow(
+                workflow_url.as_deref(),
+                workflow_data.as_deref(),
+                true, // validate
+            )
+            .await?;
+
+        // Extract summary for description fallback
+        let summary = workflow_schema
+            .document
+            .summary
+            .as_ref()
+            .map(|s| s.to_string());
+        let resolved_description = description.or(summary).unwrap_or_default();
+
+        // Validate workflow_context if provided
+        if let Some(ref ctx) = workflow_context {
+            let parsed: serde_json::Value = serde_json::from_str(ctx).map_err(|e| {
+                JobWorkerError::InvalidParameter(format!("Invalid workflow_context JSON: {}", e))
+            })?;
+            if !parsed.is_object() {
+                return Err(JobWorkerError::InvalidParameter(
+                    "workflow_context must be a JSON object".to_string(),
+                )
+                .into());
+            }
+        }
+
+        // Serialize validated workflow as inline JSON for storage.
+        // Always store as WorkflowData (snapshot) even when loaded from URL,
+        // to eliminate external dependency at execution time.
+        let workflow_json = serde_json::to_string(&workflow_schema)?;
+
+        // Encode WorkflowRunnerSettings to protobuf bytes
+        let proto_settings = WorkflowRunnerSettings {
+            workflow_source: Some(WorkflowSource::WorkflowData(workflow_json)),
+            workflow_context,
         };
+        let mut runner_settings_bytes = Vec::new();
+        proto_settings.encode(&mut runner_settings_bytes)?;
 
         // Build WorkerData
-        let description = workflow_schema.document.summary.unwrap_or_default();
-
+        let runner_id = runner
+            .id
+            .ok_or_else(|| JobWorkerError::InvalidParameter("Runner ID is missing".to_string()))?;
         let worker_data = self.build_worker_data_from_options(
-            worker_name.clone(),
-            description,
+            name.clone(),
+            resolved_description,
             runner_id,
             runner_settings_bytes,
             worker_options,
@@ -778,7 +852,7 @@ pub trait FunctionApp:
 
         let worker_id = self.worker_app().create(&worker_data).await?;
 
-        Ok((worker_id, worker_name, Some(workflow_name)))
+        Ok((worker_id, name))
     }
 
     // for LLM function calling (LLM_CHAT runner)
@@ -1542,13 +1616,13 @@ pub trait UseFunctionApp {
     fn function_app(&self) -> &FunctionAppImpl;
 }
 
-/// Wrap flat JSON arguments into the 'input' field for Workflow/ReusableWorkflow runners.
+/// Wrap flat JSON arguments into the 'input' field for Workflow runners.
 /// Used by transform_job_args to ensure args match protobuf schema before serialization.
 pub(crate) fn wrap_workflow_args_if_needed(
     rt: RunnerType,
     arg_json: serde_json::Value,
 ) -> serde_json::Value {
-    if rt != RunnerType::Workflow && rt != RunnerType::ReusableWorkflow {
+    if rt != RunnerType::Workflow {
         return arg_json;
     }
     match &arg_json {
@@ -1567,34 +1641,7 @@ pub(crate) fn transform_function_arguments_impl(
     rt: RunnerType,
     arguments: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
-    // For CREATE_WORKFLOW runner, process arguments as workflow JSON
-    // When called from LLM, only workflow JSON is expected as arguments for proper workflow creation
-    // Settings are specified via worker options
-    if rt == RunnerType::CreateWorkflow {
-        arguments.map(|mut a| {
-            let args = match a.remove("arguments") {
-                Some(serde_json::Value::String(v)) => serde_json::from_str(v.as_str()).ok(),
-                v => v,
-            };
-            let worker_opts = a.remove("settings");
-            tracing::debug!("transforming arguments (CreateWorkflow): {:#?}", args);
-            let n = args.as_ref().map(|v| {
-                v.get("document")
-                    .and_then(|v| v.get("name"))
-                    .and_then(|n| n.as_str())
-                    .unwrap_or_else(|| rt.as_str_name())
-            });
-            let s = json!({
-                "name": n,
-                "workflow_data": args.map(|v| v.to_string()).unwrap_or_default(),
-                "worker_options": worker_opts,
-            });
-            let mut r = serde_json::Map::new();
-            r.insert("arguments".to_string(), s);
-            tracing::debug!("transformed arguments (CreateWorkflow): {:#?}", r);
-            r
-        })
-    } else if rt == RunnerType::Workflow || rt == RunnerType::ReusableWorkflow {
+    if rt == RunnerType::Workflow {
         // Wrap LLM-generated flat arguments into the 'input' field expected by protobuf
         arguments.map(|mut args| {
             if args.contains_key("input") {
@@ -1640,17 +1687,6 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
         assert_eq!(parsed["owner"], "foo");
         assert_eq!(parsed["repo"], "bar");
-    }
-
-    #[test]
-    fn test_reusable_workflow_wraps_flat_args_into_input() {
-        let args = serde_json::Map::from_iter([("query".to_string(), json!("test"))]);
-        let result =
-            transform_function_arguments_impl(RunnerType::ReusableWorkflow, Some(args)).unwrap();
-        assert!(result.contains_key("input"));
-        let input_str = result["input"].as_str().unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
-        assert_eq!(parsed["query"], "test");
     }
 
     #[test]
@@ -1747,7 +1783,7 @@ mod tests {
     #[test]
     fn test_wrap_workflow_args_empty_object() {
         let arg = json!({});
-        let result = wrap_workflow_args_if_needed(RunnerType::ReusableWorkflow, arg);
+        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, arg);
         assert_eq!(result["input"].as_str().unwrap(), "{}");
     }
 
@@ -1802,8 +1838,7 @@ mod tests {
 
         // transform_function_arguments_impl correctly unwraps "arguments" → "input"
         let transformed =
-            transform_function_arguments_impl(RunnerType::ReusableWorkflow, Some(args.clone()))
-                .unwrap();
+            transform_function_arguments_impl(RunnerType::Workflow, Some(args.clone())).unwrap();
         assert!(transformed.contains_key("input"));
         assert!(!transformed.contains_key("arguments"));
         let input_str = transformed["input"].as_str().unwrap();
@@ -1812,10 +1847,8 @@ mod tests {
         assert_eq!(parsed["pull_number"], 187);
 
         // wrap_workflow_args_if_needed does NOT unwrap "arguments" — it wraps everything
-        let wrapped = wrap_workflow_args_if_needed(
-            RunnerType::ReusableWorkflow,
-            serde_json::Value::Object(args),
-        );
+        let wrapped =
+            wrap_workflow_args_if_needed(RunnerType::Workflow, serde_json::Value::Object(args));
         let wrapped_input_str = wrapped["input"].as_str().unwrap();
         let wrapped_parsed: serde_json::Value = serde_json::from_str(wrapped_input_str).unwrap();
         // The "arguments" key is still present (this was the bug)
