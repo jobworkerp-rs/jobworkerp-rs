@@ -19,4 +19,9 @@ message WorkflowRunnerSettings {
     // The workflow definition as a JSON or YAML string
     string workflow_data = 2;
   }
+
+  // # Workflow Context (optional)
+  // Context variables for workflow execution (JSON object string).
+  // If set, WorkflowRunArgs.workflow_context is ignored at runtime.
+  optional string workflow_context = 3;
 }

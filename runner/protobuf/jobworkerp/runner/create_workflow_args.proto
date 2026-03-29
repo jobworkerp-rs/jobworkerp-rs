@@ -103,4 +103,10 @@ message CreateWorkflowArgs {
   // Optional worker execution options (if not specified, default values will be
   // used)
   optional WorkerOptions worker_options = 4;
+
+  // # Workflow Context
+  // Optional context variables for workflow execution (JSON object string).
+  // If set, this will be stored in WorkflowRunnerSettings.workflow_context
+  // and args.workflow_context at runtime will be ignored.
+  optional string workflow_context = 5;
 }

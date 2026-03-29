@@ -258,6 +258,7 @@ fn create_workflow_settings(workflow_json: &str) -> Vec<u8> {
         workflow_source: Some(SettingsWorkflowSource::WorkflowData(
             workflow_json.to_string(),
         )),
+        workflow_context: None,
     };
     settings.encode_to_vec()
 }
