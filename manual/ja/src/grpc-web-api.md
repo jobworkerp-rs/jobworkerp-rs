@@ -124,10 +124,6 @@ service FunctionService {
   // 任意のRunnerから詳細設定付きWorkerを作成
   rpc CreateWorker(CreateWorkerRequest)
     returns (CreateWorkerResponse);
-
-  // ワークフロー定義からREUSABLE_WORKFLOW Workerを作成
-  rpc CreateWorkflow(CreateWorkflowRequest)
-    returns (CreateWorkflowResponse);
 }
 ```
 

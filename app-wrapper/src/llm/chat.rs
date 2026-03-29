@@ -18,7 +18,7 @@ use ollama::OllamaChatService;
 use opentelemetry::Context;
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType, result_output_item};
+use proto::jobworkerp::data::{ResultOutputItem, result_output_item};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -114,7 +114,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
                     self.app.function_set_app.clone(),
                     settings,
                 )?;
-                tracing::info!("{} loaded(ollama)", RunnerType::LlmChat.as_str_name());
+                tracing::info!("{} loaded(ollama)", "LLM(chat)");
                 self.ollama = Some(ollama);
                 Ok(())
             }
@@ -129,7 +129,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
                     settings,
                 )
                 .await?;
-                tracing::info!("{} loaded(genai)", RunnerType::LlmChat.as_str_name());
+                tracing::info!("{} loaded(genai)", "LLM(chat)");
                 self.genai = Some(genai);
                 Ok(())
             }

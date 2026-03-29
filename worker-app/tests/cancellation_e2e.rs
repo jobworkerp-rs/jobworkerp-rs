@@ -71,8 +71,7 @@ pub mod common {
         HttpRequest,
         PythonCommand,
         Docker,
-        LlmCompletion,
-        LlmChat,
+        Llm,
     }
 
     impl CancellationCapableRunner {
@@ -82,8 +81,7 @@ pub mod common {
                 Self::HttpRequest => "HTTP_REQUEST",
                 Self::PythonCommand => "PYTHON_COMMAND",
                 Self::Docker => "DOCKER",
-                Self::LlmCompletion => "LLM_COMPLETION",
-                Self::LlmChat => "LLM_CHAT",
+                Self::Llm => "LLM",
             }
         }
 
@@ -93,8 +91,7 @@ pub mod common {
                 Self::HttpRequest,
                 Self::PythonCommand,
                 Self::Docker,
-                Self::LlmCompletion,
-                Self::LlmChat,
+                Self::Llm,
             ]
         }
     }

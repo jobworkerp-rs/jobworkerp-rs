@@ -431,27 +431,29 @@ fn test_workflow_function_discovery_via_find_functions() -> Result<()> {
 
         println!("✅ Number of functions detected: {:?}", functions.len());
 
-        let create_workflow_not_found = functions.iter().any(|f| f.name == "CREATE_WORKFLOW");
+        let workflow_found = functions.iter().any(|f| f.name == "WORKFLOW");
 
-        assert!(
-            !create_workflow_not_found,
-            "CREATE_WORKFLOW function should be discoverable"
-        );
-        println!("✅ CREATE_WORKFLOW function detected");
+        assert!(workflow_found, "WORKFLOW function should be discoverable");
+        println!("✅ WORKFLOW function detected");
 
-        let reusable_workflow_found = functions.iter().any(|f| f.name == "REUSABLE_WORKFLOW");
-
-        assert!(
-            reusable_workflow_found,
-            "REUSABLE_WORKFLOW function should be discoverable"
-        );
-        println!("✅ REUSABLE_WORKFLOW function detected");
+        // Verify deprecated runners are no longer discoverable
+        for deprecated in &[
+            "INLINE_WORKFLOW",
+            "REUSABLE_WORKFLOW",
+            "CREATE_WORKFLOW",
+            "LLM_CHAT",
+            "LLM_COMPLETION",
+        ] {
+            assert!(
+                !functions.iter().any(|f| f.name == *deprecated),
+                "Deprecated runner '{}' should not be discoverable",
+                deprecated
+            );
+        }
+        println!("✅ All deprecated runners confirmed absent");
 
         // Display function details
-        for func in functions
-            .iter()
-            .filter(|f| f.name == "CREATE_WORKFLOW" || f.name == "REUSABLE_WORKFLOW")
-        {
+        for func in functions.iter().filter(|f| f.name == "WORKFLOW") {
             println!("📋 Function: {}", func.name);
             println!("   - Description: {}", func.description);
             println!("   - Type: {:?}", func.runner_type);

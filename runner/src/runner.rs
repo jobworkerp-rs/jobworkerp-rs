@@ -75,7 +75,6 @@ pub mod python;
 pub mod request;
 pub mod slack;
 pub mod timeout_config;
-pub mod workflow;
 pub mod workflow_unified;
 
 #[cfg(any(test, feature = "test-utils"))]

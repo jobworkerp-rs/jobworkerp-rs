@@ -4,8 +4,6 @@ use super::{
     docker::{DockerExecRunner, DockerRunner},
     function_set_selector::FunctionSetSelectorSpecImpl,
     grpc::GrpcRunnerSpecImpl,
-    llm::LLMCompletionRunnerSpecImpl,
-    llm_chat::LLMChatRunnerSpecImpl,
     llm_unified::LLMUnifiedRunnerSpecImpl,
     mcp::{
         McpServerRunnerImpl,
@@ -16,7 +14,6 @@ use super::{
     python::PythonCommandRunner,
     request::RequestRunner,
     slack::SlackPostMessageRunner,
-    workflow::{InlineWorkflowRunnerSpecImpl, ReusableWorkflowRunnerSpecImpl},
     workflow_unified::WorkflowUnifiedRunnerSpecImpl,
 };
 use anyhow::Result;
@@ -165,25 +162,6 @@ impl RunnerSpecFactory {
             }
             Some(RunnerType::FunctionSetSelector) => {
                 Some(Box::new(FunctionSetSelectorSpecImpl::new())
-                    as Box<dyn RunnerSpec + Send + Sync>)
-            }
-            Some(RunnerType::InlineWorkflow) => {
-                Some(Box::new(InlineWorkflowRunnerSpecImpl::new())
-                    as Box<dyn RunnerSpec + Send + Sync>)
-            }
-            Some(RunnerType::ReusableWorkflow) => {
-                Some(Box::new(ReusableWorkflowRunnerSpecImpl::new())
-                    as Box<dyn RunnerSpec + Send + Sync>)
-            }
-            Some(RunnerType::CreateWorkflow) => Some(Box::new(
-                crate::runner::create_workflow::CreateWorkflowRunnerSpecImpl {},
-            )
-                as Box<dyn RunnerSpec + Send + Sync>),
-            Some(RunnerType::LlmChat) => {
-                Some(Box::new(LLMChatRunnerSpecImpl::new()) as Box<dyn RunnerSpec + Send + Sync>)
-            }
-            Some(RunnerType::LlmCompletion) => {
-                Some(Box::new(LLMCompletionRunnerSpecImpl::new())
                     as Box<dyn RunnerSpec + Send + Sync>)
             }
             // Unified multi-method runners
