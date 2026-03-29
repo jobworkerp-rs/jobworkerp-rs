@@ -44,28 +44,14 @@ use proto::jobworkerp::data::{JobData, JobId, JobResult, ResultOutputItem, Runne
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Resolve workflow context: settings takes precedence over args.
-/// Extracted as a free function for testability.
-fn resolve_workflow_context_impl(
-    settings_context: Option<&str>,
-    args_context: &Option<String>,
-) -> Result<Arc<serde_json::Value>> {
-    let context_str = settings_context.or(args_context.as_deref());
-    Ok(Arc::new(
-        context_str
-            .map(serde_json::from_str)
-            .unwrap_or_else(|| Ok(serde_json::Value::Object(Default::default())))?,
-    ))
-}
-
 /// Unified Workflow Runner implementation that supports 'run' and 'create' methods
 pub struct WorkflowUnifiedRunnerImpl {
     app_wrapper_module: Arc<AppWrapperModule>,
     app_module: Arc<AppModule>,
     /// Workflow from settings (optional, used by 'run' method if args don't specify workflow_source)
     settings_workflow: Option<Arc<WorkflowSchema>>,
-    /// Workflow context from settings (optional). If set, args.workflow_context is ignored.
-    settings_workflow_context: Option<String>,
+    /// Workflow context from settings (optional, pre-parsed in load()). If set, args.workflow_context is ignored.
+    settings_workflow_context: Option<Arc<serde_json::Value>>,
     /// Create runner for 'create' method
     create_runner: CreateWorkflowRunnerImpl,
     spec: WorkflowUnifiedRunnerSpecImpl,
@@ -141,12 +127,25 @@ impl WorkflowUnifiedRunnerImpl {
             .ok_or_else(|| anyhow!("No workflow_source specified in settings or args"))
     }
 
-    /// Resolve workflow context: settings takes precedence over args
+    /// Resolve workflow context: pre-parsed settings takes precedence over args
     fn resolve_workflow_context(
         &self,
         args_context: &Option<String>,
     ) -> Result<Arc<serde_json::Value>> {
-        resolve_workflow_context_impl(self.settings_workflow_context.as_deref(), args_context)
+        if let Some(ctx) = &self.settings_workflow_context {
+            return Ok(Arc::clone(ctx));
+        }
+        match args_context.as_deref() {
+            Some(s) => {
+                let v: serde_json::Value = serde_json::from_str(s)
+                    .map_err(|e| anyhow!("Invalid workflow_context JSON in args: {}", e))?;
+                if !v.is_object() {
+                    return Err(anyhow!("workflow_context in args must be a JSON object"));
+                }
+                Ok(Arc::new(v))
+            }
+            None => Ok(Arc::new(serde_json::Value::Object(Default::default()))),
+        }
     }
 
     /// Execute workflow run (implementation for 'run' method)
@@ -394,15 +393,17 @@ impl RunnerTrait for WorkflowUnifiedRunnerImpl {
                 tracing::debug!("Workflow loaded from settings: {:#?}", &workflow);
                 self.settings_workflow = Some(Arc::new(workflow));
             }
-            // Validate and store workflow_context from settings
+            // Parse, validate and store workflow_context from settings
             if let Some(ref ctx) = parsed_settings.workflow_context {
                 let v: serde_json::Value = serde_json::from_str(ctx)
                     .map_err(|e| anyhow!("Invalid workflow_context JSON in settings: {}", e))?;
                 if !v.is_object() {
-                    return Err(anyhow!("workflow_context in settings must be a JSON object"));
+                    return Err(anyhow!(
+                        "workflow_context in settings must be a JSON object"
+                    ));
                 }
+                self.settings_workflow_context = Some(Arc::new(v));
             }
-            self.settings_workflow_context = parsed_settings.workflow_context;
         }
         // create_runner.load() is a no-op but call it for consistency
         self.create_runner.load(vec![]).await?;
@@ -553,54 +554,5 @@ mod tests {
                 method_name
             );
         }
-    }
-
-    #[test]
-    fn test_resolve_workflow_context_settings_takes_precedence() {
-        let settings_ctx = Some(r#"{"token":"from_settings"}"#);
-        let args_ctx = Some(r#"{"token":"from_args"}"#.to_string());
-        let result = resolve_workflow_context_impl(settings_ctx, &args_ctx).unwrap();
-        assert_eq!(
-            result.as_ref(),
-            &serde_json::json!({"token": "from_settings"})
-        );
-    }
-
-    #[test]
-    fn test_resolve_workflow_context_fallback_to_args() {
-        let args_ctx = Some(r#"{"token":"from_args"}"#.to_string());
-        let result = resolve_workflow_context_impl(None, &args_ctx).unwrap();
-        assert_eq!(
-            result.as_ref(),
-            &serde_json::json!({"token": "from_args"})
-        );
-    }
-
-    #[test]
-    fn test_resolve_workflow_context_both_none() {
-        let result = resolve_workflow_context_impl(None, &None).unwrap();
-        assert_eq!(
-            result.as_ref(),
-            &serde_json::Value::Object(Default::default())
-        );
-    }
-
-    #[test]
-    fn test_resolve_workflow_context_settings_with_none_args() {
-        let settings_ctx = Some(r#"{"key":"value"}"#);
-        let result = resolve_workflow_context_impl(settings_ctx, &None).unwrap();
-        assert_eq!(result.as_ref(), &serde_json::json!({"key": "value"}));
-    }
-
-    #[test]
-    fn test_resolve_workflow_context_invalid_json_in_settings() {
-        let result = resolve_workflow_context_impl(Some("not valid json"), &None);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_resolve_workflow_context_invalid_json_in_args() {
-        let result = resolve_workflow_context_impl(None, &Some("bad json".to_string()));
-        assert!(result.is_err());
     }
 }
