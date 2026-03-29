@@ -318,8 +318,6 @@ pub trait FunctionSpecConverter {
         })
     }
 
-    // Two branches deserialize different protobuf types (ReusableWorkflowRunnerSettings vs WorkflowRunnerSettings)
-    #[allow(clippy::if_same_then_else)]
     /// Extract workflow schema from runner_settings bytes.
     fn extract_workflow_schema(
         runner_type: i32,

@@ -1506,6 +1506,7 @@ mod test {
             page_size
         );
 
+        // Page 2 may be empty if total_count == page_size; only check IDs differ when non-empty
         if !results_page2.is_empty() {
             let first_id = results[0].id.as_ref().unwrap().value;
             let second_page_first_id = results_page2[0].id.as_ref().unwrap().value;

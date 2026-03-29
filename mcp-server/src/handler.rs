@@ -67,7 +67,7 @@ impl ServerHandler for McpHandler {
             instructions: Some(
                 "jobworkerp MCP Server - Asynchronous job processing with various runners. \
                  Available runners include COMMAND, HTTP_REQUEST, PYTHON_COMMAND, DOCKER, \
-                 LLM_COMPLETION, INLINE_WORKFLOW, REUSABLE_WORKFLOW, and custom plugins."
+                 LLM, WORKFLOW, GRPC, and custom plugins."
                     .to_string(),
             ),
         }

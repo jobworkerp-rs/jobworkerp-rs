@@ -145,7 +145,7 @@ where
             let metadata = Arc::new(HashMap::new());
             let result_stream = handler.app_module.function_app.handle_runner_for_front(
                 metadata,
-                "INLINE_WORKFLOW",
+                "WORKFLOW",
                 None, // runner_settings
                 None, // worker_options
                 serde_json::json!({ "args": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &args_bytes) }),
@@ -438,7 +438,7 @@ where
             let metadata = Arc::new(HashMap::new());
             let result_stream = handler.app_module.function_app.handle_runner_for_front(
                 metadata,
-                "INLINE_WORKFLOW",
+                "WORKFLOW",
                 None,
                 None,
                 serde_json::json!({ "args": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &args_bytes) }),
