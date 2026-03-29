@@ -553,6 +553,60 @@ fn test_create_workflow_worker_rejects_empty_workflow_context() -> Result<()> {
     })
 }
 
+#[test]
+fn test_create_workflow_worker_rejects_array_workflow_context() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app = setup_test_app_module().await?;
+
+        let workflow_json = r#"{
+            "document": {
+                "dsl": "0.0.1",
+                "namespace": "test-ns",
+                "name": "test-workflow-ctx-arr",
+                "version": "1.0.0"
+            },
+            "do": [
+                {
+                    "step1": {
+                        "run": {
+                            "runner": {
+                                "name": "COMMAND",
+                                "arguments": { "command": "echo", "args": ["hello"] }
+                            }
+                        }
+                    }
+                }
+            ]
+        }"#;
+
+        let settings_json = serde_json::json!({
+            "workflow_data": workflow_json,
+            "workflow_context": "[1,2,3]"
+        });
+
+        let result = app
+            .function_app
+            .create_worker_from_runner(
+                Some("WORKFLOW".to_string()),
+                None,
+                "wf-array-ctx-test".to_string(),
+                None,
+                Some(settings_json.to_string()),
+                None,
+            )
+            .await;
+
+        assert!(result.is_err(), "Should fail with array workflow_context");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("workflow_context must be a JSON object"),
+            "Expected JSON object error, got: {}",
+            error_msg
+        );
+        Ok(())
+    })
+}
+
 // Helper function to setup test AppModule
 async fn setup_test_app_module() -> Result<AppModule> {
     app::module::test::create_hybrid_test_app().await
