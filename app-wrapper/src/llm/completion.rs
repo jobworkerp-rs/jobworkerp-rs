@@ -18,7 +18,7 @@ use ollama::OllamaService;
 use opentelemetry::Context;
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType, result_output_item};
+use proto::jobworkerp::data::{ResultOutputItem, result_output_item};
 use serde_json;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -107,7 +107,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 ),
             ) => {
                 let ollama = OllamaService::new(settings).await?;
-                tracing::info!("{} loaded(ollama)", RunnerType::LlmCompletion.as_str_name());
+                tracing::info!("{} loaded(ollama)", "LLM(completion)");
                 self.ollama = Some(ollama);
                 Ok(())
             }
@@ -117,7 +117,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 ),
             ) => {
                 let genai = GenaiCompletionService::new(settings).await?;
-                tracing::info!("{} loaded(genai)", RunnerType::LlmCompletion.as_str_name());
+                tracing::info!("{} loaded(genai)", "LLM(completion)");
                 self.genai = Some(genai);
                 Ok(())
             }

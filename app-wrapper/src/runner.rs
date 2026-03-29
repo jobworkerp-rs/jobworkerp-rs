@@ -1,15 +1,9 @@
 pub mod cancellation;
 
 use crate::function_set_selector::FunctionSetSelectorImpl;
-use crate::llm::chat::LLMChatRunnerImpl;
 use crate::llm::unified::LLMUnifiedRunnerImpl;
 use crate::modules::AppWrapperModule;
-use crate::workflow::create_workflow::CreateWorkflowRunnerImpl;
-use crate::workflow::runner::reusable::ReusableWorkflowRunner;
 use crate::workflow::runner::unified::WorkflowUnifiedRunnerImpl;
-use crate::{
-    llm::completion::LLMCompletionRunnerImpl, workflow::runner::inline::InlineWorkflowRunner,
-};
 use anyhow::Result;
 use app::module::AppModule;
 use jobworkerp_runner::runner::mcp::McpServerRunnerImpl;
@@ -106,57 +100,6 @@ impl RunnerFactory {
                 ),
             )
                 as Box<dyn CancellableRunner + Send + Sync>),
-            Some(RunnerType::InlineWorkflow) => {
-                match InlineWorkflowRunner::new_with_cancel_monitoring(
-                    self.app_wrapper_module.clone(),
-                    self.app_module.clone(),
-                    create_cancel_helper(),
-                ) {
-                    Ok(runner) => {
-                        Some(Box::new(runner) as Box<dyn CancellableRunner + Send + Sync>)
-                    }
-                    Err(err) => {
-                        tracing::error!("Failed to create InlineWorkflowRunner: {}", err);
-                        None
-                    }
-                }
-            }
-            Some(RunnerType::ReusableWorkflow) => {
-                match ReusableWorkflowRunner::new_with_cancel_monitoring(
-                    self.app_wrapper_module.clone(),
-                    self.app_module.clone(),
-                    create_cancel_helper(),
-                ) {
-                    Ok(runner) => {
-                        Some(Box::new(runner) as Box<dyn CancellableRunner + Send + Sync>)
-                    }
-                    Err(err) => {
-                        tracing::error!("Failed to create ReusableWorkflowRunner: {}", err);
-                        None
-                    }
-                }
-            }
-            Some(RunnerType::CreateWorkflow) => Some(Box::new(
-                CreateWorkflowRunnerImpl::new_with_cancel_monitoring(
-                    self.app_module.clone(),
-                    create_cancel_helper(),
-                ),
-            )
-                as Box<dyn CancellableRunner + Send + Sync>),
-            Some(RunnerType::LlmCompletion) => Some(Box::new(
-                LLMCompletionRunnerImpl::new_with_cancel_monitoring(
-                    self.app_module.clone(),
-                    create_cancel_helper(),
-                ),
-            )
-                as Box<dyn CancellableRunner + Send + Sync>),
-            Some(RunnerType::LlmChat) => {
-                Some(Box::new(LLMChatRunnerImpl::new_with_cancel_monitoring(
-                    self.app_module.clone(),
-                    create_cancel_helper(),
-                ))
-                    as Box<dyn CancellableRunner + Send + Sync>)
-            }
             // Unified multi-method runners
             Some(RunnerType::Grpc) => Some(
                 Box::new(GrpcRunnerSpecImpl::new_with_cancel_monitoring(

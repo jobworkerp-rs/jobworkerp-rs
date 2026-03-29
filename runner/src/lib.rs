@@ -14,14 +14,6 @@ pub mod jobworkerp {
     }
     pub mod runner {
         tonic::include_proto!("jobworkerp.runner");
-        impl ReusableWorkflowRunnerSettings {
-            pub fn schema(&self) -> Option<serde_json::Map<String, serde_json::Value>> {
-                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
-                    self.json_data.as_str(),
-                )
-                .ok()
-            }
-        }
         pub mod grpc {
             tonic::include_proto!("jobworkerp.runner.grpc");
         }

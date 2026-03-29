@@ -1477,13 +1477,13 @@ pub trait UseFunctionApp {
     fn function_app(&self) -> &FunctionAppImpl;
 }
 
-/// Wrap flat JSON arguments into the 'input' field for Workflow/ReusableWorkflow runners.
+/// Wrap flat JSON arguments into the 'input' field for Workflow runners.
 /// Used by transform_job_args to ensure args match protobuf schema before serialization.
 pub(crate) fn wrap_workflow_args_if_needed(
     rt: RunnerType,
     arg_json: serde_json::Value,
 ) -> serde_json::Value {
-    if rt != RunnerType::Workflow && rt != RunnerType::ReusableWorkflow {
+    if rt != RunnerType::Workflow {
         return arg_json;
     }
     match &arg_json {
@@ -1502,34 +1502,7 @@ pub(crate) fn transform_function_arguments_impl(
     rt: RunnerType,
     arguments: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
-    // For CREATE_WORKFLOW runner, process arguments as workflow JSON
-    // When called from LLM, only workflow JSON is expected as arguments for proper workflow creation
-    // Settings are specified via worker options
-    if rt == RunnerType::CreateWorkflow {
-        arguments.map(|mut a| {
-            let args = match a.remove("arguments") {
-                Some(serde_json::Value::String(v)) => serde_json::from_str(v.as_str()).ok(),
-                v => v,
-            };
-            let worker_opts = a.remove("settings");
-            tracing::debug!("transforming arguments (CreateWorkflow): {:#?}", args);
-            let n = args.as_ref().map(|v| {
-                v.get("document")
-                    .and_then(|v| v.get("name"))
-                    .and_then(|n| n.as_str())
-                    .unwrap_or_else(|| rt.as_str_name())
-            });
-            let s = json!({
-                "name": n,
-                "workflow_data": args.map(|v| v.to_string()).unwrap_or_default(),
-                "worker_options": worker_opts,
-            });
-            let mut r = serde_json::Map::new();
-            r.insert("arguments".to_string(), s);
-            tracing::debug!("transformed arguments (CreateWorkflow): {:#?}", r);
-            r
-        })
-    } else if rt == RunnerType::Workflow || rt == RunnerType::ReusableWorkflow {
+    if rt == RunnerType::Workflow {
         // Wrap LLM-generated flat arguments into the 'input' field expected by protobuf
         arguments.map(|mut args| {
             if args.contains_key("input") {
@@ -1575,17 +1548,6 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
         assert_eq!(parsed["owner"], "foo");
         assert_eq!(parsed["repo"], "bar");
-    }
-
-    #[test]
-    fn test_reusable_workflow_wraps_flat_args_into_input() {
-        let args = serde_json::Map::from_iter([("query".to_string(), json!("test"))]);
-        let result =
-            transform_function_arguments_impl(RunnerType::ReusableWorkflow, Some(args)).unwrap();
-        assert!(result.contains_key("input"));
-        let input_str = result["input"].as_str().unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
-        assert_eq!(parsed["query"], "test");
     }
 
     #[test]
@@ -1682,7 +1644,7 @@ mod tests {
     #[test]
     fn test_wrap_workflow_args_empty_object() {
         let arg = json!({});
-        let result = wrap_workflow_args_if_needed(RunnerType::ReusableWorkflow, arg);
+        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, arg);
         assert_eq!(result["input"].as_str().unwrap(), "{}");
     }
 
@@ -1737,8 +1699,7 @@ mod tests {
 
         // transform_function_arguments_impl correctly unwraps "arguments" → "input"
         let transformed =
-            transform_function_arguments_impl(RunnerType::ReusableWorkflow, Some(args.clone()))
-                .unwrap();
+            transform_function_arguments_impl(RunnerType::Workflow, Some(args.clone())).unwrap();
         assert!(transformed.contains_key("input"));
         assert!(!transformed.contains_key("arguments"));
         let input_str = transformed["input"].as_str().unwrap();
@@ -1747,10 +1708,8 @@ mod tests {
         assert_eq!(parsed["pull_number"], 187);
 
         // wrap_workflow_args_if_needed does NOT unwrap "arguments" — it wraps everything
-        let wrapped = wrap_workflow_args_if_needed(
-            RunnerType::ReusableWorkflow,
-            serde_json::Value::Object(args),
-        );
+        let wrapped =
+            wrap_workflow_args_if_needed(RunnerType::Workflow, serde_json::Value::Object(args));
         let wrapped_input_str = wrapped["input"].as_str().unwrap();
         let wrapped_parsed: serde_json::Value = serde_json::from_str(wrapped_input_str).unwrap();
         // The "arguments" key is still present (this was the bug)

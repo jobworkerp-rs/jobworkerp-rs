@@ -6,7 +6,6 @@ use prost::Message;
 use proto::DEFAULT_METHOD_NAME;
 
 use super::{CollectStreamFuture, RunnerSpec};
-use proto::jobworkerp::data::RunnerType;
 use std::collections::HashMap;
 
 pub struct LLMChatRunnerSpecImpl {}
@@ -25,7 +24,7 @@ impl Default for LLMChatRunnerSpecImpl {
 
 pub trait LLMChatRunnerSpec {
     fn name(&self) -> String {
-        RunnerType::LlmChat.as_str_name().to_string()
+        "LLM_CHAT".to_string()
     }
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/llm/runner.proto").to_string()
