@@ -85,6 +85,15 @@ impl CreateWorkflowRunnerImpl {
             }
         };
 
+        // 3. Validate workflow_context if provided
+        if let Some(ref ctx) = args.workflow_context {
+            let parsed: serde_json::Value = serde_json::from_str(ctx)
+                .map_err(|e| anyhow!("Invalid workflow_context JSON: {}", e))?;
+            if !parsed.is_object() {
+                return Err(anyhow!("workflow_context must be a JSON object"));
+            }
+        }
+
         Ok((workflow_json, args.name.clone()))
     }
 
