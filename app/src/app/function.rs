@@ -718,10 +718,13 @@ pub trait FunctionApp:
             .await?;
 
         // Build WorkerData from WorkerOptions
+        let runner_id = runner.id.ok_or_else(|| {
+            JobWorkerError::InvalidParameter("Runner ID is missing".to_string())
+        })?;
         let worker_data = self.build_worker_data_from_options(
             name.clone(),
             description.unwrap_or_default(),
-            runner.id.unwrap(),
+            runner_id,
             runner_settings_bytes,
             worker_options,
         )?;
@@ -761,10 +764,12 @@ pub trait FunctionApp:
             settings
                 .get("workflow_url")
                 .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
                 .map(|s| s.to_string()),
             settings
                 .get("workflow_data")
                 .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
                 .map(|s| s.to_string()),
         );
         let workflow_context = settings
