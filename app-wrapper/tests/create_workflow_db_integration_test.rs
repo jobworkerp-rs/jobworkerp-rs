@@ -74,6 +74,7 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
                     basis: 2.0,
                 }),
             }),
+            workflow_context: None,
         };
 
         // Proto serialization
@@ -204,6 +205,7 @@ fn test_create_workflow_url_db_integration() -> Result<()> {
                 use_static: false,
                 retry_policy: None,
             }),
+            workflow_context: None,
         };
 
         // Proto serialization
@@ -290,6 +292,7 @@ fn test_create_workflow_error_cases_db_integration() -> Result<()> {
             }).to_string())),
             name: "".to_string(),
             worker_options: None,
+            workflow_context: None,
         };
 
         let serialized = ProstMessageCodec::serialize_message(&empty_name_args)?;
@@ -304,6 +307,7 @@ fn test_create_workflow_error_cases_db_integration() -> Result<()> {
             )),
             name: "error-test-worker".to_string(),
             worker_options: None,
+            workflow_context: None,
         };
 
         let serialized = ProstMessageCodec::serialize_message(&invalid_json_args)?;
@@ -316,6 +320,7 @@ fn test_create_workflow_error_cases_db_integration() -> Result<()> {
             workflow_source: None,
             name: "no-source-worker".to_string(),
             worker_options: None,
+            workflow_context: None,
         };
 
         let serialized = ProstMessageCodec::serialize_message(&no_source_args)?;

@@ -73,6 +73,7 @@ fn create_workflow_settings(workflow_json: &str) -> Vec<u8> {
         workflow_source: Some(SettingsWorkflowSource::WorkflowData(
             workflow_json.to_string(),
         )),
+        workflow_context: None,
     };
     settings.encode_to_vec()
 }
@@ -173,6 +174,7 @@ fn test_unified_runner_create_method() -> Result<()> {
             name: "test-created-workflow".to_string(),
             workflow_source: Some(CreateWorkflowSource::WorkflowData(workflow_json)),
             worker_options: None,
+            workflow_context: None,
         };
 
         let args_bytes = args.encode_to_vec();
@@ -245,6 +247,7 @@ fn test_unified_runner_create_invalid_workflow() -> Result<()> {
                 invalid_workflow.to_string(),
             )),
             worker_options: None,
+            workflow_context: None,
         };
 
         let args_bytes = args.encode_to_vec();
@@ -278,6 +281,7 @@ fn test_unified_runner_create_empty_name_error() -> Result<()> {
             name: "".to_string(), // Empty name should fail
             workflow_source: Some(CreateWorkflowSource::WorkflowData(workflow_json)),
             worker_options: None,
+            workflow_context: None,
         };
 
         let args_bytes = args.encode_to_vec();
@@ -316,6 +320,7 @@ fn test_workflow_create_verify_and_run_e2e() -> Result<()> {
             name: worker_name.to_string(),
             workflow_source: Some(CreateWorkflowSource::WorkflowData(workflow_json.clone())),
             worker_options: None,
+            workflow_context: None,
         };
         let create_bytes = create_args.encode_to_vec();
 

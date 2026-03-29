@@ -110,12 +110,17 @@ impl CreateWorkflowRunnerImpl {
         workflow_def: serde_json::Value,
         worker_name: String,
         worker_options: Option<WorkerOptions>,
+        workflow_context: Option<String>,
     ) -> Result<CreateWorkflowWorkerId> {
         tracing::debug!("Creating worker with name: {}", worker_name);
 
         // Build WorkerData (correct method according to design document)
-        let worker_data =
-            self.build_worker_data(worker_name.clone(), workflow_def, worker_options)?;
+        let worker_data = self.build_worker_data(
+            worker_name.clone(),
+            workflow_def,
+            worker_options,
+            workflow_context,
+        )?;
 
         let worker = self
             .app
@@ -137,6 +142,7 @@ impl CreateWorkflowRunnerImpl {
         worker_name: String,
         workflow_def: serde_json::Value,
         worker_options: Option<WorkerOptions>,
+        workflow_context: Option<String>,
     ) -> Result<proto::jobworkerp::data::WorkerData> {
         use prost::Message;
         use proto::jobworkerp::data::{ResponseType, RunnerId, RunnerType};
@@ -163,6 +169,7 @@ impl CreateWorkflowRunnerImpl {
 
             let proto_settings = WorkflowRunnerSettings {
                 workflow_source: Some(WorkflowSource::WorkflowData(workflow_def.to_string())),
+                workflow_context,
             };
 
             let mut buf = Vec::new();
@@ -274,6 +281,7 @@ impl RunnerTrait for CreateWorkflowRunnerImpl {
                     workflow_def,
                     worker_name.clone(),
                     create_args.worker_options,
+                    create_args.workflow_context,
                 )
                 .await?;
 
