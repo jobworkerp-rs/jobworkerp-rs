@@ -125,9 +125,9 @@ where
         let (workflow, workflow_context) = self.parse_workflow_from_input(&input).await?;
         let workflow_name = workflow.document.name.to_string();
 
-        // Build InlineWorkflowArgs
+        // Build WorkflowRunArgs
         let args =
-            self.build_inline_workflow_args(&input, &workflow, run_id.as_str(), workflow_context)?;
+            self.build_workflow_run_args(&input, &workflow, run_id.as_str(), workflow_context)?;
         let args_bytes = args.encode_to_vec();
 
         // Create adapter for event conversion
@@ -529,7 +529,7 @@ where
     }
 
     /// Build WorkflowRunArgs for initial execution.
-    fn build_inline_workflow_args(
+    fn build_workflow_run_args(
         &self,
         input: &RunAgentInput,
         workflow: &WorkflowSchema,

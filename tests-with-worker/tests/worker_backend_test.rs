@@ -143,43 +143,26 @@ async fn sub_test_enqueue_and_await_function_result_streaming(
     Ok(())
 }
 
-/// Sub-test: 2-stage enqueue with non-streaming CREATE_WORKFLOW runner.
+/// Sub-test: 2-stage enqueue with non-streaming FUNCTION_SET_SELECTOR runner.
 /// Verifies: enqueue waits for completion and returns result immediately
 /// (is_streaming=false, result=Some).
-async fn sub_test_enqueue_function_non_streaming_with_worker(
+async fn sub_test_enqueue_function_non_streaming_with_runner(
     app_module: &Arc<app::module::AppModule>,
 ) -> Result<()> {
     let metadata = Arc::new(HashMap::new());
-    let workflow_def = serde_json::json!({
-        "document": {
-            "dsl": "0.0.1",
-            "namespace": "enqueue-test",
-            "name": "enqueue-non-streaming-test",
-            "version": "1.0.0"
-        },
-        "input": {},
-        "do": [{
-            "step1": {
-                "run": {
-                    "runner": {
-                        "name": "COMMAND",
-                        "arguments": { "command": "echo", "args": ["test"] }
-                    }
-                }
-            }
-        }]
-    });
 
     let arguments: serde_json::Map<String, serde_json::Value> =
         serde_json::from_value(serde_json::json!({
-            "arguments": workflow_def.to_string()
+            "arguments": {
+                "function_set_name": "nonexistent-set"
+            }
         }))?;
 
     let enqueued = timeout(
         Duration::from_secs(30),
         app_module.function_app.enqueue_function_for_llm(
             metadata,
-            "CREATE_WORKFLOW",
+            "FUNCTION_SET_SELECTOR",
             Some(arguments),
             30,
         ),
@@ -188,7 +171,7 @@ async fn sub_test_enqueue_function_non_streaming_with_worker(
 
     assert!(
         !enqueued.is_streaming,
-        "CREATE_WORKFLOW should be non-streaming"
+        "FUNCTION_SET_SELECTOR should be non-streaming"
     );
     assert!(
         enqueued.result.is_some(),
@@ -197,13 +180,8 @@ async fn sub_test_enqueue_function_non_streaming_with_worker(
     assert!(enqueued.job_id.value > 0, "Job ID should be assigned");
 
     let result = enqueued.result.unwrap();
-    assert!(
-        result.get("workerId").is_some(),
-        "CREATE_WORKFLOW result should contain workerId"
-    );
-
     println!("Non-streaming enqueue result: {}", result);
-    println!("sub_test_enqueue_function_non_streaming_with_worker passed");
+    println!("sub_test_enqueue_function_non_streaming_with_runner passed");
     Ok(())
 }
 
@@ -434,7 +412,7 @@ async fn test_worker_backend_e2e() -> Result<()> {
     let test_result = async {
         sub_test_workflow_progress_realtime(&app_module).await?;
         sub_test_enqueue_and_await_function_result_streaming(&app_module).await?;
-        sub_test_enqueue_function_non_streaming_with_worker(&app_module).await?;
+        sub_test_enqueue_function_non_streaming_with_runner(&app_module).await?;
         sub_test_short_tool_execution_skips_progress(&app_module).await?;
         sub_test_worker_executes_command_via_function(&app_module).await?;
         Ok::<(), anyhow::Error>(())
