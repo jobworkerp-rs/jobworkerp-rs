@@ -123,6 +123,10 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
                 println!("   - Channel: {:?}", worker_data.channel);
 
                 assert_eq!(worker_data.name, worker_name);
+                assert_eq!(
+                    worker_data.description, "CREATE_WORKFLOW workflow for DB integration test",
+                    "Worker description should be set from workflow document.summary"
+                );
                 assert_eq!(found_worker.id.as_ref().unwrap().value, worker_id.value);
                 assert_eq!(
                     worker_data.runner_id.as_ref().unwrap().value,
