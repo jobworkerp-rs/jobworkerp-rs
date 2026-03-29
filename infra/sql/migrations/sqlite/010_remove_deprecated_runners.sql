@@ -1,0 +1,4 @@
+-- Remove deprecated runners replaced by unified multi-method runners:
+-- LLM_CHAT(65533), LLM_COMPLETION(65534) → LLM
+-- INLINE_WORKFLOW(65535), REUSABLE_WORKFLOW(65532), CREATE_WORKFLOW(-1) → WORKFLOW
+DELETE FROM runner WHERE id IN (-1, 65532, 65533, 65534, 65535);
