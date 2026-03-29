@@ -394,7 +394,14 @@ impl RunnerTrait for WorkflowUnifiedRunnerImpl {
                 tracing::debug!("Workflow loaded from settings: {:#?}", &workflow);
                 self.settings_workflow = Some(Arc::new(workflow));
             }
-            // Store workflow_context from settings (takes precedence over args at runtime)
+            // Validate and store workflow_context from settings
+            if let Some(ref ctx) = parsed_settings.workflow_context {
+                let v: serde_json::Value = serde_json::from_str(ctx)
+                    .map_err(|e| anyhow!("Invalid workflow_context JSON in settings: {}", e))?;
+                if !v.is_object() {
+                    return Err(anyhow!("workflow_context in settings must be a JSON object"));
+                }
+            }
             self.settings_workflow_context = parsed_settings.workflow_context;
         }
         // create_runner.load() is a no-op but call it for consistency
@@ -583,5 +590,17 @@ mod tests {
         let settings_ctx = Some(r#"{"key":"value"}"#);
         let result = resolve_workflow_context_impl(settings_ctx, &None).unwrap();
         assert_eq!(result.as_ref(), &serde_json::json!({"key": "value"}));
+    }
+
+    #[test]
+    fn test_resolve_workflow_context_invalid_json_in_settings() {
+        let result = resolve_workflow_context_impl(Some("not valid json"), &None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_workflow_context_invalid_json_in_args() {
+        let result = resolve_workflow_context_impl(None, &Some("bad json".to_string()));
+        assert!(result.is_err());
     }
 }
