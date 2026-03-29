@@ -772,6 +772,12 @@ pub trait FunctionApp:
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        if workflow_url.is_some() && workflow_data.is_some() {
+            return Err(JobWorkerError::InvalidParameter(
+                "Only one of workflow_url or workflow_data should be specified, not both".to_string(),
+            )
+            .into());
+        }
         if workflow_url.is_none() && workflow_data.is_none() {
             return Err(JobWorkerError::InvalidParameter(
                 "Either workflow_url or workflow_data is required in settings_json for WORKFLOW runner"
@@ -791,15 +797,11 @@ pub trait FunctionApp:
             .await?;
 
         // Extract summary for description fallback
-        let summary = if workflow_schema.document.summary.is_some() {
-            workflow_schema
-                .document
-                .summary
-                .as_ref()
-                .map(|s| s.to_string())
-        } else {
-            None
-        };
+        let summary = workflow_schema
+            .document
+            .summary
+            .as_ref()
+            .map(|s| s.to_string());
         let resolved_description = description.or(summary).unwrap_or_default();
 
         // Validate workflow_context if provided
@@ -815,7 +817,9 @@ pub trait FunctionApp:
             }
         }
 
-        // Serialize validated workflow as JSON for storage
+        // Serialize validated workflow as inline JSON for storage.
+        // Always store as WorkflowData (snapshot) even when loaded from URL,
+        // to eliminate external dependency at execution time.
         let workflow_json = serde_json::to_string(&workflow_schema)?;
 
         // Encode WorkflowRunnerSettings to protobuf bytes
@@ -827,10 +831,13 @@ pub trait FunctionApp:
         proto_settings.encode(&mut runner_settings_bytes)?;
 
         // Build WorkerData
+        let runner_id = runner.id.ok_or_else(|| {
+            JobWorkerError::InvalidParameter("Runner ID is missing".to_string())
+        })?;
         let worker_data = self.build_worker_data_from_options(
             name.clone(),
             resolved_description,
-            runner.id.unwrap(),
+            runner_id,
             runner_settings_bytes,
             worker_options,
         )?;
