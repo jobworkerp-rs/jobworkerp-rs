@@ -542,7 +542,10 @@ fn test_create_workflow_worker_rejects_empty_workflow_context() -> Result<()> {
             )
             .await;
 
-        assert!(result.is_err(), "Should fail with empty workflow_context string");
+        assert!(
+            result.is_err(),
+            "Should fail with empty workflow_context string"
+        );
         let error_msg = result.unwrap_err().to_string();
         assert!(
             error_msg.contains("Invalid workflow_context JSON"),
