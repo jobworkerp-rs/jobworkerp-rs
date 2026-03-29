@@ -235,6 +235,237 @@ fn test_create_worker_with_nonexistent_runner() -> Result<()> {
     })
 }
 
+// --- WORKFLOW runner tests ---
+
+#[test]
+fn test_create_workflow_worker_sets_summary_as_description() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app = setup_test_app_module().await?;
+
+        let workflow_yaml = r#"{
+            "document": {
+                "dsl": "0.0.1",
+                "namespace": "test-ns",
+                "name": "test-workflow",
+                "version": "1.0.0",
+                "summary": "My workflow summary for description"
+            },
+            "input": { "from": ".input" },
+            "do": [
+                {
+                    "step1": {
+                        "run": {
+                            "runner": {
+                                "name": "COMMAND",
+                                "arguments": { "command": "echo", "args": ["hello"] }
+                            }
+                        }
+                    }
+                }
+            ]
+        }"#;
+
+        let settings_json = serde_json::json!({
+            "workflow_data": workflow_yaml
+        });
+
+        let result = app
+            .function_app
+            .create_worker_from_runner(
+                Some("WORKFLOW".to_string()),
+                None,
+                "wf-summary-test".to_string(),
+                None, // no explicit description
+                Some(settings_json.to_string()),
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "Failed to create workflow worker: {:?}",
+            result
+        );
+        let (worker_id, worker_name) = result.unwrap();
+        assert_eq!(worker_name, "wf-summary-test");
+
+        let worker = app
+            .worker_app
+            .find(&worker_id)
+            .await?
+            .expect("Worker should exist");
+        let data = worker.data.as_ref().unwrap();
+        assert_eq!(
+            data.description, "My workflow summary for description",
+            "Description should be set from workflow document.summary"
+        );
+
+        // Cleanup
+        app.worker_app.delete(&worker_id).await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn test_create_workflow_worker_explicit_description_takes_precedence() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app = setup_test_app_module().await?;
+
+        let workflow_yaml = r#"{
+            "document": {
+                "dsl": "0.0.1",
+                "namespace": "test-ns",
+                "name": "test-workflow-desc",
+                "version": "1.0.0",
+                "summary": "Workflow summary"
+            },
+            "input": { "from": ".input" },
+            "do": [
+                {
+                    "step1": {
+                        "run": {
+                            "runner": {
+                                "name": "COMMAND",
+                                "arguments": { "command": "echo", "args": ["hello"] }
+                            }
+                        }
+                    }
+                }
+            ]
+        }"#;
+
+        let settings_json = serde_json::json!({
+            "workflow_data": workflow_yaml
+        });
+
+        let result = app
+            .function_app
+            .create_worker_from_runner(
+                Some("WORKFLOW".to_string()),
+                None,
+                "wf-desc-override-test".to_string(),
+                Some("Explicit description".to_string()),
+                Some(settings_json.to_string()),
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "Failed to create workflow worker: {:?}",
+            result
+        );
+        let (worker_id, _) = result.unwrap();
+
+        let worker = app
+            .worker_app
+            .find(&worker_id)
+            .await?
+            .expect("Worker should exist");
+        let data = worker.data.as_ref().unwrap();
+        assert_eq!(
+            data.description, "Explicit description",
+            "Explicit description should take precedence over summary"
+        );
+
+        // Cleanup
+        app.worker_app.delete(&worker_id).await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn test_create_workflow_worker_validates_invalid_yaml() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app = setup_test_app_module().await?;
+
+        let settings_json = serde_json::json!({
+            "workflow_data": "invalid yaml content { not valid"
+        });
+
+        let result = app
+            .function_app
+            .create_worker_from_runner(
+                Some("WORKFLOW".to_string()),
+                None,
+                "wf-invalid-test".to_string(),
+                None,
+                Some(settings_json.to_string()),
+                None,
+            )
+            .await;
+
+        assert!(result.is_err(), "Should fail with invalid workflow YAML");
+        Ok(())
+    })
+}
+
+#[test]
+fn test_create_workflow_worker_requires_settings() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app = setup_test_app_module().await?;
+
+        let result = app
+            .function_app
+            .create_worker_from_runner(
+                Some("WORKFLOW".to_string()),
+                None,
+                "wf-no-settings-test".to_string(),
+                None,
+                None, // no settings_json
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "Should fail when settings_json is missing for WORKFLOW"
+        );
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("settings_json is required"),
+            "Expected settings_json required error, got: {}",
+            error_msg
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn test_create_workflow_worker_requires_workflow_source() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app = setup_test_app_module().await?;
+
+        let settings_json = serde_json::json!({
+            "workflow_context": "{\"key\": \"value\"}"
+        });
+
+        let result = app
+            .function_app
+            .create_worker_from_runner(
+                Some("WORKFLOW".to_string()),
+                None,
+                "wf-no-source-test".to_string(),
+                None,
+                Some(settings_json.to_string()),
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "Should fail when workflow_source is missing"
+        );
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("workflow_url") || error_msg.contains("workflow_data"),
+            "Expected workflow source required error, got: {}",
+            error_msg
+        );
+        Ok(())
+    })
+}
+
 // Helper function to setup test AppModule
 async fn setup_test_app_module() -> Result<AppModule> {
     app::module::test::create_hybrid_test_app().await
