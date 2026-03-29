@@ -4,7 +4,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use prost::Message;
 use proto::DEFAULT_METHOD_NAME;
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use proto::jobworkerp::data::ResultOutputItem;
 use std::collections::HashMap;
 
 pub struct LLMCompletionRunnerSpecImpl {}
@@ -23,7 +23,7 @@ impl Default for LLMCompletionRunnerSpecImpl {
 
 pub trait LLMCompletionRunnerSpec {
     fn name(&self) -> String {
-        RunnerType::LlmCompletion.as_str_name().to_string()
+        "LLM_COMPLETION".to_string()
     }
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/llm/runner.proto").to_string()

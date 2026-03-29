@@ -2,9 +2,7 @@ use anyhow::Result;
 use infra::infra::runner::rows::RunnerWithSchema;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_runner::jobworkerp::runner::{
-    ReusableWorkflowRunnerSettings, WorkflowRunnerSettings,
-};
+use jobworkerp_runner::jobworkerp::runner::WorkflowRunnerSettings;
 use proto::DEFAULT_METHOD_NAME;
 use proto::jobworkerp::data::{RunnerData, RunnerType, StreamingOutputType, WorkerData, WorkerId};
 use proto::jobworkerp::function::data::FunctionSpecs;
@@ -323,18 +321,11 @@ pub trait FunctionSpecConverter {
     // Two branches deserialize different protobuf types (ReusableWorkflowRunnerSettings vs WorkflowRunnerSettings)
     #[allow(clippy::if_same_then_else)]
     /// Extract workflow schema from runner_settings bytes.
-    /// Supports both unified Workflow and deprecated ReusableWorkflow runners.
     fn extract_workflow_schema(
         runner_type: i32,
         runner_settings: &[u8],
     ) -> Option<serde_json::Map<String, serde_json::Value>> {
-        if runner_type == RunnerType::ReusableWorkflow as i32 {
-            ProstMessageCodec::deserialize_message::<ReusableWorkflowRunnerSettings>(
-                runner_settings,
-            )
-            .ok()
-            .and_then(|s| s.schema())
-        } else if runner_type == RunnerType::Workflow as i32 {
+        if runner_type == RunnerType::Workflow as i32 {
             ProstMessageCodec::deserialize_message::<WorkflowRunnerSettings>(runner_settings)
                 .ok()
                 .and_then(|s| s.schema())
@@ -486,39 +477,6 @@ mod tests {
             method.description.as_deref(),
             Some(summary),
             "Workflow summary should be used as method description, not the generic runner description"
-        );
-    }
-
-    #[test]
-    fn test_reusable_workflow_worker_uses_summary_as_description() {
-        let summary = "Process data with reusable workflow";
-        let workflow_json = make_workflow_json(summary);
-
-        let settings = ReusableWorkflowRunnerSettings {
-            json_data: workflow_json,
-        };
-        let runner_settings = ProstMessageCodec::serialize_message(&settings).unwrap();
-
-        let worker_data = WorkerData {
-            name: "data-processor-workflow".to_string(),
-            description: "Worker description".to_string(),
-            runner_id: Some(RunnerId { value: 1 }),
-            runner_settings,
-            ..Default::default()
-        };
-
-        let runner = make_runner_with_schema(RunnerType::ReusableWorkflow);
-        let worker_id = WorkerId { value: 200 };
-
-        let specs = TestConverter::convert_worker_to_function_specs(worker_id, worker_data, runner)
-            .unwrap();
-
-        let methods = specs.methods.unwrap();
-        let method = methods.schemas.get(DEFAULT_METHOD_NAME).unwrap();
-        assert_eq!(
-            method.description.as_deref(),
-            Some(summary),
-            "Workflow summary should be used as method description"
         );
     }
 

@@ -22,8 +22,8 @@ Executes a workflow definition. This is the default method when `using` is not s
 
 Creates a new WORKFLOW runner worker from a workflow definition.
 
-- This is a convenience method that internally calls `WorkerService/Create` with Runner=REUSABLE_WORKFLOW. It automates workflow definition validation and `WorkerData` construction, but the resulting Worker is stored in the same storage as any other Worker (no special storage is used).
-- Equivalent to manually creating a Worker via `WorkerService/Create` with `runner_id` set to REUSABLE_WORKFLOW and `runner_settings` containing the workflow definition.
+- This is a convenience method that internally calls `WorkerService/Create` with Runner=WORKFLOW. It automates workflow definition validation and `WorkerData` construction, but the resulting Worker is stored in the same storage as any other Worker (no special storage is used).
+- Equivalent to manually creating a Worker via `WorkerService/Create` with `runner_id` set to WORKFLOW and `runner_settings` containing the workflow definition.
 - The created worker can then be executed repeatedly with different inputs using the `run` method
 
 ### Runner Settings (WorkflowRunnerSettings)

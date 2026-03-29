@@ -15,7 +15,7 @@ use app_wrapper::workflow::definition::workflow::WorkflowSchema;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 use jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus as ProtoWorkflowStatus;
-use jobworkerp_runner::jobworkerp::runner::{InlineWorkflowArgs, WorkflowResult};
+use jobworkerp_runner::jobworkerp::runner::{WorkflowResult, WorkflowRunArgs};
 use prost::Message;
 use proto::jobworkerp::data::JobId;
 use proto::jobworkerp::function::data::FunctionResult;
@@ -528,15 +528,15 @@ where
         ))
     }
 
-    /// Build InlineWorkflowArgs for initial execution.
+    /// Build WorkflowRunArgs for initial execution.
     fn build_inline_workflow_args(
         &self,
         input: &RunAgentInput,
         workflow: &WorkflowSchema,
         run_id: &str,
         workflow_context: Option<serde_json::Value>,
-    ) -> Result<InlineWorkflowArgs> {
-        use jobworkerp_runner::jobworkerp::runner::inline_workflow_args::WorkflowSource;
+    ) -> Result<WorkflowRunArgs> {
+        use jobworkerp_runner::jobworkerp::runner::workflow_run_args::WorkflowSource;
 
         let workflow_json = serde_json::to_string(workflow)
             .map_err(|e| AgUiError::InvalidInput(format!("Failed to serialize workflow: {}", e)))?;
@@ -570,7 +570,7 @@ where
             None => None,
         };
 
-        Ok(InlineWorkflowArgs {
+        Ok(WorkflowRunArgs {
             workflow_source: Some(WorkflowSource::WorkflowData(workflow_json)),
             input: serde_json::to_string(&input_json).unwrap_or_else(|_| "{}".to_string()),
             workflow_context: workflow_context_str,
@@ -579,14 +579,14 @@ where
         })
     }
 
-    /// Build InlineWorkflowArgs for HITL resume.
+    /// Build WorkflowRunArgs for HITL resume.
     fn build_resume_workflow_args(
         &self,
         hitl_info: &HitlWaitingInfo,
         user_input: serde_json::Value,
         workflow_data: Option<&str>,
-    ) -> Result<InlineWorkflowArgs> {
-        use jobworkerp_runner::jobworkerp::runner::inline_workflow_args::{
+    ) -> Result<WorkflowRunArgs> {
+        use jobworkerp_runner::jobworkerp::runner::workflow_run_args::{
             Checkpoint, WorkflowSource,
             checkpoint::{CheckPointContext, TaskCheckPointContext, WorkflowCheckPointContext},
         };
@@ -616,7 +616,7 @@ where
             }),
         };
 
-        Ok(InlineWorkflowArgs {
+        Ok(WorkflowRunArgs {
             workflow_source,
             input: "{}".to_string(),
             workflow_context: None,

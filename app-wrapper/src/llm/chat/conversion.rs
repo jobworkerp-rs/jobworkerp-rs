@@ -535,7 +535,7 @@ mod tests {
             methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
                 schemas: method_schemas,
             }),
-            runner_type: proto::jobworkerp::data::RunnerType::ReusableWorkflow as i32,
+            runner_type: proto::jobworkerp::data::RunnerType::Workflow as i32,
             worker_id: None,
             ..Default::default()
         }

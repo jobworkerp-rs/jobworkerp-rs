@@ -13,7 +13,6 @@ use ollama_rs::{
     generation::completion::{GenerationResponse, request::GenerationRequest},
     models::ModelOptions,
 };
-use proto::jobworkerp::data::RunnerType;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -210,7 +209,7 @@ impl OllamaService {
                         if chunk.done {
                             tracing::debug!(
                                 "END OF stream generation {}: duration: {}",
-                                RunnerType::LlmCompletion.as_str_name(),
+                                "LLM(completion)",
                                 chunk.total_duration.unwrap_or_default()
                             );
                         }
@@ -267,7 +266,7 @@ impl OllamaService {
 
         tracing::debug!(
             "END OF generation {}: duration: {}",
-            RunnerType::LlmCompletion.as_str_name(),
+            "LLM(completion)",
             res.total_duration.unwrap_or_default()
         );
         let mut result = LlmCompletionResult {
