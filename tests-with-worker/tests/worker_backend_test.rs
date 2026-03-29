@@ -181,6 +181,12 @@ async fn sub_test_enqueue_function_non_streaming_with_runner(
 
     let result = enqueued.result.unwrap();
     println!("Non-streaming enqueue result: {}", result);
+    // FUNCTION_SET_SELECTOR with nonexistent set should return an error message
+    let output = result.to_string();
+    assert!(
+        !output.is_empty(),
+        "FUNCTION_SET_SELECTOR result should not be empty"
+    );
     println!("sub_test_enqueue_function_non_streaming_with_runner passed");
     Ok(())
 }

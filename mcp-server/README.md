@@ -105,8 +105,8 @@ MCP Server exposes the following jobworkerp Runners as tools:
 - `HTTP_REQUEST`: HTTP requests
 - `PYTHON_COMMAND`: Python script execution
 - `DOCKER`: Docker container execution
-- `LLM_COMPLETION`: LLM text generation
-- `INLINE_WORKFLOW` / `REUSABLE_WORKFLOW`: Workflow execution
+- `LLM`: LLM text generation (using="completion" or "chat")
+- `WORKFLOW`: Workflow execution (using="run" or "create")
 - Custom plugins
 
 ## Authentication
