@@ -242,7 +242,7 @@ fn test_create_workflow_worker_sets_summary_as_description() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         let app = setup_test_app_module().await?;
 
-        let workflow_yaml = r#"{
+        let workflow_json = r#"{
             "document": {
                 "dsl": "0.0.1",
                 "namespace": "test-ns",
@@ -266,7 +266,7 @@ fn test_create_workflow_worker_sets_summary_as_description() -> Result<()> {
         }"#;
 
         let settings_json = serde_json::json!({
-            "workflow_data": workflow_yaml
+            "workflow_data": workflow_json
         });
 
         let result = app
@@ -311,7 +311,7 @@ fn test_create_workflow_worker_explicit_description_takes_precedence() -> Result
     TEST_RUNTIME.block_on(async {
         let app = setup_test_app_module().await?;
 
-        let workflow_yaml = r#"{
+        let workflow_json = r#"{
             "document": {
                 "dsl": "0.0.1",
                 "namespace": "test-ns",
@@ -335,7 +335,7 @@ fn test_create_workflow_worker_explicit_description_takes_precedence() -> Result
         }"#;
 
         let settings_json = serde_json::json!({
-            "workflow_data": workflow_yaml
+            "workflow_data": workflow_json
         });
 
         let result = app
@@ -460,6 +460,93 @@ fn test_create_workflow_worker_requires_workflow_source() -> Result<()> {
         assert!(
             error_msg.contains("workflow_url") || error_msg.contains("workflow_data"),
             "Expected workflow source required error, got: {}",
+            error_msg
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn test_create_workflow_worker_rejects_both_url_and_data() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app = setup_test_app_module().await?;
+
+        let settings_json = serde_json::json!({
+            "workflow_url": "https://example.com/workflow.json",
+            "workflow_data": r#"{"document":{"dsl":"0.0.1","namespace":"ns","name":"wf","version":"1.0.0"},"do":[{"s":{"run":{"runner":{"name":"COMMAND","arguments":{"command":"echo","args":["hi"]}}}}}]}"#
+        });
+
+        let result = app
+            .function_app
+            .create_worker_from_runner(
+                Some("WORKFLOW".to_string()),
+                None,
+                "wf-both-source-test".to_string(),
+                None,
+                Some(settings_json.to_string()),
+                None,
+            )
+            .await;
+
+        assert!(result.is_err(), "Should fail when both url and data are specified");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("not both"),
+            "Expected mutual exclusion error, got: {}",
+            error_msg
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn test_create_workflow_worker_rejects_empty_workflow_context() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app = setup_test_app_module().await?;
+
+        let workflow_json = r#"{
+            "document": {
+                "dsl": "0.0.1",
+                "namespace": "test-ns",
+                "name": "test-workflow-ctx",
+                "version": "1.0.0"
+            },
+            "do": [
+                {
+                    "step1": {
+                        "run": {
+                            "runner": {
+                                "name": "COMMAND",
+                                "arguments": { "command": "echo", "args": ["hello"] }
+                            }
+                        }
+                    }
+                }
+            ]
+        }"#;
+
+        let settings_json = serde_json::json!({
+            "workflow_data": workflow_json,
+            "workflow_context": ""
+        });
+
+        let result = app
+            .function_app
+            .create_worker_from_runner(
+                Some("WORKFLOW".to_string()),
+                None,
+                "wf-empty-ctx-test".to_string(),
+                None,
+                Some(settings_json.to_string()),
+                None,
+            )
+            .await;
+
+        assert!(result.is_err(), "Should fail with empty workflow_context string");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("Invalid workflow_context JSON"),
+            "Expected JSON parse error, got: {}",
             error_msg
         );
         Ok(())
