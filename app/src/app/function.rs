@@ -12,10 +12,7 @@ use core::fmt;
 use helper::{FunctionCallHelper, McpNameConverter};
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
-use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_runner::jobworkerp::runner::WorkflowRunnerSettings;
-use jobworkerp_runner::jobworkerp::runner::workflow_runner_settings::WorkflowSource;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::ProtobufHelper;
 use proto::jobworkerp::data::RunnerData;
@@ -717,68 +714,6 @@ pub trait FunctionApp:
         let worker_id = self.worker_app().create(&worker_data).await?;
 
         Ok((worker_id, name))
-    }
-
-    /// Create a REUSABLE_WORKFLOW Worker from workflow definition
-    async fn create_workflow_from_definition(
-        &self,
-        workflow_data: Option<String>,
-        workflow_url: Option<String>,
-        name: Option<String>,
-        worker_options: Option<WorkerOptions>,
-    ) -> Result<(WorkerId, String, Option<String>)> {
-        // Load workflow definition (data or URL)
-        let workflow_schema = if let Some(data) = workflow_data {
-            self.workflow_loader()
-                .load_workflow(None, Some(&data), true)
-                .await?
-        } else if let Some(url) = workflow_url {
-            self.workflow_loader()
-                .load_workflow(Some(&url), None, true)
-                .await?
-        } else {
-            return Err(JobWorkerError::InvalidParameter(
-                "Either workflow_data or workflow_url is required".to_string(),
-            )
-            .into());
-        };
-
-        let workflow_name = workflow_schema.document.name.to_string();
-
-        // Determine worker name (from name parameter or workflow definition)
-        let worker_name = name.unwrap_or_else(|| workflow_name.clone());
-
-        // Serialize workflow_schema to JSON string
-        let workflow_json_str = serde_json::to_string(&workflow_schema).map_err(|e| {
-            JobWorkerError::InvalidParameter(format!("Failed to serialize workflow schema: {}", e))
-        })?;
-
-        let runner_settings = WorkflowRunnerSettings {
-            workflow_source: Some(WorkflowSource::WorkflowData(workflow_json_str)),
-            workflow_context: None,
-        };
-        let runner_settings_bytes = ProstMessageCodec::serialize_message(&runner_settings)?;
-
-        let runner_id = proto::jobworkerp::data::RunnerId {
-            value: proto::jobworkerp::data::RunnerType::Workflow as i64,
-        };
-
-        // Build WorkerData
-        let description = workflow_schema.document.summary.unwrap_or_default();
-
-        let worker_data = self.build_worker_data_from_options(
-            worker_name.clone(),
-            description,
-            runner_id,
-            runner_settings_bytes,
-            worker_options,
-        )?;
-
-        self.validate_worker_options(&worker_data)?;
-
-        let worker_id = self.worker_app().create(&worker_data).await?;
-
-        Ok((worker_id, worker_name, Some(workflow_name)))
     }
 
     // for LLM function calling (LLM_CHAT runner)

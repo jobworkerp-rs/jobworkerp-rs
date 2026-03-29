@@ -124,10 +124,6 @@ service FunctionService {
   // Create a Worker from any Runner with detailed configuration
   rpc CreateWorker(CreateWorkerRequest)
     returns (CreateWorkerResponse);
-
-  // Create a REUSABLE_WORKFLOW Worker from workflow definition
-  rpc CreateWorkflow(CreateWorkflowRequest)
-    returns (CreateWorkflowResponse);
 }
 ```
 

@@ -63,12 +63,13 @@ Other request fields:
 | `FindByName` | Find a function by runner_name or worker_name |
 | `Find` | Find a function by FunctionUsing (FunctionId + optional using) |
 
-### Creating Workers and Workflows
+### Creating Workers
 
 | RPC | Description |
 |-----|-------------|
 | `CreateWorker` | Create a Worker from a runner name/ID with settings |
-| `CreateWorkflow` | Create a workflow Worker from YAML/JSON definition or URL |
+
+> **Note**: To create a workflow Worker, use `WORKFLOW.create` method via `JobService.Enqueue` with `using="create"`. See [Workflow Runner](workflow.md) for details.
 
 ## LLM Function Calling
 
