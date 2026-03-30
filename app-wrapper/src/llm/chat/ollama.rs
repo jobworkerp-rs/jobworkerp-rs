@@ -16,7 +16,7 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunne
 use jobworkerp_runner::jobworkerp::runner::llm::{
     self, LlmChatArgs, LlmChatResult, PendingToolCalls, ToolCallRequest,
 };
-use ollama_rs::generation::chat::ChatMessageResponse;
+use ollama_rs::generation::chat::{ChatMessageFinalResponseData, ChatMessageResponse};
 use ollama_rs::generation::parameters::{FormatType, JsonStructure};
 use ollama_rs::generation::tools::{ToolCall as OllamaToolCall, ToolInfo};
 use ollama_rs::{
@@ -38,6 +38,19 @@ impl ToolCallName for OllamaToolCall {
 
 // Maximum number of recursive tool call rounds before aborting
 const MAX_TOOL_CALL_DEPTH: u32 = 10;
+
+fn final_data_to_usage(
+    model: &str,
+    data: &ChatMessageFinalResponseData,
+) -> llm::llm_chat_result::Usage {
+    llm::llm_chat_result::Usage {
+        model: model.to_string(),
+        prompt_tokens: data.prompt_eval_count.try_into().ok(),
+        completion_tokens: data.eval_count.try_into().ok(),
+        total_prompt_time_sec: Some((data.prompt_eval_duration as f64 / 1_000_000_000.0) as f32),
+        total_completion_time_sec: Some((data.eval_duration as f64 / 1_000_000_000.0) as f32),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct OllamaChatService {
@@ -470,7 +483,10 @@ impl OllamaChatService {
                     }),
                     reasoning_content: reasoning,
                     done: true,
-                    usage: None,
+                    usage: response
+                        .final_data
+                        .as_ref()
+                        .map(|d| final_data_to_usage(&response.model, d)),
                     pending_tool_calls: None,
                     requires_tool_execution: None,
                     tool_execution_results: vec![],
@@ -1052,11 +1068,37 @@ impl OllamaChatService {
                     )
                     .await;
                 }
-                ChatInternalResult::Final(_) => {
-                    return Err(JobWorkerError::OtherError(
-                        "Auto-select failed: LLM did not call any selector tool".to_string(),
-                    )
-                    .into());
+                ChatInternalResult::Final(response) => {
+                    // LLM responded with text instead of calling a selector tool
+                    // (e.g. casual conversation). Return the text as a stream.
+                    tracing::debug!(
+                        "Auto-select (stream): LLM responded with text instead of tool call, returning as stream"
+                    );
+                    let (content_text, reasoning) =
+                        if let Some(thinking) = response.message.thinking.clone() {
+                            (response.message.content.clone(), Some(thinking))
+                        } else {
+                            Self::divide_think_tag(response.message.content.clone())
+                        };
+                    let usage = response
+                        .final_data
+                        .as_ref()
+                        .map(|d| final_data_to_usage(&response.model, d));
+                    let stream = async_stream::stream! {
+                        yield LlmChatResult {
+                            content: Some(llm::llm_chat_result::MessageContent {
+                                content: Some(message_content::Content::Text(content_text)),
+                            }),
+                            reasoning_content: reasoning,
+                            done: true,
+                            usage,
+                            pending_tool_calls: None,
+                            requires_tool_execution: None,
+                            tool_execution_results: vec![],
+                            tool_execution_started: None,
+                        };
+                    };
+                    return Ok(Box::pin(stream));
                 }
             }
         }
@@ -1276,12 +1318,20 @@ impl OllamaChatService {
 
             match base_stream_result {
                 Ok(mut base_stream) => {
+                    let mut last_model = String::new();
+                    let mut last_final_data = None;
                     while let Some(result) = base_stream.next().await {
                         match result {
                             Ok(chunk) => {
                                 // Accumulate tool calls
                                 if !chunk.message.tool_calls.is_empty() {
                                     accumulated_tool_calls.extend(chunk.message.tool_calls.clone());
+                                }
+
+                                // Capture model name and final_data from last chunk
+                                last_model = chunk.model.clone();
+                                if chunk.final_data.is_some() {
+                                    last_final_data = chunk.final_data.clone();
                                 }
 
                                 // Yield text content as it arrives
@@ -1367,12 +1417,14 @@ impl OllamaChatService {
                         };
                     }
 
-                    // Yield final done signal
+                    // Yield final done signal with usage from last chunk
                     yield LlmChatResult {
                         content: None,
                         reasoning_content: None,
                         done: true,
-                        usage: None,
+                        usage: last_final_data
+                            .as_ref()
+                            .map(|d| final_data_to_usage(&last_model, d)),
                         pending_tool_calls: None,
                         requires_tool_execution: None,
                         tool_execution_results: vec![],

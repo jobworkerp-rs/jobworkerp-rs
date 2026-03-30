@@ -50,12 +50,42 @@ pub struct WorkflowUnifiedRunnerImpl {
     app_module: Arc<AppModule>,
     /// Workflow from settings (optional, used by 'run' method if args don't specify workflow_source)
     settings_workflow: Option<Arc<WorkflowSchema>>,
-    /// Workflow context from settings (optional, pre-parsed in load()). If set, args.workflow_context is ignored.
+    /// Workflow context from settings (optional, pre-parsed in load()). Merged with args.workflow_context (settings keys take precedence).
     settings_workflow_context: Option<Arc<serde_json::Value>>,
     /// Create runner for 'create' method
     create_runner: CreateWorkflowRunnerImpl,
     spec: WorkflowUnifiedRunnerSpecImpl,
     cancel_helper: Option<CancelMonitoringHelper>,
+}
+
+/// Merge settings and args workflow contexts. Settings keys take precedence on conflict.
+fn merge_workflow_contexts(
+    settings_context: &Option<Arc<serde_json::Value>>,
+    args_context: &Option<String>,
+) -> Result<Arc<serde_json::Value>> {
+    let args_map = match args_context.as_deref() {
+        Some(s) => {
+            let v: serde_json::Value = serde_json::from_str(s)
+                .map_err(|e| anyhow!("Invalid workflow_context JSON in args: {}", e))?;
+            match v {
+                serde_json::Value::Object(m) => Some(m),
+                _ => return Err(anyhow!("workflow_context in args must be a JSON object")),
+            }
+        }
+        None => None,
+    };
+
+    match (settings_context, args_map) {
+        (Some(settings_ctx), Some(mut args_map)) => {
+            if let serde_json::Value::Object(settings_map) = settings_ctx.as_ref() {
+                args_map.extend(settings_map.clone());
+            }
+            Ok(Arc::new(serde_json::Value::Object(args_map)))
+        }
+        (Some(ctx), None) => Ok(Arc::clone(ctx)),
+        (None, Some(args_map)) => Ok(Arc::new(serde_json::Value::Object(args_map))),
+        (None, None) => Ok(Arc::new(serde_json::Value::Object(Default::default()))),
+    }
 }
 
 impl WorkflowUnifiedRunnerImpl {
@@ -127,25 +157,12 @@ impl WorkflowUnifiedRunnerImpl {
             .ok_or_else(|| anyhow!("No workflow_source specified in settings or args"))
     }
 
-    /// Resolve workflow context: pre-parsed settings takes precedence over args
+    /// Resolve workflow context: merges settings and args contexts (settings keys take precedence)
     fn resolve_workflow_context(
         &self,
         args_context: &Option<String>,
     ) -> Result<Arc<serde_json::Value>> {
-        if let Some(ctx) = &self.settings_workflow_context {
-            return Ok(Arc::clone(ctx));
-        }
-        match args_context.as_deref() {
-            Some(s) => {
-                let v: serde_json::Value = serde_json::from_str(s)
-                    .map_err(|e| anyhow!("Invalid workflow_context JSON in args: {}", e))?;
-                if !v.is_object() {
-                    return Err(anyhow!("workflow_context in args must be a JSON object"));
-                }
-                Ok(Arc::new(v))
-            }
-            None => Ok(Arc::new(serde_json::Value::Object(Default::default()))),
-        }
+        merge_workflow_contexts(&self.settings_workflow_context, args_context)
     }
 
     /// Execute workflow run (implementation for 'run' method)
@@ -497,6 +514,67 @@ impl CancelMonitoring for WorkflowUnifiedRunnerImpl {
 mod tests {
     use super::*;
     use jobworkerp_runner::runner::RunnerSpec;
+    use serde_json::json;
+
+    #[test]
+    fn test_merge_both_contexts_with_overlapping_keys() {
+        let settings = Some(Arc::new(json!({"source": "settings", "priority": "high"})));
+        let args = Some(r#"{"source": "args", "extra": "from_args"}"#.to_string());
+
+        let result = merge_workflow_contexts(&settings, &args).unwrap();
+        let obj = result.as_object().unwrap();
+
+        assert_eq!(obj.get("source").unwrap(), "settings");
+        assert_eq!(obj.get("priority").unwrap(), "high");
+        assert_eq!(obj.get("extra").unwrap(), "from_args");
+        assert_eq!(obj.len(), 3);
+    }
+
+    #[test]
+    fn test_merge_both_contexts_no_overlap() {
+        let settings = Some(Arc::new(json!({"a": 1})));
+        let args = Some(r#"{"b": 2}"#.to_string());
+
+        let result = merge_workflow_contexts(&settings, &args).unwrap();
+        let obj = result.as_object().unwrap();
+
+        assert_eq!(obj.get("a").unwrap(), 1);
+        assert_eq!(obj.get("b").unwrap(), 2);
+        assert_eq!(obj.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_settings_only() {
+        let settings = Some(Arc::new(json!({"key": "value"})));
+        let result = merge_workflow_contexts(&settings, &None).unwrap();
+        assert_eq!(result.as_ref(), &json!({"key": "value"}));
+    }
+
+    #[test]
+    fn test_merge_args_only() {
+        let args = Some(r#"{"key": "value"}"#.to_string());
+        let result = merge_workflow_contexts(&None, &args).unwrap();
+        assert_eq!(result.as_ref(), &json!({"key": "value"}));
+    }
+
+    #[test]
+    fn test_merge_neither() {
+        let result = merge_workflow_contexts(&None, &None).unwrap();
+        assert_eq!(result.as_ref(), &json!({}));
+    }
+
+    #[test]
+    fn test_merge_invalid_args_json() {
+        let settings = Some(Arc::new(json!({"a": 1})));
+        let args = Some("not json".to_string());
+        assert!(merge_workflow_contexts(&settings, &args).is_err());
+    }
+
+    #[test]
+    fn test_merge_non_object_args() {
+        let args = Some("[1,2,3]".to_string());
+        assert!(merge_workflow_contexts(&None, &args).is_err());
+    }
 
     #[test]
     fn test_resolve_method() {

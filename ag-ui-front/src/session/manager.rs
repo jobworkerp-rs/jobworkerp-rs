@@ -48,6 +48,11 @@ pub struct HitlWaitingInfo {
     /// List of pending tool calls that need client approval
     /// Empty for traditional HITL (HUMAN_INPUT), populated for LLM tool calls
     pub pending_tool_calls: Vec<PendingToolCallInfo>,
+    /// Merged workflow context (settings + client) preserved for HITL resume
+    pub workflow_context: Option<serde_json::Value>,
+    /// Registered worker name if the workflow was started via a registered worker.
+    /// None for inline workflows.
+    pub registered_worker_name: Option<String>,
 }
 
 impl HitlWaitingInfo {
@@ -62,6 +67,8 @@ impl HitlWaitingInfo {
         checkpoint_position: String,
         workflow_name: String,
         pending_tool_calls: Vec<PendingToolCallInfo>,
+        workflow_context: Option<serde_json::Value>,
+        registered_worker_name: Option<String>,
     ) -> Self {
         Self {
             interrupt_id: Self::new_interrupt_id(),
@@ -69,7 +76,26 @@ impl HitlWaitingInfo {
             checkpoint_position,
             workflow_name,
             pending_tool_calls,
+            workflow_context,
+            registered_worker_name,
         }
+    }
+
+    /// Create a HitlWaitingInfo without workflow_context or registered_worker_name.
+    pub fn new_simple(
+        tool_call_id: String,
+        checkpoint_position: String,
+        workflow_name: String,
+        pending_tool_calls: Vec<PendingToolCallInfo>,
+    ) -> Self {
+        Self::new(
+            tool_call_id,
+            checkpoint_position,
+            workflow_name,
+            pending_tool_calls,
+            None,
+            None,
+        )
     }
 }
 
@@ -543,6 +569,8 @@ mod tests {
                 fn_name: "COMMAND___run".to_string(),
                 fn_arguments: r#"{"command":"date"}"#.to_string(),
             }],
+            Some(serde_json::json!({"model": "gpt-4"})),
+            Some("my_worker".to_string()),
         );
 
         let interrupt_id = hitl_info.interrupt_id.clone();

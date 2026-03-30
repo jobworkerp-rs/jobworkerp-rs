@@ -22,6 +22,6 @@ message WorkflowRunnerSettings {
 
   // # Workflow Context (optional)
   // Context variables for workflow execution (JSON object string).
-  // If set, WorkflowRunArgs.workflow_context is ignored at runtime.
+  // If set, merged with WorkflowRunArgs.workflow_context at runtime (settings keys take precedence on conflict).
   optional string workflow_context = 3;
 }
