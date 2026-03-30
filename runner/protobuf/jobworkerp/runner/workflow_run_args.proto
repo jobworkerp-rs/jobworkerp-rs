@@ -28,7 +28,7 @@ message WorkflowRunArgs {
   // # Workflow Context
   // Additional context information for workflow execution
   // Can be a plain string or JSON formatted string
-  // NOTE: If workflow_context is set in WorkflowRunnerSettings, this field is ignored.
+  // NOTE: If workflow_context is also set in WorkflowRunnerSettings, both are merged (settings keys take precedence).
   optional string workflow_context = 4;
 
   // # Execution ID

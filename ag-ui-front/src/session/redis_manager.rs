@@ -53,6 +53,10 @@ struct RedisHitlWaitingInfo {
     workflow_name: String,
     #[serde(default)]
     pending_tool_calls: Vec<RedisPendingToolCallInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workflow_context: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    registered_worker_name: Option<String>,
 }
 
 impl From<&HitlWaitingInfo> for RedisHitlWaitingInfo {
@@ -67,6 +71,8 @@ impl From<&HitlWaitingInfo> for RedisHitlWaitingInfo {
                 .iter()
                 .map(RedisPendingToolCallInfo::from)
                 .collect(),
+            workflow_context: info.workflow_context.clone(),
+            registered_worker_name: info.registered_worker_name.clone(),
         }
     }
 }
@@ -83,6 +89,8 @@ impl From<RedisHitlWaitingInfo> for HitlWaitingInfo {
                 .into_iter()
                 .map(PendingToolCallInfo::from)
                 .collect(),
+            workflow_context: data.workflow_context,
+            registered_worker_name: data.registered_worker_name,
         }
     }
 }
