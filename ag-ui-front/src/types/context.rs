@@ -20,6 +20,10 @@ pub enum Context {
         /// Optional namespace
         #[serde(skip_serializing_if = "Option::is_none")]
         namespace: Option<String>,
+        /// Optional workflow context variables (JSON string or object)
+        /// Merged with server-side workflow_context from worker settings (client values take precedence)
+        #[serde(skip_serializing_if = "Option::is_none", rename = "workflowContext")]
+        workflow_context: Option<serde_json::Value>,
     },
 
     /// Inline workflow definition (full schema)
@@ -62,6 +66,7 @@ impl Context {
             workflow_name: name.into(),
             version: None,
             namespace: None,
+            workflow_context: None,
         }
     }
 

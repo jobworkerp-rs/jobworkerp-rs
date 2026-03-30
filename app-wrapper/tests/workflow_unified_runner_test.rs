@@ -430,10 +430,10 @@ fn test_workflow_run_with_settings_context() -> Result<()> {
     })
 }
 
-/// Test: settings workflow_context takes precedence over args workflow_context
+/// Test: settings and args workflow_context are merged (settings keys take precedence)
 #[test]
 #[ignore = "need backend with same db"]
-fn test_workflow_settings_context_overrides_args() -> Result<()> {
+fn test_workflow_settings_context_merges_with_args() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
@@ -442,15 +442,15 @@ fn test_workflow_settings_context_overrides_args() -> Result<()> {
         runner
             .load(create_workflow_settings_with_context(
                 &workflow_json,
-                Some(r#"{"source":"settings"}"#),
+                Some(r#"{"source":"settings","priority":"high"}"#),
             ))
             .await?;
 
-        // args has different context, but settings should take precedence
+        // args has overlapping key "source" and unique key "extra"
         let args = WorkflowRunArgs {
             workflow_source: None,
-            input: r#"{"testInput": "context override test"}"#.to_string(),
-            workflow_context: Some(r#"{"source":"args"}"#.to_string()),
+            input: r#"{"testInput": "context merge test"}"#.to_string(),
+            workflow_context: Some(r#"{"source":"args","extra":"from_args"}"#.to_string()),
             ..Default::default()
         };
         let args_bytes = args.encode_to_vec();
@@ -461,12 +461,12 @@ fn test_workflow_settings_context_overrides_args() -> Result<()> {
 
         assert!(
             !response.output.is_empty() && response.status == 0,
-            "Expected successful execution with settings context override, got output='{}', status={}",
+            "Expected successful execution with merged context, got output='{}', status={}",
             response.output,
             response.status
         );
 
-        tracing::info!("Settings context overrides args test passed!");
+        tracing::info!("Settings context merges with args test passed!");
         Ok(())
     })
 }

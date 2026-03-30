@@ -107,6 +107,6 @@ message CreateWorkflowArgs {
   // # Workflow Context
   // Optional context variables for workflow execution (JSON object string).
   // If set, this will be stored in WorkflowRunnerSettings.workflow_context
-  // and args.workflow_context at runtime will be ignored.
+  // and merged with args.workflow_context at runtime (settings keys take precedence).
   optional string workflow_context = 5;
 }
