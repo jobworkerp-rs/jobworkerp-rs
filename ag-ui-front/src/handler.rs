@@ -25,6 +25,8 @@ use app_wrapper::workflow::execute::context::WorkflowStreamEvent;
 use app_wrapper::workflow::execute::workflow::WorkflowExecutor;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
+use jobworkerp_runner::jobworkerp::runner::WorkflowRunnerSettings;
+use prost::Message as ProstMessage;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -152,10 +154,17 @@ where
             .await;
 
         // Parse workflow from context (including optional workflow_context)
-        let (workflow, workflow_context) = self.parse_workflow_from_input(&input).await?;
+        let (workflow, workflow_context, registered_worker_name) =
+            self.parse_workflow_from_input(&input).await?;
 
         // Extract workflow name for HITL checkpoint tracking
         let workflow_name = workflow.document.name.to_string();
+
+        // Capture HITL context before passing workflow_context to init
+        let hitl_ctx = HitlStreamContext {
+            workflow_context: workflow_context.clone(),
+            registered_worker_name: registered_worker_name.clone(),
+        };
 
         // Create adapter for event conversion
         let adapter = shared_adapter(run_id.clone(), thread_id.clone());
@@ -184,6 +193,7 @@ where
             run_id_for_cleanup,
             workflow_name,
             true, // emit_run_started: true for new workflow runs
+            hitl_ctx,
         );
 
         Ok((session, Box::pin(stream)))
@@ -588,8 +598,8 @@ where
             ..checkpoint.clone()
         };
 
-        // 5. Get workflow schema for re-execution
-        let workflow = self
+        // 5. Get workflow schema and context for re-execution
+        let worker = self
             .app_module
             .worker_app
             .find_by_name(&hitl_info.workflow_name)
@@ -605,17 +615,25 @@ where
                 name: hitl_info.workflow_name.clone(),
             })?;
 
-        let worker_data = workflow.data.ok_or_else(|| {
+        let worker_data = worker.data.ok_or_else(|| {
             AgUiError::InvalidInput(format!("Worker '{}' has no data", hitl_info.workflow_name))
         })?;
 
-        let schema: WorkflowSchema =
-            serde_json::from_slice(&worker_data.runner_settings).map_err(|e| {
-                AgUiError::InvalidInput(format!(
-                    "Invalid workflow schema in worker '{}': {}",
-                    hitl_info.workflow_name, e
-                ))
-            })?;
+        let (schema, settings_workflow_context) = decode_workflow_from_runner_settings(
+            &worker_data.runner_settings,
+            &hitl_info.workflow_name,
+            &self.app_module,
+        )
+        .await?;
+
+        // Use merged context preserved at HITL pause time, falling back to settings context.
+        // Intentionally uses the pause-time snapshot: if settings change after pause,
+        // the resumed execution stays consistent with the original run.
+        let context_value = hitl_info
+            .workflow_context
+            .clone()
+            .or(settings_workflow_context)
+            .unwrap_or_else(|| serde_json::json!({}));
 
         // 6. Create adapter for event conversion
         let adapter = shared_adapter(run_id_typed.clone(), session.thread_id.clone());
@@ -624,10 +642,10 @@ where
         let executor = WorkflowExecutor::init(
             self.app_wrapper_module.clone(),
             self.app_module.clone(),
-            Arc::new(schema),
+            schema,
             modified_checkpoint.workflow.input.clone(),
             Some(execution_id.clone()),
-            Arc::new(serde_json::json!({})),
+            Arc::new(context_value),
             Arc::new(HashMap::new()),
             Some(modified_checkpoint),
         )
@@ -712,6 +730,11 @@ where
         let run_id_for_cleanup = run_id.to_string();
         let workflow_name_for_stream = hitl_info.workflow_name.clone();
 
+        let hitl_ctx = HitlStreamContext {
+            workflow_context: hitl_info.workflow_context.clone(),
+            registered_worker_name: hitl_info.registered_worker_name.clone(),
+        };
+
         let workflow_stream = self.create_event_stream(
             executor,
             adapter,
@@ -721,6 +744,7 @@ where
             run_id_for_cleanup,
             workflow_name_for_stream,
             true, // emit_run_started: resume is a new run invocation per AG-UI spec
+            hitl_ctx,
         );
 
         // Prepend the tool_call events to the workflow stream
@@ -935,99 +959,34 @@ where
             .collect();
 
         // 3. Update workflowContext to include toolExecutionRequests in runnerMessages
-        // The workflow uses ${ $runnerMessages } to pass messages to LLM
-        // We need to add a TOOL message with ToolExecutionRequests format
-        let mut found_workflow_inline = false;
-        for ctx in &mut input.context {
-            if let crate::types::Context::WorkflowInline {
-                workflow_context, ..
-            } = ctx
-            {
-                found_workflow_inline = true;
-
-                // Parse existing workflowContext or create new one
-                let mut ctx_value: serde_json::Value = workflow_context
-                    .as_ref()
-                    .and_then(|v| {
-                        if let serde_json::Value::String(s) = v {
-                            serde_json::from_str(s).ok()
-                        } else {
-                            Some(v.clone())
-                        }
-                    })
-                    .unwrap_or_else(|| serde_json::json!({}));
-
-                // Get existing runnerMessages or create empty array
-                let runner_messages = ctx_value
-                    .get("runnerMessages")
+        let assistant_tool_calls: Vec<serde_json::Value> = hitl_info
+            .pending_tool_calls
+            .iter()
+            .map(|tc| {
+                let fn_arguments = resolved_fn_args
+                    .get(tc.call_id.as_str())
                     .cloned()
-                    .unwrap_or_else(|| serde_json::json!([]));
+                    .unwrap_or_else(|| tc.fn_arguments.clone());
+                serde_json::json!({
+                    "callId": tc.call_id,
+                    "fnName": tc.fn_name,
+                    "fnArguments": fn_arguments
+                })
+            })
+            .collect();
 
-                let mut messages_array = match runner_messages {
-                    serde_json::Value::Array(arr) => arr,
-                    _ => vec![],
-                };
-
-                // Add Assistant's tool call response (required for OllamaChatService)
-                let tool_calls: Vec<serde_json::Value> = hitl_info
-                    .pending_tool_calls
-                    .iter()
-                    .map(|tc| {
-                        let fn_arguments = resolved_fn_args
-                            .get(tc.call_id.as_str())
-                            .cloned()
-                            .unwrap_or_else(|| tc.fn_arguments.clone());
-                        serde_json::json!({
-                            "callId": tc.call_id,
-                            "fnName": tc.fn_name,
-                            "fnArguments": fn_arguments
-                        })
-                    })
-                    .collect();
-
-                // Proto3 JSON format: enum values use uppercase names
-                messages_array.push(serde_json::json!({
-                    "role": "ASSISTANT",
-                    "content": {
-                        "toolCalls": {
-                            "calls": tool_calls
-                        }
-                    }
-                }));
-
-                // Add TOOL message with ToolExecutionRequests
-                // Proto3 JSON format: enum values use uppercase names
-                messages_array.push(serde_json::json!({
-                    "role": "TOOL",
-                    "content": {
-                        "toolExecutionRequests": {
-                            "requests": tool_execution_requests.clone()
-                        }
-                    }
-                }));
-
-                // Update context
-                if let serde_json::Value::Object(ref mut map) = ctx_value {
-                    map.insert(
-                        "runnerMessages".to_string(),
-                        serde_json::Value::Array(messages_array),
-                    );
+        let tool_message = serde_json::json!({
+            "role": "TOOL",
+            "content": {
+                "toolExecutionRequests": {
+                    "requests": tool_execution_requests.clone()
                 }
-
-                // Update the context (as JSON string per proto convention)
-                *workflow_context = Some(serde_json::Value::String(ctx_value.to_string()));
-
-                tracing::debug!(
-                    workflow_context = ?workflow_context,
-                    "Updated workflowContext with toolExecutionRequests in runnerMessages"
-                );
-                break;
             }
-        }
+        });
 
-        if !found_workflow_inline {
+        if !append_runner_messages(&mut input, assistant_tool_calls, tool_message) {
             return Err(AgUiError::InvalidInput(
-                "Missing WorkflowInline context; cannot attach ToolExecutionRequests for LLM tool approval".to_string(),
+                "Missing workflow context; cannot attach ToolExecutionRequests for LLM tool approval".to_string(),
             ));
         }
 
@@ -1035,8 +994,13 @@ where
         input.resume = None;
 
         // 5. Parse workflow from input
-        let (workflow, workflow_context) = self.parse_workflow_from_input(&input).await?;
+        let (workflow, workflow_context, registered_worker_name) =
+            self.parse_workflow_from_input(&input).await?;
         let workflow_name = workflow.document.name.to_string();
+        let hitl_ctx = HitlStreamContext {
+            workflow_context: workflow_context.clone(),
+            registered_worker_name,
+        };
 
         // 6. Use existing run_id and thread_id from session
         let run_id = session.run_id.clone();
@@ -1086,6 +1050,7 @@ where
             run_id_for_cleanup,
             workflow_name,
             true, // Resume is a new run invocation per AG-UI spec
+            hitl_ctx,
         );
 
         Ok((session, Box::pin(stream)))
@@ -1137,91 +1102,33 @@ where
         }
 
         // 2. Update workflowContext with rejection info in runnerMessages
-        let mut found_workflow_inline = false;
-        for ctx in &mut input.context {
-            if let crate::types::Context::WorkflowInline {
-                workflow_context, ..
-            } = ctx
-            {
-                found_workflow_inline = true;
+        let assistant_tool_calls: Vec<serde_json::Value> = hitl_info
+            .pending_tool_calls
+            .iter()
+            .map(|tc| {
+                serde_json::json!({
+                    "callId": tc.call_id,
+                    "fnName": tc.fn_name,
+                    "fnArguments": tc.fn_arguments
+                })
+            })
+            .collect();
 
-                let mut ctx_value: serde_json::Value = workflow_context
-                    .as_ref()
-                    .and_then(|v| {
-                        if let serde_json::Value::String(s) = v {
-                            serde_json::from_str(s).ok()
-                        } else {
-                            Some(v.clone())
-                        }
-                    })
-                    .unwrap_or_else(|| serde_json::json!({}));
-
-                let runner_messages = ctx_value
-                    .get("runnerMessages")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!([]));
-
-                let mut messages_array = match runner_messages {
-                    serde_json::Value::Array(arr) => arr,
-                    _ => vec![],
-                };
-
-                // Add Assistant's tool call message (same as approval flow)
-                let tool_calls: Vec<serde_json::Value> = hitl_info
-                    .pending_tool_calls
-                    .iter()
-                    .map(|tc| {
-                        serde_json::json!({
-                            "callId": tc.call_id,
-                            "fnName": tc.fn_name,
-                            "fnArguments": tc.fn_arguments
-                        })
-                    })
-                    .collect();
-
-                messages_array.push(serde_json::json!({
-                    "role": "ASSISTANT",
-                    "content": {
-                        "toolCalls": {
-                            "calls": tool_calls
-                        }
-                    }
-                }));
-
-                // Add TOOL message with rejection text (not toolExecutionRequests)
-                // LLM will see this as tool result text and respond accordingly
-                let rejection_text = format!(
-                    "All tool calls were rejected by the user. Reason: {}. \
-                     Please suggest alternative approaches or ask the user what they would like to do instead.",
-                    rejection_message
-                );
-                messages_array.push(serde_json::json!({
-                    "role": "TOOL",
-                    "content": {
-                        "text": rejection_text
-                    }
-                }));
-
-                if let serde_json::Value::Object(ref mut map) = ctx_value {
-                    map.insert(
-                        "runnerMessages".to_string(),
-                        serde_json::Value::Array(messages_array),
-                    );
-                }
-
-                *workflow_context = Some(serde_json::Value::String(ctx_value.to_string()));
-
-                tracing::debug!(
-                    workflow_context = ?workflow_context,
-                    "Updated workflowContext with rejection in runnerMessages"
-                );
-                break;
+        let rejection_text = format!(
+            "All tool calls were rejected by the user. Reason: {}. \
+             Please suggest alternative approaches or ask the user what they would like to do instead.",
+            rejection_message
+        );
+        let tool_message = serde_json::json!({
+            "role": "TOOL",
+            "content": {
+                "text": rejection_text
             }
-        }
+        });
 
-        if !found_workflow_inline {
+        if !append_runner_messages(&mut input, assistant_tool_calls, tool_message) {
             return Err(AgUiError::InvalidInput(
-                "Missing WorkflowInline context; cannot attach rejection for LLM tool rejection"
+                "Missing workflow context; cannot attach rejection for LLM tool rejection"
                     .to_string(),
             ));
         }
@@ -1230,8 +1137,13 @@ where
         input.resume = None;
 
         // 4. Parse workflow from input
-        let (workflow, workflow_context) = self.parse_workflow_from_input(&input).await?;
+        let (workflow, workflow_context, registered_worker_name) =
+            self.parse_workflow_from_input(&input).await?;
         let workflow_name = workflow.document.name.to_string();
+        let hitl_ctx = HitlStreamContext {
+            workflow_context: workflow_context.clone(),
+            registered_worker_name,
+        };
 
         // 5. Use existing run_id and thread_id from session
         let run_id = session.run_id.clone();
@@ -1283,6 +1195,7 @@ where
             run_id_for_cleanup,
             workflow_name,
             false, // Don't emit RUN_STARTED again
+            hitl_ctx,
         );
 
         let rejection_stream = futures::stream::iter(rejection_events);
@@ -1292,11 +1205,16 @@ where
     }
 
     /// Parse workflow schema from input context.
-    /// Returns (workflow_schema, workflow_context) tuple.
+    /// Returns (workflow_schema, workflow_context, registered_worker_name) tuple.
+    /// `registered_worker_name` is `Some` for `WorkflowDefinition`, `None` for `WorkflowInline`.
     async fn parse_workflow_from_input(
         &self,
         input: &RunAgentInput,
-    ) -> Result<(Arc<WorkflowSchema>, Option<serde_json::Value>)> {
+    ) -> Result<(
+        Arc<WorkflowSchema>,
+        Option<serde_json::Value>,
+        Option<String>,
+    )> {
         // Try to extract inline workflow first, then fall back to workflow by name
         for ctx in &input.context {
             match ctx {
@@ -1311,10 +1229,13 @@ where
                                 e
                             ))
                         })?;
-                    return Ok((Arc::new(schema), workflow_context.clone()));
+                    return Ok((Arc::new(schema), workflow_context.clone(), None));
                 }
-                crate::types::Context::WorkflowDefinition { workflow_name, .. } => {
-                    // Search for REUSABLE_WORKFLOW runner Worker by name
+                crate::types::Context::WorkflowDefinition {
+                    workflow_name,
+                    workflow_context: client_ctx,
+                    ..
+                } => {
                     let worker = self
                         .app_module
                         .worker_app
@@ -1331,20 +1252,20 @@ where
                             name: workflow_name.clone(),
                         })?;
 
-                    // Get WorkerData and deserialize runner_settings to WorkflowSchema
                     let worker_data = worker.data.ok_or_else(|| {
                         AgUiError::InvalidInput(format!("Worker '{}' has no data", workflow_name))
                     })?;
 
-                    let schema: WorkflowSchema =
-                        serde_json::from_slice(&worker_data.runner_settings).map_err(|e| {
-                            AgUiError::InvalidInput(format!(
-                                "Invalid workflow schema in worker '{}': {}",
-                                workflow_name, e
-                            ))
-                        })?;
-                    // WorkflowDefinition doesn't support workflowContext
-                    return Ok((Arc::new(schema), None));
+                    let (schema, settings_ctx) = decode_workflow_from_runner_settings(
+                        &worker_data.runner_settings,
+                        workflow_name,
+                        &self.app_module,
+                    )
+                    .await?;
+
+                    // Merge settings workflow_context with client workflow_context
+                    let merged_ctx = merge_workflow_contexts(settings_ctx, client_ctx.clone());
+                    return Ok((schema, merged_ctx, Some(workflow_name.clone())));
                 }
                 _ => continue,
             }
@@ -1488,6 +1409,7 @@ where
         run_id_for_cleanup: String,
         workflow_name: String,
         emit_run_started: bool,
+        hitl_ctx: HitlStreamContext,
     ) -> impl Stream<Item = (u64, AgUiEvent)> + Send + 'static {
         let event_store = self.event_store.clone();
         let encoder = self.encoder.clone();
@@ -2061,6 +1983,8 @@ where
                                         current_position.clone(),
                                         workflow_name.clone(),
                                         pending_tool_calls.clone(),
+                                        hitl_ctx.workflow_context.clone(),
+                                        hitl_ctx.registered_worker_name.clone(),
                                     );
                                     let interrupt_id = hitl_info.interrupt_id.clone();
                                     if !session_manager.set_paused_with_hitl_info(&session_id, hitl_info).await {
@@ -2313,6 +2237,8 @@ where
                                     checkpoint_position,
                                     workflow_name.clone(),
                                     vec![], // Traditional HITL (HUMAN_INPUT)
+                                    hitl_ctx.workflow_context.clone(),
+                                    hitl_ctx.registered_worker_name.clone(),
                                 );
                                 if !session_manager.set_paused_with_hitl_info(&session_id, hitl_info).await {
                                     // Failed to persist HITL state - emit RUN_ERROR and set session to Error
@@ -2532,6 +2458,185 @@ fn value_to_json_string(value: &serde_json::Value) -> String {
             tracing::warn!("Failed to serialize serde_json::Value to string: {}", e);
             String::new()
         }),
+    }
+}
+
+/// Update workflow context's runnerMessages with ASSISTANT tool call and a TOOL response message.
+/// Returns true if a workflow context was found and updated.
+fn append_runner_messages(
+    input: &mut RunAgentInput,
+    assistant_tool_calls: Vec<serde_json::Value>,
+    tool_message: serde_json::Value,
+) -> bool {
+    for ctx in &mut input.context {
+        let workflow_context = match ctx {
+            crate::types::Context::WorkflowInline {
+                workflow_context, ..
+            } => workflow_context,
+            crate::types::Context::WorkflowDefinition {
+                workflow_context, ..
+            } => workflow_context,
+            _ => continue,
+        };
+
+        let mut ctx_value: serde_json::Value = workflow_context
+            .as_ref()
+            .and_then(|v| {
+                if let serde_json::Value::String(s) = v {
+                    serde_json::from_str(s).ok()
+                } else {
+                    Some(v.clone())
+                }
+            })
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        let runner_messages = ctx_value
+            .get("runnerMessages")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+
+        let mut messages_array = match runner_messages {
+            serde_json::Value::Array(arr) => arr,
+            _ => vec![],
+        };
+
+        // Add ASSISTANT tool call message
+        messages_array.push(serde_json::json!({
+            "role": "ASSISTANT",
+            "content": {
+                "toolCalls": {
+                    "calls": assistant_tool_calls
+                }
+            }
+        }));
+
+        // Add the caller-provided TOOL message
+        messages_array.push(tool_message);
+
+        if let serde_json::Value::Object(ref mut map) = ctx_value {
+            map.insert(
+                "runnerMessages".to_string(),
+                serde_json::Value::Array(messages_array),
+            );
+        }
+
+        *workflow_context = Some(serde_json::Value::String(ctx_value.to_string()));
+
+        tracing::debug!(
+            workflow_context = ?workflow_context,
+            "Updated workflowContext runnerMessages"
+        );
+        return true;
+    }
+    false
+}
+
+pub(crate) async fn decode_workflow_from_runner_settings(
+    runner_settings: &[u8],
+    workflow_name: &str,
+    app_module: &AppModule,
+) -> Result<(Arc<WorkflowSchema>, Option<serde_json::Value>)> {
+    use jobworkerp_runner::jobworkerp::runner::workflow_runner_settings::WorkflowSource;
+
+    let parsed = WorkflowRunnerSettings::decode(runner_settings).map_err(|e| {
+        AgUiError::InvalidInput(format!(
+            "Failed to decode WorkflowRunnerSettings for worker '{}': {}",
+            workflow_name, e
+        ))
+    })?;
+
+    let source = parsed.workflow_source.ok_or_else(|| {
+        AgUiError::InvalidInput(format!(
+            "Worker '{}' has no workflow_source in settings",
+            workflow_name
+        ))
+    })?;
+
+    let schema = match source {
+        WorkflowSource::WorkflowData(data) => {
+            let s: WorkflowSchema = serde_json::from_str(&data).map_err(|e| {
+                AgUiError::InvalidInput(format!(
+                    "Invalid workflow schema in worker '{}': {}",
+                    workflow_name, e
+                ))
+            })?;
+            Arc::new(s)
+        }
+        WorkflowSource::WorkflowUrl(url) => {
+            let s = app_module
+                .workflow_loader
+                .load_workflow(Some(url.as_str()), None, false)
+                .await
+                .map_err(|e| {
+                    AgUiError::InvalidInput(format!(
+                        "Failed to load workflow '{}' from URL '{}': {}",
+                        workflow_name, url, e
+                    ))
+                })?;
+            Arc::new(s)
+        }
+    };
+
+    let workflow_context = parsed
+        .workflow_context
+        .map(|s| serde_json::from_str(&s))
+        .transpose()
+        .map_err(|e| {
+            AgUiError::InvalidInput(format!(
+                "Invalid workflow_context JSON in worker '{}': {}",
+                workflow_name, e
+            ))
+        })?;
+
+    Ok((schema, workflow_context))
+}
+
+/// HITL-related context carried through the event stream for pause/resume.
+#[derive(Debug, Clone)]
+pub(crate) struct HitlStreamContext {
+    pub workflow_context: Option<serde_json::Value>,
+    pub registered_worker_name: Option<String>,
+}
+
+/// Merge settings-side workflow_context with client-side workflow_context.
+/// Settings keys take precedence over client values on conflict (shallow merge:
+/// nested objects are replaced entirely, not recursively merged).
+/// If client_ctx is a JSON string, it is parsed first.
+pub(crate) fn merge_workflow_contexts(
+    settings_ctx: Option<serde_json::Value>,
+    client_ctx: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    match (settings_ctx, client_ctx) {
+        (None, None) => None,
+        (Some(s), None) => Some(s),
+        (None, Some(c)) => Some(parse_workflow_context_value(c)),
+        (Some(s), Some(c)) => {
+            let parsed_client = parse_workflow_context_value(c);
+            match (parsed_client, s) {
+                (serde_json::Value::Object(mut base), serde_json::Value::Object(overlay)) => {
+                    // overlay = settings, so settings keys win on conflict
+                    for (k, v) in overlay {
+                        base.insert(k, v);
+                    }
+                    Some(serde_json::Value::Object(base))
+                }
+                (_, settings_val) => Some(settings_val),
+            }
+        }
+    }
+}
+
+/// Parse workflow_context value: if it's a JSON string, parse it.
+fn parse_workflow_context_value(v: serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::String(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            tracing::error!(
+                "Failed to parse workflow_context string as JSON: {}, falling back to settings context",
+                e
+            );
+            serde_json::Value::String(s)
+        }),
+        other => other,
     }
 }
 

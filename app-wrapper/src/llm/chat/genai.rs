@@ -929,11 +929,42 @@ impl GenaiChatService {
                     )?;
                     return Box::pin(self.request_chat_stream(result.second_args, metadata)).await;
                 }
-                ChatInternalResult::Final(_) => {
-                    return Err(JobWorkerError::OtherError(
-                        "Auto-select failed: LLM did not call any selector tool".to_string(),
-                    )
-                    .into());
+                ChatInternalResult::Final(response) => {
+                    // LLM responded with text instead of calling a selector tool
+                    // (e.g. casual conversation). Return the text as a stream.
+                    tracing::debug!(
+                        "Auto-select (stream): LLM responded with text instead of tool call, returning as stream"
+                    );
+                    let (content_text, reasoning) =
+                        Self::divide_think_tag(response.first_text().unwrap_or("").to_string());
+                    let metadata_trailer = Trailer { metadata };
+                    let stream = async_stream::stream! {
+                        let llm_result = LlmChatResult {
+                            content: Some(llm_chat_result::MessageContent {
+                                content: Some(message_content::Content::Text(content_text)),
+                            }),
+                            reasoning_content: reasoning,
+                            done: true,
+                            usage: Some(llm_chat_result::Usage {
+                                model: response.model_iden.model_name.to_string(),
+                                prompt_tokens: response.usage.prompt_tokens.map(|v| v as u32),
+                                completion_tokens: response.usage.completion_tokens.map(|v| v as u32),
+                                ..Default::default()
+                            }),
+                            pending_tool_calls: None,
+                            requires_tool_execution: None,
+                            tool_execution_results: vec![],
+                            tool_execution_started: None,
+                        };
+                        let bytes = prost::Message::encode_to_vec(&llm_result);
+                        yield ResultOutputItem {
+                            item: Some(result_output_item::Item::Data(bytes)),
+                        };
+                        yield ResultOutputItem {
+                            item: Some(result_output_item::Item::End(metadata_trailer)),
+                        };
+                    };
+                    return Ok(Box::pin(stream));
                 }
             }
         }

@@ -433,7 +433,7 @@ async fn test_hitl_session_state_transitions() {
     assert!(session.hitl_waiting_info.is_none());
 
     // 2. Transition to Paused with HITL info (simulating wait directive)
-    let hitl_info = HitlWaitingInfo::new(
+    let hitl_info = HitlWaitingInfo::new_simple(
         format!("wait_{}", run_id),
         "/do/0".to_string(),
         "test_workflow".to_string(),
@@ -499,7 +499,7 @@ async fn test_hitl_session_lookup_by_run_id() {
         .await;
 
     // Set to paused with HITL info
-    let hitl_info = HitlWaitingInfo::new(
+    let hitl_info = HitlWaitingInfo::new_simple(
         format!("wait_{}", run_id),
         "/do/1/do/0".to_string(),
         "nested_workflow".to_string(),
@@ -677,7 +677,7 @@ async fn test_multiple_hitl_waits_in_workflow() {
         .await;
 
     // First HITL wait
-    let hitl_info_1 = HitlWaitingInfo::new(
+    let hitl_info_1 = HitlWaitingInfo::new_simple(
         format!("wait_1_{}", run_id),
         "/do/0".to_string(),
         "multi_wait_workflow".to_string(),
@@ -720,7 +720,7 @@ async fn test_multiple_hitl_waits_in_workflow() {
         .await;
 
     // Second HITL wait
-    let hitl_info_2 = HitlWaitingInfo::new(
+    let hitl_info_2 = HitlWaitingInfo::new_simple(
         format!("wait_2_{}", run_id),
         "/do/1".to_string(),
         "multi_wait_workflow".to_string(),
@@ -903,7 +903,7 @@ async fn test_hitl_tool_call_id_validation() {
 
     // Set HITL info with specific tool_call_id
     let expected_tool_call_id = format!("wait_{}", run_id);
-    let hitl_info = HitlWaitingInfo::new(
+    let hitl_info = HitlWaitingInfo::new_simple(
         expected_tool_call_id.clone(),
         "/do/0".to_string(),
         "test_workflow".to_string(),
@@ -1408,7 +1408,7 @@ async fn test_hitl_atomic_resume_from_paused() {
         .await;
 
     // Set to Paused with HITL info
-    let hitl_info = HitlWaitingInfo::new(
+    let hitl_info = HitlWaitingInfo::new_simple(
         format!("wait_{}", run_id),
         "/do/0".to_string(),
         "atomic_test_workflow".to_string(),

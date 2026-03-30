@@ -122,8 +122,15 @@ where
             .await;
 
         // Parse workflow from context (including optional workflow_context)
-        let (workflow, workflow_context) = self.parse_workflow_from_input(&input).await?;
+        let (workflow, workflow_context, registered_worker_name) =
+            self.parse_workflow_from_input(&input).await?;
         let workflow_name = workflow.document.name.to_string();
+
+        // Capture HITL context before consuming workflow_context
+        let hitl_ctx = crate::handler::HitlStreamContext {
+            workflow_context: workflow_context.clone(),
+            registered_worker_name: registered_worker_name.clone(),
+        };
 
         // Build WorkflowRunArgs
         let args =
@@ -141,18 +148,30 @@ where
 
         // Create the stream that processes results lazily
         let stream = stream! {
-            // Enqueue job via FunctionApp inside the stream
             let metadata = Arc::new(HashMap::new());
-            let result_stream = handler.app_module.function_app.handle_runner_for_front(
-                metadata,
-                "WORKFLOW",
-                None, // runner_settings
-                None, // worker_options
-                serde_json::json!({ "args": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &args_bytes) }),
-                Some(run_id_str.clone()), // uniq_key
-                timeout_sec,
-                true, // streaming
-            );
+            // Use registered worker when available (preserves runner_settings including workflow_context),
+            // otherwise create a temp worker for inline workflows.
+            let result_stream = if let Some(ref worker_name) = registered_worker_name {
+                handler.app_module.function_app.handle_worker_call_for_front(
+                    metadata,
+                    worker_name,
+                    serde_json::json!({ "args": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &args_bytes) }),
+                    Some(run_id_str.clone()),
+                    timeout_sec,
+                    true,
+                )
+            } else {
+                handler.app_module.function_app.handle_runner_for_front(
+                    metadata,
+                    "WORKFLOW",
+                    None,
+                    None,
+                    serde_json::json!({ "args": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &args_bytes) }),
+                    Some(run_id_str.clone()),
+                    timeout_sec,
+                    true,
+                )
+            };
 
             // Process the stream
             for await event in Self::create_event_stream_inner(
@@ -166,6 +185,7 @@ where
                 handler.encoder.clone(),
                 handler.session_manager.clone(),
                 handler.job_registry.clone(),
+                hitl_ctx,
             ) {
                 yield event;
             }
@@ -429,23 +449,42 @@ where
         let workflow_name = hitl_info.workflow_name.clone();
         let handler = self.clone();
 
+        let hitl_ctx = crate::handler::HitlStreamContext {
+            workflow_context: hitl_info.workflow_context.clone(),
+            registered_worker_name: hitl_info.registered_worker_name.clone(),
+        };
+
         let stream = stream! {
             // Yield tool call events first (END → RESULT order)
             yield (end_event_id, tool_call_end);
             yield (result_event_id, tool_call_result);
 
-            // Enqueue resume job
+            // Enqueue resume job: branch between registered worker and inline runner
             let metadata = Arc::new(HashMap::new());
-            let result_stream = handler.app_module.function_app.handle_runner_for_front(
-                metadata,
-                "WORKFLOW",
-                None,
-                None,
-                serde_json::json!({ "args": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &args_bytes) }),
-                Some(run_id_str.clone()),
-                timeout_sec,
-                true,
-            );
+            let result_stream = if let Some(ref worker_name) = hitl_ctx.registered_worker_name {
+                handler.app_module.function_app.handle_worker_call_for_front(
+                    metadata,
+                    worker_name,
+                    serde_json::json!({ "args": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &args_bytes) }),
+                    Some(run_id_str.clone()),
+                    timeout_sec,
+                    true,
+                )
+            } else {
+                handler.app_module.function_app.handle_runner_for_front(
+                    metadata,
+                    "WORKFLOW",
+                    None,
+                    None,
+                    serde_json::json!({ "args": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &args_bytes) }),
+                    Some(run_id_str.clone()),
+                    timeout_sec,
+                    true,
+                )
+            };
+
+            // Clone hitl_ctx for inner stream (registered_worker_name is borrowed above)
+            let hitl_ctx_inner = hitl_ctx.clone();
 
             // Process the stream
             for await event in Self::create_event_stream_inner(
@@ -459,6 +498,7 @@ where
                 handler.encoder.clone(),
                 handler.session_manager.clone(),
                 handler.job_registry.clone(),
+                hitl_ctx_inner,
             ) {
                 yield event;
             }
@@ -468,11 +508,16 @@ where
     }
 
     /// Parse workflow schema from input context.
-    /// Returns (workflow_schema, workflow_context) tuple.
+    /// Returns (workflow_schema, workflow_context, registered_worker_name) tuple.
+    /// `registered_worker_name` is `Some` when using `WorkflowDefinition` (registered worker).
     async fn parse_workflow_from_input(
         &self,
         input: &RunAgentInput,
-    ) -> Result<(Arc<WorkflowSchema>, Option<serde_json::Value>)> {
+    ) -> Result<(
+        Arc<WorkflowSchema>,
+        Option<serde_json::Value>,
+        Option<String>,
+    )> {
         for ctx in &input.context {
             match ctx {
                 crate::types::Context::WorkflowInline {
@@ -486,9 +531,13 @@ where
                                 e
                             ))
                         })?;
-                    return Ok((Arc::new(schema), workflow_context.clone()));
+                    return Ok((Arc::new(schema), workflow_context.clone(), None));
                 }
-                crate::types::Context::WorkflowDefinition { workflow_name, .. } => {
+                crate::types::Context::WorkflowDefinition {
+                    workflow_name,
+                    workflow_context: client_ctx,
+                    ..
+                } => {
                     let worker = self
                         .app_module
                         .worker_app
@@ -509,15 +558,16 @@ where
                         AgUiError::InvalidInput(format!("Worker '{}' has no data", workflow_name))
                     })?;
 
-                    let schema: WorkflowSchema =
-                        serde_json::from_slice(&worker_data.runner_settings).map_err(|e| {
-                            AgUiError::InvalidInput(format!(
-                                "Invalid workflow schema in worker '{}': {}",
-                                workflow_name, e
-                            ))
-                        })?;
-                    // WorkflowDefinition doesn't support workflowContext
-                    return Ok((Arc::new(schema), None));
+                    let (schema, settings_ctx) =
+                        crate::handler::decode_workflow_from_runner_settings(
+                            &worker_data.runner_settings,
+                            workflow_name,
+                            &self.app_module,
+                        )
+                        .await?;
+                    let merged_ctx =
+                        crate::handler::merge_workflow_contexts(settings_ctx, client_ctx.clone());
+                    return Ok((schema, merged_ctx, Some(workflow_name.clone())));
                 }
                 _ => continue,
             }
@@ -657,6 +707,7 @@ where
         encoder: Arc<EventEncoder>,
         session_manager: Arc<SM>,
         job_registry: JobRegistry,
+        hitl_ctx: crate::handler::HitlStreamContext,
     ) -> impl Stream<Item = (u64, AgUiEvent)> + Send + 'a {
         stream! {
             // Emit RUN_STARTED
@@ -767,6 +818,8 @@ where
                                     workflow_result.position.clone(),
                                     workflow_name.clone(),
                                     vec![], // Traditional HITL (HUMAN_INPUT)
+                                    hitl_ctx.workflow_context.clone(),
+                                    hitl_ctx.registered_worker_name.clone(),
                                 );
                                 if !session_manager
                                     .set_paused_with_hitl_info(&session_id, hitl_info)
