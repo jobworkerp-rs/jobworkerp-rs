@@ -171,6 +171,10 @@ pub trait SessionManager: Send + Sync {
 
     /// Delete a session
     async fn delete_session(&self, session_id: &str) -> bool;
+
+    /// Get the most recent active or paused session for a given thread ID.
+    /// Returns None if no active/paused session exists for the thread.
+    async fn get_active_session_by_thread_id(&self, thread_id: &ThreadId) -> Option<Session>;
 }
 
 /// Internal shared state for InMemorySessionManager
@@ -417,6 +421,19 @@ impl SessionManager for InMemorySessionManager {
             false
         }
     }
+
+    async fn get_active_session_by_thread_id(&self, thread_id: &ThreadId) -> Option<Session> {
+        let sessions = self.inner.sessions.read().await;
+        sessions
+            .values()
+            .filter(|s| {
+                s.thread_id == *thread_id
+                    && matches!(s.state, SessionState::Active | SessionState::Paused)
+                    && !self.inner.is_expired(s)
+            })
+            .max_by_key(|s| s.created_at)
+            .cloned()
+    }
 }
 
 #[cfg(test)]
@@ -616,5 +633,106 @@ mod tests {
         let manager = InMemorySessionManager::new(3600);
         let session = manager.get_session_by_interrupt_id("int_nonexistent").await;
         assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_active_session_by_thread_id_active() {
+        let manager = InMemorySessionManager::new(3600);
+        let created = manager
+            .create_session(RunId::new("run_1"), ThreadId::new("thread_1"))
+            .await;
+
+        let found = manager
+            .get_active_session_by_thread_id(&ThreadId::new("thread_1"))
+            .await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().session_id, created.session_id);
+    }
+
+    #[tokio::test]
+    async fn test_get_active_session_by_thread_id_paused() {
+        let manager = InMemorySessionManager::new(3600);
+        let created = manager
+            .create_session(RunId::new("run_1"), ThreadId::new("thread_1"))
+            .await;
+
+        let hitl_info = HitlWaitingInfo::new_simple(
+            "call_1".to_string(),
+            "/tasks/test".to_string(),
+            "test_wf".to_string(),
+            vec![],
+        );
+        manager
+            .set_paused_with_hitl_info(&created.session_id, hitl_info)
+            .await;
+
+        let found = manager
+            .get_active_session_by_thread_id(&ThreadId::new("thread_1"))
+            .await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().state, SessionState::Paused);
+    }
+
+    #[tokio::test]
+    async fn test_get_active_session_by_thread_id_completed_excluded() {
+        let manager = InMemorySessionManager::new(3600);
+        let created = manager
+            .create_session(RunId::new("run_1"), ThreadId::new("thread_1"))
+            .await;
+
+        manager
+            .set_session_state(&created.session_id, SessionState::Completed)
+            .await;
+
+        let found = manager
+            .get_active_session_by_thread_id(&ThreadId::new("thread_1"))
+            .await;
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_active_session_by_thread_id_expired_excluded() {
+        let manager = InMemorySessionManager::new(1); // 1 second TTL
+        manager
+            .create_session(RunId::new("run_1"), ThreadId::new("thread_1"))
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let found = manager
+            .get_active_session_by_thread_id(&ThreadId::new("thread_1"))
+            .await;
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_active_session_by_thread_id_multiple_returns_newest() {
+        let manager = InMemorySessionManager::new(3600);
+
+        let _older = manager
+            .create_session(RunId::new("run_1"), ThreadId::new("thread_1"))
+            .await;
+
+        // Small delay to ensure different created_at
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let newer = manager
+            .create_session(RunId::new("run_2"), ThreadId::new("thread_1"))
+            .await;
+
+        let found = manager
+            .get_active_session_by_thread_id(&ThreadId::new("thread_1"))
+            .await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().session_id, newer.session_id);
+    }
+
+    #[tokio::test]
+    async fn test_get_active_session_by_thread_id_nonexistent() {
+        let manager = InMemorySessionManager::new(3600);
+        let found = manager
+            .get_active_session_by_thread_id(&ThreadId::new("nonexistent"))
+            .await;
+        assert!(found.is_none());
     }
 }

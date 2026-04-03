@@ -85,6 +85,10 @@ where
         .route("/message", post(message_handler::<SM, ES>))
         .route("/run/{run_id}", delete(cancel_handler::<SM, ES>))
         .route("/state/{run_id}", get(state_handler::<SM, ES>))
+        .route(
+            "/sessions/by-thread/{thread_id}",
+            get(session_by_thread_handler::<SM, ES>),
+        )
         .layer(axum::middleware::from_fn_with_state(
             token_store,
             auth_middleware,
@@ -338,6 +342,104 @@ where
 {
     let workflow_state = state.handler.get_state(&run_id).await?;
     Ok(Json(serde_json::to_value(workflow_state)?))
+}
+
+/// Response for GET /ag-ui/sessions/by-thread/{thread_id}
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionByThreadResponse {
+    found: bool,
+    session: Option<SessionInfoResponse>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionInfoResponse {
+    session_id: String,
+    run_id: String,
+    thread_id: String,
+    state: String,
+    last_event_id: u64,
+    hitl_info: Option<HitlInfoResponse>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HitlInfoResponse {
+    interrupt_id: String,
+    tool_call_id: String,
+    pending_tool_calls: Vec<PendingToolCallResponse>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingToolCallResponse {
+    call_id: String,
+    fn_name: String,
+    fn_arguments: Option<String>,
+}
+
+/// GET /ag-ui/sessions/by-thread/{thread_id} - Find active/paused session for a thread.
+async fn session_by_thread_handler<SM, ES>(
+    State(state): State<Arc<AsyncAppState<SM, ES>>>,
+    Path(thread_id): Path<String>,
+) -> Json<SessionByThreadResponse>
+where
+    SM: SessionManager + Clone + Send + Sync + 'static,
+    ES: EventStore + Clone + Send + Sync + 'static,
+{
+    use crate::types::ids::ThreadId;
+
+    let tid = ThreadId::new(&thread_id);
+    let session = state
+        .handler
+        .session_manager()
+        .get_active_session_by_thread_id(&tid)
+        .await;
+
+    match session {
+        Some(s) => {
+            let hitl_info = s.hitl_waiting_info.as_ref().map(|h| HitlInfoResponse {
+                interrupt_id: h.interrupt_id.clone(),
+                tool_call_id: h.tool_call_id.clone(),
+                pending_tool_calls: h
+                    .pending_tool_calls
+                    .iter()
+                    .map(|tc| PendingToolCallResponse {
+                        call_id: tc.call_id.clone(),
+                        fn_name: tc.fn_name.clone(),
+                        fn_arguments: if tc.fn_arguments.is_empty() {
+                            None
+                        } else {
+                            Some(tc.fn_arguments.clone())
+                        },
+                    })
+                    .collect(),
+            });
+
+            let state_str = match s.state {
+                crate::session::manager::SessionState::Active => "active",
+                crate::session::manager::SessionState::Paused => "paused",
+                _ => "unknown",
+            };
+
+            Json(SessionByThreadResponse {
+                found: true,
+                session: Some(SessionInfoResponse {
+                    session_id: s.session_id,
+                    run_id: s.run_id.to_string(),
+                    thread_id: s.thread_id.to_string(),
+                    state: state_str.to_string(),
+                    last_event_id: s.last_event_id,
+                    hitl_info,
+                }),
+            })
+        }
+        None => Json(SessionByThreadResponse {
+            found: false,
+            session: None,
+        }),
+    }
 }
 
 /// Application error type for axum handlers.
