@@ -23,6 +23,18 @@ pub enum SessionState {
     Error,
 }
 
+impl std::fmt::Display for SessionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionState::Active => write!(f, "active"),
+            SessionState::Paused => write!(f, "paused"),
+            SessionState::Completed => write!(f, "completed"),
+            SessionState::Cancelled => write!(f, "cancelled"),
+            SessionState::Error => write!(f, "error"),
+        }
+    }
+}
+
 /// Information about a pending tool call for HITL
 #[derive(Debug, Clone)]
 pub struct PendingToolCallInfo {
@@ -422,6 +434,7 @@ impl SessionManager for InMemorySessionManager {
         }
     }
 
+    // TODO: add thread_id_index (like run_id_index) for O(m) lookup when session count grows
     async fn get_active_session_by_thread_id(&self, thread_id: &ThreadId) -> Option<Session> {
         let sessions = self.inner.sessions.read().await;
         sessions
