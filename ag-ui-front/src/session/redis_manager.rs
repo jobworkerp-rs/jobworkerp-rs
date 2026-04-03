@@ -17,6 +17,10 @@ const SESSION_KEY_PREFIX: &str = "ag_ui:session:";
 const RUN_ID_INDEX_PREFIX: &str = "ag_ui:run_index:";
 /// Redis key prefix for thread_id -> session_ids reverse index (Set)
 const THREAD_SESSIONS_PREFIX: &str = "ag_ui:thread_sessions:";
+/// Thread index lives longer than individual sessions because the set
+/// references multiple sessions. Factor of 2 ensures the index survives
+/// even when the newest session within the thread is refreshed near its TTL boundary.
+const THREAD_INDEX_TTL_MULTIPLIER: u64 = 2;
 
 /// Serializable pending tool call info for Redis storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,7 +201,7 @@ impl RedisSessionManager {
         session_id: &str,
     ) {
         let key = Self::thread_sessions_key(thread_id);
-        let thread_ttl = self.ttl_sec * 2;
+        let thread_ttl = self.ttl_sec.saturating_mul(THREAD_INDEX_TTL_MULTIPLIER);
         if let Err(e) = conn.sadd::<_, _, ()>(&key, session_id).await {
             tracing::warn!(thread_id = %thread_id, error = %e, "Failed to SADD to thread index");
         }
@@ -222,7 +226,7 @@ impl RedisSessionManager {
     /// Refresh thread Set index TTL
     async fn refresh_thread_index_ttl(&self, conn: &mut impl AsyncCommands, thread_id: &str) {
         let key = Self::thread_sessions_key(thread_id);
-        let thread_ttl = self.ttl_sec * 2;
+        let thread_ttl = self.ttl_sec.saturating_mul(THREAD_INDEX_TTL_MULTIPLIER);
         if let Err(e) = conn.expire::<_, ()>(&key, thread_ttl as i64).await {
             tracing::warn!(thread_id = %thread_id, error = %e, "Failed to refresh thread index TTL");
         }
@@ -634,13 +638,39 @@ impl SessionManager for RedisSessionManager {
     async fn get_active_session_by_thread_id(&self, thread_id: &ThreadId) -> Option<Session> {
         let mut conn = self.pool.get().await.ok()?;
         let thread_key = Self::thread_sessions_key(thread_id.as_str());
-        let session_ids: Vec<String> = conn.smembers(&thread_key).await.ok()?;
+        let session_ids: Vec<String> = match conn.smembers::<_, Vec<String>>(&thread_key).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(thread_id = %thread_id, error = %e, "Failed to SMEMBERS for thread sessions");
+                return None;
+            }
+        };
+
+        if session_ids.is_empty() {
+            return None;
+        }
+
+        // Single MGET instead of N separate GETs
+        let keys: Vec<String> = session_ids
+            .iter()
+            .map(|sid| Self::session_key(sid))
+            .collect();
+        let values: Vec<Option<String>> = match conn.mget::<_, Vec<Option<String>>>(&keys).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(thread_id = %thread_id, error = %e, "Failed to MGET session data");
+                return None;
+            }
+        };
 
         let mut best: Option<Session> = None;
         let mut stale_ids: Vec<String> = Vec::new();
 
-        for sid in &session_ids {
-            match self.get_session(sid).await {
+        for (sid, json_opt) in session_ids.iter().zip(values.into_iter()) {
+            match json_opt
+                .and_then(|json| serde_json::from_str::<RedisSessionData>(&json).ok())
+                .map(Session::from)
+            {
                 Some(s) if matches!(s.state, SessionState::Active | SessionState::Paused) => {
                     if best.as_ref().is_none_or(|b| s.created_at > b.created_at) {
                         best = Some(s);
@@ -650,13 +680,9 @@ impl SessionManager for RedisSessionManager {
             }
         }
 
-        // Lazy cleanup of stale members
-        if !stale_ids.is_empty()
-            && let Ok(mut cleanup_conn) = self.pool.get().await
-        {
-            for sid in &stale_ids {
-                let _: Result<(), _> = cleanup_conn.srem(&thread_key, sid).await;
-            }
+        // Lazy cleanup reusing the same connection
+        for sid in &stale_ids {
+            let _: Result<(), _> = conn.srem(&thread_key, sid).await;
         }
 
         best
