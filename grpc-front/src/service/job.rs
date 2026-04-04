@@ -505,7 +505,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         let job_request_clone = job_request.clone();
         let reserved_id_clone = reserved_job_id;
 
-        let mut enqueue_handle = tokio::spawn(async move {
+        let enqueue_handle = tokio::spawn(async move {
             let (wid, wname) = match job_request_clone.worker.as_ref() {
                 Some(Worker::WorkerId(id)) => (Some(id), None),
                 Some(Worker::WorkerName(name)) => (None, Some(name)),
@@ -540,7 +540,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             .job_queue_config
             .feed_dispatch_timeout_duration();
 
-        let mut feed_handle = tokio::spawn(async move {
+        let feed_handle = tokio::spawn(async move {
             // For Standalone mode, wait until the feed channel is ready
             if let Some(store) = feed_sender_store.as_ref() {
                 let timeout = feed_dispatch_timeout;
@@ -605,52 +605,67 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Ok::<(), tonic::Status>(())
         });
 
-        // Wait for both; abort feed_handle early if enqueue fails.
-        // IMPORTANT: enqueue_job must return before the runner starts consuming the
-        // feed stream. If a future runner implementation consumes feed data inside
-        // enqueue_job (before returning), this select! could deadlock.
-        let (enqueue_result, feed_result) = tokio::select! {
-            enqueue_res = &mut enqueue_handle => {
-                let enqueue_res = enqueue_res
-                    .map_err(|e| tonic::Status::internal(format!("enqueue task panicked: {e}")))?;
-                if enqueue_res.is_err() {
-                    feed_handle.abort();
-                    (enqueue_res, Ok(()))
-                } else {
-                    let feed_res = feed_handle.await
-                        .map_err(|e| tonic::Status::internal(format!("feed task panicked: {e}")))?;
-                    (enqueue_res, feed_res)
-                }
-            }
-            feed_res = &mut feed_handle => {
-                let feed_res = feed_res
-                    .map_err(|e| tonic::Status::internal(format!("feed task panicked: {e}")))?;
-                let enqueue_res = enqueue_handle.await
-                    .map_err(|e| tonic::Status::internal(format!("enqueue task panicked: {e}")))?;
-                (enqueue_res, feed_res)
-            }
-        };
+        // Wait only for enqueue to complete; feed_handle continues in the background.
+        // enqueue_job blocks until runner returns a stream and complete_job publishes the
+        // result via enqueue_result_direct (BLPOP unblock). The subscribed result stream
+        // is already receiving data at this point, so we can return the gRPC response
+        // immediately and let the client start reading while feed forwarding continues.
+        let enqueue_result = enqueue_handle
+            .await
+            .map_err(|e| tonic::Status::internal(format!("enqueue task panicked: {e}")))?;
 
-        // Check feed errors first
-        if let Err(feed_err) = feed_result {
-            tracing::warn!("feed forwarding failed: {:?}", feed_err);
-            // Force-close the runner's feed channel so it does not hang waiting for data
-            let _ = cleanup_feed_publisher
-                .publish_feed(
-                    &JobId {
-                        value: job_id_value,
-                    },
-                    Vec::new(),
-                    true,
-                )
-                .await;
-            // Try to clean up the job if enqueue succeeded
-            if let Ok((ref id, _, _)) = enqueue_result
-                && let Err(e) = self.app().delete_job(id).await
-            {
-                tracing::warn!("failed to clean up orphan job {}: {e}", id.value);
-            }
-            return Err(feed_err);
+        if enqueue_result.is_err() {
+            feed_handle.abort();
+        } else {
+            // Spawn background monitor for feed_handle cleanup.
+            // NOTE: We intentionally do NOT delete the job on feed failure because:
+            // 1. The gRPC response (with the result stream) has already been sent to
+            //    the client, so deleting the job would be inconsistent.
+            // 2. Closing the feed channel (publish_feed with is_final=true) causes the
+            //    runner to detect the closed channel and either complete with partial
+            //    results or emit an error into the result stream — the client observes
+            //    feed-related failures through the result stream, not via gRPC status.
+            tokio::spawn(async move {
+                let feed_failed = match feed_handle.await {
+                    Ok(Ok(())) => {
+                        tracing::trace!(
+                            "enqueue_with_client_stream: feed forwarding completed for job {}",
+                            job_id_value
+                        );
+                        false
+                    }
+                    Ok(Err(feed_err)) => {
+                        tracing::warn!(
+                            "enqueue_with_client_stream: feed forwarding failed for job {}: {:?}",
+                            job_id_value,
+                            feed_err
+                        );
+                        true
+                    }
+                    Err(join_err) => {
+                        tracing::error!(
+                            "enqueue_with_client_stream: feed task panicked for job {}: {:?}",
+                            job_id_value,
+                            join_err
+                        );
+                        true
+                    }
+                };
+                if feed_failed {
+                    // Force-close the runner's feed channel so it does not hang.
+                    // The runner will detect the closed channel and propagate the
+                    // error through the result stream to the client.
+                    let _ = cleanup_feed_publisher
+                        .publish_feed(
+                            &JobId {
+                                value: job_id_value,
+                            },
+                            Vec::new(),
+                            true,
+                        )
+                        .await;
+                }
+            });
         }
 
         // Process enqueue result (same pattern as enqueue_for_stream)
