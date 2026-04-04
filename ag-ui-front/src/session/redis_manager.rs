@@ -15,6 +15,12 @@ use serde::{Deserialize, Serialize};
 const SESSION_KEY_PREFIX: &str = "ag_ui:session:";
 /// Redis key prefix for run_id index
 const RUN_ID_INDEX_PREFIX: &str = "ag_ui:run_index:";
+/// Redis key prefix for thread_id -> session_ids reverse index (Set)
+const THREAD_SESSIONS_PREFIX: &str = "ag_ui:thread_sessions:";
+/// Thread index lives longer than individual sessions because the set
+/// references multiple sessions. Factor of 2 ensures the index survives
+/// even when the newest session within the thread is refreshed near its TTL boundary.
+const THREAD_INDEX_TTL_MULTIPLIER: u64 = 2;
 
 /// Serializable pending tool call info for Redis storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,13 +122,7 @@ impl From<&Session> for RedisSessionData {
             thread_id: session.thread_id.to_string(),
             created_at: session.created_at,
             last_event_id: session.last_event_id,
-            state: match session.state {
-                SessionState::Active => "active".to_string(),
-                SessionState::Paused => "paused".to_string(),
-                SessionState::Completed => "completed".to_string(),
-                SessionState::Cancelled => "cancelled".to_string(),
-                SessionState::Error => "error".to_string(),
-            },
+            state: session.state.to_string(),
             hitl_waiting_info: session
                 .hitl_waiting_info
                 .as_ref()
@@ -163,13 +163,19 @@ pub struct RedisSessionManager {
 }
 
 impl RedisSessionManager {
+    /// Maximum TTL value in seconds to prevent i64 overflow on Redis EXPIRE
+    const MAX_TTL_SEC: u64 = i64::MAX as u64;
+
     /// Create a new Redis session manager.
     ///
     /// # Arguments
     /// * `pool` - Redis connection pool
     /// * `ttl_sec` - Session TTL in seconds
     pub fn new(pool: &'static RedisPool, ttl_sec: u64) -> Self {
-        Self { pool, ttl_sec }
+        Self {
+            pool,
+            ttl_sec: ttl_sec.min(Self::MAX_TTL_SEC),
+        }
     }
 
     /// Generate Redis key for session
@@ -181,12 +187,62 @@ impl RedisSessionManager {
     fn run_id_key(run_id: &str) -> String {
         format!("{}{}", RUN_ID_INDEX_PREFIX, run_id)
     }
+
+    /// Generate Redis key for thread_id -> session_ids reverse index
+    fn thread_sessions_key(thread_id: &str) -> String {
+        format!("{}{}", THREAD_SESSIONS_PREFIX, thread_id)
+    }
+
+    /// Add session_id to thread Set index and refresh TTL
+    async fn add_to_thread_index(
+        &self,
+        conn: &mut impl AsyncCommands,
+        thread_id: &str,
+        session_id: &str,
+    ) {
+        let key = Self::thread_sessions_key(thread_id);
+        let thread_ttl = self
+            .ttl_sec
+            .saturating_mul(THREAD_INDEX_TTL_MULTIPLIER)
+            .min(Self::MAX_TTL_SEC);
+        if let Err(e) = conn.sadd::<_, _, ()>(&key, session_id).await {
+            tracing::warn!(thread_id = %thread_id, error = %e, "Failed to SADD to thread index");
+        }
+        if let Err(e) = conn.expire::<_, ()>(&key, thread_ttl as i64).await {
+            tracing::warn!(thread_id = %thread_id, error = %e, "Failed to refresh thread index TTL");
+        }
+    }
+
+    /// Remove session_id from thread Set index
+    async fn remove_from_thread_index(
+        &self,
+        conn: &mut impl AsyncCommands,
+        thread_id: &str,
+        session_id: &str,
+    ) {
+        let key = Self::thread_sessions_key(thread_id);
+        if let Err(e) = conn.srem::<_, _, ()>(&key, session_id).await {
+            tracing::warn!(thread_id = %thread_id, error = %e, "Failed to SREM from thread index");
+        }
+    }
+
+    /// Refresh thread Set index TTL
+    async fn refresh_thread_index_ttl(&self, conn: &mut impl AsyncCommands, thread_id: &str) {
+        let key = Self::thread_sessions_key(thread_id);
+        let thread_ttl = self
+            .ttl_sec
+            .saturating_mul(THREAD_INDEX_TTL_MULTIPLIER)
+            .min(Self::MAX_TTL_SEC);
+        if let Err(e) = conn.expire::<_, ()>(&key, thread_ttl as i64).await {
+            tracing::warn!(thread_id = %thread_id, error = %e, "Failed to refresh thread index TTL");
+        }
+    }
 }
 
 #[async_trait]
 impl SessionManager for RedisSessionManager {
     async fn create_session(&self, run_id: RunId, thread_id: ThreadId) -> Session {
-        let session = Session::new(run_id.clone(), thread_id);
+        let session = Session::new(run_id.clone(), thread_id.clone());
         let session_id = session.session_id.clone();
         let data = RedisSessionData::from(&session);
 
@@ -224,6 +280,10 @@ impl SessionManager for RedisSessionManager {
                                 "Failed to store run_id mapping in Redis"
                             );
                         }
+
+                        // Add to thread -> session_ids reverse index
+                        self.add_to_thread_index(&mut *conn, thread_id.as_str(), &session_id)
+                            .await;
                     }
                     Err(e) => {
                         tracing::error!(
@@ -329,6 +389,7 @@ impl SessionManager for RedisSessionManager {
     async fn update_last_event_id(&self, session_id: &str, event_id: u64) -> bool {
         if let Some(mut session) = self.get_session(session_id).await {
             let run_id = session.run_id.to_string();
+            let thread_id = session.thread_id.to_string();
             session.last_event_id = event_id;
             let data = RedisSessionData::from(&session);
 
@@ -362,6 +423,7 @@ impl SessionManager for RedisSessionManager {
                     );
                     return false;
                 }
+                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
                 return true;
             }
         }
@@ -371,6 +433,7 @@ impl SessionManager for RedisSessionManager {
     async fn set_session_state(&self, session_id: &str, state: SessionState) -> bool {
         if let Some(mut session) = self.get_session(session_id).await {
             let run_id = session.run_id.to_string();
+            let thread_id = session.thread_id.to_string();
             session.state = state;
             let data = RedisSessionData::from(&session);
 
@@ -390,7 +453,6 @@ impl SessionManager for RedisSessionManager {
                     );
                     return false;
                 }
-                // Refresh run_id index TTL to keep it in sync with session TTL
                 if let Err(e) = conn
                     .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
                     .await
@@ -404,6 +466,7 @@ impl SessionManager for RedisSessionManager {
                     );
                     return false;
                 }
+                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
                 return true;
             }
         }
@@ -421,6 +484,7 @@ impl SessionManager for RedisSessionManager {
                 return false;
             }
             let run_id = session.run_id.to_string();
+            let thread_id = session.thread_id.to_string();
             session.state = SessionState::Paused;
             session.hitl_waiting_info = Some(hitl_info);
             let data = RedisSessionData::from(&session);
@@ -441,7 +505,6 @@ impl SessionManager for RedisSessionManager {
                     );
                     return false;
                 }
-                // Refresh run_id index TTL to keep it in sync with session TTL
                 if let Err(e) = conn
                     .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
                     .await
@@ -455,6 +518,7 @@ impl SessionManager for RedisSessionManager {
                     );
                     return false;
                 }
+                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
                 return true;
             }
         }
@@ -468,6 +532,7 @@ impl SessionManager for RedisSessionManager {
                 return false;
             }
             let run_id = session.run_id.to_string();
+            let thread_id = session.thread_id.to_string();
             session.hitl_waiting_info = None;
             let data = RedisSessionData::from(&session);
 
@@ -487,7 +552,6 @@ impl SessionManager for RedisSessionManager {
                     );
                     return false;
                 }
-                // Refresh run_id index TTL to keep it in sync with session TTL
                 if let Err(e) = conn
                     .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
                     .await
@@ -501,6 +565,7 @@ impl SessionManager for RedisSessionManager {
                     );
                     return false;
                 }
+                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
                 return true;
             }
         }
@@ -514,6 +579,7 @@ impl SessionManager for RedisSessionManager {
                 return false;
             }
             let run_id = session.run_id.to_string();
+            let thread_id = session.thread_id.to_string();
             session.hitl_waiting_info = None;
             session.state = new_state;
             let data = RedisSessionData::from(&session);
@@ -534,7 +600,6 @@ impl SessionManager for RedisSessionManager {
                     );
                     return false;
                 }
-                // Refresh run_id index TTL to keep it in sync with session TTL
                 if let Err(e) = conn
                     .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
                     .await
@@ -548,6 +613,7 @@ impl SessionManager for RedisSessionManager {
                     );
                     return false;
                 }
+                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
                 return true;
             }
         }
@@ -556,7 +622,7 @@ impl SessionManager for RedisSessionManager {
 
     async fn delete_session(&self, session_id: &str) -> bool {
         if let Ok(mut conn) = self.pool.get().await {
-            // Get session to find run_id for index cleanup
+            // Get session to find run_id and thread_id for index cleanup
             let session_key = Self::session_key(session_id);
             let json: Option<String> = (*conn).get(&session_key).await.ok().flatten();
 
@@ -565,12 +631,73 @@ impl SessionManager for RedisSessionManager {
             {
                 let run_id_key = Self::run_id_key(&data.run_id);
                 let _: Result<(), _> = (*conn).del(&run_id_key).await;
+                self.remove_from_thread_index(&mut *conn, &data.thread_id, session_id)
+                    .await;
             }
 
             let result: Result<i32, _> = (*conn).del(&session_key).await;
             return result.map(|n| n > 0).unwrap_or(false);
         }
         false
+    }
+
+    async fn get_active_session_by_thread_id(&self, thread_id: &ThreadId) -> Option<Session> {
+        let mut conn = self.pool.get().await.ok()?;
+        let thread_key = Self::thread_sessions_key(thread_id.as_str());
+        let session_ids: Vec<String> = match conn.smembers::<_, Vec<String>>(&thread_key).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(thread_id = %thread_id, error = %e, "Failed to SMEMBERS for thread sessions");
+                return None;
+            }
+        };
+
+        if session_ids.is_empty() {
+            return None;
+        }
+
+        // Single MGET instead of N separate GETs
+        let keys: Vec<String> = session_ids
+            .iter()
+            .map(|sid| Self::session_key(sid))
+            .collect();
+        let values: Vec<Option<String>> = match conn.mget::<_, Vec<Option<String>>>(&keys).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(thread_id = %thread_id, error = %e, "Failed to MGET session data");
+                return None;
+            }
+        };
+
+        let mut best: Option<Session> = None;
+        let mut stale_ids: Vec<String> = Vec::new();
+
+        for (sid, json_opt) in session_ids.iter().zip(values.into_iter()) {
+            match json_opt {
+                None => stale_ids.push(sid.clone()),
+                Some(json) => {
+                    match serde_json::from_str::<RedisSessionData>(&json).map(Session::from) {
+                        Ok(s) if matches!(s.state, SessionState::Active | SessionState::Paused) => {
+                            if best.as_ref().is_none_or(|b| s.created_at > b.created_at) {
+                                best = Some(s);
+                            }
+                        }
+                        Ok(_) => stale_ids.push(sid.clone()),
+                        Err(e) => {
+                            tracing::warn!(session_id = %sid, error = %e, "Failed to deserialize session data, removing from thread index");
+                            stale_ids.push(sid.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Lazy cleanup reusing the same connection
+        for sid in &stale_ids {
+            let _: Result<(), _> = conn.srem(&thread_key, sid).await;
+        }
+
+        best
     }
 }
 
@@ -698,6 +825,82 @@ mod tests {
         // Also verify run_id index is cleaned up
         let by_run = manager.get_session_by_run_id(&RunId::new("run_6")).await;
         assert!(by_run.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_redis_get_active_session_by_thread_id() {
+        let pool = create_test_pool().await;
+        let manager = RedisSessionManager::new(pool, 3600);
+
+        let session = manager
+            .create_session(RunId::new("run_active_1"), ThreadId::new("thread_active_1"))
+            .await;
+
+        // Active session should be found
+        let found = manager
+            .get_active_session_by_thread_id(&ThreadId::new("thread_active_1"))
+            .await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().session_id, session.session_id);
+
+        // Set to Completed -> should not be found
+        manager
+            .set_session_state(&session.session_id, SessionState::Completed)
+            .await;
+        let found = manager
+            .get_active_session_by_thread_id(&ThreadId::new("thread_active_1"))
+            .await;
+        assert!(found.is_none());
+
+        // Cleanup
+        manager.delete_session(&session.session_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_redis_get_active_session_by_thread_id_paused() {
+        let pool = create_test_pool().await;
+        let manager = RedisSessionManager::new(pool, 3600);
+
+        let session = manager
+            .create_session(RunId::new("run_paused_1"), ThreadId::new("thread_paused_1"))
+            .await;
+
+        let hitl_info = HitlWaitingInfo::new_simple(
+            "call_1".to_string(),
+            "/tasks/test".to_string(),
+            "test_wf".to_string(),
+            vec![PendingToolCallInfo {
+                call_id: "call_1".to_string(),
+                fn_name: "test_fn".to_string(),
+                fn_arguments: "{}".to_string(),
+            }],
+        );
+        manager
+            .set_paused_with_hitl_info(&session.session_id, hitl_info)
+            .await;
+
+        let found = manager
+            .get_active_session_by_thread_id(&ThreadId::new("thread_paused_1"))
+            .await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().state, SessionState::Paused);
+
+        // Cleanup
+        manager.delete_session(&session.session_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_redis_get_active_session_by_thread_id_nonexistent() {
+        let pool = create_test_pool().await;
+        let manager = RedisSessionManager::new(pool, 3600);
+
+        let found = manager
+            .get_active_session_by_thread_id(&ThreadId::new("nonexistent_thread"))
+            .await;
+        assert!(found.is_none());
     }
 
     async fn create_test_pool() -> &'static RedisPool {

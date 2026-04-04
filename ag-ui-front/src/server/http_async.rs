@@ -7,12 +7,14 @@ use crate::config::ServerConfig;
 use crate::error::AgUiError;
 use crate::handler_async::AsyncAgUiHandler;
 use crate::server::auth::{TokenStore, auth_middleware};
+use crate::server::types::AppError;
 use crate::session::{EventStore, SessionManager};
 use crate::types::RunAgentInput;
+use crate::types::ids::ThreadId;
 use axum::extract::{Path, State};
-use axum::http::{Method, StatusCode, header};
+use axum::http::{Method, header};
+use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use command_utils::util::shutdown::ShutdownLock;
@@ -85,6 +87,10 @@ where
         .route("/message", post(message_handler::<SM, ES>))
         .route("/run/{run_id}", delete(cancel_handler::<SM, ES>))
         .route("/state/{run_id}", get(state_handler::<SM, ES>))
+        .route(
+            "/sessions/by-thread/{thread_id}",
+            get(session_by_thread_handler::<SM, ES>),
+        )
         .layer(axum::middleware::from_fn_with_state(
             token_store,
             auth_middleware,
@@ -340,110 +346,23 @@ where
     Ok(Json(serde_json::to_value(workflow_state)?))
 }
 
-/// Application error type for axum handlers.
-#[derive(Debug)]
-struct AppError(AgUiError);
+/// GET /ag-ui/sessions/by-thread/{thread_id} - Find active/paused session for a thread.
+async fn session_by_thread_handler<SM, ES>(
+    State(state): State<Arc<AsyncAppState<SM, ES>>>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<Option<super::types::SessionInfoResponse>>, AppError>
+where
+    SM: SessionManager + Clone + Send + Sync + 'static,
+    ES: EventStore + Clone + Send + Sync + 'static,
+{
+    let tid = ThreadId::validated(&thread_id)
+        .map_err(|e| AppError(AgUiError::InvalidInput(e.to_string())))?;
+    let session = state
+        .handler
+        .session_manager()
+        .get_active_session_by_thread_id(&tid)
+        .await;
 
-impl From<AgUiError> for AppError {
-    fn from(err: AgUiError) -> Self {
-        AppError(err)
-    }
-}
-
-impl From<serde_json::Error> for AppError {
-    fn from(err: serde_json::Error) -> Self {
-        AppError(AgUiError::Serialization(err))
-    }
-}
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let (status, error_code, message) = match &self.0 {
-            AgUiError::SessionNotFound(id) => (
-                StatusCode::NOT_FOUND,
-                "SESSION_NOT_FOUND",
-                format!("Session not found: {}", id),
-            ),
-            AgUiError::SessionExpired(id) => (
-                StatusCode::GONE,
-                "SESSION_EXPIRED",
-                format!("Session expired: {}", id),
-            ),
-            AgUiError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, "INVALID_INPUT", msg.clone()),
-            AgUiError::WorkflowInitFailed(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "WORKFLOW_INIT_FAILED",
-                msg.clone(),
-            ),
-            AgUiError::Cancelled => (
-                StatusCode::OK,
-                "CANCELLED",
-                "Workflow cancelled".to_string(),
-            ),
-            AgUiError::Timeout { timeout_sec } => (
-                StatusCode::GATEWAY_TIMEOUT,
-                "TIMEOUT",
-                format!("Timeout after {} seconds", timeout_sec),
-            ),
-            AgUiError::SessionNotPaused { current_state } => (
-                StatusCode::CONFLICT,
-                "INVALID_SESSION_STATE",
-                format!("Session not paused: current state is {}", current_state),
-            ),
-            AgUiError::InvalidToolCallId { expected, actual } => (
-                StatusCode::BAD_REQUEST,
-                "INVALID_TOOL_CALL_ID",
-                format!(
-                    "Invalid tool_call_id: expected {}, got {}",
-                    expected, actual
-                ),
-            ),
-            AgUiError::CheckpointNotFound {
-                workflow_name,
-                position,
-            } => (
-                StatusCode::NOT_FOUND,
-                "CHECKPOINT_NOT_FOUND",
-                format!("Checkpoint not found: {} at {}", workflow_name, position),
-            ),
-            AgUiError::HitlInfoNotFound { session_id } => (
-                StatusCode::NOT_FOUND,
-                "HITL_INFO_NOT_FOUND",
-                format!("HITL waiting info not found for session: {}", session_id),
-            ),
-            _ => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                format!("{}", self.0),
-            ),
-        };
-
-        let body = serde_json::json!({
-            "error": {
-                "code": error_code,
-                "message": message
-            }
-        });
-
-        (status, Json(body)).into_response()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_app_error_response() {
-        let err = AppError(AgUiError::SessionNotFound("test-session".to_string()));
-        let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[test]
-    fn test_app_error_invalid_input() {
-        let err = AppError(AgUiError::InvalidInput("bad request".to_string()));
-        let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
+    let info = super::types::build_session_info(session);
+    Ok(Json(info))
 }
