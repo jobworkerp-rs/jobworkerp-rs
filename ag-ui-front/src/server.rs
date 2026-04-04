@@ -4,6 +4,7 @@ pub mod auth;
 pub mod embedded;
 pub mod http;
 pub mod http_async;
+pub mod types;
 
 pub use auth::{TokenStore, extract_bearer_token};
 pub use embedded::boot_embedded_server;
