@@ -71,11 +71,10 @@ schemars = "1"
 
 # Protobuf support
 prost = "0.14"
-tonic = "0.14"
 tokio-stream = "0.1"
 
 [build-dependencies]
-tonic-prost-build = "0.14"
+prost-build = "0.14"
 ```
 
 ### 2. Define Protobufs
@@ -114,7 +113,7 @@ message MyResult {
 
 ### 3. Setup build.rs
 
-Configure `build.rs` to compile your proto files. Use `tonic_prost_build`.
+Configure `build.rs` to compile your proto files. Use `prost_build`. Since plugins do not define gRPC services, `tonic-prost-build` is not needed.
 
 ```rust
 use std::env;
@@ -123,7 +122,7 @@ use std::path::PathBuf;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    tonic_prost_build::configure()
+    prost_build::Config::new()
         .protoc_arg("--experimental_allow_proto3_optional")
         .file_descriptor_set_path(out_dir.join("my_plugin.bin"))
         .type_attribute(
@@ -156,9 +155,9 @@ use prost::Message;
 use std::{alloc::System, collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 
-// Include generated proto code using tonic::include_proto! macro
+// Include generated proto code from prost-build
 pub mod my_runner {
-    tonic::include_proto!("my_runner");
+    include!(concat!(env!("OUT_DIR"), "/my_runner.rs"));
 }
 use my_runner::{MyRunnerSettings, MyJobArgs, MyResult};
 
