@@ -122,13 +122,7 @@ impl From<&Session> for RedisSessionData {
             thread_id: session.thread_id.to_string(),
             created_at: session.created_at,
             last_event_id: session.last_event_id,
-            state: match session.state {
-                SessionState::Active => "active".to_string(),
-                SessionState::Paused => "paused".to_string(),
-                SessionState::Completed => "completed".to_string(),
-                SessionState::Cancelled => "cancelled".to_string(),
-                SessionState::Error => "error".to_string(),
-            },
+            state: session.state.to_string(),
             hitl_waiting_info: session
                 .hitl_waiting_info
                 .as_ref()
@@ -169,13 +163,19 @@ pub struct RedisSessionManager {
 }
 
 impl RedisSessionManager {
+    /// Maximum TTL value in seconds to prevent i64 overflow on Redis EXPIRE
+    const MAX_TTL_SEC: u64 = i64::MAX as u64;
+
     /// Create a new Redis session manager.
     ///
     /// # Arguments
     /// * `pool` - Redis connection pool
     /// * `ttl_sec` - Session TTL in seconds
     pub fn new(pool: &'static RedisPool, ttl_sec: u64) -> Self {
-        Self { pool, ttl_sec }
+        Self {
+            pool,
+            ttl_sec: ttl_sec.min(Self::MAX_TTL_SEC),
+        }
     }
 
     /// Generate Redis key for session
@@ -201,7 +201,10 @@ impl RedisSessionManager {
         session_id: &str,
     ) {
         let key = Self::thread_sessions_key(thread_id);
-        let thread_ttl = self.ttl_sec.saturating_mul(THREAD_INDEX_TTL_MULTIPLIER);
+        let thread_ttl = self
+            .ttl_sec
+            .saturating_mul(THREAD_INDEX_TTL_MULTIPLIER)
+            .min(Self::MAX_TTL_SEC);
         if let Err(e) = conn.sadd::<_, _, ()>(&key, session_id).await {
             tracing::warn!(thread_id = %thread_id, error = %e, "Failed to SADD to thread index");
         }
@@ -226,7 +229,10 @@ impl RedisSessionManager {
     /// Refresh thread Set index TTL
     async fn refresh_thread_index_ttl(&self, conn: &mut impl AsyncCommands, thread_id: &str) {
         let key = Self::thread_sessions_key(thread_id);
-        let thread_ttl = self.ttl_sec.saturating_mul(THREAD_INDEX_TTL_MULTIPLIER);
+        let thread_ttl = self
+            .ttl_sec
+            .saturating_mul(THREAD_INDEX_TTL_MULTIPLIER)
+            .min(Self::MAX_TTL_SEC);
         if let Err(e) = conn.expire::<_, ()>(&key, thread_ttl as i64).await {
             tracing::warn!(thread_id = %thread_id, error = %e, "Failed to refresh thread index TTL");
         }
@@ -667,16 +673,22 @@ impl SessionManager for RedisSessionManager {
         let mut stale_ids: Vec<String> = Vec::new();
 
         for (sid, json_opt) in session_ids.iter().zip(values.into_iter()) {
-            match json_opt
-                .and_then(|json| serde_json::from_str::<RedisSessionData>(&json).ok())
-                .map(Session::from)
-            {
-                Some(s) if matches!(s.state, SessionState::Active | SessionState::Paused) => {
-                    if best.as_ref().is_none_or(|b| s.created_at > b.created_at) {
-                        best = Some(s);
+            match json_opt {
+                None => stale_ids.push(sid.clone()),
+                Some(json) => {
+                    match serde_json::from_str::<RedisSessionData>(&json).map(Session::from) {
+                        Ok(s) if matches!(s.state, SessionState::Active | SessionState::Paused) => {
+                            if best.as_ref().is_none_or(|b| s.created_at > b.created_at) {
+                                best = Some(s);
+                            }
+                        }
+                        Ok(_) => stale_ids.push(sid.clone()),
+                        Err(e) => {
+                            tracing::warn!(session_id = %sid, error = %e, "Failed to deserialize session data, removing from thread index");
+                            stale_ids.push(sid.clone());
+                        }
                     }
                 }
-                _ => stale_ids.push(sid.clone()),
             }
         }
 

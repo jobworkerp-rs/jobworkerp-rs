@@ -65,8 +65,31 @@ impl From<&str> for RunId {
 pub struct ThreadId(String);
 
 impl ThreadId {
+    const MAX_LEN: usize = 256;
+
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+
+    /// Validate and create a ThreadId from untrusted input (e.g. HTTP path params).
+    /// Rejects empty strings, strings exceeding 256 chars, and unsafe characters.
+    pub fn validated(id: impl Into<String>) -> Result<Self, &'static str> {
+        let s: String = id.into();
+        if s.is_empty() {
+            return Err("thread_id must not be empty");
+        }
+        if s.len() > Self::MAX_LEN {
+            return Err("thread_id exceeds maximum length of 256 characters");
+        }
+        if !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+        {
+            return Err(
+                "thread_id contains invalid characters (allowed: alphanumeric, -, _, ., :)",
+            );
+        }
+        Ok(Self(s))
     }
 
     pub fn random() -> Self {
@@ -244,6 +267,30 @@ mod tests {
     fn test_thread_id_display() {
         let thread_id = ThreadId::new("thread-456");
         assert_eq!(format!("{}", thread_id), "thread-456");
+    }
+
+    #[test]
+    fn test_thread_id_validated_ok() {
+        assert!(ThreadId::validated("valid-thread_id.123:abc").is_ok());
+        assert!(ThreadId::validated("a").is_ok());
+        assert!(ThreadId::validated("a".repeat(256)).is_ok());
+    }
+
+    #[test]
+    fn test_thread_id_validated_empty() {
+        assert!(ThreadId::validated("").is_err());
+    }
+
+    #[test]
+    fn test_thread_id_validated_too_long() {
+        assert!(ThreadId::validated("a".repeat(257)).is_err());
+    }
+
+    #[test]
+    fn test_thread_id_validated_invalid_chars() {
+        assert!(ThreadId::validated("has spaces").is_err());
+        assert!(ThreadId::validated("path/traversal").is_err());
+        assert!(ThreadId::validated("injection\n").is_err());
     }
 
     #[test]
