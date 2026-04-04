@@ -5,6 +5,7 @@ use crate::session::manager::Session;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use chrono::{DateTime, Utc};
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,6 +15,7 @@ pub struct SessionInfoResponse {
     pub thread_id: String,
     pub state: String,
     pub last_event_id: u64,
+    pub created_at: DateTime<Utc>,
     pub hitl_info: Option<HitlInfoResponse>,
 }
 
@@ -34,38 +36,36 @@ pub struct PendingToolCallResponse {
 }
 
 /// Build a `SessionInfoResponse` from an optional `Session`.
-/// Returns `Err(AgUiError::SessionNotFound)` when the session is `None`.
-pub fn build_session_info(
-    session: Option<Session>,
-    context: &str,
-) -> crate::error::Result<SessionInfoResponse> {
-    let s = session.ok_or_else(|| AgUiError::SessionNotFound(context.to_string()))?;
+/// Returns `None` when no active session exists (normal state).
+pub fn build_session_info(session: Option<Session>) -> Option<SessionInfoResponse> {
+    session.map(|s| {
+        let hitl_info = s.hitl_waiting_info.as_ref().map(|h| HitlInfoResponse {
+            interrupt_id: h.interrupt_id.clone(),
+            tool_call_id: h.tool_call_id.clone(),
+            pending_tool_calls: h
+                .pending_tool_calls
+                .iter()
+                .map(|tc| PendingToolCallResponse {
+                    call_id: tc.call_id.clone(),
+                    fn_name: tc.fn_name.clone(),
+                    fn_arguments: if tc.fn_arguments.is_empty() {
+                        None
+                    } else {
+                        Some(tc.fn_arguments.clone())
+                    },
+                })
+                .collect(),
+        });
 
-    let hitl_info = s.hitl_waiting_info.as_ref().map(|h| HitlInfoResponse {
-        interrupt_id: h.interrupt_id.clone(),
-        tool_call_id: h.tool_call_id.clone(),
-        pending_tool_calls: h
-            .pending_tool_calls
-            .iter()
-            .map(|tc| PendingToolCallResponse {
-                call_id: tc.call_id.clone(),
-                fn_name: tc.fn_name.clone(),
-                fn_arguments: if tc.fn_arguments.is_empty() {
-                    None
-                } else {
-                    Some(tc.fn_arguments.clone())
-                },
-            })
-            .collect(),
-    });
-
-    Ok(SessionInfoResponse {
-        session_id: s.session_id,
-        run_id: s.run_id.to_string(),
-        thread_id: s.thread_id.to_string(),
-        state: s.state.to_string(),
-        last_event_id: s.last_event_id,
-        hitl_info,
+        SessionInfoResponse {
+            session_id: s.session_id,
+            run_id: s.run_id.to_string(),
+            thread_id: s.thread_id.to_string(),
+            state: s.state.to_string(),
+            last_event_id: s.last_event_id,
+            created_at: s.created_at,
+            hitl_info,
+        }
     })
 }
 

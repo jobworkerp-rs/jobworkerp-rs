@@ -10,6 +10,7 @@ use crate::server::auth::{TokenStore, auth_middleware};
 use crate::server::types::AppError;
 use crate::session::{EventStore, SessionManager};
 use crate::types::RunAgentInput;
+use crate::types::ids::ThreadId;
 use axum::extract::{Path, State};
 use axum::http::{Method, header};
 use axum::response::IntoResponse;
@@ -349,20 +350,19 @@ where
 async fn session_by_thread_handler<SM, ES>(
     State(state): State<Arc<AsyncAppState<SM, ES>>>,
     Path(thread_id): Path<String>,
-) -> Result<Json<super::types::SessionInfoResponse>, AppError>
+) -> Result<Json<Option<super::types::SessionInfoResponse>>, AppError>
 where
     SM: SessionManager + Clone + Send + Sync + 'static,
     ES: EventStore + Clone + Send + Sync + 'static,
 {
-    use crate::types::ids::ThreadId;
-
-    let tid = ThreadId::new(&thread_id);
+    let tid = ThreadId::validated(&thread_id)
+        .map_err(|e| AppError(AgUiError::InvalidInput(e.to_string())))?;
     let session = state
         .handler
         .session_manager()
         .get_active_session_by_thread_id(&tid)
         .await;
 
-    let info = super::types::build_session_info(session, &thread_id)?;
+    let info = super::types::build_session_info(session);
     Ok(Json(info))
 }

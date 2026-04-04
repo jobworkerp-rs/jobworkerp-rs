@@ -3,7 +3,7 @@
 use crate::types::ids::{RunId, ThreadId};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{RwLock, watch};
@@ -193,6 +193,7 @@ pub trait SessionManager: Send + Sync {
 struct SessionManagerInner {
     sessions: RwLock<HashMap<String, Session>>,
     run_id_index: RwLock<HashMap<String, String>>,
+    thread_id_index: RwLock<HashMap<String, HashSet<String>>>,
     ttl: Duration,
     cleanup_interval_sec: u64,
     shutdown_tx: watch::Sender<bool>,
@@ -210,7 +211,8 @@ impl SessionManagerInner {
     async fn cleanup_expired_sessions(&self) {
         let now = Utc::now();
         let mut sessions = self.sessions.write().await;
-        let mut index = self.run_id_index.write().await;
+        let mut run_index = self.run_id_index.write().await;
+        let mut thread_index = self.thread_id_index.write().await;
 
         let expired: Vec<String> = sessions
             .iter()
@@ -220,7 +222,14 @@ impl SessionManagerInner {
 
         for session_id in expired {
             if let Some(session) = sessions.remove(&session_id) {
-                index.remove(session.run_id.as_str());
+                run_index.remove(session.run_id.as_str());
+                let tid = session.thread_id.as_str();
+                if let Some(set) = thread_index.get_mut(tid) {
+                    set.remove(&session_id);
+                    if set.is_empty() {
+                        thread_index.remove(tid);
+                    }
+                }
             }
         }
     }
@@ -250,6 +259,7 @@ impl InMemorySessionManager {
         let inner = Arc::new(SessionManagerInner {
             sessions: RwLock::new(HashMap::new()),
             run_id_index: RwLock::new(HashMap::new()),
+            thread_id_index: RwLock::new(HashMap::new()),
             ttl: Duration::seconds(clamped_ttl as i64),
             cleanup_interval_sec,
             shutdown_tx,
@@ -311,9 +321,14 @@ impl SessionManager for InMemorySessionManager {
         let session_id = session.session_id.clone();
 
         let mut sessions = self.inner.sessions.write().await;
-        let mut index = self.inner.run_id_index.write().await;
+        let mut run_index = self.inner.run_id_index.write().await;
+        let mut thread_index = self.inner.thread_id_index.write().await;
 
-        index.insert(run_id.to_string(), session_id.clone());
+        run_index.insert(run_id.to_string(), session_id.clone());
+        thread_index
+            .entry(session.thread_id.to_string())
+            .or_default()
+            .insert(session_id.clone());
         sessions.insert(session_id, session.clone());
 
         session
@@ -325,9 +340,17 @@ impl SessionManager for InMemorySessionManager {
 
         if self.inner.is_expired(session) {
             let run_id = session.run_id.clone();
+            let tid = session.thread_id.to_string();
             sessions.remove(session_id);
-            let mut index = self.inner.run_id_index.write().await;
-            index.remove(run_id.as_str());
+            let mut run_index = self.inner.run_id_index.write().await;
+            run_index.remove(run_id.as_str());
+            let mut thread_index = self.inner.thread_id_index.write().await;
+            if let Some(set) = thread_index.get_mut(tid.as_str()) {
+                set.remove(session_id);
+                if set.is_empty() {
+                    thread_index.remove(tid.as_str());
+                }
+            }
             return None;
         }
 
@@ -426,22 +449,39 @@ impl SessionManager for InMemorySessionManager {
     async fn delete_session(&self, session_id: &str) -> bool {
         let mut sessions = self.inner.sessions.write().await;
         if let Some(session) = sessions.remove(session_id) {
-            let mut index = self.inner.run_id_index.write().await;
-            index.remove(session.run_id.as_str());
+            let mut run_index = self.inner.run_id_index.write().await;
+            run_index.remove(session.run_id.as_str());
+            let mut thread_index = self.inner.thread_id_index.write().await;
+            let tid = session.thread_id.as_str();
+            if let Some(set) = thread_index.get_mut(tid) {
+                set.remove(session_id);
+                if set.is_empty() {
+                    thread_index.remove(tid);
+                }
+            }
             true
         } else {
             false
         }
     }
 
-    // TODO: add thread_id_index (like run_id_index) for O(m) lookup when session count grows
     async fn get_active_session_by_thread_id(&self, thread_id: &ThreadId) -> Option<Session> {
+        // Clone session_ids and drop thread_index lock before acquiring sessions lock
+        // to maintain consistent lock ordering (sessions → thread_id_index) with other methods.
+        //
+        // Note: expired/non-active session IDs remain in thread_id_index here because
+        // lazy cleanup would require a write lock, increasing contention on the read path.
+        // The background cleanup task periodically purges expired entries from all indexes.
+        let session_ids: HashSet<String> = {
+            let thread_index = self.inner.thread_id_index.read().await;
+            thread_index.get(thread_id.as_str())?.clone()
+        };
         let sessions = self.inner.sessions.read().await;
-        sessions
-            .values()
+        session_ids
+            .iter()
+            .filter_map(|sid| sessions.get(sid.as_str()))
             .filter(|s| {
-                s.thread_id == *thread_id
-                    && matches!(s.state, SessionState::Active | SessionState::Paused)
+                matches!(s.state, SessionState::Active | SessionState::Paused)
                     && !self.inner.is_expired(s)
             })
             .max_by_key(|s| s.created_at)
@@ -706,11 +746,17 @@ mod tests {
     #[tokio::test]
     async fn test_get_active_session_by_thread_id_expired_excluded() {
         let manager = InMemorySessionManager::new(1); // 1 second TTL
-        manager
+        let session = manager
             .create_session(RunId::new("run_1"), ThreadId::new("thread_1"))
             .await;
 
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // Backdate created_at to simulate expiration without real sleep
+        {
+            let mut sessions = manager.inner.sessions.write().await;
+            if let Some(s) = sessions.get_mut(&session.session_id) {
+                s.created_at = Utc::now() - Duration::seconds(5);
+            }
+        }
 
         let found = manager
             .get_active_session_by_thread_id(&ThreadId::new("thread_1"))
@@ -722,12 +768,17 @@ mod tests {
     async fn test_get_active_session_by_thread_id_multiple_returns_newest() {
         let manager = InMemorySessionManager::new(3600);
 
-        let _older = manager
+        let older = manager
             .create_session(RunId::new("run_1"), ThreadId::new("thread_1"))
             .await;
 
-        // Small delay to ensure different created_at
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        // Backdate the older session to ensure different created_at without sleep
+        {
+            let mut sessions = manager.inner.sessions.write().await;
+            if let Some(s) = sessions.get_mut(&older.session_id) {
+                s.created_at -= Duration::seconds(10);
+            }
+        }
 
         let newer = manager
             .create_session(RunId::new("run_2"), ThreadId::new("thread_1"))
