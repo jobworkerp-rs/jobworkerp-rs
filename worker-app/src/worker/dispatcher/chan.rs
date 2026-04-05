@@ -301,7 +301,14 @@ pub trait ChanJobDispatcher:
             .check_cancellation_status(&jid, &wid, &wdat, metadata.clone(), &jdat)
             .await?
         {
-            return self.result_processor().process_result(cancelled_result, None, wdat).await;
+            let (result, completion_rx) = self
+                .result_processor()
+                .process_result(cancelled_result, None, wdat)
+                .await?;
+            if let Some(rx) = completion_rx {
+                let _ = rx.await;
+            }
+            return Ok(result);
         }
 
         let resolved =
@@ -447,7 +454,19 @@ pub trait ChanJobDispatcher:
                     }
             }
 
-            self.result_processor().process_result(r.0, r.1, wdat).await
+            let (result, completion_rx) =
+                self.result_processor().process_result(r.0, r.1, wdat).await?;
+            // Wait for background stream-publishing task to finish before allowing
+            // this concurrency slot to pop the next job.
+            if let Some(rx) = completion_rx
+                && rx.await.is_err()
+            {
+                tracing::warn!(
+                    "stream completion sender dropped for job {:?}",
+                    &jid
+                );
+            }
+            Ok(result)
     }
 }
 
