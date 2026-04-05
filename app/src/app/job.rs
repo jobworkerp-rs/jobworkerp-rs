@@ -40,6 +40,32 @@ use proto::jobworkerp::data::{
 };
 use std::{collections::HashMap, fmt, sync::Arc};
 
+/// Receiver that the dispatcher awaits to know when a spawned stream-publishing
+/// task has finished. `None` means there is no background task to wait for.
+pub type StreamCompletionReceiver = Option<tokio::sync::oneshot::Receiver<()>>;
+
+/// Guard that sends `()` on the oneshot when dropped.
+/// Prevents the dispatcher from hanging if the spawned task panics or returns early.
+pub struct OneshotCompletionGuard {
+    sender: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl OneshotCompletionGuard {
+    pub fn new(sender: tokio::sync::oneshot::Sender<()>) -> Self {
+        Self {
+            sender: Some(sender),
+        }
+    }
+}
+
+impl Drop for OneshotCompletionGuard {
+    fn drop(&mut self) {
+        if let Some(tx) = self.sender.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
 /// Resolved execution settings after merging worker defaults with per-job overrides.
 #[derive(Debug, Clone)]
 pub struct ResolvedJobParams {
@@ -161,7 +187,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         id: &JobResultId,
         result: &JobResultData,
         stream: Option<BoxStream<'static, ResultOutputItem>>,
-    ) -> Result<bool>;
+    ) -> Result<(bool, StreamCompletionReceiver)>;
     async fn delete_job(&self, id: &JobId) -> Result<bool>;
     async fn find_job(&self, id: &JobId) -> Result<Option<Job>>
     where
@@ -334,7 +360,7 @@ pub(crate) fn spawn_end_marker_if_needed<P: JobResultPublisher + Clone + Send + 
     data: &JobResultData,
     jid: &JobId,
     pubsub_repo: &P,
-) {
+) -> StreamCompletionReceiver {
     if data.streaming_type != StreamingType::None as i32
         && data.status != ResultStatus::Success as i32
     {
@@ -346,7 +372,9 @@ pub(crate) fn spawn_end_marker_if_needed<P: JobResultPublisher + Clone + Send + 
         let end_stream = futures::stream::once(async move { end_item }).boxed();
         let pubsub_repo = pubsub_repo.clone();
         let job_id_for_stream = *jid;
+        let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
+            let _guard = OneshotCompletionGuard::new(tx);
             if let Err(e) = pubsub_repo
                 .publish_result_stream_data(job_id_for_stream, end_stream)
                 .await
@@ -358,6 +386,9 @@ pub(crate) fn spawn_end_marker_if_needed<P: JobResultPublisher + Clone + Send + 
                 );
             }
         });
+        Some(rx)
+    } else {
+        None
     }
 }
 
@@ -634,5 +665,41 @@ mod resolve_tests {
         assert!(eff.broadcast_results);
         // retry_policy not overridden: worker's policy
         assert_eq!(eff.retry_policy.as_ref().unwrap().max_retry, 3);
+    }
+
+    #[test]
+    fn test_oneshot_completion_guard_sends_on_drop() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        {
+            let _guard = OneshotCompletionGuard::new(tx);
+            // guard dropped here
+        }
+        // receiver should get the signal
+        assert!(rx.blocking_recv().is_ok());
+    }
+
+    #[test]
+    fn test_oneshot_completion_guard_sends_on_panic() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = OneshotCompletionGuard::new(tx);
+            panic!("test panic");
+        }));
+        assert!(result.is_err());
+        // receiver should still get the signal despite panic
+        assert!(rx.blocking_recv().is_ok());
+    }
+
+    #[test]
+    fn test_stream_completion_receiver_type() {
+        // Verify StreamCompletionReceiver is None by default
+        let rx: StreamCompletionReceiver = None;
+        assert!(rx.is_none());
+
+        // Verify Some(rx) works with oneshot
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let completion: StreamCompletionReceiver = Some(rx);
+        assert!(completion.is_some());
+        let _ = tx.send(());
     }
 }
