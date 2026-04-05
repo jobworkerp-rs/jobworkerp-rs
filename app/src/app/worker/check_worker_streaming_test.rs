@@ -117,6 +117,9 @@ mod tests {
         async fn update(&self, _id: &WorkerId, _worker: &Option<WorkerData>) -> Result<bool> {
             unimplemented!()
         }
+        async fn upsert_by_name(&self, _worker: &WorkerData) -> Result<WorkerId> {
+            unimplemented!()
+        }
         async fn delete(&self, _id: &WorkerId) -> Result<bool> {
             unimplemented!()
         }

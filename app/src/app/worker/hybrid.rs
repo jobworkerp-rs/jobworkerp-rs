@@ -23,7 +23,7 @@ use crate::app::runner::{
 };
 
 use super::super::{StorageConfig, UseStorageConfig};
-use super::{WorkerApp, WorkerAppCacheHelper};
+use super::{WorkerApp, WorkerAppCacheHelper, is_unique_violation};
 
 #[derive(Clone, Debug)]
 pub struct HybridWorkerAppImpl {
@@ -201,6 +201,55 @@ impl WorkerApp for HybridWorkerAppImpl {
             .publish_worker_changed(&wid, &wdata)
             .await;
         Ok(wid)
+    }
+
+    async fn upsert_by_name(&self, worker: &WorkerData) -> Result<WorkerId> {
+        let wsid = worker
+            .runner_id
+            .ok_or_else(|| JobWorkerError::InvalidParameter("runner_id is required".to_string()))?;
+        let _ = self
+            .validate_runner_settings_data(&wsid, worker.runner_settings.as_slice())
+            .await?
+            .ok_or_else(|| {
+                JobWorkerError::InvalidParameter("runner settings not provided".to_string())
+            })?;
+
+        // update-first: try UPDATE WHERE name = ?
+        if let Some(wid) = self.rdb_worker_repository().update_by_name(worker).await? {
+            let _ = self.redis_worker_repository().delete(&wid).await;
+            self.clear_cache(&wid).await;
+            self.clear_cache_by_name(&worker.name).await;
+            let _ = self
+                .redis_worker_repository()
+                .publish_worker_changed(&wid, worker)
+                .await;
+            return Ok(wid);
+        }
+
+        // not updated: try INSERT (delegates to create which handles rdb + redis + pubsub)
+        match self.create(worker).await {
+            Ok(wid) => Ok(wid),
+            Err(e) => {
+                if is_unique_violation(&e) {
+                    // UNIQUE constraint violation: identical data existed (MySQL path)
+                    let existing = self
+                        .rdb_worker_repository()
+                        .find_by_name(&worker.name)
+                        .await?
+                        .ok_or_else(|| {
+                            JobWorkerError::RuntimeError(format!(
+                                "worker not found after conflict: name={}",
+                                worker.name
+                            ))
+                        })?;
+                    Ok(existing.id.ok_or_else(|| {
+                        JobWorkerError::RuntimeError("worker has no id after conflict".to_string())
+                    })?)
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     async fn update(&self, id: &WorkerId, worker: &Option<WorkerData>) -> Result<bool> {
@@ -682,6 +731,61 @@ mod tests {
                 .await?;
             assert_eq!(app.count().await?, 2);
             assert_eq!(list.len(), 2);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_upsert_by_name() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_app(false).await?;
+            let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
+                name: "testUpsertRunner".to_string(),
+            })?;
+
+            let w1 = WorkerData {
+                name: "test_upsert_hybrid".to_string(),
+                description: "original".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                ..Default::default()
+            };
+
+            // First upsert: should create
+            let id1 = app.upsert_by_name(&w1).await?;
+            assert!(id1.value > 0);
+
+            let found = app.find(&id1).await?;
+            assert!(found.is_some());
+            assert_eq!(
+                found.as_ref().unwrap().data.as_ref().unwrap().description,
+                "original"
+            );
+
+            // Second upsert with same name but different data: should update, same id
+            let w2 = WorkerData {
+                name: "test_upsert_hybrid".to_string(),
+                description: "updated".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                ..Default::default()
+            };
+            let id2 = app.upsert_by_name(&w2).await?;
+            assert_eq!(id1.value, id2.value);
+
+            let found = app.find(&id2).await?;
+            assert_eq!(
+                found.as_ref().unwrap().data.as_ref().unwrap().description,
+                "updated"
+            );
+
+            // Third upsert with identical data: should succeed without error
+            let id3 = app.upsert_by_name(&w2).await?;
+            assert_eq!(id1.value, id3.value);
+
+            // Cleanup
+            let _ = app.delete_all().await?;
+
             Ok(())
         })
     }

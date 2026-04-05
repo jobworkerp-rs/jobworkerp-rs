@@ -450,6 +450,43 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
             Err(e) => Err(handle_error(&e)),
         }
     }
+
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "upsert_worker"))]
+    async fn upsert_worker(
+        &self,
+        request: tonic::Request<CreateWorkerRequest>,
+    ) -> Result<tonic::Response<CreateWorkerResponse>, tonic::Status> {
+        let _s = Self::trace_request("function", "upsert_worker", &request);
+        let req = request.into_inner();
+
+        self.validate_create_worker_request(&req)?;
+
+        use crate::proto::jobworkerp::function::service::create_worker_request;
+        let (runner_name, runner_id) = match req.runner {
+            Some(create_worker_request::Runner::RunnerName(name)) => (Some(name), None),
+            Some(create_worker_request::Runner::RunnerId(id)) => (None, Some(id)),
+            None => unreachable!("Validation should catch this case"),
+        };
+
+        match self
+            .function_app()
+            .upsert_worker_from_runner(
+                runner_name,
+                runner_id,
+                req.name.clone(),
+                req.description,
+                req.settings_json,
+                req.worker_options,
+            )
+            .await
+        {
+            Ok((worker_id, worker_name)) => Ok(Response::new(CreateWorkerResponse {
+                worker_id: Some(worker_id),
+                worker_name,
+            })),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
 }
 
 #[derive(DebugStub)]
