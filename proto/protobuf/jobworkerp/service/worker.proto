@@ -58,6 +58,7 @@ message FindChannelListResponse {
 
 service WorkerService {
   rpc Create(jobworkerp.data.WorkerData) returns (CreateWorkerResponse);
+  rpc UpsertByName(jobworkerp.data.WorkerData) returns (CreateWorkerResponse);
   rpc Update(jobworkerp.data.Worker) returns (SuccessResponse);
   rpc Delete(jobworkerp.data.WorkerId) returns (SuccessResponse);
   rpc Find(jobworkerp.data.WorkerId) returns (OptionalWorkerResponse);

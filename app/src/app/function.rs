@@ -672,8 +672,8 @@ pub trait FunctionApp:
         Ok(functions)
     }
 
-    /// Create a Worker from any Runner with detailed configuration
-    async fn create_worker_from_runner(
+    /// Build WorkerData from runner and request parameters (shared by create/upsert).
+    async fn build_worker_data_for_request(
         &self,
         runner_name: Option<String>,
         runner_id: Option<proto::jobworkerp::data::RunnerId>,
@@ -681,8 +681,7 @@ pub trait FunctionApp:
         description: Option<String>,
         settings_json: Option<String>,
         worker_options: Option<WorkerOptions>,
-    ) -> Result<(WorkerId, String)> {
-        // Find runner (name or id)
+    ) -> Result<(proto::jobworkerp::data::WorkerData, String)> {
         let runner = self.find_runner(runner_name, runner_id).await?;
 
         let runner_settings_value = settings_json
@@ -696,14 +695,14 @@ pub trait FunctionApp:
             })
             .transpose()?;
 
-        // WORKFLOW runner: delegate to workflow-specific path with validation
+        // WORKFLOW runner: delegate to workflow-specific build path
         if runner
             .data
             .as_ref()
             .is_some_and(|d| d.runner_type() == RunnerType::Workflow)
         {
             return self
-                .create_workflow_worker(
+                .build_workflow_worker_data(
                     &runner,
                     name,
                     description,
@@ -717,7 +716,6 @@ pub trait FunctionApp:
             .setup_runner_and_settings(&runner, runner_settings_value)
             .await?;
 
-        // Build WorkerData from WorkerOptions
         let runner_id = runner
             .id
             .ok_or_else(|| JobWorkerError::InvalidParameter("Runner ID is missing".to_string()))?;
@@ -731,24 +729,22 @@ pub trait FunctionApp:
 
         self.validate_worker_options(&worker_data)?;
 
-        let worker_id = self.worker_app().create(&worker_data).await?;
-
-        Ok((worker_id, name))
+        Ok((worker_data, name))
     }
 
-    /// Create a Worker for WORKFLOW runner with workflow-specific validation.
+    /// Build WorkerData for WORKFLOW runner with workflow-specific validation.
     ///
     /// Parses and validates the workflow definition, extracts `document.summary`
     /// as the worker description (when not explicitly provided), and encodes the
     /// workflow into `WorkflowRunnerSettings` protobuf for storage.
-    async fn create_workflow_worker(
+    async fn build_workflow_worker_data(
         &self,
         runner: &infra::infra::runner::rows::RunnerWithSchema,
         name: String,
         description: Option<String>,
         settings_json: Option<serde_json::Value>,
         worker_options: Option<WorkerOptions>,
-    ) -> Result<(WorkerId, String)> {
+    ) -> Result<(proto::jobworkerp::data::WorkerData, String)> {
         use jobworkerp_runner::jobworkerp::runner::WorkflowRunnerSettings;
         use jobworkerp_runner::jobworkerp::runner::workflow_runner_settings::WorkflowSource;
         use prost::Message;
@@ -850,8 +846,54 @@ pub trait FunctionApp:
 
         self.validate_worker_options(&worker_data)?;
 
-        let worker_id = self.worker_app().create(&worker_data).await?;
+        Ok((worker_data, name))
+    }
 
+    /// Create a Worker from any Runner with detailed configuration
+    async fn create_worker_from_runner(
+        &self,
+        runner_name: Option<String>,
+        runner_id: Option<proto::jobworkerp::data::RunnerId>,
+        name: String,
+        description: Option<String>,
+        settings_json: Option<String>,
+        worker_options: Option<WorkerOptions>,
+    ) -> Result<(WorkerId, String)> {
+        let (worker_data, name) = self
+            .build_worker_data_for_request(
+                runner_name,
+                runner_id,
+                name,
+                description,
+                settings_json,
+                worker_options,
+            )
+            .await?;
+        let worker_id = self.worker_app().create(&worker_data).await?;
+        Ok((worker_id, name))
+    }
+
+    /// Upsert a Worker from any Runner: update if name exists, create otherwise
+    async fn upsert_worker_from_runner(
+        &self,
+        runner_name: Option<String>,
+        runner_id: Option<proto::jobworkerp::data::RunnerId>,
+        name: String,
+        description: Option<String>,
+        settings_json: Option<String>,
+        worker_options: Option<WorkerOptions>,
+    ) -> Result<(WorkerId, String)> {
+        let (worker_data, name) = self
+            .build_worker_data_for_request(
+                runner_name,
+                runner_id,
+                name,
+                description,
+                settings_json,
+                worker_options,
+            )
+            .await?;
+        let worker_id = self.worker_app().upsert_by_name(&worker_data).await?;
         Ok((worker_id, name))
     }
 

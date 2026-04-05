@@ -106,4 +106,7 @@ service FunctionService {
 
   // Create a Worker from any Runner with detailed configuration
   rpc CreateWorker(CreateWorkerRequest) returns (CreateWorkerResponse);
+
+  // Upsert a Worker: create if not exists, update if name conflicts
+  rpc UpsertWorker(CreateWorkerRequest) returns (CreateWorkerResponse);
 }
