@@ -16,6 +16,16 @@ use std::sync::Arc;
 
 use super::runner::UseRunnerApp;
 
+/// Check if an anyhow::Error wraps a DB unique constraint violation.
+pub(crate) fn is_unique_violation(e: &anyhow::Error) -> bool {
+    if let Some(JobWorkerError::DBError(sqlx_err)) = e.downcast_ref::<JobWorkerError>() {
+        return sqlx_err
+            .as_database_error()
+            .is_some_and(|dbe| dbe.is_unique_violation());
+    }
+    false
+}
+
 #[async_trait]
 pub trait WorkerAppCacheHelper: Send + Sync {
     fn memory_cache(&self) -> &MokaCacheImpl<Arc<String>, Worker>;
@@ -83,6 +93,8 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
     async fn create_temp(&self, worker: WorkerData, with_random_name: bool) -> Result<WorkerId>;
     // if worker is None, clear cache only
     async fn update(&self, id: &WorkerId, worker: &Option<WorkerData>) -> Result<bool>;
+    // upsert: update-first by name, fallback to create if not found
+    async fn upsert_by_name(&self, worker: &WorkerData) -> Result<WorkerId>;
     async fn delete(&self, id: &WorkerId) -> Result<bool>;
     // Delete a temp worker (only from redis/memory, not from RDB)
     async fn delete_temp(&self, id: &WorkerId) -> Result<bool>;

@@ -204,6 +204,18 @@ impl<
             Err(e) => Err(handle_error(&e)),
         }
     }
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "upsert_by_name"))]
+    async fn upsert_by_name(
+        &self,
+        request: tonic::Request<WorkerData>,
+    ) -> Result<tonic::Response<CreateWorkerResponse>, tonic::Status> {
+        let _span = Self::trace_request("worker", "upsert_by_name", &request);
+        let data = self.validate_create(request.into_inner())?;
+        match self.app().upsert_by_name(&data).await {
+            Ok(id) => Ok(Response::new(CreateWorkerResponse { id: Some(id) })),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "update"))]
     async fn update(
         &self,
