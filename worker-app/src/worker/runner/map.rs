@@ -33,32 +33,34 @@ impl RunnerFactoryWithPoolMap {
         worker_id: &WorkerId,
         worker_data: Arc<WorkerData>,
     ) -> Result<Option<Object<RunnerPoolManagerImpl>>> {
-        // creates static runner pool
-        if worker_data.use_static {
-            tracing::debug!(
-                "add_and_get_runner: {}: {}",
-                worker_id.value,
-                &worker_data.name
-            );
-            // XXX shold clone runner?
-            let p = RunnerFactoryWithPool::new(
-                runner_data,
-                worker_data,
-                self.runner_factory.clone(),
-                self.worker_config.clone(),
-            )
-            .await?;
-            let runner_impl = p.get().await?;
-            self.pools.write().await.insert(worker_id.value, p);
-            Ok(Some(runner_impl))
-        } else {
+        if !worker_data.use_static {
             tracing::warn!(
                 "add_and_get_runner: worker_id:{} not static",
                 worker_id.value
             );
-            // no op for non-static
-            Ok(None)
+            return Ok(None);
         }
+        let mut pools = self.pools.write().await;
+        if let Some(existing) = pools.get(&worker_id.value).cloned() {
+            drop(pools);
+            return existing.get().await.map(Some);
+        }
+        tracing::debug!(
+            "add_and_get_runner: {}: {}",
+            worker_id.value,
+            &worker_data.name
+        );
+        let p = RunnerFactoryWithPool::new(
+            runner_data,
+            worker_data,
+            self.runner_factory.clone(),
+            self.worker_config.clone(),
+        )
+        .await?;
+        let pool_clone = p.clone();
+        pools.insert(worker_id.value, p);
+        drop(pools);
+        pool_clone.get().await.map(Some)
     }
 
     pub async fn clear(&self) {
@@ -94,31 +96,47 @@ impl RunnerFactoryWithPoolMap {
         worker_data: &WorkerData,
         timeout: Option<Duration>,
     ) -> Result<Option<Object<RunnerPoolManagerImpl>>> {
-        if worker_data.use_static {
-            let mp = self.pools.read().await;
-            if let Some(p) = mp.get(&worker_id.value).cloned() {
-                let timeouts = if let Some(to) = timeout {
-                    Timeouts::wait_millis(to.as_millis() as u64)
-                } else {
-                    Timeouts::default()
-                };
-                p.timeout_get(&timeouts)
-                    .await
-                    .inspect_err(|e| tracing::error!("error in timeout_get: {:?}", e))
-                    .map(Some)
-            } else {
-                // release read guard
-                drop(mp);
-                // add created runner pool to map
-                self.add_and_get_runner(
-                    Arc::new(runner_data.clone()),
-                    worker_id,
-                    Arc::new(worker_data.clone()),
-                )
-                .await
-            }
+        if !worker_data.use_static {
+            return Ok(None);
+        }
+
+        let timeouts = if let Some(to) = timeout {
+            Timeouts::wait_millis(to.as_millis() as u64)
         } else {
-            Ok(None)
+            Timeouts::default()
+        };
+
+        // Acquire write lock to prevent TOCTOU race on pool creation.
+        // Pool creation (RunnerFactoryWithPool::new) is lightweight (no runner instantiation),
+        // so lock contention is negligible.
+        let mut pools = self.pools.write().await;
+        if let Some(p) = pools.get(&worker_id.value).cloned() {
+            drop(pools);
+            p.timeout_get(&timeouts)
+                .await
+                .inspect_err(|e| tracing::error!("error in timeout_get: {:?}", e))
+                .map(Some)
+        } else {
+            tracing::debug!(
+                "get_or_create_static_runner: creating pool for {}: {}",
+                worker_id.value,
+                &worker_data.name
+            );
+            let p = RunnerFactoryWithPool::new(
+                Arc::new(runner_data.clone()),
+                Arc::new(worker_data.clone()),
+                self.runner_factory.clone(),
+                self.worker_config.clone(),
+            )
+            .await?;
+            let pool_clone = p.clone();
+            pools.insert(worker_id.value, p);
+            drop(pools);
+            pool_clone
+                .timeout_get(&timeouts)
+                .await
+                .inspect_err(|e| tracing::error!("error in timeout_get: {:?}", e))
+                .map(Some)
         }
     }
 }

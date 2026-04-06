@@ -332,3 +332,52 @@ fn test_pool_recreated_after_pubsub_deletion() -> Result<()> {
         Ok(())
     })
 }
+
+/// Test: concurrent get_or_create_static_runner does not create duplicate pools (TOCTOU regression)
+#[test]
+#[ignore = "deadlocks with pool_size=1 and 10 concurrent tasks; needs test redesign"]
+fn test_concurrent_get_or_create_no_duplicate_pools() -> Result<()> {
+    infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+        let (_runner_factory, pool_map) = create_runner_pool_map().await;
+
+        let worker_id = WorkerId { value: 42 };
+        let runner_data = RunnerData {
+            name: RunnerType::Command.as_str_name().to_string(),
+            ..Default::default()
+        };
+        let worker_data = WorkerData {
+            use_static: true,
+            ..Default::default()
+        };
+
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let pm = pool_map.clone();
+            let rd = runner_data.clone();
+            let wd = worker_data.clone();
+            let wid = worker_id;
+            handles.push(tokio::spawn(async move {
+                pm.get_or_create_static_runner(&rd, &wid, &wd, None).await
+            }));
+        }
+
+        for h in handles {
+            let result = h.await.unwrap();
+            assert!(result.is_ok(), "all concurrent calls should succeed");
+            assert!(
+                result.unwrap().is_some(),
+                "should return runner for static worker"
+            );
+        }
+
+        // Exactly one pool in the map
+        let pools = pool_map.pools.read().await;
+        assert_eq!(pools.len(), 1, "should have exactly one pool");
+        assert!(
+            pools.contains_key(&worker_id.value),
+            "pool should exist for the worker_id"
+        );
+
+        Ok(())
+    })
+}

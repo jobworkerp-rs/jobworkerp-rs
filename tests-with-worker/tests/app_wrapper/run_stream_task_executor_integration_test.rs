@@ -55,7 +55,7 @@ async fn create_command_worker(
 /// Test: RunStreamTaskExecutor executes Worker configuration with streaming
 #[test]
 fn test_run_stream_task_executor_worker_config() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     TEST_RUNTIME.block_on(async {
         let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
         let worker_handle = start_test_worker(app_module.clone()).await?;

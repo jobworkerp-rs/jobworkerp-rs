@@ -6,7 +6,7 @@ use std::time::Instant;
 #[test]
 #[ignore = "depends on local file path"]
 fn benchmark_actual_workflow_validation() {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     println!("🔍 Benchmarking actual workflow file validation");
     println!("================================================");
     println!("Target: claude-code-collection-pipeline.yaml");
