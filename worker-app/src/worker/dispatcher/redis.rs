@@ -257,8 +257,13 @@ pub trait RedisJobDispatcher:
                 .result_processor()
                 .process_result(cancelled_result, None, wdat)
                 .await?;
-            if let Some(rx) = completion_rx {
-                let _ = rx.await;
+            if let Some(rx) = completion_rx
+                && rx.await.is_err()
+            {
+                tracing::warn!(
+                    "stream completion sender dropped for cancelled job {:?}",
+                    &jid
+                );
             }
             return Ok(result);
         }

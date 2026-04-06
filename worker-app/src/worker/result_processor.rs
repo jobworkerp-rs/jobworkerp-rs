@@ -68,7 +68,7 @@ impl ResultProcessorImpl {
             // the result to Redis/RDB first, listen_result's find_job_result_by_job_id
             // would find a cached entry with output=None and return it immediately
             // without the stream, causing callers to see empty output.
-            let retried = self
+            let complete_or_retry_result = self
                 .process_complete_or_retry_condition(&id, &data, st_data, &w, &metadata)
                 .await;
             // Store result if necessary by result status and worker setting.
@@ -80,7 +80,7 @@ impl ResultProcessorImpl {
                 .await
             {
                 Ok(_r) => {
-                    let completion_rx = retried?;
+                    let completion_rx = complete_or_retry_result?;
                     Ok((
                         JobResult {
                             id: Some(id),
@@ -91,7 +91,11 @@ impl ResultProcessorImpl {
                     ))
                 }
                 Err(e) => {
-                    tracing::error!("job result store error: {:?}, retried: {:?}", e, retried);
+                    tracing::error!(
+                        "job result store error: {:?}, complete_or_retry: {:?}",
+                        e,
+                        complete_or_retry_result
+                    );
                     Err(e)
                 }
             }
