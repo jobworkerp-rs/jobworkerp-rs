@@ -740,7 +740,7 @@ impl JobApp for RdbChanJobAppImpl {
         id: &JobResultId,
         data: &JobResultData,
         stream: Option<BoxStream<'static, ResultOutputItem>>,
-    ) -> Result<bool> {
+    ) -> Result<(bool, super::StreamCompletionReceiver)> {
         tracing::debug!(
             "complete_job: res_id={}, job_id={:?}, has_stream={}",
             &id.value,
@@ -751,6 +751,7 @@ impl JobApp for RdbChanJobAppImpl {
             // For streaming jobs, don't delete status immediately as the process may still be running
             // data.response_type is already resolved via resolve_job_params() in runner.rs,
             // reflecting any per-job overrides applied at enqueue time.
+            let mut completion_rx: super::StreamCompletionReceiver = None;
             let res = match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     let res = self
@@ -761,6 +762,7 @@ impl JobApp for RdbChanJobAppImpl {
                     // Start stream publishing as background task (non-blocking)
                     // This enables realtime streaming instead of batch delivery
                     if let Some(stream) = stream {
+                        let (tx, rx) = tokio::sync::oneshot::channel();
                         let pubsub_repo = self.job_result_pubsub_repository().clone();
                         let job_id_for_stream = *jid;
                         tracing::debug!(
@@ -768,6 +770,7 @@ impl JobApp for RdbChanJobAppImpl {
                             &jid.value
                         );
                         tokio::spawn(async move {
+                            let _guard = super::OneshotCompletionGuard::new(tx);
                             if let Err(e) = pubsub_repo
                                 .publish_result_stream_data(job_id_for_stream, stream)
                                 .await
@@ -784,8 +787,9 @@ impl JobApp for RdbChanJobAppImpl {
                                 );
                             }
                         });
+                        completion_rx = Some(rx);
                     } else {
-                        super::spawn_end_marker_if_needed(
+                        completion_rx = super::spawn_end_marker_if_needed(
                             data,
                             jid,
                             self.job_result_pubsub_repository(),
@@ -813,6 +817,7 @@ impl JobApp for RdbChanJobAppImpl {
                     // Start stream publishing as background task (non-blocking)
                     // This enables realtime streaming instead of batch delivery
                     if let Some(stream) = stream {
+                        let (tx, rx) = tokio::sync::oneshot::channel();
                         let pubsub_repo = self.job_result_pubsub_repository().clone();
                         let job_id_for_stream = *jid;
                         tracing::debug!(
@@ -820,6 +825,7 @@ impl JobApp for RdbChanJobAppImpl {
                             &jid.value
                         );
                         tokio::spawn(async move {
+                            let _guard = super::OneshotCompletionGuard::new(tx);
                             if let Err(e) = pubsub_repo
                                 .publish_result_stream_data(job_id_for_stream, stream)
                                 .await
@@ -836,8 +842,9 @@ impl JobApp for RdbChanJobAppImpl {
                                 );
                             }
                         });
+                        completion_rx = Some(rx);
                     } else {
-                        super::spawn_end_marker_if_needed(
+                        completion_rx = super::spawn_end_marker_if_needed(
                             data,
                             jid,
                             self.job_result_pubsub_repository(),
@@ -853,11 +860,11 @@ impl JobApp for RdbChanJobAppImpl {
             };
             // Unconditional cleanup (no state checks needed)
             self.cleanup_job(jid).await?;
-            res
+            res.map(|b| (b, completion_rx))
         } else {
             // something wrong
             tracing::error!("no job found from result: {:?}", data);
-            Ok(false)
+            Ok((false, None))
         }
     }
 
@@ -1631,6 +1638,7 @@ mod tests {
             assert!(
                 app.complete_job(&rid, result.data.as_ref().unwrap(), None)
                     .await?
+                    .0
             );
             let (jid, job_res) = jh.await?;
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1773,6 +1781,7 @@ mod tests {
                     None
                 )
                 .await?
+                .0
             );
             jh.await?;
 
@@ -1890,6 +1899,7 @@ mod tests {
                     None
                 )
                 .await?
+                .0
             );
             // not fetched job (because of not use job_dispatcher)
             assert!(app.find_job(&job_id).await?.is_none());

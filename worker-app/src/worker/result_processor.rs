@@ -5,6 +5,7 @@ use app::app::UseStorageConfig;
 use app::app::UseWorkerConfig;
 use app::app::WorkerConfig;
 use app::app::job::JobApp;
+use app::app::job::StreamCompletionReceiver;
 use app::app::job::UseJobApp;
 use app::app::job_result::JobResultApp;
 use app::app::job_result::UseJobResultApp;
@@ -52,7 +53,7 @@ impl ResultProcessorImpl {
         jr: JobResult,
         st_data: Option<BoxStream<'static, ResultOutputItem>>,
         w: WorkerData,
-    ) -> Result<JobResult> {
+    ) -> Result<(JobResult, StreamCompletionReceiver)> {
         tracing::debug!("got job_result: {:?}, worker: {:?}", &jr.id, &w.name);
         if let JobResult {
             id: Some(id),
@@ -67,7 +68,7 @@ impl ResultProcessorImpl {
             // the result to Redis/RDB first, listen_result's find_job_result_by_job_id
             // would find a cached entry with output=None and return it immediately
             // without the stream, causing callers to see empty output.
-            let retried = self
+            let complete_or_retry_result = self
                 .process_complete_or_retry_condition(&id, &data, st_data, &w, &metadata)
                 .await;
             // Store result if necessary by result status and worker setting.
@@ -79,15 +80,22 @@ impl ResultProcessorImpl {
                 .await
             {
                 Ok(_r) => {
-                    retried?; // error if retried err
-                    Ok(JobResult {
-                        id: Some(id),
-                        data: Some(data),
-                        metadata,
-                    })
+                    let completion_rx = complete_or_retry_result?;
+                    Ok((
+                        JobResult {
+                            id: Some(id),
+                            data: Some(data),
+                            metadata,
+                        },
+                        completion_rx,
+                    ))
                 }
                 Err(e) => {
-                    tracing::error!("job result store error: {:?}, retried: {:?}", e, retried);
+                    tracing::error!(
+                        "job result store error: {:?}, complete_or_retry: {:?}",
+                        e,
+                        complete_or_retry_result
+                    );
                     Err(e)
                 }
             }
@@ -104,7 +112,7 @@ impl ResultProcessorImpl {
         stream: Option<BoxStream<'static, ResultOutputItem>>,
         worker: &WorkerData,
         metadata: &HashMap<String, String>,
-    ) -> Result<()> {
+    ) -> Result<StreamCompletionReceiver> {
         // retry or periodic job
         let jopt = Self::build_retry_job(dat, worker, metadata);
         // need to retry
@@ -112,14 +120,15 @@ impl ResultProcessorImpl {
             // update or insert job for retry or periodic
             tracing::debug!("need to retry worker: {:?}, job: {:?}", &worker.name, &j);
             self.job_app().update_job(&j).await?;
-            Ok(())
+            Ok(None)
         } else {
             // complete job (delete first for unique key)
-            let res = self
-                .job_app()
-                .complete_job(id, dat, stream)
-                .await
-                .map(|_| ());
+            // Preserve error for later propagation while still running periodic/cleanup logic
+            let (complete_result, completion_rx) =
+                match self.job_app().complete_job(id, dat, stream).await {
+                    Ok((b, rx)) => (Ok(b), rx),
+                    Err(e) => (Err(e), None),
+                };
 
             // the job finished
             // if finished periodic job, enqueue next periodic job
@@ -160,7 +169,9 @@ impl ResultProcessorImpl {
                 }
             }
 
-            res
+            // Propagate complete_job error after cleanup
+            complete_result?;
+            Ok(completion_rx)
         }
     }
 }

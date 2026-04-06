@@ -331,7 +331,7 @@ $defs:
           name:
             type: string
             title: RunnerName
-            description: The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)
+            description: The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP_REQUEST, GRPC, PYTHON_COMMAND, LLM, MCP server names, plugin names, etc.)
           using:
             type: string
             title: Using
