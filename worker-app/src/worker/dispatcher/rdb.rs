@@ -210,7 +210,8 @@ pub trait RdbJobDispatcher:
                     let res = self.run_job(&runner_data, &wid, &w, job).await;
                     tracing::debug!("job completed. result: {:?}", &res.0);
                     // store result
-                    self.result_processor()
+                    let (result, completion_rx) = self
+                        .result_processor()
                         .process_result(res.0, res.1, w)
                         .await
                         .inspect_err(|e| {
@@ -219,8 +220,13 @@ pub trait RdbJobDispatcher:
                                 &wid,
                                 e
                             )
-                        })
-                        .map(Some)
+                        })?;
+                    if let Some(rx) = completion_rx
+                        && rx.await.is_err()
+                    {
+                        tracing::warn!("stream completion sender dropped for rdb job {:?}", &wid);
+                    }
+                    Ok(Some(result))
                 } else {
                     tracing::debug!("failed to grab job: {:?}", job.data);
                     Ok(None)
