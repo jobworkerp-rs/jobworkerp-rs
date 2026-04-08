@@ -3,8 +3,8 @@ use crate::proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use crate::proto::jobworkerp::service::worker_service_server::WorkerService;
 use crate::proto::jobworkerp::service::{
     ChannelInfo, CountCondition, CountResponse, CountWorkerRequest, CreateWorkerResponse,
-    FindChannelListResponse, FindWorkerListRequest, OptionalWorkerResponse, SuccessResponse,
-    WorkerNameRequest,
+    FindChannelListResponse, FindWorkerListRequest, OptionalWorkerResponse,
+    ReleaseStaticWorkerRequest, SuccessResponse, WorkerNameRequest,
 };
 use crate::service::error_handle::handle_error;
 use app::app::worker::WorkerApp;
@@ -433,6 +433,46 @@ impl<
             })
             .collect();
         Ok(Response::new(FindChannelListResponse { channels }))
+    }
+
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(method = "release_static_worker")
+    )]
+    async fn release_static_worker(
+        &self,
+        request: tonic::Request<ReleaseStaticWorkerRequest>,
+    ) -> Result<tonic::Response<SuccessResponse>, tonic::Status> {
+        let _s = Self::trace_request("worker", "release_static_worker", &request);
+        let req = request.into_inner();
+        match req.target {
+            Some(
+                crate::proto::jobworkerp::service::release_static_worker_request::Target::WorkerId(
+                    worker_id,
+                ),
+            ) => match self.app().release_static_worker(&worker_id).await {
+                Ok(res) => Ok(Response::new(SuccessResponse { is_success: res })),
+                Err(e) => Err(handle_error(&e)),
+            },
+            Some(
+                crate::proto::jobworkerp::service::release_static_worker_request::Target::Name(
+                    name,
+                ),
+            ) => {
+                if name.is_empty() {
+                    return Err(tonic::Status::invalid_argument("name should not be empty"));
+                }
+                match self.app().release_static_worker_by_name(&name).await {
+                    Ok(res) => Ok(Response::new(SuccessResponse { is_success: res })),
+                    Err(e) => Err(handle_error(&e)),
+                }
+            }
+            None => match self.app().release_all_static_workers().await {
+                Ok(res) => Ok(Response::new(SuccessResponse { is_success: res })),
+                Err(e) => Err(handle_error(&e)),
+            },
+        }
     }
 }
 

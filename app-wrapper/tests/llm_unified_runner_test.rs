@@ -58,7 +58,7 @@ fn create_ollama_settings() -> Vec<u8> {
 #[ignore = "need to run with ollama server"]
 #[tokio::test]
 async fn test_unified_runner_completion_method() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let mut runner = create_test_unified_runner().await?;
     runner.load(create_ollama_settings()).await?;
@@ -98,7 +98,7 @@ async fn test_unified_runner_completion_method() -> Result<()> {
 #[ignore = "need to run with ollama server"]
 #[tokio::test]
 async fn test_unified_runner_chat_method() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let mut runner = create_test_unified_runner().await?;
     runner.load(create_ollama_settings()).await?;
@@ -145,7 +145,7 @@ async fn test_unified_runner_chat_method() -> Result<()> {
 #[ignore = "need to run with ollama server"]
 #[tokio::test]
 async fn test_unified_runner_completion_stream() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let mut runner = create_test_unified_runner().await?;
     runner.load(create_ollama_settings()).await?;
@@ -205,7 +205,7 @@ async fn test_unified_runner_completion_stream() -> Result<()> {
 #[ignore = "need to run with ollama server"]
 #[tokio::test]
 async fn test_unified_runner_chat_stream() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let mut runner = create_test_unified_runner().await?;
     runner.load(create_ollama_settings()).await?;
@@ -272,7 +272,7 @@ async fn test_unified_runner_chat_stream() -> Result<()> {
 #[ignore = "need to run with ollama server"]
 #[tokio::test]
 async fn test_unified_runner_missing_method_error() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let mut runner = create_test_unified_runner().await?;
     runner.load(create_ollama_settings()).await?;
@@ -302,7 +302,7 @@ async fn test_unified_runner_missing_method_error() -> Result<()> {
 #[ignore = "need to run with ollama server"]
 #[tokio::test]
 async fn test_unified_runner_unknown_method_error() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let mut runner = create_test_unified_runner().await?;
     runner.load(create_ollama_settings()).await?;
@@ -334,7 +334,7 @@ async fn test_unified_runner_unknown_method_error() -> Result<()> {
 #[ignore = "need to run with ollama server"]
 #[tokio::test]
 async fn test_unified_runner_chat_with_json_schema() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let mut runner = create_test_unified_runner().await?;
     runner.load(create_ollama_settings()).await?;
@@ -404,7 +404,7 @@ async fn test_unified_runner_chat_with_json_schema() -> Result<()> {
 #[ignore = "need to run with ollama server"]
 #[tokio::test]
 async fn test_unified_runner_completion_with_json_schema() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let mut runner = create_test_unified_runner().await?;
     runner.load(create_ollama_settings()).await?;
