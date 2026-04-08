@@ -152,7 +152,7 @@ fn extract_text(result: &LlmChatResult) -> Option<&str> {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_auto_select_picks_function_set() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let (service, worker_handle) = create_auto_select_test_service().await?;
 
     // A natural user request that should trigger COMMAND toolset selection
@@ -208,7 +208,7 @@ async fn test_auto_select_picks_function_set() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_auto_select_streaming_picks_function_set() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let (service, worker_handle) = create_auto_select_test_service().await?;
 
     let args = create_auto_select_chat_args(

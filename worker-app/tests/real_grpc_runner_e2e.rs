@@ -318,7 +318,7 @@ async fn test_grpc_unary_default_using() -> Result<()> {
 #[ignore = "Requires running gRPC server at localhost:9000 with streaming endpoint"]
 #[tokio::test]
 async fn test_grpc_streaming_via_run() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let job_runner = get_real_job_runner().await;
 
@@ -410,7 +410,7 @@ async fn test_grpc_streaming_via_run() -> Result<()> {
 #[ignore = "Requires running gRPC server at localhost:9000 with streaming endpoint"]
 #[tokio::test]
 async fn test_grpc_streaming_response() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let job_runner = get_real_job_runner().await;
 
@@ -626,7 +626,7 @@ async fn test_grpc_streaming_response_without_reflection() -> Result<()> {
 #[ignore = "Requires running gRPC server at localhost:9000"]
 #[tokio::test]
 async fn test_grpc_error_handling() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let job_runner = get_real_job_runner().await;
 

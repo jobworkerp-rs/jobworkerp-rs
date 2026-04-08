@@ -351,6 +351,51 @@ impl WorkerApp for HybridWorkerAppImpl {
         Ok(res)
     }
 
+    async fn release_static_worker(&self, id: &WorkerId) -> Result<bool> {
+        let worker = self.find(id).await?.ok_or_else(|| {
+            JobWorkerError::NotFound(format!("worker not found: id={}", id.value))
+        })?;
+        let wd = worker.data.as_ref().ok_or_else(|| {
+            JobWorkerError::NotFound(format!("worker data not found: id={}", id.value))
+        })?;
+        if !wd.use_static {
+            return Err(JobWorkerError::FailedPrecondition(format!(
+                "worker is not static: id={}",
+                id.value
+            ))
+            .into());
+        }
+        tracing::info!("release static worker: id={}", id.value);
+        // Reuse publish_worker_changed to trigger runner pool deletion on subscribers.
+        // Subscribers treat any worker_changed event by deleting the runner pool for that worker_id.
+        let _ = self
+            .redis_worker_repository()
+            .publish_worker_changed(id, wd)
+            .await
+            .inspect_err(|e| tracing::error!("failed to publish worker changed: {:?}", e));
+        Ok(true)
+    }
+
+    async fn release_static_worker_by_name(&self, name: &str) -> Result<bool> {
+        let worker = self.find_by_name(name).await?.ok_or_else(|| {
+            JobWorkerError::NotFound(format!("worker not found by name: {}", name))
+        })?;
+        let wid = worker.id.as_ref().ok_or_else(|| {
+            JobWorkerError::NotFound(format!("worker id not found for name: {}", name))
+        })?;
+        self.release_static_worker(wid).await
+    }
+
+    async fn release_all_static_workers(&self) -> Result<bool> {
+        tracing::info!("release all static workers");
+        let _ = self
+            .redis_worker_repository()
+            .publish_worker_all_deleted()
+            .await
+            .inspect_err(|e| tracing::error!("failed to publish worker all deleted: {:?}", e));
+        Ok(true)
+    }
+
     async fn find(&self, id: &WorkerId) -> Result<Option<Worker>>
     where
         Self: Send + 'static,
@@ -827,6 +872,85 @@ mod tests {
 
             let not_found = app.find(&id).await?;
             assert!(not_found.is_none());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_upsert_use_static_find_list() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_app(false).await?;
+            let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
+                name: "testStaticRunner".to_string(),
+            })?;
+
+            // Create worker with use_static=true via upsert_by_name
+            let w1 = WorkerData {
+                name: "test_static_worker".to_string(),
+                description: "static worker".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                use_static: true,
+                ..Default::default()
+            };
+            let id1 = app.upsert_by_name(&w1).await?;
+            assert!(id1.value > 0);
+
+            // Create worker with use_static=false
+            let w2 = WorkerData {
+                name: "test_non_static_worker".to_string(),
+                description: "non-static worker".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                use_static: false,
+                ..Default::default()
+            };
+            let id2 = app.upsert_by_name(&w2).await?;
+            assert!(id2.value > 0);
+
+            // FindList should return both workers
+            let list = app
+                .find_list(vec![], None, None, None, None, None, vec![], None, None)
+                .await?;
+            assert_eq!(list.len(), 2, "Expected 2 workers, got {}", list.len());
+
+            // Verify the static worker is in the list and has use_static=true
+            let static_worker = list.iter().find(|w| w.id == Some(id1)).unwrap();
+            assert!(
+                static_worker.data.as_ref().unwrap().use_static,
+                "use_static should be true"
+            );
+
+            // Verify the non-static worker is in the list
+            let non_static_worker = list.iter().find(|w| w.id == Some(id2)).unwrap();
+            assert!(
+                !non_static_worker.data.as_ref().unwrap().use_static,
+                "use_static should be false"
+            );
+
+            // Re-upsert with same data (idempotency check)
+            let id3 = app.upsert_by_name(&w1).await?;
+            assert_eq!(id1.value, id3.value);
+
+            // FindList should still return both workers
+            let list2 = app
+                .find_list(vec![], None, None, None, None, None, vec![], None, None)
+                .await?;
+            assert_eq!(
+                list2.len(),
+                2,
+                "Expected 2 workers after re-upsert, got {}",
+                list2.len()
+            );
+
+            // find by id should also work
+            let found = app.find(&id1).await?;
+            assert!(found.is_some());
+            assert!(found.unwrap().data.unwrap().use_static);
+
+            // Cleanup
+            let _ = app.delete_all().await?;
 
             Ok(())
         })
