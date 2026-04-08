@@ -244,6 +244,50 @@ impl WorkerApp for RdbWorkerAppImpl {
             .inspect_err(|e| tracing::error!("failed to publish worker all deleted: {:?}", e));
         Ok(res)
     }
+
+    async fn release_static_worker(&self, id: &WorkerId) -> Result<bool> {
+        let worker = self.find(id).await?.ok_or_else(|| {
+            JobWorkerError::NotFound(format!("worker not found: id={}", id.value))
+        })?;
+        let wd = worker.data.as_ref().ok_or_else(|| {
+            JobWorkerError::NotFound(format!("worker data not found: id={}", id.value))
+        })?;
+        if !wd.use_static {
+            return Err(JobWorkerError::FailedPrecondition(format!(
+                "worker is not static: id={}",
+                id.value
+            ))
+            .into());
+        }
+        tracing::info!("release static worker: id={}", id.value);
+        // Reuse publish_worker_changed to trigger runner pool deletion on subscribers.
+        // Subscribers treat any worker_changed event by deleting the runner pool for that worker_id.
+        let _ = self
+            .chan_worker_pubsub_repository()
+            .publish_worker_changed(id, wd)
+            .inspect_err(|e| tracing::error!("failed to publish worker changed: {:?}", e));
+        Ok(true)
+    }
+
+    async fn release_static_worker_by_name(&self, name: &str) -> Result<bool> {
+        let worker = self.find_by_name(name).await?.ok_or_else(|| {
+            JobWorkerError::NotFound(format!("worker not found by name: {}", name))
+        })?;
+        let wid = worker.id.as_ref().ok_or_else(|| {
+            JobWorkerError::NotFound(format!("worker id not found for name: {}", name))
+        })?;
+        self.release_static_worker(wid).await
+    }
+
+    async fn release_all_static_workers(&self) -> Result<bool> {
+        tracing::info!("release all static workers");
+        let _ = self
+            .chan_worker_pubsub_repository()
+            .publish_worker_all_deleted()
+            .inspect_err(|e| tracing::error!("failed to publish worker all deleted: {:?}", e));
+        Ok(true)
+    }
+
     async fn find_data_by_name(&self, name: &str) -> Result<Option<WorkerData>>
     where
         Self: Send + 'static,

@@ -397,7 +397,7 @@ async fn sub_test_require_check_error(
 /// across all client-stream sub-tests.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_client_stream_e2e() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
     load_hello_plugin(&app_module).await;

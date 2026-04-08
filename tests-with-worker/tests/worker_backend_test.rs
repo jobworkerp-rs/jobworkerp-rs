@@ -399,7 +399,7 @@ async fn sub_test_short_tool_execution_skips_progress(
 /// across all worker backend sub-tests.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_worker_backend_e2e() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
     let worker_handle = start_test_worker(app_module.clone()).await?;

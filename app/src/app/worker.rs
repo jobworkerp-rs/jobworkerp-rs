@@ -100,6 +100,19 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
     async fn delete_temp(&self, id: &WorkerId) -> Result<bool>;
     async fn delete_all(&self) -> Result<bool>;
 
+    /// Release a static worker by id: release its runner pool via pubsub.
+    /// Verifies worker existence and use_static=true.
+    async fn release_static_worker(&self, id: &WorkerId) -> Result<bool>;
+
+    /// Release a static worker by name: resolves name to id, then releases its runner pool.
+    async fn release_static_worker_by_name(&self, name: &str) -> Result<bool>;
+
+    /// Release all static workers: release all runner pools via pubsub.
+    /// Note: uses `publish_worker_all_deleted`, which clears runner pools for all static workers
+    /// and also clears worker definition caches for all workers (including non-static) as a side effect.
+    /// Non-static workers are unaffected in terms of runner pools (they don't use pooling).
+    async fn release_all_static_workers(&self) -> Result<bool>;
+
     async fn find_data_by_name(&self, name: &str) -> Result<Option<WorkerData>>
     where
         Self: Send + 'static,

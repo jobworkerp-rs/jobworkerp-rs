@@ -129,6 +129,15 @@ mod tests {
         async fn delete_all(&self) -> Result<bool> {
             unimplemented!()
         }
+        async fn release_static_worker(&self, _id: &WorkerId) -> Result<bool> {
+            unimplemented!()
+        }
+        async fn release_static_worker_by_name(&self, _name: &str) -> Result<bool> {
+            unimplemented!()
+        }
+        async fn release_all_static_workers(&self) -> Result<bool> {
+            unimplemented!()
+        }
         async fn find(&self, _id: &WorkerId) -> Result<Option<Worker>> {
             Ok(self.worker_data.as_ref().map(|d| Worker {
                 id: Some(WorkerId { value: 1 }),

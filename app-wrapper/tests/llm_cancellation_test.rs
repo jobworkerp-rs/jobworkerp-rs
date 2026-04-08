@@ -130,7 +130,7 @@ fn create_long_running_completion_args() -> LlmCompletionArgs {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_llm_chat_with_cancellation_helper() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let app_module = create_hybrid_test_app().await?;
 
     let external_cancel_token = CancellationToken::new();
@@ -213,7 +213,7 @@ async fn test_llm_chat_with_cancellation_helper() -> Result<()> {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_llm_completion_with_cancellation_helper() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let external_cancel_token = CancellationToken::new();
     let mock_manager = MockCancellationManager::new_with_token(external_cancel_token.clone());
@@ -297,7 +297,7 @@ async fn test_llm_completion_with_cancellation_helper() -> Result<()> {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_llm_chat_pre_cancellation() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let app_module = create_hybrid_test_app().await?;
 
     let external_cancel_token = CancellationToken::new();
@@ -365,7 +365,7 @@ async fn test_llm_chat_pre_cancellation() -> Result<()> {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_llm_completion_pre_cancellation() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let external_cancel_token = CancellationToken::new();
     external_cancel_token.cancel(); // Pre-cancel
@@ -429,7 +429,7 @@ async fn test_llm_completion_pre_cancellation() -> Result<()> {
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_llm_chat_without_cancellation_helper() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let app_module = create_hybrid_test_app().await?;
 
     let mut runner = app_wrapper::llm::chat::LLMChatRunnerImpl::new(Arc::new(app_module));
