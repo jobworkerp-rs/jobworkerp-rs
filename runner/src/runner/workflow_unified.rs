@@ -23,7 +23,6 @@ use crate::schema_to_json_string;
 use anyhow::{Result, anyhow};
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use std::collections::HashMap;
@@ -202,28 +201,6 @@ fn collect_keep_last(stream: BoxStream<'static, ResultOutputItem>) -> CollectStr
     })
 }
 
-/// Check workflow result status and return an error for non-success terminal states.
-fn check_workflow_status(result: &WorkflowResult) -> Result<()> {
-    if result.status == WorkflowStatus::Faulted as i32 {
-        return Err(JobWorkerError::OtherError(format!(
-            "Workflow faulted: {}",
-            result.error_message.as_deref().unwrap_or("Unknown error")
-        ))
-        .into());
-    }
-    if result.status == WorkflowStatus::Cancelled as i32 {
-        return Err(JobWorkerError::CancelledError(format!(
-            "Workflow cancelled: {}",
-            result
-                .error_message
-                .as_deref()
-                .unwrap_or("Unknown cancellation")
-        ))
-        .into());
-    }
-    Ok(())
-}
-
 /// Collect workflow stream: decode WorkflowResult items and return the final result.
 fn collect_workflow_stream(stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
     use proto::jobworkerp::data::result_output_item;
@@ -267,8 +244,13 @@ fn collect_workflow_stream(stream: BoxStream<'static, ResultOutputItem>) -> Coll
         }
 
         if let Some(ref data) = final_collected {
-            if let Ok(result) = WorkflowResult::decode(data.as_slice()) {
-                check_workflow_status(&result)?;
+            if let Ok(result) = WorkflowResult::decode(data.as_slice())
+                && result.status == WorkflowStatus::Faulted as i32
+            {
+                return Err(anyhow::anyhow!(
+                    "Workflow execution failed: {}",
+                    result.error_message.as_deref().unwrap_or("Unknown error")
+                ));
             }
             return Ok((data.clone(), metadata));
         }
@@ -280,8 +262,13 @@ fn collect_workflow_stream(stream: BoxStream<'static, ResultOutputItem>) -> Coll
             ));
         }
 
-        if let Some(ref result) = final_result {
-            check_workflow_status(result)?;
+        if let Some(ref result) = final_result
+            && result.status == WorkflowStatus::Faulted as i32
+        {
+            return Err(anyhow::anyhow!(
+                "Workflow execution failed: {}",
+                result.error_message.as_deref().unwrap_or("Unknown error")
+            ));
         }
 
         let bytes = final_result.map(|r| r.encode_to_vec()).unwrap_or_default();
@@ -532,121 +519,5 @@ mod tests {
             "Error message should contain 'FinalCollected error': {}",
             err_msg
         );
-    }
-
-    #[tokio::test]
-    async fn test_collect_workflow_stream_cancelled_status() {
-        let mut result = create_workflow_result(
-            "wf-cancel",
-            r#"{"partial": "data"}"#,
-            WorkflowStatus::Cancelled,
-        );
-        result.error_message = Some("User cancelled".to_string());
-
-        let items = vec![create_data_item(&result), create_end_item(HashMap::new())];
-        let stream = futures::stream::iter(items).boxed();
-
-        let result = collect_workflow_stream(stream).await;
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("User cancelled"),
-            "Error message should contain 'User cancelled': {}",
-            err_msg
-        );
-    }
-
-    #[tokio::test]
-    async fn test_collect_workflow_stream_cancelled_via_final_collected() {
-        let mut final_result = create_workflow_result(
-            "wf-cancel-final",
-            r#"{"partial": "data"}"#,
-            WorkflowStatus::Cancelled,
-        );
-        final_result.error_message = Some("FinalCollected cancel".to_string());
-
-        let items = vec![
-            create_final_collected_item(final_result.encode_to_vec()),
-            create_end_item(HashMap::new()),
-        ];
-        let stream = futures::stream::iter(items).boxed();
-
-        let result = collect_workflow_stream(stream).await;
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("FinalCollected cancel"),
-            "Error message should contain 'FinalCollected cancel': {}",
-            err_msg
-        );
-    }
-
-    #[tokio::test]
-    async fn test_collect_workflow_stream_faulted_default_message() {
-        // error_message is None — should use default "Unknown error"
-        let result = create_workflow_result(
-            "wf-err-no-msg",
-            r#"{"error": "something"}"#,
-            WorkflowStatus::Faulted,
-        );
-        // error_message is already None from create_workflow_result
-
-        let items = vec![create_data_item(&result), create_end_item(HashMap::new())];
-        let stream = futures::stream::iter(items).boxed();
-
-        let result = collect_workflow_stream(stream).await;
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("Unknown error"),
-            "Error message should contain default 'Unknown error': {}",
-            err_msg
-        );
-    }
-
-    #[tokio::test]
-    async fn test_collect_workflow_stream_cancelled_default_message() {
-        // error_message is None — should use default "Unknown cancellation"
-        let result = create_workflow_result(
-            "wf-cancel-no-msg",
-            r#"{"partial": "data"}"#,
-            WorkflowStatus::Cancelled,
-        );
-
-        let items = vec![create_data_item(&result), create_end_item(HashMap::new())];
-        let stream = futures::stream::iter(items).boxed();
-
-        let result = collect_workflow_stream(stream).await;
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("Unknown cancellation"),
-            "Error message should contain default 'Unknown cancellation': {}",
-            err_msg
-        );
-    }
-
-    #[test]
-    fn test_check_workflow_status_completed_ok() {
-        let result =
-            create_workflow_result("wf-ok", r#"{"done": true}"#, WorkflowStatus::Completed);
-        assert!(check_workflow_status(&result).is_ok());
-    }
-
-    #[test]
-    fn test_check_workflow_status_faulted_err() {
-        let mut result =
-            create_workflow_result("wf-fault", r#"{"error": "fail"}"#, WorkflowStatus::Faulted);
-        result.error_message = Some("task failed".to_string());
-        let err = check_workflow_status(&result).unwrap_err();
-        assert!(err.to_string().contains("task failed"));
-    }
-
-    #[test]
-    fn test_check_workflow_status_cancelled_err() {
-        let mut result = create_workflow_result("wf-cancel", r#"{}"#, WorkflowStatus::Cancelled);
-        result.error_message = Some("user cancel".to_string());
-        let err = check_workflow_status(&result).unwrap_err();
-        assert!(err.to_string().contains("user cancel"));
     }
 }
