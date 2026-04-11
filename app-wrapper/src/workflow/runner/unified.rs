@@ -233,35 +233,17 @@ impl WorkflowUnifiedRunnerImpl {
         let res = final_context.ok_or_else(|| anyhow!("No workflow context was returned"))?;
         tracing::info!("Workflow result: {}", res.output_string());
 
-        let error_message = if res.status == WorkflowStatus::Completed.into() {
-            None
-        } else {
-            res.output.as_ref().map(|o| o.to_string())
-        };
-
-        // Check for non-success workflow status before returning
-        if res.status == WorkflowStatus::Faulted.into() {
-            return Err(JobWorkerError::OtherError(format!(
-                "Workflow faulted: {}",
-                error_message.as_deref().unwrap_or("Unknown error")
-            ))
-            .into());
-        }
-        if res.status == WorkflowStatus::Cancelled.into() {
-            return Err(JobWorkerError::CancelledError(format!(
-                "Workflow cancelled: {}",
-                error_message.as_deref().unwrap_or("Unknown cancellation")
-            ))
-            .into());
-        }
-
         let r = WorkflowResult {
             id: res.id.to_string(),
             output: serde_json::to_string(&res.output)?,
             position: res.position.as_json_pointer(),
             status: WorkflowStatus::from_str_name(res.status.to_string().as_str())
                 .unwrap_or(WorkflowStatus::Faulted) as i32,
-            error_message,
+            error_message: if res.status == WorkflowStatus::Completed.into() {
+                None
+            } else {
+                res.output.as_ref().map(|o| o.to_string())
+            },
         };
         Ok(r.encode_to_vec())
     }
