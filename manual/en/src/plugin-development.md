@@ -81,6 +81,19 @@ prost-build = "0.14"
 
 Define your plugin's configuration, input arguments, and output results using Protocol Buffers.
 
+#### Protobuf Definition Constraints
+
+For JobWorkerP plugins, the server dynamically interprets each schema from the single proto definition string returned by `runner_settings_proto`, `args_proto`, or `result_proto`. The implementation assumes the following constraints:
+
+- Do not use `import`; each proto definition must be self-contained in a single proto string.
+- In each proto definition, the first declared `message` is treated as the primary message for that role.
+  - `runner_settings_proto`: primary settings message
+  - `args_proto`: primary input message
+  - `result_proto`: primary output message
+- You may define helper `enum`s or additional `message`s in the same file, but do not place another `message` before the primary one.
+
+This is not just a documentation preference; it matches the current implementation. The server compiles the returned proto text as a single file and uses the first discovered `message` when converting between JSON Schema and JSON/Protobuf payloads. Because of that, proto definitions that rely on external `import`s, or that declare the real primary message later in the file, will not be handled as intended.
+
 **Example `protobuf/my_runner.proto` (Configuration):**
 ```protobuf
 syntax = "proto3";
