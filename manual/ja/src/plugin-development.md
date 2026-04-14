@@ -81,6 +81,19 @@ prost-build = "0.14"
 
 プラグインの設定、入力引数、出力結果をProtocol Buffersで定義します。
 
+#### Protobuf定義の制約
+
+JobWorkerP のプラグインでは、`runner_settings_proto`、`args_proto`、`result_proto` として返した **1つの proto 定義文字列だけ** を使って、サーバー側が動的にスキーマを解釈します。実装上の前提として、次の制約があります。
+
+- `import` を使わず、1つの proto 定義文字列だけで完結させてください。
+- 各 proto 定義では、最初に定義した `message` をその役割のメインmessageとして扱います。
+  - `runner_settings_proto` では設定用message
+  - `args_proto` では入力引数用message
+  - `result_proto` では出力結果用message
+- 補助的な `enum` や追加の `message` を同じファイル内に定義することはできますが、メインmessageより前に別の `message` を置かないでください。
+
+この前提は実装にも依存しています。サーバー側は受け取った proto 文字列を単一ファイルとしてそのままコンパイルし、最初に見つかった `message` を JSON Schema 変換や JSON/Protobuf 変換に使用します。そのため、外部 proto への `import` や、先頭以外にメインmessageを置く定義は期待どおりに扱えません。
+
 **例 `protobuf/my_runner.proto` (設定):**
 ```protobuf
 syntax = "proto3";
