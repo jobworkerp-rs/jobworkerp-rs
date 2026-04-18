@@ -672,7 +672,7 @@ impl SessionManager for RedisSessionManager {
         let mut best: Option<Session> = None;
         let mut stale_ids: Vec<String> = Vec::new();
 
-        for (sid, json_opt) in session_ids.iter().zip(values.into_iter()) {
+        for (sid, json_opt) in session_ids.iter().zip(values) {
             match json_opt {
                 None => stale_ids.push(sid.clone()),
                 Some(json) => {

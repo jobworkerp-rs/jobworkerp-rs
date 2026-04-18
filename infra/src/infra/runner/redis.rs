@@ -111,8 +111,8 @@ where
             .map_err(|e| JobWorkerError::RedisError(e).into());
         match res {
             Ok(tree) => Ok(tree
-                .iter()
-                .flat_map(|(_id, v)| {
+                .values()
+                .flat_map(|v| {
                     ProstMessageCodec::deserialize_message::<RunnerWithSchema>(v)
                         .inspect_err(|e| tracing::warn!("cannot deserialize runner: {:?}", e))
                 })
