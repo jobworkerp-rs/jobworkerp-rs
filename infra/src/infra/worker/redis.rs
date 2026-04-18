@@ -177,8 +177,8 @@ where
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into());
         res.map(|tree| {
-            tree.iter()
-                .flat_map(|(_id, v)| Self::deserialize_message::<Worker>(v))
+            tree.values()
+                .flat_map(|v| Self::deserialize_message::<Worker>(v))
                 .collect()
         })
     }
