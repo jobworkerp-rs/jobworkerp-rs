@@ -77,12 +77,15 @@ impl ForTaskStreamExecutor {
         while_: &Option<String>,
         copy_deeply: bool,
     ) -> Result<(TaskContext, serde_json::Value), Box<workflow::Error>> {
-        // For parallel execution, create deep copy to ensure isolation
-        // For sequential execution, use shared context to preserve final state
+        // For parallel execution, create deep copy to ensure isolation.
+        // For sequential execution, share context_variables so the final state
+        // accumulates across iterations, but isolate `position` so the inner
+        // task's pushes don't pile up across iterations (e.g. when try.catch
+        // swallows an error via onError=continue without popping back).
         let task_context = if copy_deeply {
             task_context.deep_copy().await
         } else {
-            task_context.clone()
+            task_context.clone_with_isolated_position().await
         };
 
         task_context

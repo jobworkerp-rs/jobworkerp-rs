@@ -340,6 +340,26 @@ impl TaskContext {
         }
     }
 
+    // Shallow clone that isolates only `position`. Used by sequential for-loop
+    // iterations: context_variables must be shared so each iteration sees the
+    // accumulated state, but position must be per-iteration to prevent the
+    // inner task's pushes from piling up across iterations (e.g. when a try
+    // task swallows an error via onError=continue and never pops back).
+    pub async fn clone_with_isolated_position(&self) -> Self {
+        Self {
+            definition: self.definition.clone(),
+            raw_input: self.raw_input.clone(),
+            input: self.input.clone(),
+            raw_output: self.raw_output.clone(),
+            output: self.output.clone(),
+            context_variables: self.context_variables.clone(),
+            started_at: self.started_at,
+            completed_at: self.completed_at,
+            flow_directive: self.flow_directive.clone(),
+            position: Arc::new(RwLock::new(self.position.read().await.clone())),
+        }
+    }
+
     pub fn from_flow_directive(&self, flow_directive: Option<String>) -> Self {
         let mut s = self.clone();
         if let Some(fd) = flow_directive {
@@ -1010,5 +1030,57 @@ mod tests {
 
         let result = context.match_checkpoint_by_relative_path(&sub_path).await;
         assert_eq!(result, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_clone_with_isolated_position_isolates_position_only() {
+        let original = TaskContext::new_empty();
+        original.add_position_name("root".to_string()).await;
+
+        let cloned = original.clone_with_isolated_position().await;
+
+        // position is independent: pushes on the clone must not leak back.
+        cloned.add_position_name("child".to_string()).await;
+        let original_depth = original.position.read().await.full().len();
+        let cloned_depth = cloned.position.read().await.full().len();
+        assert_eq!(original_depth, 1, "original position must not be mutated");
+        assert_eq!(
+            cloned_depth, 2,
+            "clone position should track its own pushes"
+        );
+
+        // context_variables are shared: writes on the clone are visible from original.
+        cloned
+            .add_context_value("k".to_string(), serde_json::json!("v"))
+            .await;
+        let original_value = original.context_variables.lock().await.get("k").cloned();
+        assert_eq!(original_value, Some(serde_json::json!("v")));
+    }
+
+    #[tokio::test]
+    async fn test_clone_with_isolated_position_no_accumulation_across_iterations() {
+        // Reproduces the for-loop sequential-iteration scenario: if the inner
+        // task pushes onto position but a swallowed error (try.catch with
+        // onError=continue) prevents the matching pop, the next iteration must
+        // still start from the parent position — not from the leftover depth.
+        let parent = TaskContext::new_empty();
+        parent.add_position_name("for".to_string()).await;
+        let parent_depth = parent.position.read().await.full().len();
+
+        for _ in 0..5 {
+            let iter_ctx = parent.clone_with_isolated_position().await;
+            iter_ctx.add_position_name("do".to_string()).await;
+            iter_ctx.add_position_name("0".to_string()).await;
+            iter_ctx
+                .add_position_name("invokeWithRetry".to_string())
+                .await;
+            // Simulate try-catch swallowing the error without popping back.
+        }
+
+        let after = parent.position.read().await.full().len();
+        assert_eq!(
+            after, parent_depth,
+            "parent position must remain stable across iterations"
+        );
     }
 }
