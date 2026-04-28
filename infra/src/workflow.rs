@@ -29,13 +29,14 @@ pub struct WorkflowLoader {
     http_client: Option<reqwest::ReqwestClient>, // Private to prevent security setting bypass; None for local-only mode
 }
 
-// JSON Schema validator initialization
-// Benchmark results with jsonschema 0.42 (see app-wrapper/tests/workflow_schema_validation_benchmark.rs):
-// - Validator initialization: ~28ms
-// - Simple workflow validation: ~210μs
+// Schema validation is delegated to `jobworkerp_runner::validation::workflow`,
+// which loads the validator-specific schema (`workflow_minimal_fix.json`).
+// `runner/schema/workflow.yaml` is for code generation only and uses sibling
+// `$ref` patterns that the JSON Schema validator cannot resolve correctly
+// against `unevaluatedProperties: false` — using it here previously caused
+// valid `if + do/set + export + then` tasks to be rejected.
 //
-// Full schema validation is enabled by default.
-// Set WORKFLOW_SKIP_SCHEMA_VALIDATION=true to skip full schema validation (errors logged only).
+// Set WORKFLOW_SKIP_SCHEMA_VALIDATION=true to skip full schema validation.
 //
 // Security: Plugin developers MUST validate their inputs independently.
 // See CLAUDE.md for security guidelines.
@@ -43,18 +44,6 @@ static SKIP_SCHEMA_VALIDATION: LazyLock<bool> = LazyLock::new(|| {
     std::env::var("WORKFLOW_SKIP_SCHEMA_VALIDATION")
         .map(|v| v.to_lowercase() == "true" || v == "1")
         .unwrap_or(false)
-});
-
-static WORKFLOW_VALIDATOR: LazyLock<Option<jsonschema::Validator>> = LazyLock::new(|| {
-    let schema_content = include_str!("../../runner/schema/workflow.yaml");
-    let schema = serde_yaml::from_str(schema_content)
-        .inspect_err(|e| tracing::error!("Failed to parse workflow schema: {:?}", e))
-        .ok()?;
-
-    // Direct initialization (no thread spawning overhead)
-    jsonschema::draft202012::new(&schema)
-        .inspect_err(|e| tracing::warn!("Failed to create workflow schema validator: {:?}", e))
-        .ok()
 });
 
 impl WorkflowLoader {
@@ -112,34 +101,9 @@ impl WorkflowLoader {
         Ok(())
     }
 
-    /// Full JSON Schema validation
+    /// Full JSON Schema validation (delegated to the shared runner validator).
     async fn validate_schema(&self, instance: &serde_json::Value) -> Result<()> {
-        // Perform full validation
-        if let Some(validator) = &*WORKFLOW_VALIDATOR {
-            let mut error_details = Vec::new();
-            for error in validator.iter_errors(instance) {
-                error_details.push(format!(
-                    "Path: {}, Message: {}",
-                    error.instance_path(),
-                    error
-                ));
-            }
-            if error_details.is_empty() {
-                Ok(())
-            } else {
-                tracing::error!(
-                    "Workflow schema validation failed: {}",
-                    error_details.join("; ")
-                );
-                Err(anyhow!(
-                    "Failed to validate workflow schema: errors: {}",
-                    error_details.join("; ")
-                ))
-            }
-        } else {
-            tracing::warn!("Workflow schema validator is not initialized, skipping validation");
-            Ok(())
-        }
+        jobworkerp_runner::validation::validate_workflow_schema(instance).await
     }
 
     pub async fn load_workflow(
@@ -539,6 +503,80 @@ mod test {
         // println!("====FOR: {:#?}", _for_task);
 
         Ok(())
+    }
+
+    // Regression: previously the loader pulled `runner/schema/workflow.yaml`
+    // (a code-generation source whose sibling `$ref` patterns the JSON Schema
+    // validator can't resolve against `unevaluatedProperties: false`) instead
+    // of the validator-only `workflow_minimal_fix.json`. Tasks like
+    // `if + set + export + then` and `if + do + export + then` were rejected
+    // with "Unevaluated properties are not allowed" even though they are
+    // valid against the documented schema. See
+    // docs/jobworkerp-workflow-validator-bug-2.md.
+    #[tokio::test]
+    async fn loader_accepts_set_task_with_if_export_then() {
+        let yaml = r#"
+document:
+  dsl: "1.0.0-jobworkerp"
+  namespace: repro
+  name: validator-bug-set
+  version: "1.0.0"
+input:
+  schema:
+    document:
+      type: object
+do:
+  - setFlag:
+      set:
+        ready: true
+  - guarded:
+      if: "${ $ready }"
+      set:
+        done: true
+      export:
+        as:
+          result: "ok"
+      then: exit
+"#;
+        let loader = super::WorkflowLoader::new_local_only();
+        loader
+            .load_workflow(None, Some(yaml), true)
+            .await
+            .expect("setTask with if/export/then must validate");
+    }
+
+    #[tokio::test]
+    async fn loader_accepts_do_task_with_if_export_then() {
+        let yaml = r#"
+document:
+  dsl: "1.0.0-jobworkerp"
+  namespace: repro
+  name: validator-bug-do
+  version: "1.0.0"
+input:
+  schema:
+    document:
+      type: object
+do:
+  - setFlag:
+      set:
+        ready: true
+  - guarded:
+      if: "${ $ready }"
+      do:
+        - inner:
+            set:
+              done: true
+      export:
+        as:
+          result: "ok"
+      then: exit
+"#;
+        let loader = super::WorkflowLoader::new_local_only();
+        loader
+            .load_workflow(None, Some(yaml), true)
+            .await
+            .expect("doTask with if/export/then must validate");
     }
 
     #[test]
