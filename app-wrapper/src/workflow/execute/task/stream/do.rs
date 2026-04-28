@@ -479,6 +479,7 @@ mod tests {
                 schema: None,
             }),
             do_: task_list,
+            timeout: None,
         }
     }
 
@@ -960,6 +961,7 @@ mod tests {
                         map
                     },
                 ]),
+                timeout: None,
             });
 
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
@@ -1117,6 +1119,7 @@ mod tests {
                     schema: None,
                 }),
                 do_: task_list,
+                timeout: None,
             };
 
             let input = Arc::new(serde_json::json!({"test": "input"}));
@@ -1286,6 +1289,7 @@ mod tests {
                     schema: None,
                 }),
                 do_: task_list,
+                timeout: None,
             };
 
             let input = Arc::new(serde_json::json!({"test": "input"}));

@@ -1286,6 +1286,7 @@ mod tests {
                 schema: None,
             }),
             do_: task_list,
+            timeout: None,
         }
     }
 
@@ -1331,6 +1332,7 @@ mod tests {
                 schema: None,
             }),
             do_: task_list,
+            timeout: None,
         }
     }
 
