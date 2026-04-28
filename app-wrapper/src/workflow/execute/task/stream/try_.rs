@@ -563,6 +563,7 @@ mod tests {
                 schema: None,
             }),
             do_: TaskList(vec![]),
+            timeout: None,
         }
     }
 

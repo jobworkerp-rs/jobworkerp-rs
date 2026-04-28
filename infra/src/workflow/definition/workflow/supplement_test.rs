@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_duration_to_millis() {
@@ -238,5 +239,64 @@ mod tests {
 
         // not match to empty
         assert!(!none_template.is_match("any-string"));
+    }
+
+    #[test]
+    fn test_create_do_task_propagates_workflow_timeout_inline() {
+        use std::sync::Arc;
+
+        let wf = WorkflowSchema {
+            timeout: Some(DoTimeout::Variant0(Timeout {
+                after: Duration::Inline {
+                    days: Some(0),
+                    hours: Some(3),
+                    minutes: Some(0),
+                    seconds: Some(0),
+                    milliseconds: Some(0),
+                },
+            })),
+            ..Default::default()
+        };
+
+        let do_task = wf.create_do_task(Arc::new(HashMap::new()));
+
+        let timeout = do_task
+            .timeout
+            .expect("workflow-level timeout must propagate to root DoTask");
+        match timeout {
+            TaskTimeout::Timeout(t) => {
+                // 3 hours exceeds the legacy 1-hour default; verify the exact value
+                assert_eq!(t.after.to_millis(), 3 * 60 * 60 * 1000);
+            }
+            TaskTimeout::TaskTimeoutReference(_) => panic!("expected inline Timeout variant"),
+        }
+    }
+
+    #[test]
+    fn test_create_do_task_propagates_workflow_timeout_reference() {
+        use std::sync::Arc;
+
+        let wf = WorkflowSchema {
+            timeout: Some(DoTimeout::Variant1("long-running".to_string())),
+            ..Default::default()
+        };
+
+        let do_task = wf.create_do_task(Arc::new(HashMap::new()));
+
+        match do_task.timeout.expect("timeout must propagate") {
+            TaskTimeout::TaskTimeoutReference(name) => assert_eq!(name, "long-running"),
+            TaskTimeout::Timeout(_) => panic!("expected reference variant"),
+        }
+    }
+
+    #[test]
+    fn test_create_do_task_without_workflow_timeout_is_none() {
+        use std::sync::Arc;
+
+        // No workflow-level timeout set; root DoTask.timeout must remain None so
+        // that the executor falls back to the configured default.
+        let wf = WorkflowSchema::default();
+        let do_task = wf.create_do_task(Arc::new(HashMap::new()));
+        assert!(do_task.timeout.is_none());
     }
 }

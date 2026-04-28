@@ -198,6 +198,16 @@ impl WorkflowLoader {
                         input: do_task.input.unwrap_or_default(),
                         output: do_task.output,
                         document: definition::workflow::Document::default(),
+                        // Preserve the task-level timeout from the legacy DoTask input as
+                        // the workflow-level timeout so 1h+ values remain honored.
+                        timeout: do_task.timeout.map(|t| match t {
+                            definition::workflow::TaskTimeout::Timeout(timeout) => {
+                                definition::workflow::DoTimeout::Variant0(timeout)
+                            }
+                            definition::workflow::TaskTimeout::TaskTimeoutReference(name) => {
+                                definition::workflow::DoTimeout::Variant1(name)
+                            }
+                        }),
                     })
                 }
             }
