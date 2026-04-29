@@ -106,6 +106,22 @@
       "title": "Do",
       "description": "Tasks to execute in this workflow."
     },
+    "timeout": {
+      "title": "DoTimeout",
+      "description": "Workflow-level timeout configuration. Applied to the implicit root task that wraps all tasks declared under `do`. Overrides the `WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC` environment variable (default 3600s) and allows specifying durations longer than 1 hour.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/timeout",
+          "title": "TimeoutDefinition",
+          "description": "The workflow's timeout configuration."
+        },
+        {
+          "type": "string",
+          "title": "TimeoutReference",
+          "description": "The name of a named timeout defined in reusable components."
+        }
+      ]
+    },
     "output": {
       "$ref": "#/$defs/output",
       "title": "Output",
@@ -461,7 +477,7 @@
             "name": {
               "type": "string",
               "title": "RunnerName",
-              "description": "The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)"
+              "description": "The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP_REQUEST, GRPC, PYTHON_COMMAND, LLM, MCP server names, plugin names, etc.)"
             },
             "using": {
               "type": "string",
@@ -674,7 +690,7 @@
         "script": {
           "type": "object",
           "title": "ScriptConfiguration",
-          "description": "Script execution configuration. unevaluatedProperties is true to allow language-specific properties (e.g., virtualenv for Python, modulePaths for JavaScript).",
+          "description": "Script execution configuration",
           "unevaluatedProperties": true,
           "required": [
             "language"
@@ -1309,8 +1325,7 @@
       "type": "string",
       "title": "PlainString",
       "description": "Plain string without runtime expressions.",
-      "minLength": 1,
-      "pattern": "^\\s*(?!.*\\$\\{).*$"
+      "pattern": "^\\s*[^\\$\\{].*[^\\$\\{]\\s*$"
     }
   }
 }

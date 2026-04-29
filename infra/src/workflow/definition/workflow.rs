@@ -322,6 +322,45 @@ impl DoTask {
         Default::default()
     }
 }
+#[doc = "Workflow-level timeout configuration. Applied to the implicit root task that wraps all tasks declared under `do`. Overrides the `WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC` environment variable (default 3600s) and allows specifying durations longer than 1 hour."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"DoTimeout\","]
+#[doc = "  \"description\": \"Workflow-level timeout configuration. Applied to the implicit root task that wraps all tasks declared under `do`. Overrides the `WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC` environment variable (default 3600s) and allows specifying durations longer than 1 hour.\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"title\": \"TimeoutDefinition\","]
+#[doc = "      \"description\": \"The workflow's timeout configuration.\","]
+#[doc = "      \"$ref\": \"#/$defs/timeout\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"title\": \"TimeoutReference\","]
+#[doc = "      \"description\": \"The name of a named timeout defined in reusable components.\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum DoTimeout {
+    Variant0(Timeout),
+    Variant1(::std::string::String),
+}
+impl ::std::convert::From<&Self> for DoTimeout {
+    fn from(value: &DoTimeout) -> Self {
+        value.clone()
+    }
+}
+impl ::std::convert::From<Timeout> for DoTimeout {
+    fn from(value: Timeout) -> Self {
+        Self::Variant0(value)
+    }
+}
 #[doc = "Workflow metadata and identification."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -943,7 +982,8 @@ impl ExternalResource {
 #[doc = "      \"enum\": ["]
 #[doc = "        \"continue\","]
 #[doc = "        \"exit\","]
-#[doc = "        \"end\""]
+#[doc = "        \"end\","]
+#[doc = "        \"wait\""]
 #[doc = "      ]"]
 #[doc = "    },"]
 #[doc = "    {"]
@@ -982,7 +1022,8 @@ impl ::std::convert::From<FlowDirectiveEnum> for FlowDirective {
 #[doc = "  \"enum\": ["]
 #[doc = "    \"continue\","]
 #[doc = "    \"exit\","]
-#[doc = "    \"end\""]
+#[doc = "    \"end\","]
+#[doc = "    \"wait\""]
 #[doc = "  ]"]
 #[doc = "}"]
 #[doc = r" ```"]
@@ -2781,7 +2822,7 @@ impl ::std::convert::From<&Self> for RunJobFunction {
 #[doc = "    },"]
 #[doc = "    \"name\": {"]
 #[doc = "      \"title\": \"RunnerName\","]
-#[doc = "      \"description\": \"The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)\","]
+#[doc = "      \"description\": \"The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP_REQUEST, GRPC, PYTHON_COMMAND, LLM, MCP server names, plugin names, etc.)\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"options\": {"]
@@ -2806,7 +2847,7 @@ impl ::std::convert::From<&Self> for RunJobFunction {
 pub struct RunJobRunner {
     #[doc = "A key/value mapping of arguments to use when running the runner as job. Runtime expressions are supported for value transformation."]
     pub arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)"]
+    #[doc = "The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP_REQUEST, GRPC, PYTHON_COMMAND, LLM, MCP server names, plugin names, etc.)"]
     pub name: ::std::string::String,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub options: ::std::option::Option<WorkerOptions>,
@@ -2912,7 +2953,7 @@ impl RunJobWorker {
 #[doc = "        },"]
 #[doc = "        \"name\": {"]
 #[doc = "          \"title\": \"RunnerName\","]
-#[doc = "          \"description\": \"The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)\","]
+#[doc = "          \"description\": \"The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP_REQUEST, GRPC, PYTHON_COMMAND, LLM, MCP server names, plugin names, etc.)\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        },"]
 #[doc = "        \"options\": {"]
@@ -5155,6 +5196,22 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 #[doc = "      \"title\": \"Output\","]
 #[doc = "      \"description\": \"Workflow output configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/output\""]
+#[doc = "    },"]
+#[doc = "    \"timeout\": {"]
+#[doc = "      \"title\": \"DoTimeout\","]
+#[doc = "      \"description\": \"Workflow-level timeout configuration. Applied to the implicit root task that wraps all tasks declared under `do`. Overrides the `WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC` environment variable (default 3600s) and allows specifying durations longer than 1 hour.\","]
+#[doc = "      \"oneOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"title\": \"TimeoutDefinition\","]
+#[doc = "          \"description\": \"The workflow's timeout configuration.\","]
+#[doc = "          \"$ref\": \"#/$defs/timeout\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"title\": \"TimeoutReference\","]
+#[doc = "          \"description\": \"The name of a named timeout defined in reusable components.\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        }"]
+#[doc = "      ]"]
 #[doc = "    }"]
 #[doc = "  }"]
 #[doc = "}"]
@@ -5173,6 +5230,9 @@ pub struct WorkflowSchema {
     #[doc = "Workflow output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
+    #[doc = "Workflow-level timeout configuration. Applied to the implicit root task that wraps all tasks declared under `do`. Overrides the `WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC` environment variable (default 3600s) and allows specifying durations longer than 1 hour."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub timeout: ::std::option::Option<DoTimeout>,
 }
 impl ::std::convert::From<&WorkflowSchema> for WorkflowSchema {
     fn from(value: &WorkflowSchema) -> Self {
@@ -8772,6 +8832,8 @@ pub mod builder {
         document: ::std::result::Result<super::Document, ::std::string::String>,
         input: ::std::result::Result<super::Input, ::std::string::String>,
         output: ::std::result::Result<::std::option::Option<super::Output>, ::std::string::String>,
+        timeout:
+            ::std::result::Result<::std::option::Option<super::DoTimeout>, ::std::string::String>,
     }
     impl ::std::default::Default for WorkflowSchema {
         fn default() -> Self {
@@ -8781,6 +8843,7 @@ pub mod builder {
                 document: Err("no value supplied for document".to_string()),
                 input: Err("no value supplied for input".to_string()),
                 output: Ok(Default::default()),
+                timeout: Ok(Default::default()),
             }
         }
     }
@@ -8835,6 +8898,16 @@ pub mod builder {
                 .map_err(|e| format!("error converting supplied value for output: {}", e));
             self
         }
+        pub fn timeout<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::DoTimeout>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.timeout = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+            self
+        }
     }
     impl ::std::convert::TryFrom<WorkflowSchema> for super::WorkflowSchema {
         type Error = super::error::ConversionError;
@@ -8847,6 +8920,7 @@ pub mod builder {
                 document: value.document?,
                 input: value.input?,
                 output: value.output?,
+                timeout: value.timeout?,
             })
         }
     }
@@ -8858,6 +8932,7 @@ pub mod builder {
                 document: Ok(value.document),
                 input: Ok(value.input),
                 output: Ok(value.output),
+                timeout: Ok(value.timeout),
             }
         }
     }
