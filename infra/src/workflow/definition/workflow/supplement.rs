@@ -235,6 +235,7 @@ impl Default for WorkflowSchema {
             document: Default::default(),
             input: Default::default(),
             output: Default::default(),
+            timeout: Default::default(),
         }
     }
 }
@@ -249,8 +250,22 @@ impl WorkflowSchema {
             input: Some(self.input.clone()),
             output: self.output.clone(),
             metadata: meta_map,
+            // Propagate workflow-level timeout to the implicit root DoTask so
+            // that the executor's resolve_timeout() picks it up instead of
+            // falling back to WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC (default 1h).
+            timeout: self.timeout.as_ref().map(do_timeout_to_task_timeout),
             ..Default::default()
         }
+    }
+}
+
+// DoTimeout and TaskTimeout share the same oneOf(Timeout | String) shape in the
+// schema; bridge them so the workflow-level timeout can be applied to the
+// implicit root DoTask without changing the executor's timeout resolution path.
+pub fn do_timeout_to_task_timeout(t: &DoTimeout) -> TaskTimeout {
+    match t {
+        DoTimeout::Variant0(timeout) => TaskTimeout::Timeout(timeout.clone()),
+        DoTimeout::Variant1(name) => TaskTimeout::TaskTimeoutReference(name.clone()),
     }
 }
 

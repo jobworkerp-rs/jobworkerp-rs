@@ -1051,6 +1051,7 @@ mod tests {
                 schema: None,
             }),
             do_: task_list,
+            timeout: None,
         }
     }
 
@@ -1520,6 +1521,7 @@ mod tests {
                 storage: Some(CheckpointConfigStorage::Memory),
             }),
             do_: task_list,
+            timeout: None,
         }
     }
 
@@ -1665,6 +1667,7 @@ mod tests {
                 storage: Some(CheckpointConfigStorage::Memory),
             }),
             do_: task_list,
+            timeout: None,
         }
     }
     async fn load_test_workflow_from_yaml(yaml_path: &str) -> WorkflowSchema {
