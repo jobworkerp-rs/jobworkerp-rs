@@ -5,6 +5,7 @@
   - [Build and Launch](./getting-started/build.md)
   - [Docker](./getting-started/docker.md)
 - [Client Usage](./client-usage.md)
+- [Direct gRPC Usage (Protobuf Reflection)](./grpc-direct-api.md)
 - [Runners]()
   - [Built-in Runners](./runners/builtin.md)
   - [MCP Proxy](./runners/mcp-proxy.md)
