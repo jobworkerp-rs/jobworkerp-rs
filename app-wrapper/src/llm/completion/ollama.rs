@@ -1,5 +1,7 @@
 use anyhow::{Result, anyhow};
+use command_utils::trace::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType};
 use command_utils::trace::impls::GenericOtelClient;
+use command_utils::trace::otel_span::GenAIOtelClient;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
@@ -18,9 +20,45 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use super::super::generic_tracing_helper::{
-    ChatResponse, GenericLLMTracingHelper, LLMMessage, UsageData,
+    ChatResponse, GenericLLMTracingHelper, LLMMessage, StreamingTraceUpdate, UsageData,
 };
 use crate::llm::ThinkTagHelper;
+
+/// Build a generation span for an ollama text completion request.
+fn build_completion_span(
+    model: &str,
+    prompt: &str,
+    options: &ModelOptions,
+    metadata: &HashMap<String, String>,
+) -> OtelSpanAttributes {
+    let mut model_parameters = HashMap::new();
+    if let Ok(value) = serde_json::to_value(options)
+        && let Some(obj) = value.as_object()
+    {
+        for (k, v) in obj {
+            if !v.is_null() {
+                model_parameters.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    let mut builder = OtelSpanBuilder::new("ollama.completion.completions")
+        .span_type(OtelSpanType::Generation)
+        .model(model.to_string())
+        .system("ollama")
+        .operation_name("text_completion")
+        .input(serde_json::json!(prompt))
+        .openinference_span_kind("LLM")
+        .model_parameters(model_parameters);
+
+    if let Some(sid) = metadata.get("session_id").cloned() {
+        builder = builder.session_id(sid);
+    }
+    if let Some(uid) = metadata.get("user_id").cloned() {
+        builder = builder.user_id(uid);
+    }
+    builder.build()
+}
 
 #[derive(Clone)]
 pub struct OllamaService {
@@ -110,12 +148,26 @@ impl OllamaService {
     pub async fn request_stream_generation(
         &self,
         args: LlmCompletionArgs,
+        metadata: HashMap<String, String>,
+        parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, LlmCompletionResult>> {
         let options = Self::create_completion_options(&args);
         let model = if let Some(model) = args.model.as_ref() {
             model.clone()
         } else {
             self.model.clone()
+        };
+        // Build the generation span attributes BEFORE moving prompt/options into the
+        // ollama request. The wrapper helper is a no-op when the otel client is absent.
+        let span_attributes = if GenericLLMTracingHelper::get_otel_client(self).is_some() {
+            Some(build_completion_span(
+                &model,
+                &args.prompt,
+                &options,
+                &metadata,
+            ))
+        } else {
+            None
         };
         let mut request = GenerationRequest::new(model, args.prompt);
         request = request.options(options);
@@ -222,7 +274,40 @@ impl OllamaService {
             futures::stream::iter(stream_vec)
         }).boxed();
 
-        Ok(stream)
+        let traced_stream = if let Some(span_attrs) = span_attributes {
+            let mut accumulated = String::with_capacity(4096);
+            GenericLLMTracingHelper::with_streaming_response_tracing(
+                self,
+                parent_context,
+                span_attrs,
+                stream,
+                move |chunk: &LlmCompletionResult| {
+                    if let Some(content) = chunk.content.as_ref()
+                        && let Some(message_content::Content::Text(text)) = content.content.as_ref()
+                    {
+                        accumulated.push_str(text);
+                    }
+                    if chunk.done {
+                        let usage = chunk.usage.as_ref().and_then(|u| {
+                            super::super::generic_tracing_helper::streaming_usage_map(
+                                u.prompt_tokens,
+                                u.completion_tokens,
+                            )
+                        });
+                        StreamingTraceUpdate::Final {
+                            output: serde_json::json!(accumulated),
+                            usage,
+                        }
+                    } else {
+                        StreamingTraceUpdate::None
+                    }
+                },
+            )
+        } else {
+            Box::pin(stream)
+        };
+
+        Ok(traced_stream)
     }
 
     /// Cancellable version of request_generation
@@ -230,11 +315,17 @@ impl OllamaService {
         &self,
         args: LlmCompletionArgs,
         cancellation_token: CancellationToken,
-        _cx: opentelemetry::Context,
-        _metadata: HashMap<String, String>,
+        cx: opentelemetry::Context,
+        metadata: HashMap<String, String>,
     ) -> Result<LlmCompletionResult> {
         let options = Self::create_completion_options(&args);
         let think = args.options.as_ref().map(|o| o.extract_reasoning_content());
+        // Open the generation span before constructing the ollama request so the
+        // request payload can still be borrowed for the span attributes.
+        let span = self.get_otel_client().cloned().map(|client| {
+            let attrs = build_completion_span(&self.model, &args.prompt, &options, &metadata);
+            client.start_with_context(attrs, cx.clone())
+        });
         let mut request = GenerationRequest::new(self.model.clone(), args.prompt);
         request = request.options(options.clone());
         if let Some(t) = think {
@@ -254,12 +345,28 @@ impl OllamaService {
             request = request.context(completion::GenerationContext(context.data));
         }
 
-        // Cancellable Ollama generation call
+        // Cancellable Ollama generation call. We end the span manually after the
+        // response is in hand so usage / output can be recorded onto it.
         let res = tokio::select! {
             generation_result = self.ollama.generate(request) => {
-                generation_result.map_err(|e| anyhow!("Generation error(generation): {}", e))?
+                match generation_result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if let Some(mut span) = span {
+                            use opentelemetry::trace::{Span, Status};
+                            span.set_status(Status::error(e.to_string()));
+                            span.end();
+                        }
+                        return Err(anyhow!("Generation error(generation): {}", e));
+                    }
+                }
             }
             _ = cancellation_token.cancelled() => {
+                if let Some(mut span) = span {
+                    use opentelemetry::trace::{Span, Status};
+                    span.set_status(Status::error("cancelled"));
+                    span.end();
+                }
                 return Err(JobWorkerError::CancelledError("Ollama generation was cancelled".to_string()).into());
             }
         };
@@ -310,9 +417,40 @@ impl OllamaService {
         };
 
         result.content = Some(llm::llm_completion_result::MessageContent {
-            content: Some(message_content::Content::Text(content_text)),
+            content: Some(message_content::Content::Text(content_text.clone())),
         });
         result.reasoning_content = reasoning;
+
+        // Record usage / output on the generation span and close it.
+        if let Some(mut span) = span {
+            use opentelemetry::trace::{Span, Status};
+            if let Ok(output_str) = serde_json::to_string(&serde_json::json!(content_text)) {
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "langfuse.observation.output",
+                    output_str.clone(),
+                ));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "gen_ai.completion",
+                    output_str,
+                ));
+            }
+            if let Some(usage) = &result.usage {
+                if let Some(p) = usage.prompt_tokens {
+                    span.set_attribute(opentelemetry::KeyValue::new(
+                        "gen_ai.usage.input_tokens",
+                        p as i64,
+                    ));
+                }
+                if let Some(c) = usage.completion_tokens {
+                    span.set_attribute(opentelemetry::KeyValue::new(
+                        "gen_ai.usage.output_tokens",
+                        c as i64,
+                    ));
+                }
+            }
+            span.set_status(Status::Ok);
+            span.end();
+        }
         Ok(result)
     }
 }
@@ -494,7 +632,7 @@ We want to verify that all chunks are properly received and processed.
 
         // Request the streaming response
         let stream_result = plugin
-            .request_stream_generation(request)
+            .request_stream_generation(request, std::collections::HashMap::new(), None)
             .await
             .expect("failed to run streaming plugin");
 

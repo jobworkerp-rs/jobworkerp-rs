@@ -1,7 +1,7 @@
 use super::super::tracing::ollama_helper::OllamaTracingHelper;
 use super::conversion::{ToolCallName, ToolConverter};
 use crate::llm::ThinkTagHelper;
-use crate::llm::generic_tracing_helper::GenericLLMTracingHelper;
+use crate::llm::generic_tracing_helper::{self, GenericLLMTracingHelper, StreamingTraceUpdate};
 use anyhow::Result;
 use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
 use app::app::function::{FunctionApp, FunctionAppImpl};
@@ -993,12 +993,18 @@ impl OllamaChatService {
         self: Arc<Self>,
         mut args: LlmChatArgs,
         metadata: HashMap<String, String>,
+        parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
         // Check for tool execution requests first (highest priority, manual mode continuation)
         let metadata_arc = Arc::new(metadata);
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
             return self
-                .handle_tool_execution_stream(args, tool_exec_requests, metadata_arc)
+                .handle_tool_execution_stream(
+                    args,
+                    tool_exec_requests,
+                    metadata_arc,
+                    parent_context,
+                )
                 .await;
         }
 
@@ -1014,7 +1020,9 @@ impl OllamaChatService {
                 tracing::warn!(
                     "auto_select_function_set is true but no selector tools available, falling back to normal streaming"
                 );
-                return self.create_streaming_chat(args, metadata_arc).await;
+                return self
+                    .create_streaming_chat(args, metadata_arc, parent_context)
+                    .await;
             }
             // Insert system_prompt into args before cloning for Phase 2
             if let Some(ref system_prompt) = self.system_prompt {
@@ -1046,7 +1054,7 @@ impl OllamaChatService {
                 options,
                 messages,
                 tools,
-                None,
+                parent_context.clone(),
                 metadata_arc.clone(),
                 args.json_schema.clone(),
                 false, // manual mode to intercept selector tool call
@@ -1063,9 +1071,11 @@ impl OllamaChatService {
                         original_args,
                         " (stream)",
                     )?;
-                    return Box::pin(
-                        self.request_stream_chat(result.second_args, (*metadata_arc).clone()),
-                    )
+                    return Box::pin(self.request_stream_chat(
+                        result.second_args,
+                        (*metadata_arc).clone(),
+                        parent_context,
+                    ))
                     .await;
                 }
                 ChatInternalResult::Final(response) => {
@@ -1104,7 +1114,8 @@ impl OllamaChatService {
         }
 
         // Normal streaming flow (first request or no tool execution)
-        self.create_streaming_chat(args, metadata_arc).await
+        self.create_streaming_chat(args, metadata_arc, parent_context)
+            .await
     }
 
     /// Wrapper method for non-Arc callers (backward compatibility)
@@ -1112,10 +1123,13 @@ impl OllamaChatService {
         &self,
         args: LlmChatArgs,
         metadata: HashMap<String, String>,
+        parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
         // Clone self into Arc for internal use
         let self_arc = Arc::new(self.clone());
-        self_arc.request_stream_chat(args, metadata).await
+        self_arc
+            .request_stream_chat(args, metadata, parent_context)
+            .await
     }
 
     /// Handle tool execution requests and continue LLM conversation in streaming mode
@@ -1124,6 +1138,7 @@ impl OllamaChatService {
         args: LlmChatArgs,
         requests: Vec<ToolExecutionRequest>,
         metadata: Arc<HashMap<String, String>>,
+        parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
         use jobworkerp_runner::jobworkerp::runner::llm::{
             ToolExecutionResult, ToolExecutionStarted,
@@ -1133,6 +1148,7 @@ impl OllamaChatService {
         let args_clone = args.clone();
         let requests_clone = requests.clone();
         let metadata_clone = metadata.clone();
+        let parent_context_clone = parent_context.clone();
 
         let stream = async_stream::stream! {
             let mut updated_args = args_clone;
@@ -1150,6 +1166,19 @@ impl OllamaChatService {
                     serde_json::from_str(&req.fn_arguments).ok();
 
                 tracing::debug!("Executing tool: {} with args: {:?}", req.fn_name, arguments);
+
+                // Open a tool-call span (child of the streaming generation span) so wall-clock
+                // duration is captured even though the tool runs inside the async stream.
+                let arg_value = arguments
+                    .as_ref()
+                    .map(|m| serde_json::Value::Object(m.clone()))
+                    .unwrap_or(serde_json::Value::Null);
+                let tool_span = self_clone.open_tool_span(
+                    &req.fn_name,
+                    arg_value,
+                    &metadata_clone,
+                    parent_context_clone.clone(),
+                );
 
                 // Phase A: Enqueue and get job_id immediately
                 let enqueued = self_clone
@@ -1204,6 +1233,8 @@ impl OllamaChatService {
 
                 tracing::debug!("Tool {} result: {}", req.fn_name, tool_result);
 
+                generic_tracing_helper::finish_tool_span(tool_span, &tool_result, success);
+
                 // Cache result for Phase 2
                 tool_results_cache.push((req.call_id.clone(), tool_result.clone(), success));
 
@@ -1233,7 +1264,7 @@ impl OllamaChatService {
 
             // Phase 3: Continue with LLM streaming using updated args
             tracing::debug!("handle_tool_execution_stream: Phase 3 — creating continuation stream");
-            match self_clone.clone().create_streaming_chat(updated_args, metadata_clone.clone()).await {
+            match self_clone.clone().create_streaming_chat(updated_args, metadata_clone.clone(), parent_context.clone()).await {
                 Ok(mut continuation_stream) => {
                     tracing::debug!("handle_tool_execution_stream: Phase 3 — continuation stream created, forwarding chunks");
                     let mut chunk_count = 0u64;
@@ -1270,7 +1301,8 @@ impl OllamaChatService {
     async fn create_streaming_chat(
         self: Arc<Self>,
         args: LlmChatArgs,
-        _metadata: Arc<HashMap<String, String>>,
+        metadata: Arc<HashMap<String, String>>,
+        parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
         let use_function_calling = args
             .function_options
@@ -1290,7 +1322,24 @@ impl OllamaChatService {
         let model_name = args.model.clone().unwrap_or_else(|| self.model.clone());
         let messages = Self::convert_messages(&args).await;
 
-        let mut req = ChatMessageRequest::new(model_name, messages);
+        // Build span attributes for the streaming generation BEFORE consuming `messages`
+        // and `options` into the ollama request. The wrapper helper is a no-op when no
+        // otel client is configured, so this is safe in test/non-otel environments.
+        let span_attributes = if GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
+            let input_messages = Self::convert_messages_to_input_ollama(&messages);
+            let model_parameters = Self::convert_model_options_to_parameters_ollama(&options);
+            Some(self.create_chat_completion_span_attributes(
+                &model_name,
+                input_messages,
+                Some(&model_parameters),
+                &tools,
+                metadata.as_ref(),
+            ))
+        } else {
+            None
+        };
+
+        let mut req = ChatMessageRequest::new(model_name.clone(), messages);
         req = req.options(options);
         if let Some(t) = args.options.as_ref().map(|o| o.extract_reasoning_content()) {
             req = req.think(t);
@@ -1451,6 +1500,43 @@ impl OllamaChatService {
             }
         };
 
-        Ok(Box::pin(stream))
+        // Wrap the underlying stream with the generation span. The closure accumulates
+        // streamed content and emits a Final update when the terminal `done=true` chunk
+        // arrives so usage/output can be recorded on the span.
+        let traced_stream = if let Some(span_attrs) = span_attributes {
+            let mut accumulated_text = String::with_capacity(4096);
+            GenericLLMTracingHelper::with_streaming_response_tracing(
+                &*self,
+                parent_context,
+                span_attrs,
+                stream,
+                move |chunk: &LlmChatResult| {
+                    if let Some(content) = chunk.content.as_ref()
+                        && let Some(message_content::Content::Text(text)) = content.content.as_ref()
+                    {
+                        accumulated_text.push_str(text);
+                    }
+                    if chunk.done {
+                        let usage = chunk.usage.as_ref().and_then(|u| {
+                            generic_tracing_helper::streaming_usage_map(
+                                u.prompt_tokens,
+                                u.completion_tokens,
+                            )
+                        });
+                        let output = serde_json::json!({
+                            "role": "assistant",
+                            "content": accumulated_text,
+                        });
+                        StreamingTraceUpdate::Final { output, usage }
+                    } else {
+                        StreamingTraceUpdate::None
+                    }
+                },
+            )
+        } else {
+            Box::pin(stream)
+        };
+
+        Ok(traced_stream)
     }
 }

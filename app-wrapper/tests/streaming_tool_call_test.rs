@@ -30,7 +30,8 @@ use tokio::time::{Duration, timeout};
 
 /// Test configuration
 const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
-const TEST_MODEL: &str = "qwen3:30b";
+//const TEST_MODEL: &str = "qwen3:30b";
+const TEST_MODEL: &str = "gpt-oss:20b";
 const OTLP_ADDR: &str = "http://otel-collector.default.svc.cluster.local:4317";
 const TEST_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -128,7 +129,7 @@ async fn test_streaming_manual_mode_returns_pending_tool_calls() -> Result<()> {
         TEST_TIMEOUT,
         service
             .clone()
-            .request_stream_chat(args.clone(), metadata.clone()),
+            .request_stream_chat(args.clone(), metadata.clone(), None),
     )
     .await??;
 
@@ -232,7 +233,7 @@ async fn test_streaming_manual_mode_returns_pending_tool_calls() -> Result<()> {
         TEST_TIMEOUT,
         service
             .clone()
-            .request_stream_chat(continuation_args, metadata.clone()),
+            .request_stream_chat(continuation_args, metadata.clone(), None),
     )
     .await??;
 
@@ -347,7 +348,7 @@ async fn test_streaming_without_tools() -> Result<()> {
     println!("Sending streaming request without tools...");
     let stream = timeout(
         TEST_TIMEOUT,
-        service.clone().request_stream_chat(args, metadata),
+        service.clone().request_stream_chat(args, metadata, None),
     )
     .await??;
 
@@ -385,7 +386,7 @@ async fn test_streaming_result_format() -> Result<()> {
 
     let stream = timeout(
         TEST_TIMEOUT,
-        service.clone().request_stream_chat(args, metadata),
+        service.clone().request_stream_chat(args, metadata, None),
     )
     .await??;
 
@@ -423,7 +424,7 @@ async fn test_streaming_echo_tool_call() -> Result<()> {
     println!("Sending streaming request for echo command...");
     let stream = timeout(
         TEST_TIMEOUT,
-        service.clone().request_stream_chat(args, metadata),
+        service.clone().request_stream_chat(args, metadata, None),
     )
     .await??;
 
