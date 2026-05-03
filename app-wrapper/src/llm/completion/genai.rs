@@ -3,7 +3,8 @@ use command_utils::trace::impls::GenericOtelClient;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent as GenaiMessageContent,
+    ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatStreamEvent, JsonSpec,
+    MessageContent as GenaiMessageContent,
 };
 use genai::resolver::{Endpoint, ServiceTargetResolver};
 use genai::{Client, ServiceTarget};
@@ -91,17 +92,36 @@ impl GenaiCompletionService {
             otel_client: Some(Arc::new(GenericOtelClient::new("genai.completion_service"))),
         })
     }
-    fn options(&self, args: &LlmCompletionArgs) -> Option<ChatOptions> {
-        args.options.map(|opt| {
-            // XXX
-            ChatOptions {
-                temperature: opt.temperature.map(|v| v as f64),
-                max_tokens: opt.max_tokens.map(|v| v as u32),
-                top_p: opt.top_p.map(|v| v as f64),
-                normalize_reasoning_content: opt.extract_reasoning_content,
-                ..Default::default()
+    pub(super) fn build_options(args: &LlmCompletionArgs) -> Option<ChatOptions> {
+        let mut chat_opts = ChatOptions::default();
+        let mut has_value = false;
+
+        if let Some(opt) = args.options {
+            chat_opts.temperature = opt.temperature.map(|v| v as f64);
+            chat_opts.max_tokens = opt.max_tokens.map(|v| v as u32);
+            chat_opts.top_p = opt.top_p.map(|v| v as f64);
+            chat_opts.normalize_reasoning_content = opt.extract_reasoning_content;
+            has_value = true;
+        }
+
+        if let Some(schema_str) = args.json_schema.as_deref() {
+            match serde_json::from_str::<serde_json::Value>(schema_str) {
+                Ok(schema) => {
+                    chat_opts.response_format = Some(ChatResponseFormat::JsonSpec(JsonSpec::new(
+                        crate::llm::GENAI_JSON_SPEC_NAME,
+                        schema,
+                    )));
+                    has_value = true;
+                    tracing::debug!("Applied JSON schema to GenAI completion: {}", schema_str);
+                }
+                Err(e) => {
+                    // Mirror Ollama behavior: warn and ignore on parse failure.
+                    tracing::warn!("Invalid JSON schema for GenAI completion, ignoring: {}", e);
+                }
             }
-        })
+        }
+
+        if has_value { Some(chat_opts) } else { None }
     }
     fn messages(&self, args: LlmCompletionArgs) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
@@ -123,7 +143,7 @@ impl GenaiCompletionService {
         metadata: HashMap<String, String>,
     ) -> Result<LlmCompletionResult> {
         let metadata = Arc::new(metadata);
-        let options = self.options(&args);
+        let options = Self::build_options(&args);
         let messages = self.messages(args);
         let chat_req = ChatRequest::new(messages);
 
@@ -240,7 +260,7 @@ impl GenaiCompletionService {
         args: LlmCompletionArgs,
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let options = self.options(&args);
+        let options = Self::build_options(&args);
         let messages = self.messages(args);
         let chat_req = ChatRequest::new(messages);
         tracing::debug!(
@@ -433,3 +453,73 @@ impl GenericLLMTracingHelper for GenaiCompletionService {
 }
 
 impl GenaiCompletionTracingHelper for GenaiCompletionService {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_args::LlmOptions;
+
+    #[test]
+    fn build_options_sets_json_spec_response_format() {
+        let schema = r#"{"type":"object","properties":{"x":{"type":"integer"}}}"#;
+        let args = LlmCompletionArgs {
+            json_schema: Some(schema.to_string()),
+            ..Default::default()
+        };
+        let opts = GenaiCompletionService::build_options(&args).expect("options must be Some");
+        match opts.response_format {
+            Some(ChatResponseFormat::JsonSpec(spec)) => {
+                assert_eq!(spec.name, "structured_output");
+                let expected: serde_json::Value = serde_json::from_str(schema).unwrap();
+                assert_eq!(spec.schema, expected);
+            }
+            other => panic!("expected JsonSpec response_format, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_options_returns_some_when_only_json_schema() {
+        let args = LlmCompletionArgs {
+            options: None,
+            json_schema: Some(r#"{"type":"object"}"#.to_string()),
+            ..Default::default()
+        };
+        let opts = GenaiCompletionService::build_options(&args);
+        assert!(opts.is_some());
+        assert!(opts.unwrap().response_format.is_some());
+    }
+
+    #[test]
+    fn build_options_ignores_invalid_json_schema() {
+        let args = LlmCompletionArgs {
+            options: None,
+            json_schema: Some("not a json".to_string()),
+            ..Default::default()
+        };
+        assert!(GenaiCompletionService::build_options(&args).is_none());
+    }
+
+    #[test]
+    fn build_options_preserves_existing_fields() {
+        let args = LlmCompletionArgs {
+            options: Some(LlmOptions {
+                temperature: Some(0.42),
+                max_tokens: Some(128),
+                top_p: Some(0.9),
+                extract_reasoning_content: Some(true),
+                ..Default::default()
+            }),
+            json_schema: Some(r#"{"type":"object"}"#.to_string()),
+            ..Default::default()
+        };
+        let opts = GenaiCompletionService::build_options(&args).expect("options must be Some");
+        assert!((opts.temperature.unwrap() - 0.42_f64).abs() < 1e-6);
+        assert_eq!(opts.max_tokens, Some(128));
+        assert!((opts.top_p.unwrap() - 0.9_f64).abs() < 1e-6);
+        assert_eq!(opts.normalize_reasoning_content, Some(true));
+        assert!(matches!(
+            opts.response_format,
+            Some(ChatResponseFormat::JsonSpec(_))
+        ));
+    }
+}

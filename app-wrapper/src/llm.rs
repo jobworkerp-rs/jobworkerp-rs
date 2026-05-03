@@ -4,6 +4,8 @@ pub mod generic_tracing_helper;
 pub mod tracing;
 pub mod unified;
 
+pub(crate) const GENAI_JSON_SPEC_NAME: &str = "structured_output";
+
 pub trait ThinkTagHelper {
     const START_THINK_TAG: &'static str = "<think>";
     const END_THINK_TAG: &'static str = "</think>";
