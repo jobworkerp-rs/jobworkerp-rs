@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Test configuration
 const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
-const TEST_MODEL: &str = "qwen3:30b"; // Use a model that supports structured output
+const TEST_MODEL: &str = "qwen3.5:9b"; // Use a model that supports structured output
 const TEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Create test chat service
@@ -268,12 +268,12 @@ async fn test_completion_stream_with_json_schema() -> Result<()> {
 
 #[ignore = "need to run with ollama server"]
 #[tokio::test]
-async fn test_workflow_8level_schema_with_llm_chat() -> Result<()> {
+async fn test_workflow_minimal_schema_with_llm_chat() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let service = create_test_chat_service().await?;
 
-    // Load the workflow_8level_final.json schema
-    let schema_path = "../runner/schema/workflow_8level_final.json";
+    // Load the workflow_minimal_fix.json schema
+    let schema_path = "../runner/schema/workflow_minimal_fix.json";
     let schema = std::fs::read_to_string(schema_path)
         .map_err(|e| anyhow::anyhow!("Failed to read schema file at {}: {}", schema_path, e))?;
 
@@ -361,7 +361,7 @@ async fn test_complex_nested_workflow_with_llm_chat() -> Result<()> {
     let service = create_test_chat_service().await?;
 
     // Load the workflow schema
-    let schema_path = "../runner/schema/workflow_8level_final.json";
+    let schema_path = "../runner/schema/workflow_minimal_fix.json";
     let schema = std::fs::read_to_string(schema_path)
         .map_err(|e| anyhow::anyhow!("Failed to read schema file at {}: {}", schema_path, e))?;
 
