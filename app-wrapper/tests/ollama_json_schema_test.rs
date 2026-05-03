@@ -232,7 +232,11 @@ async fn test_completion_stream_with_json_schema() -> Result<()> {
     };
 
     // Request the streaming response
-    let stream_result = timeout(TEST_TIMEOUT, service.request_stream_generation(args)).await??;
+    let stream_result = timeout(
+        TEST_TIMEOUT,
+        service.request_stream_generation(args, std::collections::HashMap::new(), None),
+    )
+    .await??;
 
     // Collect all chunks to verify the streaming functionality
     let responses = stream_result.collect::<Vec<_>>().await;
