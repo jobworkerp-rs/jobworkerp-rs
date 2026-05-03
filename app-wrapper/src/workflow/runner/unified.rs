@@ -254,7 +254,12 @@ impl WorkflowUnifiedRunnerImpl {
         args: &WorkflowRunArgs,
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let cx = Self::create_context(&metadata);
+        // Mirror execute_run (line 174): build a root span owned by the returned stream so
+        // child spans created downstream by execute_workflow_with_events have a valid parent.
+        // Without this, create_context returns an empty Context and child spans end up with
+        // a zero trace_id and never form a recognisable trace in the backend (Langfuse).
+        let span = Self::otel_span_from_metadata(&metadata, APP_NAME, "workflow.run_stream");
+        let cx = opentelemetry::Context::current_with_span(span);
         let metadata_arc = Arc::new(metadata.clone());
         let execution_id = ExecutionId::new_opt(args.execution_id.clone());
 
@@ -296,8 +301,8 @@ impl WorkflowUnifiedRunnerImpl {
             .await?,
         );
 
-        let workflow_stream = executor.execute_workflow(Arc::new(cx));
-        let output_stream = workflow_stream
+        let workflow_stream = executor.execute_workflow(Arc::new(cx.clone()));
+        let inner_stream = workflow_stream
             .then(|result| async move {
                 match result {
                     Ok(context) => {
@@ -345,8 +350,19 @@ impl WorkflowUnifiedRunnerImpl {
                         proto::jobworkerp::data::Trailer { metadata },
                     )),
                 }
-            }))
-            .boxed();
+            }));
+
+        // Wrap the stream so the root Context (owning the BoxedSpan) lives until the
+        // consumer drops the stream; BoxedSpan::Drop ends the span at that point.
+        let root_cx = cx;
+        let output_stream = async_stream::stream! {
+            let _root_cx = root_cx;
+            futures::pin_mut!(inner_stream);
+            while let Some(item) = inner_stream.next().await {
+                yield item;
+            }
+        }
+        .boxed();
 
         Ok(output_stream)
     }
