@@ -12,8 +12,8 @@ use command_utils::trace::impls::GenericOtelClient;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent as GenaiMessageContent,
-    Tool, ToolResponse,
+    ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatStreamEvent, JsonSpec,
+    MessageContent as GenaiMessageContent, Tool, ToolResponse,
 };
 use genai::resolver::{Endpoint, ServiceTargetResolver};
 use genai::{Client, ServiceTarget};
@@ -134,17 +134,36 @@ impl GenaiChatService {
             otel_client: Some(Arc::new(GenericOtelClient::new("genai.chat_service"))),
         })
     }
-    fn options(&self, args: &LlmChatArgs) -> Option<ChatOptions> {
-        args.options.map(|opt| {
-            // XXX
-            ChatOptions {
-                temperature: opt.temperature.map(|v| v as f64),
-                max_tokens: opt.max_tokens.map(|v| v as u32),
-                top_p: opt.top_p.map(|v| v as f64),
-                normalize_reasoning_content: opt.extract_reasoning_content,
-                ..Default::default()
+    pub(super) fn build_options(args: &LlmChatArgs) -> Option<ChatOptions> {
+        let mut chat_opts = ChatOptions::default();
+        let mut has_value = false;
+
+        if let Some(opt) = args.options {
+            chat_opts.temperature = opt.temperature.map(|v| v as f64);
+            chat_opts.max_tokens = opt.max_tokens.map(|v| v as u32);
+            chat_opts.top_p = opt.top_p.map(|v| v as f64);
+            chat_opts.normalize_reasoning_content = opt.extract_reasoning_content;
+            has_value = true;
+        }
+
+        if let Some(schema_str) = args.json_schema.as_deref() {
+            match serde_json::from_str::<serde_json::Value>(schema_str) {
+                Ok(schema) => {
+                    chat_opts.response_format = Some(ChatResponseFormat::JsonSpec(JsonSpec::new(
+                        crate::llm::GENAI_JSON_SPEC_NAME,
+                        schema,
+                    )));
+                    has_value = true;
+                    tracing::debug!("Applied JSON schema to GenAI chat: {}", schema_str);
+                }
+                Err(e) => {
+                    // Mirror Ollama behavior: warn and ignore on parse failure.
+                    tracing::warn!("Invalid JSON schema for GenAI chat, ignoring: {}", e);
+                }
             }
-        })
+        }
+
+        if has_value { Some(chat_opts) } else { None }
     }
     fn trans_role(
         &self,
@@ -344,7 +363,7 @@ impl GenaiChatService {
             .and_then(|fo| fo.is_auto_calling)
             .unwrap_or(false);
 
-        let options = self.options(&args);
+        let options = Self::build_options(&args);
         let (tools_vec, auto_select_names) = self.function_list(&args).await?;
         let is_auto_select = !auto_select_names.is_empty();
         let tools = Arc::new(tools_vec);
@@ -901,7 +920,7 @@ impl GenaiChatService {
             }
             let original_args = args.clone();
 
-            let options = self.options(&args);
+            let options = Self::build_options(&args);
             let model = args.model.clone().unwrap_or_else(|| self.model.clone());
             let messages = Arc::new(Mutex::new(self.trans_messages(args)));
             let tools = Arc::new(tools_vec);
@@ -1149,7 +1168,7 @@ impl GenaiChatService {
         args: LlmChatArgs,
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let options = self.options(&args);
+        let options = Self::build_options(&args);
         let (tools, _auto_select_names) = self.function_list(&args).await?;
         let messages = self.trans_messages(args);
         let chat_req = if tools.is_empty() {
@@ -1469,5 +1488,75 @@ impl crate::llm::tracing::LLMTracingHelper for GenaiChatService {
 
     fn get_default_model(&self) -> String {
         self.model.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::LlmOptions;
+
+    #[test]
+    fn build_options_sets_json_spec_response_format() {
+        let schema = r#"{"type":"object","properties":{"x":{"type":"integer"}}}"#;
+        let args = LlmChatArgs {
+            json_schema: Some(schema.to_string()),
+            ..Default::default()
+        };
+        let opts = GenaiChatService::build_options(&args).expect("options must be Some");
+        match opts.response_format {
+            Some(ChatResponseFormat::JsonSpec(spec)) => {
+                assert_eq!(spec.name, "structured_output");
+                let expected: serde_json::Value = serde_json::from_str(schema).unwrap();
+                assert_eq!(spec.schema, expected);
+            }
+            other => panic!("expected JsonSpec response_format, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_options_returns_some_when_only_json_schema() {
+        let args = LlmChatArgs {
+            options: None,
+            json_schema: Some(r#"{"type":"object"}"#.to_string()),
+            ..Default::default()
+        };
+        let opts = GenaiChatService::build_options(&args);
+        assert!(opts.is_some());
+        assert!(opts.unwrap().response_format.is_some());
+    }
+
+    #[test]
+    fn build_options_ignores_invalid_json_schema() {
+        let args = LlmChatArgs {
+            options: None,
+            json_schema: Some("not a json".to_string()),
+            ..Default::default()
+        };
+        assert!(GenaiChatService::build_options(&args).is_none());
+    }
+
+    #[test]
+    fn build_options_preserves_existing_fields() {
+        let args = LlmChatArgs {
+            options: Some(LlmOptions {
+                temperature: Some(0.42),
+                max_tokens: Some(128),
+                top_p: Some(0.9),
+                extract_reasoning_content: Some(true),
+                ..Default::default()
+            }),
+            json_schema: Some(r#"{"type":"object"}"#.to_string()),
+            ..Default::default()
+        };
+        let opts = GenaiChatService::build_options(&args).expect("options must be Some");
+        assert!((opts.temperature.unwrap() - 0.42_f64).abs() < 1e-6);
+        assert_eq!(opts.max_tokens, Some(128));
+        assert!((opts.top_p.unwrap() - 0.9_f64).abs() < 1e-6);
+        assert_eq!(opts.normalize_reasoning_content, Some(true));
+        assert!(matches!(
+            opts.response_format,
+            Some(ChatResponseFormat::JsonSpec(_))
+        ));
     }
 }
