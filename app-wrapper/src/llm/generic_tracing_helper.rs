@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use command_utils::trace::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType};
+use command_utils::trace::attr::{
+    OtelSpanAttributes, OtelSpanBuilder, OtelSpanType, langfuse_keys,
+};
 use command_utils::trace::impls::GenericOtelClient;
 use command_utils::trace::otel_span::GenAIOtelClient;
 use futures::Stream;
@@ -121,7 +123,7 @@ pub trait GenericLLMTracingHelper {
                     Ok(result) => {
                         let response_output = result.to_json().to_string();
                         span.set_attribute(opentelemetry::KeyValue::new(
-                            "langfuse.observation.output",
+                            langfuse_keys::OBSERVATION_OUTPUT,
                             response_output,
                         ));
                         span.set_status(Status::Ok);
@@ -417,7 +419,7 @@ impl StreamSpanGuard {
         use opentelemetry::trace::{Span, Status};
         if let Ok(output_str) = serde_json::to_string(&output) {
             span.set_attribute(opentelemetry::KeyValue::new(
-                "langfuse.observation.output",
+                langfuse_keys::OBSERVATION_OUTPUT,
                 output_str.clone(),
             ));
             span.set_attribute(opentelemetry::KeyValue::new(
@@ -428,7 +430,7 @@ impl StreamSpanGuard {
         if let Some(usage) = usage {
             if let Ok(usage_str) = serde_json::to_string(&usage) {
                 span.set_attribute(opentelemetry::KeyValue::new(
-                    "langfuse.observation.usage_details",
+                    langfuse_keys::OBSERVATION_USAGE_DETAILS,
                     usage_str,
                 ));
             }
@@ -471,7 +473,7 @@ impl StreamSpanGuard {
         };
         use opentelemetry::trace::{Span, Status};
         span.set_attribute(opentelemetry::KeyValue::new(
-            "langfuse.observation.level",
+            langfuse_keys::OBSERVATION_LEVEL,
             "ERROR",
         ));
         span.set_attribute(opentelemetry::KeyValue::new(
@@ -505,7 +507,7 @@ pub fn finish_tool_span(span: Option<BoxedSpan>, result: &str, success: bool) {
     };
     use opentelemetry::trace::{Span, Status};
     span.set_attribute(opentelemetry::KeyValue::new(
-        "langfuse.observation.output",
+        langfuse_keys::OBSERVATION_OUTPUT,
         result.to_string(),
     ));
     if success {
