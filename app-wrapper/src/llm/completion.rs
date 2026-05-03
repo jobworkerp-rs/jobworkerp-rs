@@ -251,14 +251,26 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             .into());
         }
 
+        // The Context owns the root BoxedSpan; we move it into the returned stream so the
+        // span lives until the consumer drops the stream (BoxedSpan::Drop calls end()).
+        let parent_cx = Context::current_with_span(Self::otel_span_from_metadata(
+            &metadata,
+            APP_WORKER_NAME,
+            "llm_completion_run_stream",
+        ));
+
         if let Some(ollama) = self.ollama.as_mut() {
-            let stream = ollama.request_stream_generation(args).await?;
+            let stream = ollama
+                .request_stream_generation(args, metadata.clone(), Some(parent_cx.clone()))
+                .await?;
 
             let req_meta = Arc::new(metadata.clone());
             let cancel_token = cancellation_token.clone();
+            let root_cx = parent_cx;
 
             // Stream processing with mid-stream cancellation capability
             let output_stream = stream! {
+                let _root_cx = root_cx;
                 tokio::pin!(stream);
                 loop {
                     tokio::select! {
@@ -309,7 +321,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
             let stream = tokio::select! {
-                result = genai.request_chat_stream(args, metadata) => result?,
+                result = genai.request_chat_stream(args, metadata, Some(parent_cx.clone())) => result?,
                 _ = cancellation_token.cancelled() => {
                     tracing::info!("LLM completion stream (GenAI) request was cancelled");
                     return Err(JobWorkerError::CancelledError("LLM completion stream (GenAI) request was cancelled".to_string()).into());
@@ -317,7 +329,9 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             };
 
             let cancel_token = cancellation_token.clone();
+            let root_cx = parent_cx;
             let cancellable_stream = stream! {
+                let _root_cx = root_cx;
                 tokio::pin!(stream);
                 loop {
                     tokio::select! {

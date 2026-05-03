@@ -1,6 +1,6 @@
 use super::super::generic_tracing_helper::{
-    ChatResponse, GenericLLMTracingHelper, LLMMessage, ModelOptions as GenericModelOptions,
-    ToolInfo as GenericToolInfo, UsageData,
+    self, ChatResponse, GenericLLMTracingHelper, LLMMessage, ModelOptions as GenericModelOptions,
+    StreamingTraceUpdate, ToolInfo as GenericToolInfo, UsageData,
 };
 use super::conversion::{ToolCallName, ToolConverter};
 use crate::llm::ThinkTagHelper;
@@ -879,12 +879,19 @@ impl GenaiChatService {
         &self,
         mut args: LlmChatArgs,
         metadata: HashMap<String, String>,
+        parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Check for tool execution requests first (highest priority, manual mode continuation)
         let metadata_arc = Arc::new(metadata.clone());
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
             return self
-                .handle_tool_execution_stream(args, tool_exec_requests, metadata_arc, metadata)
+                .handle_tool_execution_stream(
+                    args,
+                    tool_exec_requests,
+                    metadata_arc,
+                    metadata,
+                    parent_context,
+                )
                 .await;
         }
 
@@ -900,7 +907,9 @@ impl GenaiChatService {
                 tracing::warn!(
                     "auto_select_function_set is true but no selector tools available, falling back to normal streaming"
                 );
-                return self.create_chat_stream(args, metadata).await;
+                return self
+                    .create_chat_stream(args, metadata, parent_context)
+                    .await;
             }
             // Insert system_prompt into args before cloning for Phase 2
             if let Some(ref system_prompt) = self.system_prompt {
@@ -931,7 +940,7 @@ impl GenaiChatService {
                 options,
                 messages,
                 tools,
-                None,
+                parent_context.clone(),
                 metadata_arc.clone(),
                 false, // manual mode to intercept selector tool call
                 0,
@@ -946,7 +955,12 @@ impl GenaiChatService {
                         original_args,
                         " (stream)",
                     )?;
-                    return Box::pin(self.request_chat_stream(result.second_args, metadata)).await;
+                    return Box::pin(self.request_chat_stream(
+                        result.second_args,
+                        metadata,
+                        parent_context,
+                    ))
+                    .await;
                 }
                 ChatInternalResult::Final(response) => {
                     // LLM responded with text instead of calling a selector tool
@@ -989,7 +1003,8 @@ impl GenaiChatService {
         }
 
         // Normal streaming flow
-        self.create_chat_stream(args, metadata).await
+        self.create_chat_stream(args, metadata, parent_context)
+            .await
     }
 
     /// Handle tool execution requests and continue LLM conversation in streaming mode
@@ -999,6 +1014,7 @@ impl GenaiChatService {
         requests: Vec<ToolExecutionRequest>,
         metadata_arc: Arc<HashMap<String, String>>,
         metadata: HashMap<String, String>,
+        parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         use jobworkerp_runner::jobworkerp::runner::llm::{
             ToolExecutionResult, ToolExecutionStarted,
@@ -1009,6 +1025,7 @@ impl GenaiChatService {
         let requests_clone = requests.clone();
         let metadata_arc_clone = metadata_arc.clone();
         let metadata_clone = metadata.clone();
+        let parent_context_clone = parent_context.clone();
 
         let metadata_trailer = Trailer {
             metadata: metadata.clone(),
@@ -1030,6 +1047,19 @@ impl GenaiChatService {
                     serde_json::from_str(&req.fn_arguments).ok();
 
                 tracing::debug!("Executing tool: {} with args: {:?}", req.fn_name, arguments);
+
+                // Open a tool-call span (child of the streaming generation span) so wall-clock
+                // duration is captured even though the tool runs inside the async stream.
+                let arg_value = arguments
+                    .as_ref()
+                    .map(|m| serde_json::Value::Object(m.clone()))
+                    .unwrap_or(serde_json::Value::Null);
+                let tool_span = self_clone.open_tool_span(
+                    &req.fn_name,
+                    arg_value,
+                    &metadata_clone,
+                    parent_context_clone.clone(),
+                );
 
                 // Phase A: Enqueue and get job_id immediately
                 let enqueued = self_clone
@@ -1090,6 +1120,8 @@ impl GenaiChatService {
 
                 tracing::debug!("Tool {} result: {}", req.fn_name, tool_result);
 
+                generic_tracing_helper::finish_tool_span(tool_span, &tool_result, success);
+
                 // Cache result for Phase 2
                 tool_results_cache.push((req.call_id.clone(), tool_result.clone(), success));
 
@@ -1125,7 +1157,7 @@ impl GenaiChatService {
 
             // Phase 3: Continue with LLM streaming using updated args
             tracing::debug!("handle_tool_execution_stream: Phase 3 — creating continuation stream");
-            match self_clone.create_chat_stream(updated_args, metadata_clone).await {
+            match self_clone.create_chat_stream(updated_args, metadata_clone, parent_context.clone()).await {
                 Ok(mut continuation_stream) => {
                     tracing::debug!("handle_tool_execution_stream: Phase 3 — continuation stream created, forwarding chunks");
                     let mut chunk_count = 0u64;
@@ -1167,24 +1199,41 @@ impl GenaiChatService {
         &self,
         args: LlmChatArgs,
         metadata: HashMap<String, String>,
+        parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let options = Self::build_options(&args);
         let (tools, _auto_select_names) = self.function_list(&args).await?;
+        // Honour args.model when supplied so the span and the actual request
+        // target the same model. Falling back to self.model only when args
+        // omits it keeps parity with request_chat_internal_with_tracing.
+        let model = args.model.clone().unwrap_or_else(|| self.model.clone());
         let messages = self.trans_messages(args);
         let chat_req = if tools.is_empty() {
             ChatRequest::new(messages)
         } else {
-            ChatRequest::new(messages).with_tools(tools)
+            ChatRequest::new(messages).with_tools(tools.clone())
         };
         tracing::debug!(
             "Genai LLM(stream): model: {}, Chat request: {:?}, options: {:?}",
-            &self.model,
+            &model,
             &chat_req,
             &options
         );
+
+        // Build span attributes BEFORE consuming chat_req into exec_chat_stream so the
+        // generation span captures the same input the model receives.
+        let span_attributes = if GenericLLMTracingHelper::get_otel_client(self).is_some() {
+            Some(
+                self.create_chat_span_from_request(&model, &chat_req, &options, &tools, &metadata)
+                    .await,
+            )
+        } else {
+            None
+        };
+
         let res = self
             .client
-            .exec_chat_stream(&self.model, chat_req, options.as_ref())
+            .exec_chat_stream(&model, chat_req, options.as_ref())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to request generation: {:#?}", e))?;
 
@@ -1360,7 +1409,70 @@ impl GenaiChatService {
             }
         };
 
-        Ok(Box::pin(stream))
+        // Wrap the stream with the generation span. The closure decodes each Data item
+        // (a serialized LlmChatResult) so we can detect the `done=true` terminal chunk
+        // and record final usage / output text on the span.
+        let traced = if let Some(span_attrs) = span_attributes {
+            use prost::Message as _;
+            let mut accumulated_text = String::with_capacity(4096);
+            GenericLLMTracingHelper::with_streaming_response_tracing(
+                self,
+                parent_context,
+                span_attrs,
+                stream,
+                move |item: &ResultOutputItem| {
+                    let bytes = match item.item.as_ref() {
+                        Some(result_output_item::Item::Data(b)) => b,
+                        _ => return StreamingTraceUpdate::None,
+                    };
+                    let parsed = match LlmChatResult::decode(bytes.as_slice()) {
+                        Ok(p) => p,
+                        Err(_) => return StreamingTraceUpdate::None,
+                    };
+                    // The `done=true` chunk carries `End.captured_content` (the
+                    // full text already aggregated by GenAI) — adding it to
+                    // `accumulated_text`, which already holds the per-chunk
+                    // concatenation, would duplicate the body in the trace.
+                    // Skip accumulation on the terminal chunk and prefer the
+                    // captured full text only as a fallback when no per-chunk
+                    // text was streamed.
+                    let chunk_text =
+                        parsed
+                            .content
+                            .as_ref()
+                            .and_then(|c| match c.content.as_ref() {
+                                Some(message_content::Content::Text(text)) => Some(text.as_str()),
+                                _ => None,
+                            });
+                    if !parsed.done {
+                        if let Some(text) = chunk_text {
+                            accumulated_text.push_str(text);
+                        }
+                        return StreamingTraceUpdate::None;
+                    }
+                    let usage = parsed.usage.as_ref().and_then(|u| {
+                        generic_tracing_helper::streaming_usage_map(
+                            u.prompt_tokens,
+                            u.completion_tokens,
+                        )
+                    });
+                    let final_text = if accumulated_text.is_empty() {
+                        chunk_text.unwrap_or("").to_string()
+                    } else {
+                        std::mem::take(&mut accumulated_text)
+                    };
+                    let output = serde_json::json!({
+                        "role": "assistant",
+                        "content": final_text,
+                    });
+                    StreamingTraceUpdate::Final { output, usage }
+                },
+            )
+        } else {
+            Box::pin(stream)
+        };
+
+        Ok(traced)
     }
 }
 

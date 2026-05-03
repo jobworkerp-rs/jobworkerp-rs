@@ -209,7 +209,11 @@ async fn test_genai_auto_select_streaming_picks_function_set() -> Result<()> {
     let metadata = HashMap::new();
 
     println!("Sending auto-select streaming request to GenAI (via Ollama)...");
-    let result = timeout(TEST_TIMEOUT, service.request_chat_stream(args, metadata)).await;
+    let result = timeout(
+        TEST_TIMEOUT,
+        service.request_chat_stream(args, metadata, None),
+    )
+    .await;
 
     match result {
         Ok(Ok(mut stream)) => {

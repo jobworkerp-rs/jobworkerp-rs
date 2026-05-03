@@ -18,8 +18,34 @@ use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::super::generic_tracing_helper::{GenericLLMTracingHelper, LLMMessage};
+use command_utils::trace::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType};
+
+use super::super::generic_tracing_helper::{
+    GenericLLMTracingHelper, LLMMessage, StreamingTraceUpdate,
+};
 use super::super::tracing::genai_helper::GenaiCompletionTracingHelper;
+
+/// Build a generation span for a genai-backed text completion request.
+fn build_genai_completion_span(
+    model: &str,
+    prompt: Option<String>,
+    metadata: &HashMap<String, String>,
+) -> OtelSpanAttributes {
+    let mut builder = OtelSpanBuilder::new("genai.completion.completions")
+        .span_type(OtelSpanType::Generation)
+        .model(model.to_string())
+        .system("genai")
+        .operation_name("text_completion")
+        .input(serde_json::json!(prompt.unwrap_or_default()))
+        .openinference_span_kind("LLM");
+    if let Some(sid) = metadata.get("session_id").cloned() {
+        builder = builder.session_id(sid);
+    }
+    if let Some(uid) = metadata.get("user_id").cloned() {
+        builder = builder.user_id(uid);
+    }
+    builder.build()
+}
 
 pub struct GenaiLLMConfig {
     pub model_name: String,
@@ -259,8 +285,18 @@ impl GenaiCompletionService {
         &self,
         args: LlmCompletionArgs,
         metadata: HashMap<String, String>,
+        parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let options = Self::build_options(&args);
+        let span_attributes = if GenericLLMTracingHelper::get_otel_client(self).is_some() {
+            Some(build_genai_completion_span(
+                &self.model,
+                Some(args.prompt.clone()),
+                &metadata,
+            ))
+        } else {
+            None
+        };
         let messages = self.messages(args);
         let chat_req = ChatRequest::new(messages);
         tracing::debug!(
@@ -410,7 +446,66 @@ impl GenaiCompletionService {
             }))
             .boxed();
 
-        Ok(stream)
+        let traced = if let Some(span_attrs) = span_attributes {
+            use prost::Message as _;
+            let mut accumulated = String::with_capacity(4096);
+            GenericLLMTracingHelper::with_streaming_response_tracing(
+                self,
+                parent_context,
+                span_attrs,
+                stream,
+                move |item: &ResultOutputItem| {
+                    let bytes = match item.item.as_ref() {
+                        Some(result_output_item::Item::Data(b)) => b,
+                        _ => return StreamingTraceUpdate::None,
+                    };
+                    let parsed = match LlmCompletionResult::decode(bytes.as_slice()) {
+                        Ok(p) => p,
+                        Err(_) => return StreamingTraceUpdate::None,
+                    };
+                    // The `done=true` chunk carries `End.captured_content`
+                    // (the full text already aggregated by GenAI). Adding it
+                    // to `accumulated`, which already holds the per-chunk
+                    // concatenation, would duplicate the body in the trace.
+                    // Skip accumulation on the terminal chunk and use the
+                    // captured full text only as a fallback when no per-chunk
+                    // text was streamed.
+                    let chunk_text =
+                        parsed
+                            .content
+                            .as_ref()
+                            .and_then(|c| match c.content.as_ref() {
+                                Some(message_content::Content::Text(text)) => Some(text.as_str()),
+                                _ => None,
+                            });
+                    if !parsed.done {
+                        if let Some(text) = chunk_text {
+                            accumulated.push_str(text);
+                        }
+                        return StreamingTraceUpdate::None;
+                    }
+                    let usage = parsed.usage.as_ref().and_then(|u| {
+                        super::super::generic_tracing_helper::streaming_usage_map(
+                            u.prompt_tokens,
+                            u.completion_tokens,
+                        )
+                    });
+                    let final_text = if accumulated.is_empty() {
+                        chunk_text.unwrap_or("").to_string()
+                    } else {
+                        std::mem::take(&mut accumulated)
+                    };
+                    StreamingTraceUpdate::Final {
+                        output: serde_json::json!(final_text),
+                        usage,
+                    }
+                },
+            )
+        } else {
+            stream
+        };
+
+        Ok(traced)
     }
 }
 

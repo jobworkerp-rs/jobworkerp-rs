@@ -5,7 +5,11 @@ use anyhow::Result;
 use command_utils::trace::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType};
 use command_utils::trace::impls::GenericOtelClient;
 use command_utils::trace::otel_span::GenAIOtelClient;
+use futures::Stream;
+use futures::StreamExt;
+use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
+use opentelemetry::global::BoxedSpan;
 use serde_json::json;
 
 /// Generic trait for OpenTelemetry tracing functionality in LLM services
@@ -300,6 +304,237 @@ pub trait GenericLLMTracingHelper {
             Ok(())
         }
     }
+
+    /// Open a span for a single tool call as a child of `parent_context`.
+    ///
+    /// Returns `None` when no otel client is configured. The caller must call
+    /// `finish_tool_span` (or drop the span) to terminate it.
+    fn open_tool_span(
+        &self,
+        function_name: &str,
+        arguments: serde_json::Value,
+        metadata: &HashMap<String, String>,
+        parent_context: Option<opentelemetry::Context>,
+    ) -> Option<BoxedSpan> {
+        let client = self.get_otel_client()?;
+        let attrs = self.create_tool_call_span_attributes(function_name, arguments, metadata);
+        let span = match parent_context {
+            Some(ctx) => client.start_with_context(attrs, ctx),
+            None => client.start_new_span(attrs),
+        };
+        Some(span)
+    }
+
+    /// Wrap an async stream with a generation span.
+    ///
+    /// The span is started before the first chunk is awaited and is guaranteed to end
+    /// when the stream terminates (or is dropped). The caller supplies a `finalize`
+    /// closure that inspects each chunk and reports either no-op, the final state, or
+    /// an error. The final state is recorded onto the span as `langfuse.observation.output`
+    /// (and `gen_ai.usage.*` for usage), then the span is closed.
+    fn with_streaming_response_tracing<S, T, F>(
+        &self,
+        parent_context: Option<opentelemetry::Context>,
+        span_attributes: OtelSpanAttributes,
+        stream: S,
+        mut finalize: F,
+    ) -> BoxStream<'static, T>
+    where
+        S: Stream<Item = T> + Send + 'static,
+        T: Send + 'static,
+        F: FnMut(&T) -> StreamingTraceUpdate + Send + 'static,
+    {
+        let otel_client = self.get_otel_client().cloned();
+        // No tracer configured: short-circuit so the wrapper costs nothing.
+        let Some(client) = otel_client else {
+            return stream.boxed();
+        };
+
+        let span = if let Some(ref ctx) = parent_context {
+            client.start_with_context(span_attributes, ctx.clone())
+        } else {
+            client.start_new_span(span_attributes)
+        };
+        // The Drop impl on StreamSpanGuard guarantees `end()` runs even if the
+        // returned stream is dropped before reaching its `Final` chunk (e.g. the
+        // consumer aborts mid-stream).
+        let guard = StreamSpanGuard::new(span);
+
+        let traced = async_stream::stream! {
+            let mut guard = guard;
+            futures::pin_mut!(stream);
+            while let Some(item) = stream.next().await {
+                match finalize(&item) {
+                    StreamingTraceUpdate::None => {}
+                    StreamingTraceUpdate::Final { output, usage } => {
+                        guard.finish_ok(output, usage);
+                    }
+                    StreamingTraceUpdate::Error(message) => {
+                        guard.finish_error(message);
+                    }
+                }
+                yield item;
+            }
+        };
+
+        traced.boxed()
+    }
+}
+
+/// Update emitted by the per-chunk `finalize` callback of
+/// [`GenericLLMTracingHelper::with_streaming_response_tracing`].
+pub enum StreamingTraceUpdate {
+    /// Intermediate chunk — no span change.
+    None,
+    /// Stream reached its terminal chunk; record the final output and usage and
+    /// close the span as Ok.
+    Final {
+        output: serde_json::Value,
+        usage: Option<HashMap<String, i64>>,
+    },
+    /// Stream errored out; record the message and close the span as Error.
+    Error(String),
+}
+
+/// RAII guard that owns the streaming generation span and ends it exactly once.
+///
+/// `finish_ok` / `finish_error` set the recorded outcome and end the span. If neither
+/// is called (consumer dropped the stream early), `Drop` ends the span anyway so the
+/// tracer never leaks an open span.
+struct StreamSpanGuard {
+    span: Option<BoxedSpan>,
+}
+
+impl StreamSpanGuard {
+    fn new(span: BoxedSpan) -> Self {
+        Self { span: Some(span) }
+    }
+
+    fn finish_ok(&mut self, output: serde_json::Value, usage: Option<HashMap<String, i64>>) {
+        let Some(mut span) = self.span.take() else {
+            return; // already finalised
+        };
+        use opentelemetry::trace::{Span, Status};
+        if let Ok(output_str) = serde_json::to_string(&output) {
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "langfuse.observation.output",
+                output_str.clone(),
+            ));
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "gen_ai.completion",
+                output_str,
+            ));
+        }
+        if let Some(usage) = usage {
+            if let Ok(usage_str) = serde_json::to_string(&usage) {
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "langfuse.observation.usage_details",
+                    usage_str,
+                ));
+            }
+            for (key, value) in &usage {
+                match key.as_str() {
+                    "input_tokens" | "prompt_tokens" => {
+                        span.set_attribute(opentelemetry::KeyValue::new(
+                            "gen_ai.usage.input_tokens",
+                            *value,
+                        ));
+                    }
+                    "output_tokens" | "completion_tokens" => {
+                        span.set_attribute(opentelemetry::KeyValue::new(
+                            "gen_ai.usage.output_tokens",
+                            *value,
+                        ));
+                    }
+                    "total_tokens" => {
+                        span.set_attribute(opentelemetry::KeyValue::new(
+                            "gen_ai.usage.total_tokens",
+                            *value,
+                        ));
+                    }
+                    other => {
+                        span.set_attribute(opentelemetry::KeyValue::new(
+                            format!("gen_ai.usage.{other}"),
+                            *value,
+                        ));
+                    }
+                }
+            }
+        }
+        span.set_status(Status::Ok);
+        span.end();
+    }
+
+    fn finish_error(&mut self, message: String) {
+        let Some(mut span) = self.span.take() else {
+            return;
+        };
+        use opentelemetry::trace::{Span, Status};
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "langfuse.observation.level",
+            "ERROR",
+        ));
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "error.message",
+            message.clone(),
+        ));
+        span.set_status(Status::error(message));
+        span.end();
+    }
+}
+
+impl Drop for StreamSpanGuard {
+    fn drop(&mut self) {
+        if let Some(mut span) = self.span.take() {
+            use opentelemetry::trace::Span;
+            // Stream was dropped before terminating naturally — close the span to
+            // avoid leaking it into the tracer's never-ending state.
+            span.end();
+        }
+    }
+}
+
+/// Record the result of a tool execution onto its span and end it.
+///
+/// `success = false` marks the span as Error with `result` as the message; `true`
+/// marks it Ok. A `None` span is silently ignored so callers can use this with
+/// optional spans returned by `open_tool_span`.
+pub fn finish_tool_span(span: Option<BoxedSpan>, result: &str, success: bool) {
+    let Some(mut span) = span else {
+        return;
+    };
+    use opentelemetry::trace::{Span, Status};
+    span.set_attribute(opentelemetry::KeyValue::new(
+        "langfuse.observation.output",
+        result.to_string(),
+    ));
+    if success {
+        span.set_status(Status::Ok);
+    } else {
+        span.set_status(Status::error(result.to_string()));
+    }
+    span.end();
+}
+
+/// Build a streaming usage map from prompt/completion token counts.
+///
+/// Returns `None` when both inputs are `None` so callers can pass it through to
+/// `StreamingTraceUpdate::Final::usage` without an extra wrapping conditional.
+pub fn streaming_usage_map(
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+) -> Option<HashMap<String, i64>> {
+    if prompt_tokens.is_none() && completion_tokens.is_none() {
+        return None;
+    }
+    let mut m = HashMap::new();
+    if let Some(p) = prompt_tokens {
+        m.insert("prompt_tokens".to_string(), p as i64);
+    }
+    if let Some(c) = completion_tokens {
+        m.insert("completion_tokens".to_string(), c as i64);
+    }
+    Some(m)
 }
 
 /// Trait for LLM message types
