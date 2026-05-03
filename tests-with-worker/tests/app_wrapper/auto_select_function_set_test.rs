@@ -220,7 +220,7 @@ async fn test_auto_select_streaming_picks_function_set() -> Result<()> {
     println!("Sending auto-select streaming request to Ollama...");
     let result = timeout(
         TEST_TIMEOUT,
-        Arc::new(service).request_stream_chat(args, metadata),
+        Arc::new(service).request_stream_chat(args, metadata, None),
     )
     .await;
 
