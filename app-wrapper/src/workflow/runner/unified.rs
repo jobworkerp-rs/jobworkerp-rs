@@ -19,6 +19,7 @@ use anyhow::{Result, anyhow};
 use app::module::AppModule;
 use async_trait::async_trait;
 use command_utils::trace::Tracing;
+use command_utils::trace::attr::langfuse_keys;
 use futures::stream::BoxStream;
 use futures::{StreamExt, pin_mut};
 use jobworkerp_base::APP_NAME;
@@ -171,7 +172,13 @@ impl WorkflowUnifiedRunnerImpl {
         args: &WorkflowRunArgs,
         metadata: HashMap<String, String>,
     ) -> Result<Vec<u8>> {
-        let span = Self::otel_span_from_metadata(&metadata, APP_NAME, "workflow.run");
+        use opentelemetry::trace::Span;
+        let mut span = Self::otel_span_from_metadata(&metadata, APP_NAME, "workflow.run");
+        // Record input now, output just before drop, so Langfuse shows both columns.
+        span.set_attribute(opentelemetry::KeyValue::new(
+            langfuse_keys::OBSERVATION_INPUT,
+            args.input.clone(),
+        ));
         let cx = opentelemetry::Context::current_with_span(span);
         let execution_id = ExecutionId::new_opt(args.execution_id.clone());
 
@@ -212,7 +219,7 @@ impl WorkflowUnifiedRunnerImpl {
         )
         .await?;
 
-        let workflow_stream = executor.execute_workflow(Arc::new(cx));
+        let workflow_stream = executor.execute_workflow(Arc::new(cx.clone()));
         pin_mut!(workflow_stream);
 
         let mut final_context = None;
@@ -245,6 +252,13 @@ impl WorkflowUnifiedRunnerImpl {
                 res.output.as_ref().map(|o| o.to_string())
             },
         };
+        // Stamp final output onto the root span before its Context is dropped.
+        use opentelemetry::trace::TraceContextExt;
+        cx.span().set_attribute(opentelemetry::KeyValue::new(
+            langfuse_keys::OBSERVATION_OUTPUT,
+            r.output.clone(),
+        ));
+        drop(cx);
         Ok(r.encode_to_vec())
     }
 
@@ -254,11 +268,15 @@ impl WorkflowUnifiedRunnerImpl {
         args: &WorkflowRunArgs,
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Mirror execute_run (line 174): build a root span owned by the returned stream so
-        // child spans created downstream by execute_workflow_with_events have a valid parent.
-        // Without this, create_context returns an empty Context and child spans end up with
-        // a zero trace_id and never form a recognisable trace in the backend (Langfuse).
-        let span = Self::otel_span_from_metadata(&metadata, APP_NAME, "workflow.run_stream");
+        use opentelemetry::trace::Span;
+        // Without an explicit root span here, `create_context` returns an empty Context
+        // and downstream child spans end up with a zero trace_id — the trace then never
+        // surfaces in Langfuse.
+        let mut span = Self::otel_span_from_metadata(&metadata, APP_NAME, "workflow.run_stream");
+        span.set_attribute(opentelemetry::KeyValue::new(
+            langfuse_keys::OBSERVATION_INPUT,
+            args.input.clone(),
+        ));
         let cx = opentelemetry::Context::current_with_span(span);
         let metadata_arc = Arc::new(metadata.clone());
         let execution_id = ExecutionId::new_opt(args.execution_id.clone());
@@ -302,11 +320,21 @@ impl WorkflowUnifiedRunnerImpl {
         );
 
         let workflow_stream = executor.execute_workflow(Arc::new(cx.clone()));
-        let inner_stream = workflow_stream
-            .then(|result| async move {
-                match result {
-                    Ok(context) => {
-                        let workflow_result = WorkflowResult {
+        // root_cx is moved into the trailing `once` future so the BoxedSpan stays
+        // alive until the stream emits End — at that point the Context drops and the
+        // span ends. last_output captures the most recent successful output so we can
+        // stamp it onto the root span there. Faulted chunks are intentionally NOT
+        // recorded so an error mid-stream doesn't blank out an earlier good value.
+        let root_cx = cx;
+        let last_output: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let last_output_for_then = last_output.clone();
+        let output_stream = workflow_stream
+            .then(move |result| {
+                let last_output = last_output_for_then.clone();
+                async move {
+                    let workflow_result = match result {
+                        Ok(context) => WorkflowResult {
                             id: context.id.to_string(),
                             output: serde_json::to_string(&context.output).unwrap_or_default(),
                             position: context.position.as_json_pointer(),
@@ -320,49 +348,46 @@ impl WorkflowUnifiedRunnerImpl {
                             } else {
                                 context.output.as_ref().map(|o| o.to_string())
                             },
-                        };
-                        ResultOutputItem {
-                            item: Some(proto::jobworkerp::data::result_output_item::Item::Data(
-                                workflow_result.encode_to_vec(),
-                            )),
+                        },
+                        Err(e) => {
+                            tracing::error!("Error in workflow execution: {:?}", e);
+                            WorkflowResult {
+                                id: "error".to_string(),
+                                output: "".to_string(),
+                                position: e.as_ref().instance.clone().unwrap_or_default(),
+                                status: WorkflowStatus::Faulted as i32,
+                                error_message: Some(format!("Failed to execute workflow: {e}")),
+                            }
                         }
+                    };
+                    if workflow_result.status != WorkflowStatus::Faulted as i32
+                        && let Ok(mut slot) = last_output.lock()
+                    {
+                        *slot = Some(workflow_result.output.clone());
                     }
-                    Err(e) => {
-                        tracing::error!("Error in workflow execution: {:?}", e);
-                        let workflow_result = WorkflowResult {
-                            id: "error".to_string(),
-                            output: "".to_string(),
-                            position: e.as_ref().instance.clone().unwrap_or_default(),
-                            status: WorkflowStatus::Faulted as i32,
-                            error_message: Some(format!("Failed to execute workflow: {e}")),
-                        };
-                        ResultOutputItem {
-                            item: Some(proto::jobworkerp::data::result_output_item::Item::Data(
-                                workflow_result.encode_to_vec(),
-                            )),
-                        }
+                    ResultOutputItem {
+                        item: Some(proto::jobworkerp::data::result_output_item::Item::Data(
+                            workflow_result.encode_to_vec(),
+                        )),
                     }
                 }
             })
             .chain(futures::stream::once(async move {
+                if let Some(output) = last_output.lock().ok().and_then(|s| s.clone()) {
+                    use opentelemetry::trace::TraceContextExt;
+                    root_cx.span().set_attribute(opentelemetry::KeyValue::new(
+                        langfuse_keys::OBSERVATION_OUTPUT,
+                        output,
+                    ));
+                }
+                drop(root_cx);
                 ResultOutputItem {
                     item: Some(proto::jobworkerp::data::result_output_item::Item::End(
                         proto::jobworkerp::data::Trailer { metadata },
                     )),
                 }
-            }));
-
-        // Wrap the stream so the root Context (owning the BoxedSpan) lives until the
-        // consumer drops the stream; BoxedSpan::Drop ends the span at that point.
-        let root_cx = cx;
-        let output_stream = async_stream::stream! {
-            let _root_cx = root_cx;
-            futures::pin_mut!(inner_stream);
-            while let Some(item) = inner_stream.next().await {
-                yield item;
-            }
-        }
-        .boxed();
+            }))
+            .boxed();
 
         Ok(output_stream)
     }
