@@ -614,7 +614,7 @@ impl ForTaskStreamExecutor {
                                         ForOnError::Continue => {
                                             // Log the error and continue to next item
                                             tracing::warn!("Continuing to next item due to onError=continue");
-                                            yield Err(e);
+                                            // yield Err(e); comment out to avoid abort
                                             // Break from current item's processing but continue with next items
                                             break;
                                         }
