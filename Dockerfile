@@ -23,7 +23,7 @@ COPY admin-ui/ .
 RUN pnpm build
 
 # Runtime Stage
-FROM nvcr.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+FROM nvcr.io/nvidia/cuda:13.1.2-cudnn-runtime-ubuntu24.04
 
 RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y libssl3 libcurl4 libgomp1 docker.io docker-compose nginx gosu protobuf-compiler \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
