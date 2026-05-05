@@ -152,11 +152,7 @@ impl Plugins {
                     Err(e) => {
                         // Surface the underlying cause (libloading errors include
                         // unresolved symbols, missing shared libs, ABI mismatches).
-                        tracing::warn!(
-                            "cannot load plugin: {:?}: {:#}",
-                            file.path(),
-                            e
-                        );
+                        tracing::warn!("cannot load plugin: {:?}: {:#}", file.path(), e);
                     }
                 }
             } else if !file.path().exists() {
