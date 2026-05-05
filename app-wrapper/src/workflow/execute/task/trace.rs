@@ -4,6 +4,22 @@ use command_utils::trace::Tracing;
 use opentelemetry::KeyValue;
 use opentelemetry::trace::SpanRef;
 
+// Span attribute keys. Centralised so renames stay consistent across
+// production code and the tests that assert on these keys.
+const ATTR_OPERATION_NAME: &str = "operation.name";
+const ATTR_TASK_INPUT: &str = "workflow.task.input";
+const ATTR_TASK_POSITION: &str = "workflow.task.position";
+const ATTR_TASK_OUTPUT: &str = "workflow.task.output";
+const ATTR_TASK_FLOW_DIRECTIVE: &str = "workflow.task.flow_directive";
+const ATTR_TASK_DURATION_MS: &str = "workflow.task.duration_ms";
+const ATTR_TASK_STATUS: &str = "workflow.task.status";
+const ATTR_FOR_INDEX: &str = "workflow.task.for.index";
+const ATTR_FOR_ITEM: &str = "workflow.task.for.item";
+
+fn json_attr(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).unwrap_or_default()
+}
+
 /// Trait for recording task execution traces to OpenTelemetry spans
 pub trait TaskTracing: Tracing {
     fn record_task_span(
@@ -20,51 +36,75 @@ pub trait TaskTracing: Tracing {
         task: &TaskContext,
         position_json_pointer: String,
     ) {
-        let input_json = serde_json::to_string(&task.input).unwrap_or_default();
-        // Record span attributes using OpenTelemetry semantic conventions
+        // Skip the JSON serialisation when the span is non-recording (sampled
+        // out or no-op tracer). `task.input` can be large (e.g. LLM payloads),
+        // so this gate is a meaningful per-task save on the hot path.
+        if !span.is_recording() {
+            return;
+        }
         span.set_attributes(vec![
-            KeyValue::new("operation.name", operation_name),
-            KeyValue::new("workflow.task.input", input_json),
-            KeyValue::new("workflow.task.position", position_json_pointer),
+            KeyValue::new(ATTR_OPERATION_NAME, operation_name),
+            KeyValue::new(ATTR_TASK_INPUT, json_attr(&task.input)),
+            KeyValue::new(ATTR_TASK_POSITION, position_json_pointer),
         ]);
-        // span.record("workflow.context_variables", &context_vars_json);
+    }
+    /// Record per-iteration metadata on a `for` task's branch span.
+    /// `workflow.task.input` is intentionally not set here; the inner do/run
+    /// task spans record the real (post-`from`) input themselves.
+    fn record_for_item(
+        span: &mut SpanRef,
+        operation_name: String,
+        item: &serde_json::Value,
+        index: usize,
+        position_json_pointer: String,
+    ) {
+        if !span.is_recording() {
+            return;
+        }
+        span.set_attributes(vec![
+            KeyValue::new(ATTR_OPERATION_NAME, operation_name),
+            KeyValue::new(ATTR_TASK_POSITION, position_json_pointer),
+            KeyValue::new(ATTR_FOR_INDEX, index as i64),
+            KeyValue::new(ATTR_FOR_ITEM, json_attr(item)),
+        ]);
     }
     fn record_task_output(
         span: &SpanRef<'_>,
         result_task: &TaskContext,
         execution_duration_ms: i64,
     ) {
-        let output = &result_task.output;
-        let flow_directive = &result_task.flow_directive;
-
-        let output_json = serde_json::to_string(output).unwrap_or_default();
-
-        // Record task execution result to span attributes
+        if !span.is_recording() {
+            return;
+        }
         span.set_attributes(vec![
-            KeyValue::new("workflow.task.output", output_json.clone()),
+            KeyValue::new(ATTR_TASK_OUTPUT, json_attr(&result_task.output)),
             KeyValue::new(
-                "workflow.task.flow_directive",
-                format!("{flow_directive:?}"),
+                ATTR_TASK_FLOW_DIRECTIVE,
+                format!("{:?}", &result_task.flow_directive),
             ),
-            KeyValue::new("workflow.task.duration_ms", execution_duration_ms),
-            KeyValue::new("workflow.task.status", "completed"),
+            KeyValue::new(ATTR_TASK_DURATION_MS, execution_duration_ms),
+            KeyValue::new(ATTR_TASK_STATUS, "completed"),
         ]);
     }
     #[allow(clippy::borrowed_box)]
     fn record_result(span: &SpanRef<'_>, result: Result<&WorkflowStreamEvent, &Box<Error>>) {
         match result {
             Ok(event) => {
-                if let Some(task) = event.context() {
+                if span.is_recording()
+                    && let Some(task) = event.context()
+                {
                     span.set_attributes(vec![KeyValue::new(
-                        "workflow.task.output",
-                        serde_json::to_string(&task.output).unwrap_or_default(),
+                        ATTR_TASK_OUTPUT,
+                        json_attr(&task.output),
                     )]);
                 }
                 span.set_status(opentelemetry::trace::Status::Ok);
             }
             Err(e) => {
                 span.set_status(opentelemetry::trace::Status::error(e.to_string()));
-                span.set_attribute(KeyValue::new("error", format!("{e:#?}")));
+                if span.is_recording() {
+                    span.set_attribute(KeyValue::new("error", format!("{e:#?}")));
+                }
             }
         }
     }

@@ -133,6 +133,29 @@ impl ForTaskStreamExecutor {
         Ok((task_context, while_cond))
     }
 
+    // Wrap a per-item failure as an Ok(TaskCompleted) event so onError=continue
+    // doesn't abort the whole workflow. The error is preserved inside the
+    // event's output payload for downstream observability.
+    async fn build_item_error_event(
+        task_name: &str,
+        error: &workflow::Error,
+        index: usize,
+        item: &serde_json::Value,
+        base_context: &TaskContext,
+    ) -> WorkflowStreamEvent {
+        let mut ctx = base_context.clone_with_isolated_position().await;
+        let error_json = serde_json::to_value(error)
+            .unwrap_or_else(|_| serde_json::json!({ "detail": error.to_string() }));
+        let payload = serde_json::json!({
+            "error": error_json,
+            "index": index,
+            "item": item,
+        });
+        ctx.set_raw_output(payload);
+        let pos = ctx.position.read().await.as_json_pointer();
+        WorkflowStreamEvent::task_completed_with_position("forTask", task_name, &pos, ctx)
+    }
+
     async fn initialize_execution(
         &self,
         task_name: &str,
@@ -221,6 +244,9 @@ impl ForTaskStreamExecutor {
         let cancel_tx = Arc::new(cancel_tx);
 
         let mut has_items = false;
+        // Track prepare-time DSL failures so we don't take the empty-stream early-return
+        // path (which would silently swallow the error sent into `tx`).
+        let mut prepare_error_pending = false;
 
         // First pass - prepare all items and determine which ones should be processed
         let mut items_to_process = Vec::new();
@@ -233,32 +259,40 @@ impl ForTaskStreamExecutor {
                 Ok((prepared_context, while_cond)) => {
                     if Self::eval_as_bool(&while_cond) {
                         has_items = true;
-                        items_to_process.push((i, prepared_context));
+                        // Carry the raw item value alongside the prepared context so the
+                        // spawned task can include it in onError=continue error events.
+                        items_to_process.push((i, prepared_context, item.clone()));
                     } else {
                         tracing::debug!("for: while condition is false, skipping item {}", i);
                         break;
                     }
                 }
                 Err(e) => {
-                    // Instead of failing the entire operation, record this specific error
-                    // and let other tasks continue
-                    tracing::error!("Error preparing item {}: {:?}", i, e);
-
-                    // Send the error directly into the stream instead of returning early
+                    // prepare_for_item failures are DSL-level errors (broken jq expression
+                    // or malformed `while` clause), not per-item runtime errors. They are
+                    // outside the scope of `onError: continue`. Cancel any siblings already
+                    // spawned and propagate the error so the workflow faults.
+                    tracing::error!(
+                        "Error preparing item {} (DSL/expression error, faulting regardless of onError): {:?}",
+                        i,
+                        e
+                    );
+                    prepare_error_pending = true;
+                    let _ = cancel_tx.send(true);
                     let tx_err = tx.clone();
-                    let e_clone = e.clone();
                     tokio::spawn(async move {
-                        let _ = tx_err.send(Err(e_clone)).await;
+                        let _ = tx_err.send(Err(e)).await;
                     });
-
-                    // Continue with other items
-                    continue;
+                    // Stop preparing further items; let already-spawned tasks drain.
+                    break;
                 }
             };
         }
 
-        // If no items to process, return a stream with just the final result
-        if !has_items {
+        // If no items to process AND no prepare error is pending, short-circuit with the
+        // empty-completion event. When a prepare error was already queued onto `tx`,
+        // fall through to the receiver-driven path so that error reaches the consumer.
+        if !has_items && !prepare_error_pending {
             let mut final_ctx = original_context;
             final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
             final_ctx.remove_context_value(item_name).await;
@@ -280,7 +314,7 @@ impl ForTaskStreamExecutor {
             tokio::runtime::Handle::current().metrics().num_workers()
         );
         let mut join_set = tokio::task::JoinSet::new();
-        for (i, prepared_context) in items_to_process {
+        for (i, prepared_context, item_value) in items_to_process {
             // Clone all resources needed for this task
             let tx = tx.clone();
             let do_task_clone = do_task.clone();
@@ -297,6 +331,9 @@ impl ForTaskStreamExecutor {
             let cancel_tx_clone = cancel_tx.clone();
             let mut cancel_rx_clone = cancel_rx.clone();
             let emit_streaming_data = self.emit_streaming_data;
+            let item_value_for_err = item_value.clone();
+            let task_name_for_err = task_name.to_string();
+            let original_ctx_for_err = original_context.clone();
 
             // Spawn this task asynchronously
             join_set.spawn(async move {
@@ -305,13 +342,19 @@ impl ForTaskStreamExecutor {
                 let ccx = Arc::new(opentelemetry::Context::current_with_span(span));
                 let ccx_clone = ccx.clone();
                 let mut span = ccx_clone.span();
-                Self::record_task_input(
+                // Record per-iteration metadata (item value + index) on the
+                // branch span. The inner do-task spans record their own real
+                // input via TaskExecutor::execute, so we deliberately avoid
+                // setting `workflow.task.input` here (it would otherwise carry
+                // the for-task-level input, i.e. the entire array).
+                Self::record_for_item(
                     &mut span,
                     format!(
                         "for_parallel_task:{}_{}",
                         &task_name_formatted, &item_name_clone
                     ),
-                    &prepared_context,
+                    &item_value,
+                    i,
                     prepared_context.position.read().await.as_json_pointer(),
                 );
 
@@ -390,12 +433,37 @@ impl ForTaskStreamExecutor {
                                         result
                                     };
 
+                                    // On error, react per onError policy: Break signals cancel
+                                    // and propagates Err; Continue converts the Err into an
+                                    // Ok(TaskCompleted) carrying the error so upstream stream
+                                    // consumers don't treat it as a fatal abort.
+                                    let result = match result {
+                                        Ok(event) => Ok(event),
+                                        Err(e) => match on_error {
+                                            ForOnError::Break => {
+                                                let _ = cancel_tx_clone.send(true);
+                                                tracing::warn!("Error occurred, cancelling all parallel tasks due to onError=break");
+                                                Err(e)
+                                            }
+                                            ForOnError::Continue => {
+                                                Self::record_error(&span, &e.to_string());
+                                                tracing::warn!(
+                                                    "Continuing past error in parallel for-item {} due to onError=continue",
+                                                    i
+                                                );
+                                                let event = ForTaskStreamExecutor::build_item_error_event(
+                                                    &task_name_for_err,
+                                                    &e,
+                                                    i,
+                                                    &item_value_for_err,
+                                                    &original_ctx_for_err,
+                                                )
+                                                .await;
+                                                Ok(event)
+                                            }
+                                        },
+                                    };
                                     let is_error = result.is_err();
-                                    if is_error && on_error == ForOnError::Break {
-                                        // Signal all other tasks to cancel
-                                        let _ = cancel_tx_clone.send(true);
-                                        tracing::warn!("Error occurred, cancelling all parallel tasks due to onError=break");
-                                    }
 
                                     Self::record_result(&span, result.as_ref());
                                     if tx.send(result).await.is_err() {
@@ -555,6 +623,20 @@ impl ForTaskStreamExecutor {
                             format!("for_task_{task_name}:{item_name}_{i}"),
                         );
                         let item_cx = Arc::new(opentelemetry::Context::current_with_span(span));
+                        // Mirror the parallel branch: tag this iteration's span
+                        // with item/index so traces can identify which value of
+                        // `for.in` this branch corresponds to. The inner do/run
+                        // task spans record their own real input.
+                        {
+                            let mut span_ref = item_cx.span();
+                            Self::record_for_item(
+                                &mut span_ref,
+                                format!("for_task:{task_name}:{item_name}_{i}"),
+                                item,
+                                i,
+                                prepared_context.position.read().await.as_json_pointer(),
+                            );
+                        }
 
                         let task_name_formatted = Arc::new(format!("{task_name}_{i}"));
                         let do_stream_executor = DoTaskStreamExecutor::new(
@@ -612,10 +694,15 @@ impl ForTaskStreamExecutor {
 
                                     match on_error {
                                         ForOnError::Continue => {
-                                            // Log the error and continue to next item
+                                            // Surface the failed item as a TaskCompleted event carrying
+                                            // error info, so observers can see the failure without the
+                                            // upstream stream consumer treating Err as a fatal abort.
                                             tracing::warn!("Continuing to next item due to onError=continue");
-                                            // yield Err(e); comment out to avoid abort
-                                            // Break from current item's processing but continue with next items
+                                            let event = Self::build_item_error_event(
+                                                &task_name, &e, i, item, &task_context,
+                                            ).await;
+                                            yield Ok(event);
+                                            // Stop draining this item's stream and advance to next.
                                             break;
                                         }
                                         ForOnError::Break => {
@@ -648,20 +735,16 @@ impl ForTaskStreamExecutor {
                         }
                     }
                     Err(e) => {
-                        tracing::error!("Error preparing item {}: {:?}", i, e);
-
-                        match on_error {
-                            ForOnError::Continue => {
-                                tracing::warn!("Continuing to next item due to onError=continue");
-                                yield Err(e);
-                                // Continue with next item
-                                continue;
-                            }
-                            ForOnError::Break => {
-                                yield Err(e);
-                                return;
-                            }
-                        }
+                        // prepare_for_item failures are DSL-level errors (broken jq expression
+                        // or malformed `while` clause), not per-item runtime errors. They are
+                        // outside the scope of `onError: continue`, which only governs failures
+                        // inside the iteration body. Always fault here.
+                        tracing::error!(
+                            "Error preparing item {} (DSL/expression error, faulting regardless of onError): {:?}",
+                            i, e
+                        );
+                        yield Err(e);
+                        return;
                     }
                 }
             }
@@ -992,14 +1075,23 @@ mod tests {
                 }
             }
 
-            // Count faulted results (workflow errors are now returned as Ok with Faulted status)
-            let faulted_count = results.iter().filter(|r| {
+            // Per-item events that surfaced the failure as Ok with `error` in output.
+            let error_event_count = results.iter().filter(|r| {
                 match r {
-                    Ok(wc) => wc.status == WorkflowStatus::Faulted ||
-                        wc.output.as_ref().map(|o| o.get("error").is_some()).unwrap_or(false),
-                    Err(_) => true,
+                    Ok(wc) => wc
+                        .output
+                        .as_ref()
+                        .map(|o| o.get("error").is_some())
+                        .unwrap_or(false),
+                    Err(_) => false,
                 }
             }).count();
+
+            let faulted_status_count = results.iter().filter(|r| {
+                matches!(r, Ok(wc) if wc.status == WorkflowStatus::Faulted)
+            }).count();
+
+            let top_level_err_count = results.iter().filter(|r| r.is_err()).count();
 
             // Count successfully processed items (have processed_item in output)
             let processed_item_count = results.iter().filter(|r| {
@@ -1011,28 +1103,344 @@ mod tests {
                 }
             }).count();
 
-            println!("Results summary - faulted: {}, processed_items: {}", faulted_count, processed_item_count);
+            println!(
+                "Results summary - error_events: {}, faulted_status: {}, top_level_err: {}, processed_items: {}",
+                error_event_count, faulted_status_count, top_level_err_count, processed_item_count
+            );
 
-            // CONTINUE MODE: Verification
-            // Note: After execute_workflow API change (commit 100edc6), when ForTask yields an error,
-            // the workflow immediately transitions to Faulted status and terminates.
-            // The onError=continue behavior works within ForTask's internal loop, but the error
-            // still propagates to execute_workflow which sets the workflow to Faulted.
-
-            // Should have received some results
+            // CONTINUE MODE: with the fix, item-level failures must NOT abort the workflow.
             assert!(!results.is_empty(), "Expected some results, but got none");
 
-            // Should have at least one faulted result (from item1)
-            assert!(faulted_count >= 1, "Expected at least 1 faulted result from item1, got {}", faulted_count);
+            // No top-level Err should escape under onError=continue.
+            assert_eq!(
+                top_level_err_count, 0,
+                "Expected no top-level Err under onError=continue, got {}", top_level_err_count
+            );
 
-            // With current API: item0 processes successfully, then item1 fails and workflow terminates
-            // The processed_item_count should be at least 1 (item0 was processed before item1 failed)
-            assert!(processed_item_count >= 1, "Expected at least 1 successfully processed item (item0), got {}", processed_item_count);
+            // The workflow as a whole must not be Faulted.
+            let final_status = workflow_context.read().await.status.clone();
+            assert_ne!(
+                final_status,
+                WorkflowStatus::Faulted,
+                "Workflow must not be Faulted under onError=continue"
+            );
+            assert_eq!(
+                faulted_status_count, 0,
+                "No yielded WorkflowContext should carry Faulted status under continue, got {}",
+                faulted_status_count
+            );
 
-            println!("CONTINUE MODE VERIFICATION:");
-            println!("- item0 was processed successfully before error at item1");
-            println!("- Error at item1 caused workflow to transition to Faulted status");
-            println!("- Note: After API change, errors propagate to execute_workflow which terminates the workflow");
+            // The fixture's switch falls through to the next task without `then: end`,
+            // so every iteration emits a `process_item` event AND eventually hits
+            // `fail_item` (after switch routes back). What matters here is:
+            //   1. The loop completed every iteration (4 iterations × 4 items processed),
+            //   2. Each iteration's failure surfaced as an Ok event with `error` payload,
+            //   3. No top-level Err escaped and the workflow did not Fault.
+            assert_eq!(
+                processed_item_count, 4,
+                "Expected all 4 iterations to reach process_item, got {}",
+                processed_item_count
+            );
+            assert_eq!(
+                error_event_count, 4,
+                "Expected one Ok error event per iteration, got {}",
+                error_event_count
+            );
+
+            println!("CONTINUE MODE VERIFICATION (fixed):");
+            println!("- Loop ran all 4 iterations under onError=continue");
+            println!("- Each per-iteration failure surfaced as Ok event with error info");
+            println!("- No top-level Err escaped; workflow status remained non-Faulted");
+        });
+    }
+
+    #[test]
+    fn test_for_task_parallel_continue_on_error() {
+        // Same shape as the sequential continue test, but with `inParallel: true`.
+        // Verifies that the parallel path also converts per-item Err into Ok events
+        // under onError=continue and does not abort the workflow.
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "for-task-parallel-continue-test",
+                    "version": "1.0.0",
+                    "metadata": {}
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object",
+                            "properties": {
+                                "items": {
+                                    "type": "array",
+                                    "items": {"type": "string"}
+                                }
+                            }
+                        }
+                    }
+                },
+                "do": [
+                    {
+                        "process_items": {
+                            "for": {
+                                "in": "${.items}",
+                                "each": "item",
+                                "at": "index"
+                            },
+                            "inParallel": true,
+                            "onError": "continue",
+                            "do": [
+                                {
+                                    "item_router": {
+                                        "switch": [
+                                            {
+                                                "error_case": {
+                                                    "when": "${$index == 1}",
+                                                    "then": "fail_item"
+                                                }
+                                            },
+                                            {
+                                                "success_case": {
+                                                    "then": "process_item"
+                                                }
+                                            }
+                                        ]
+                                    }
+                                },
+                                {
+                                    "process_item": {
+                                        "set": {
+                                            "processed_item": "${$item}",
+                                            "processed_index": "${$index}"
+                                        }
+                                    }
+                                },
+                                {
+                                    "fail_item": {
+                                        "raise": {
+                                            "error": {
+                                                "type": "https://serverlessworkflow.io/errors/generic",
+                                                "status": 500,
+                                                "title": "Intentional error for testing"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            });
+
+            let workflow = Arc::new(
+                serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap()
+            );
+
+            let input = Arc::new(serde_json::json!({
+                "items": ["item0", "item1", "item2", "item3"]
+            }));
+            let context = Arc::new(serde_json::json!({}));
+
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+
+            let executor = WorkflowExecutor {
+                default_task_timeout_sec: 30,
+                job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
+                workflow: workflow.clone(),
+                workflow_context: workflow_context.clone(),
+                execution_id: None,
+                metadata: Arc::new(HashMap::new()),
+                checkpoint_repository: None,
+            };
+
+            let workflow_stream = executor.execute_workflow(
+                Arc::new(opentelemetry::Context::current()),
+            );
+            tokio::pin!(workflow_stream);
+
+            let timeout_duration = tokio::time::Duration::from_secs(15);
+            let timeout_result = tokio::time::timeout(timeout_duration, async {
+                let mut local_results = Vec::new();
+                while let Some(result) = workflow_stream.next().await {
+                    local_results.push(result);
+                    if local_results.len() > 30 {
+                        break;
+                    }
+                }
+                local_results
+            }).await;
+
+            let results = timeout_result.expect("parallel continue test timed out");
+
+            let top_level_err_count = results.iter().filter(|r| r.is_err()).count();
+            let faulted_status_count = results.iter().filter(|r| {
+                matches!(r, Ok(wc) if wc.status == WorkflowStatus::Faulted)
+            }).count();
+            let error_event_count = results.iter().filter(|r| {
+                match r {
+                    Ok(wc) => wc.output.as_ref()
+                        .map(|o| o.get("error").is_some()).unwrap_or(false),
+                    Err(_) => false,
+                }
+            }).count();
+            let processed_item_count = results.iter().filter(|r| {
+                match r {
+                    Ok(wc) => wc.output.as_ref()
+                        .and_then(|o| o.get("processed_item")).is_some(),
+                    Err(_) => false,
+                }
+            }).count();
+
+            println!(
+                "[parallel continue] errors={} faulted={} top_err={} processed={}",
+                error_event_count, faulted_status_count, top_level_err_count, processed_item_count
+            );
+
+            assert!(!results.is_empty(), "Expected some results, got none");
+            assert_eq!(top_level_err_count, 0, "No top-level Err under onError=continue");
+            assert_eq!(faulted_status_count, 0, "No Faulted status events under continue");
+
+            let final_status = workflow_context.read().await.status.clone();
+            assert_ne!(final_status, WorkflowStatus::Faulted,
+                "Workflow must not be Faulted under onError=continue (parallel)");
+
+            // Same fixture as the sequential case: switch falls through, so all 4
+            // iterations both reach `process_item` and then `fail_item`.
+            // Parallel ordering doesn't change those totals.
+            assert_eq!(processed_item_count, 4,
+                "Expected all 4 iterations to reach process_item, got {}", processed_item_count);
+            assert_eq!(error_event_count, 4,
+                "Expected one Ok error event per iteration, got {}", error_event_count);
+        });
+    }
+
+    // prepare_for_item failures (broken jq in `while`) are DSL-level errors and must
+    // fault the workflow even when onError=continue is set. Tests both sequential
+    // and parallel paths to lock in the new contract.
+    #[test]
+    fn test_for_task_prepare_error_faults_even_with_continue() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+
+            for in_parallel in [false, true] {
+                let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+                // `while` references an undefined jq function so transform_value fails
+                // during prepare_for_item for every iteration.
+                let workflow_json = serde_json::json!({
+                    "document": {
+                        "dsl": "1.0.0",
+                        "namespace": "test",
+                        "name": "for-task-prepare-error",
+                        "version": "1.0.0",
+                        "metadata": {}
+                    },
+                    "input": {
+                        "schema": {
+                            "document": {
+                                "type": "object",
+                                "properties": {
+                                    "items": {"type": "array", "items": {"type": "string"}}
+                                }
+                            }
+                        }
+                    },
+                    "do": [
+                        {
+                            "process_items": {
+                                "for": {
+                                    "in": "${.items}",
+                                    "each": "item",
+                                    "at": "index"
+                                },
+                                "while": "${ this_function_does_not_exist(.) }",
+                                "inParallel": in_parallel,
+                                "onError": "continue",
+                                "do": [
+                                    {
+                                        "noop": {
+                                            "set": { "x": 1 }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                });
+
+                let workflow = Arc::new(
+                    serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap()
+                );
+                let input = Arc::new(serde_json::json!({"items": ["a", "b", "c"]}));
+                let context = Arc::new(serde_json::json!({}));
+
+                let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                    &workflow,
+                    input.clone(),
+                    context,
+                    None,
+                )));
+
+                let executor = WorkflowExecutor {
+                    default_task_timeout_sec: 30,
+                    job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
+                    workflow: workflow.clone(),
+                    workflow_context: workflow_context.clone(),
+                    execution_id: None,
+                    metadata: Arc::new(HashMap::new()),
+                    checkpoint_repository: None,
+                };
+
+                let workflow_stream = executor.execute_workflow(
+                    Arc::new(opentelemetry::Context::current()),
+                );
+                tokio::pin!(workflow_stream);
+
+                let timeout_duration = tokio::time::Duration::from_secs(10);
+                let timeout_result = tokio::time::timeout(timeout_duration, async {
+                    let mut local_results = Vec::new();
+                    while let Some(result) = workflow_stream.next().await {
+                        local_results.push(result);
+                        if local_results.len() > 30 { break; }
+                    }
+                    local_results
+                }).await;
+
+                let results = timeout_result
+                    .unwrap_or_else(|_| panic!("prepare-error test timed out (in_parallel={})", in_parallel));
+
+                let final_status = workflow_context.read().await.status.clone();
+                let top_level_err_count = results.iter().filter(|r| r.is_err()).count();
+                let faulted_status_count = results.iter().filter(|r| {
+                    matches!(r, Ok(wc) if wc.status == WorkflowStatus::Faulted)
+                }).count();
+
+                println!(
+                    "[prepare-error in_parallel={}] final_status={:?} top_err={} faulted_status={}",
+                    in_parallel, final_status, top_level_err_count, faulted_status_count
+                );
+
+                // Either an explicit Err propagated, or the workflow ended Faulted.
+                // Both are acceptable evidence that the failure was not swallowed.
+                assert!(
+                    top_level_err_count >= 1
+                        || faulted_status_count >= 1
+                        || final_status == WorkflowStatus::Faulted,
+                    "Prepare-time DSL error must fault the workflow even with onError=continue (in_parallel={}); status={:?}, top_err={}, faulted_events={}",
+                    in_parallel, final_status, top_level_err_count, faulted_status_count
+                );
+            }
         });
     }
 
@@ -1606,5 +2014,205 @@ mod tests {
                 "Workflow should be in Waiting status after wait directive"
             );
         });
+    }
+
+    /// Verify span attributes for the for-task tracing fix:
+    /// - Each inner do_task span records its own real input (post-`from`)
+    ///   rather than the for-task-level input (the whole `in` array).
+    /// - The for branch span carries `workflow.task.for.item` and
+    ///   `workflow.task.for.index` matching the iteration value.
+    ///
+    /// Covers both sequential and parallel paths in one fixture by running
+    /// each mode against an identical workflow shape.
+    #[test]
+    fn test_for_task_span_attributes_record_per_item_input() {
+        use opentelemetry::Value as OtelValue;
+        use opentelemetry::global;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+        // Snapshot the previous global provider so we can restore it after the
+        // test, preventing pollution of any later test in the same process that
+        // observes `global::tracer_provider()`.
+        let saved_provider = global::tracer_provider();
+
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+
+            for in_parallel in [false, true] {
+                // Each iteration starts with its own exporter/provider so the
+                // first run's spans don't pollute the second run's assertions.
+                let exporter = InMemorySpanExporter::default();
+                let provider = SdkTracerProvider::builder()
+                    .with_simple_exporter(exporter.clone())
+                    .build();
+                global::set_tracer_provider(provider.clone());
+
+                let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+                // `do.process_item` uses `input.from` to project the iteration
+                // item; the post-from input must be the single string element,
+                // not the parent array.
+                let workflow_json = serde_json::json!({
+                    "document": {
+                        "dsl": "1.0.0",
+                        "namespace": "test",
+                        "name": "for-task-span-attr-test",
+                        "version": "1.0.0",
+                        "metadata": {}
+                    },
+                    "input": {
+                        "schema": {
+                            "document": {
+                                "type": "object",
+                                "properties": {
+                                    "items": {"type": "array", "items": {"type": "string"}}
+                                }
+                            }
+                        }
+                    },
+                    "do": [
+                        {
+                            "process_items": {
+                                "for": {
+                                    "in": "${.items}",
+                                    "each": "item",
+                                    "at": "index"
+                                },
+                                "inParallel": in_parallel,
+                                "do": [
+                                    {
+                                        "process_item": {
+                                            "input": { "from": "${ $item }" },
+                                            "set": { "processed": "${ . }" }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                });
+
+                let workflow =
+                    Arc::new(serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap());
+                let input = Arc::new(serde_json::json!({
+                    "items": ["alpha", "beta", "gamma"]
+                }));
+                let context = Arc::new(serde_json::json!({}));
+                let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                    &workflow,
+                    input.clone(),
+                    context,
+                    None,
+                )));
+
+                let executor = WorkflowExecutor {
+                    default_task_timeout_sec: 30,
+                    job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
+                    workflow: workflow.clone(),
+                    workflow_context: workflow_context.clone(),
+                    execution_id: None,
+                    metadata: Arc::new(HashMap::new()),
+                    checkpoint_repository: None,
+                };
+
+                let workflow_stream =
+                    executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+                tokio::pin!(workflow_stream);
+                while let Some(_r) = workflow_stream.next().await {}
+
+                // Force flush so all spans land in the exporter before assertion.
+                let _ = provider.force_flush();
+                let spans = exporter.get_finished_spans().expect("get spans");
+
+                // Helper: pull a string-valued attribute by key.
+                let attr_str = |s: &opentelemetry_sdk::trace::SpanData, key: &str| -> Option<String> {
+                    s.attributes.iter().find_map(|kv| {
+                        if kv.key.as_str() == key {
+                            match &kv.value {
+                                OtelValue::String(v) => Some(v.to_string()),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                };
+                let attr_i64 = |s: &opentelemetry_sdk::trace::SpanData, key: &str| -> Option<i64> {
+                    s.attributes.iter().find_map(|kv| {
+                        if kv.key.as_str() == key {
+                            match &kv.value {
+                                OtelValue::I64(v) => Some(*v),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                };
+
+                // 1) Each `process_item` task span must carry the per-iteration
+                //    string as its workflow.task.input — not the source array.
+                //    Match the full task-name suffix so the outer `process_items`
+                //    span (note the trailing `s`) is excluded.
+                let process_item_inputs: Vec<String> = spans
+                    .iter()
+                    .filter(|s| s.name.ends_with(":process_item"))
+                    .filter_map(|s| attr_str(s, "workflow.task.input"))
+                    .collect();
+                assert!(
+                    !process_item_inputs.is_empty(),
+                    "expected at least one process_item span (in_parallel={in_parallel})"
+                );
+                for input_json in &process_item_inputs {
+                    assert!(
+                        input_json.contains("alpha")
+                            || input_json.contains("beta")
+                            || input_json.contains("gamma"),
+                        "process_item span input should contain a single iteration value, got: {input_json} (in_parallel={in_parallel})"
+                    );
+                    // The bug used to surface the whole array; fail loudly if it
+                    // ever regresses.
+                    assert!(
+                        !(input_json.contains("alpha")
+                            && input_json.contains("beta")
+                            && input_json.contains("gamma")),
+                        "process_item span input must NOT be the entire array, got: {input_json} (in_parallel={in_parallel})"
+                    );
+                }
+
+                // 2) For-iteration branch spans must carry item + index attrs.
+                let mut for_item_attrs: Vec<(i64, String)> = spans
+                    .iter()
+                    .filter_map(|s| {
+                        let idx = attr_i64(s, "workflow.task.for.index")?;
+                        let item = attr_str(s, "workflow.task.for.item")?;
+                        Some((idx, item))
+                    })
+                    .collect();
+                for_item_attrs.sort_by_key(|(i, _)| *i);
+                for_item_attrs.dedup();
+                assert_eq!(
+                    for_item_attrs.len(),
+                    3,
+                    "expected 3 distinct iteration spans, got {:?} (in_parallel={in_parallel})",
+                    for_item_attrs
+                );
+                let expected = ["alpha", "beta", "gamma"];
+                for (i, (idx, item)) in for_item_attrs.iter().enumerate() {
+                    assert_eq!(*idx as usize, i);
+                    assert!(
+                        item.contains(expected[i]),
+                        "iteration {i} item attr should contain {} (got {item}, in_parallel={in_parallel})",
+                        expected[i]
+                    );
+                }
+
+                // Drain in-flight exports for THIS iteration's provider before
+                // installing the next one, so we don't leak spans across runs.
+                let _ = provider.shutdown();
+            }
+        });
+
+        global::set_tracer_provider(saved_provider);
     }
 }
