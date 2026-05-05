@@ -25,7 +25,7 @@ jobs:
       - name: apt upgrade
         run: |
           apt-get update
-          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates curl gnupg lsb-release docker.io
+          apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates curl gnupg lsb-release docker.io
           # Install Node.js for setup-protoc action
           curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
           apt-get install -y nodejs
@@ -154,10 +154,10 @@ jobs:
           sudo docker container prune -f || true
           sudo docker image prune -af || true
           sudo docker volume prune -f || true
-      - name: apt upgrade
+      - name: apt update
         run: |
           apt-get update
-          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates curl gnupg lsb-release docker.io
+          apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates curl gnupg lsb-release docker.io
           # Install Node.js for setup-protoc action
           curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
           apt-get install -y nodejs
