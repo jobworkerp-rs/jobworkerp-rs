@@ -361,6 +361,20 @@ impl TaskExecutor {
                             &task_context.raw_input
                         );
                         let pos_str = task_context.position.read().await.as_json_pointer();
+                        // Record input on the active span before the skip path
+                        // returns. The normal path records this in
+                        // `update_context_by_input` further below; without
+                        // this, skipped tasks would have a span with no
+                        // workflow.task.input/position attributes at all.
+                        {
+                            let mut span_ref = cx.span();
+                            Self::record_task_input(
+                                &mut span_ref,
+                                self.task_name.clone(),
+                                &task_context,
+                                pos_str.clone(),
+                            );
+                        }
                         task_context.remove_position().await; // remove task_name
                         task_context.set_completed_at();
                         let event = WorkflowStreamEvent::task_completed_with_position(

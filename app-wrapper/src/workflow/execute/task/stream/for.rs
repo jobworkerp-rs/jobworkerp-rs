@@ -451,9 +451,11 @@ impl ForTaskStreamExecutor {
                                     }
 
                                     // On error, react per onError policy: Break signals cancel
-                                    // and propagates Err; Continue converts the Err into an
-                                    // Ok(TaskCompleted) carrying the error so upstream stream
-                                    // consumers don't treat it as a fatal abort.
+                                    // and propagates Err; Continue records the error on the
+                                    // span and wraps the Err into an Ok(TaskCompleted) so
+                                    // upstream stream consumers do not treat it as a fatal
+                                    // abort. The span status set by record_error stays put
+                                    // because record_result no longer overwrites it on Ok.
                                     let result = match result {
                                         Ok(event) => Ok(event),
                                         Err(e) => match on_error {
@@ -498,14 +500,18 @@ impl ForTaskStreamExecutor {
                                     }
                                 }
                                 None => {
-                                    // Stream completed - check for Wait state
+                                    // Stream completed - check for Wait state.
+                                    // Wait inside ForTask is a structural DSL
+                                    // error, not a per-item runtime failure, so
+                                    // it must NOT honour onError=continue here:
+                                    // cancel siblings unconditionally to mirror
+                                    // the in-stream Wait detection above.
                                     let wf_status = workflow_context.read().await.status.clone();
                                     if wf_status == WorkflowStatus::Waiting {
                                         tracing::error!(
                                             "Wait directive inside ForTask is not supported (parallel, detected after stream end): task={}",
                                             task_name_formatted
                                         );
-                                        // Reset status to Running to allow error propagation
                                         workflow_context.write().await.status = WorkflowStatus::Running;
                                         let error = workflow::errors::ErrorFactory::new().bad_argument(
                                             "Wait directive inside ForTask is not currently supported. \
@@ -513,9 +519,8 @@ impl ForTaskStreamExecutor {
                                             Some(item_position.read().await.as_error_instance()),
                                             None,
                                         );
-                                        if on_error == ForOnError::Break {
-                                            let _ = cancel_tx_clone.send(true);
-                                        }
+                                        let _ = cancel_tx_clone.send(true);
+                                        Self::record_error(&span, &error.to_string());
                                         let _ = tx.send(Err(error)).await;
                                     }
                                     break;
@@ -2307,10 +2312,25 @@ mod tests {
         use opentelemetry::global;
         use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 
-        // Snapshot the previous global provider so we can restore it after the
-        // test, preventing pollution of any later test in the same process that
-        // observes `global::tracer_provider()`.
-        let saved_provider = global::tracer_provider();
+        // Snapshot the previous global provider and restore it via a RAII
+        // guard so a panic anywhere inside the test still puts the global
+        // back. This test relies on the workspace policy of running tests
+        // with --test-threads=1 (CLAUDE.md); without serial execution the
+        // global provider swap would race with any other test that observes
+        // it, so do not parallelise this test in isolation.
+        struct ProviderGuard {
+            saved: Option<opentelemetry::global::GlobalTracerProvider>,
+        }
+        impl Drop for ProviderGuard {
+            fn drop(&mut self) {
+                if let Some(p) = self.saved.take() {
+                    opentelemetry::global::set_tracer_provider(p);
+                }
+            }
+        }
+        let _guard = ProviderGuard {
+            saved: Some(global::tracer_provider()),
+        };
 
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             use crate::workflow::execute::workflow::WorkflowExecutor;
@@ -2489,7 +2509,276 @@ mod tests {
                 let _ = provider.shutdown();
             }
         });
+        // ProviderGuard restores the original global on drop.
+    }
 
-        global::set_tracer_provider(saved_provider);
+    /// In parallel + onError=continue mode, a failed iteration is exposed
+    /// upstream as Ok(TaskCompleted) so the workflow does not abort, but the
+    /// span for that iteration must NOT report success: OpenTelemetry status
+    /// is partial-ordered Ok > Error > Unset, so calling
+    /// `record_result(Ok)` after `record_error` would silently flip the span
+    /// status back to Ok and break alerting/error-rate dashboards.
+    #[test]
+    fn test_for_task_parallel_continue_keeps_error_span_status() {
+        use opentelemetry::global;
+        use opentelemetry::trace::Status;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+        struct ProviderGuard {
+            saved: Option<opentelemetry::global::GlobalTracerProvider>,
+        }
+        impl Drop for ProviderGuard {
+            fn drop(&mut self) {
+                if let Some(p) = self.saved.take() {
+                    opentelemetry::global::set_tracer_provider(p);
+                }
+            }
+        }
+        let _guard = ProviderGuard {
+            saved: Some(global::tracer_provider()),
+        };
+
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+
+            let exporter = InMemorySpanExporter::default();
+            let provider = SdkTracerProvider::builder()
+                .with_simple_exporter(exporter.clone())
+                .build();
+            global::set_tracer_provider(provider.clone());
+
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+            // Item at index 1 raises; the for-task uses inParallel + continue
+            // so the workflow keeps running. Each iteration's branch span
+            // should still expose Status::Error for index 1. Avoid `then: end`
+            // in the success path so the workflow doesn't complete and cancel
+            // siblings before the failing iteration's span is finalised.
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "for-task-parallel-continue-error-span",
+                    "version": "1.0.0",
+                    "metadata": {}
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object",
+                            "properties": {
+                                "items": {"type": "array", "items": {"type": "string"}}
+                            }
+                        }
+                    }
+                },
+                "do": [
+                    {
+                        "process_items": {
+                            "for": {
+                                "in": "${.items}",
+                                "each": "item",
+                                "at": "index"
+                            },
+                            "inParallel": true,
+                            "onError": "continue",
+                            "do": [
+                                {
+                                    "maybe_fail": {
+                                        "if": "${ $index == 1 }",
+                                        "raise": {
+                                            "error": {
+                                                "type": "https://serverlessworkflow.io/errors/generic",
+                                                "status": 500,
+                                                "title": "test failure"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            });
+
+            let workflow =
+                Arc::new(serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap());
+            let input = Arc::new(serde_json::json!({"items": ["a", "b", "c"]}));
+            let context = Arc::new(serde_json::json!({}));
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+            let executor = WorkflowExecutor {
+                default_task_timeout_sec: 30,
+                job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
+                workflow: workflow.clone(),
+                workflow_context: workflow_context.clone(),
+                execution_id: None,
+                metadata: Arc::new(HashMap::new()),
+                checkpoint_repository: None,
+            };
+
+            let workflow_stream = executor
+                .execute_workflow(Arc::new(opentelemetry::Context::current()));
+            tokio::pin!(workflow_stream);
+            while (workflow_stream.next().await).is_some() {}
+
+            let _ = provider.force_flush();
+            let spans = exporter.get_finished_spans().expect("get spans");
+
+            // Find the index-1 iteration's branch span. The parallel branch
+            // span name is the for `each` value (here: "item"). Its
+            // workflow.task.for.index attribute pinpoints which iteration.
+            let mut item1_span_status: Option<Status> = None;
+            for s in &spans {
+                let mut idx = None;
+                for kv in &s.attributes {
+                    if kv.key.as_str() == "workflow.task.for.index"
+                        && let opentelemetry::Value::I64(v) = &kv.value
+                    {
+                        idx = Some(*v);
+                    }
+                }
+                if idx == Some(1) {
+                    item1_span_status = Some(s.status.clone());
+                    break;
+                }
+            }
+
+            let status = item1_span_status.expect(
+                "parallel for-task should produce a branch span tagged with workflow.task.for.index=1",
+            );
+            assert!(
+                matches!(status, Status::Error { .. }),
+                "parallel for branch span for the failing iteration must report Status::Error even with onError=continue, got {:?}",
+                status
+            );
+
+            let _ = provider.shutdown();
+        });
+    }
+
+    /// `if: false` skip path returns before update_context_by_input, so the
+    /// post-`from` recording does not run. The skipped task's span must
+    /// still carry workflow.task.input / workflow.task.position so traces
+    /// can show *which* task was skipped and what its input would have been.
+    #[test]
+    fn test_skip_if_task_records_span_input_and_position() {
+        use opentelemetry::Value as OtelValue;
+        use opentelemetry::global;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+        struct ProviderGuard {
+            saved: Option<opentelemetry::global::GlobalTracerProvider>,
+        }
+        impl Drop for ProviderGuard {
+            fn drop(&mut self) {
+                if let Some(p) = self.saved.take() {
+                    opentelemetry::global::set_tracer_provider(p);
+                }
+            }
+        }
+        let _guard = ProviderGuard {
+            saved: Some(global::tracer_provider()),
+        };
+
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+
+            let exporter = InMemorySpanExporter::default();
+            let provider = SdkTracerProvider::builder()
+                .with_simple_exporter(exporter.clone())
+                .build();
+            global::set_tracer_provider(provider.clone());
+
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "skip-if-tracing",
+                    "version": "1.0.0",
+                    "metadata": {}
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object",
+                            "properties": { "k": {"type": "string"} }
+                        }
+                    }
+                },
+                "do": [
+                    {
+                        "always_skipped": {
+                            "if": "${ false }",
+                            "set": { "x": 1 }
+                        }
+                    }
+                ]
+            });
+
+            let workflow =
+                Arc::new(serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap());
+            let input = Arc::new(serde_json::json!({ "k": "v" }));
+            let context = Arc::new(serde_json::json!({}));
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+            let executor = WorkflowExecutor {
+                default_task_timeout_sec: 30,
+                job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
+                workflow: workflow.clone(),
+                workflow_context: workflow_context.clone(),
+                execution_id: None,
+                metadata: Arc::new(HashMap::new()),
+                checkpoint_repository: None,
+            };
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            tokio::pin!(workflow_stream);
+            while (workflow_stream.next().await).is_some() {}
+
+            let _ = provider.force_flush();
+            let spans = exporter.get_finished_spans().expect("get spans");
+
+            let skipped_span = spans
+                .iter()
+                .find(|s| s.name.as_ref().contains("always_skipped"))
+                .expect("expected a span for the skipped task");
+
+            let mut has_input = false;
+            let mut has_position = false;
+            for kv in &skipped_span.attributes {
+                if kv.key.as_str() == "workflow.task.input"
+                    && let OtelValue::String(_) = &kv.value
+                {
+                    has_input = true;
+                }
+                if kv.key.as_str() == "workflow.task.position"
+                    && let OtelValue::String(_) = &kv.value
+                {
+                    has_position = true;
+                }
+            }
+            assert!(
+                has_input,
+                "skipped task span must still carry workflow.task.input"
+            );
+            assert!(
+                has_position,
+                "skipped task span must still carry workflow.task.position"
+            );
+
+            let _ = provider.shutdown();
+        });
     }
 }
