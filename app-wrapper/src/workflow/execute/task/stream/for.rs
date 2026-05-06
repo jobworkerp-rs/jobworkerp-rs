@@ -152,7 +152,15 @@ impl ForTaskStreamExecutor {
             "index": index,
             "item": item,
         });
-        let pos = base_context.position.read().await.as_json_pointer();
+        // Prefer the error's own instance pointer — it points at the inner
+        // task that actually failed (e.g. .../for/2/do/0/raise). Falling back
+        // to base_context.position would only give the for-task root, which
+        // breaks downstream position-based dedup (AG-UI's
+        // prev_position == position check).
+        let pos = match error.instance.as_ref() {
+            Some(p) if !p.is_empty() => p.clone(),
+            _ => base_context.position.read().await.as_json_pointer(),
+        };
         WorkflowStreamEvent::for_item_failed(task_name, &pos, index as u32, payload)
     }
 
@@ -2918,5 +2926,126 @@ mod tests {
             }
             other => panic!("expected ForItemFailed proto event, got {:?}", other),
         }
+    }
+
+    /// ForItemFailed.position must point at the failing inner task, not the
+    /// for-task root. Earlier the event built its position from
+    /// `base_context.position` (== for-task root for both parallel and
+    /// sequential paths), which made AG-UI's prev_position == position
+    /// dedup miss the open step opened for the iteration's branch span.
+    /// Verify that the position carried by the event reaches all the way
+    /// to the inner task that raised.
+    #[test]
+    fn test_for_item_failed_position_points_to_inner_failure() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+            use futures::StreamExt;
+
+            for in_parallel in [false, true] {
+                let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+                let workflow_json = serde_json::json!({
+                    "document": {
+                        "dsl": "1.0.0",
+                        "namespace": "test",
+                        "name": "for-item-failed-position",
+                        "version": "1.0.0",
+                        "metadata": {}
+                    },
+                    "input": {
+                        "schema": {
+                            "document": {
+                                "type": "object",
+                                "properties": {
+                                    "items": {"type": "array", "items": {"type": "string"}}
+                                }
+                            }
+                        }
+                    },
+                    "do": [
+                        {
+                            "loop": {
+                                "for": {"in": "${.items}", "each": "item", "at": "index"},
+                                "inParallel": in_parallel,
+                                "onError": "continue",
+                                "do": [
+                                    {
+                                        "maybe_fail": {
+                                            "if": "${ $index == 1 }",
+                                            "raise": {
+                                                "error": {
+                                                    "type": "https://serverlessworkflow.io/errors/generic",
+                                                    "status": 500,
+                                                    "title": "fail"
+                                                }
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                });
+
+                let workflow =
+                    Arc::new(serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap());
+                let input = Arc::new(serde_json::json!({"items": ["a", "b", "c"]}));
+                let context = Arc::new(serde_json::json!({}));
+                let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                    &workflow,
+                    input.clone(),
+                    context,
+                    None,
+                )));
+
+                let executor = WorkflowExecutor {
+                    default_task_timeout_sec: 30,
+                    job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
+                    workflow: workflow.clone(),
+                    workflow_context: workflow_context.clone(),
+                    execution_id: None,
+                    metadata: Arc::new(HashMap::new()),
+                    checkpoint_repository: None,
+                };
+
+                let event_stream = executor.execute_workflow_with_events(
+                    Arc::new(opentelemetry::Context::current()),
+                    false,
+                );
+                tokio::pin!(event_stream);
+
+                let mut for_item_position: Option<String> = None;
+                while let Some(item) = event_stream.next().await {
+                    if let Ok(WorkflowStreamEvent::ForItemFailed {
+                        position, index, ..
+                    }) = item
+                        && index == 1
+                    {
+                        for_item_position = Some(position.clone());
+                        break;
+                    }
+                }
+
+                let pos = for_item_position.unwrap_or_else(|| {
+                    panic!(
+                        "expected a ForItemFailed event for index=1 (in_parallel={in_parallel})"
+                    )
+                });
+                // The inner failing task's pointer must extend past the
+                // for-task root. for-task root looks like
+                // "/ROOT/do/0/loop/for"; the inner failure must include the
+                // failing task name ("maybe_fail") below it.
+                assert!(
+                    pos.contains("maybe_fail"),
+                    "ForItemFailed position should point at the failing inner task, got {} (in_parallel={in_parallel})",
+                    pos
+                );
+                assert!(
+                    pos.len() > "/ROOT/do/0/loop/for".len(),
+                    "ForItemFailed position should be deeper than the for-task root, got {} (in_parallel={in_parallel})",
+                    pos
+                );
+            }
+        });
     }
 }

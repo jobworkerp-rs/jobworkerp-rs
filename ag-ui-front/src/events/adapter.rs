@@ -491,4 +491,48 @@ mod tests {
             _ => panic!("Expected StepFinished"),
         }
     }
+
+    /// Mirrors the standalone forItemFailed shape emitted by the workflow
+    /// handler (handler.rs ForItemFailed branch): a STEP_STARTED with
+    /// task_type="forItemFailed" + STEP_FINISHED whose `result` carries the
+    /// captured error_payload. This locks in that ForItemFailed actually
+    /// reaches the wire: a regression that drops the payload (e.g. by
+    /// passing None to task_finished) must fail this test.
+    #[test]
+    fn test_for_item_failed_step_carries_error_payload() {
+        let mut adapter = WorkflowEventAdapter::new(RunId::new("run_1"), ThreadId::new("thread_1"));
+
+        let payload = serde_json::json!({
+            "error": { "type": "test", "title": "boom" },
+            "index": 2,
+            "item": "gamma",
+        });
+
+        let started = adapter.task_started("loop[2]", Some("forItemFailed"), None);
+        match &started {
+            AgUiEvent::StepStarted {
+                step_name,
+                metadata,
+                ..
+            } => {
+                assert_eq!(step_name, &Some("loop[2]".to_string()));
+                let md = metadata.as_ref().expect("metadata should be set");
+                assert_eq!(
+                    md.get("taskType").and_then(|v| v.as_str()),
+                    Some("forItemFailed")
+                );
+            }
+            _ => panic!("Expected StepStarted"),
+        }
+
+        let finished = adapter
+            .task_finished(Some(payload.clone()))
+            .expect("STEP_FINISHED should be emitted");
+        match finished {
+            AgUiEvent::StepFinished { result, .. } => {
+                assert_eq!(result, Some(payload));
+            }
+            _ => panic!("Expected StepFinished"),
+        }
+    }
 }

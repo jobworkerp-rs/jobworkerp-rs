@@ -2132,10 +2132,10 @@ where
                         // ForItemFailed: per-iteration failure surfaced by a
                         // for-task running with onError=continue. The for-task
                         // itself will still emit a single TaskCompleted at the
-                        // end, so we only close out any open step here. The
-                        // failure detail is logged for observability — UI
-                        // adapters can pick this up over time by extending
-                        // task_finished to take a result payload.
+                        // end, so we surface this as a self-contained
+                        // STEP_STARTED + STEP_FINISHED pair carrying the error
+                        // payload as the step result, so the UI can render
+                        // "iteration N failed" without losing details.
                         if let WorkflowStreamEvent::ForItemFailed {
                             task_name,
                             position,
@@ -2150,10 +2150,14 @@ where
                                 error_payload = %error_payload,
                                 "for-task iteration failed under onError=continue"
                             );
+                            // If a step was previously open at the failing
+                            // iteration's position (parallel branch span), close
+                            // it first carrying the error payload so the UI sees
+                            // the failure attached to that step.
                             if prev_position.as_deref() == Some(position) {
                                 let finished_event = {
                                     let mut adapter_lock = adapter.lock().await;
-                                    adapter_lock.task_finished(None)
+                                    adapter_lock.task_finished(Some(error_payload.clone()))
                                 };
                                 if let Some(finished_event) = finished_event {
                                     let event_id = Self::encode_event_with_logging(
@@ -2166,6 +2170,36 @@ where
                                     yield (event_id, finished_event);
                                 }
                                 prev_position = None;
+                            } else {
+                                // No matching open step: emit a standalone
+                                // STEP_STARTED + STEP_FINISHED pair so the
+                                // failure is still visible in the UI timeline.
+                                let step_name = format!("{task_name}[{index}]");
+                                let mut adapter_lock = adapter.lock().await;
+                                let started_event = adapter_lock.task_started(
+                                    &step_name,
+                                    Some("forItemFailed"),
+                                    None,
+                                );
+                                let finished_event =
+                                    adapter_lock.task_finished(Some(error_payload.clone()));
+                                drop(adapter_lock);
+                                let event_id =
+                                    Self::encode_event_with_logging(&encoder, &started_event);
+                                event_store
+                                    .store_event(&run_id, event_id, started_event.clone())
+                                    .await;
+                                yield (event_id, started_event);
+                                if let Some(finished_event) = finished_event {
+                                    let event_id = Self::encode_event_with_logging(
+                                        &encoder,
+                                        &finished_event,
+                                    );
+                                    event_store
+                                        .store_event(&run_id, event_id, finished_event.clone())
+                                        .await;
+                                    yield (event_id, finished_event);
+                                }
                             }
                             // ForItemFailed exposes no TaskContext, so the
                             // context() fallback below would no-op anyway.
