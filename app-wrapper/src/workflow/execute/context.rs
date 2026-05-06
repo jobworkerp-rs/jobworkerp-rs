@@ -551,6 +551,15 @@ pub enum WorkflowStreamEvent {
         event: TaskCompletedEvent,
         context: TaskContext,
     },
+    /// Per-iteration failure inside a parallel/sequential ForTask running with
+    /// `onError: continue`. Carries the captured error payload and a position
+    /// for observability, but intentionally does NOT expose a TaskContext: the
+    /// for-task itself still emits exactly one final TaskCompleted, and we do
+    /// not want this event to overwrite WorkflowContext.output along the way.
+    ForItemFailed {
+        event: TaskCompletedEvent,
+        error_payload: serde_json::Value,
+    },
 }
 
 impl WorkflowStreamEvent {
@@ -576,6 +585,12 @@ impl WorkflowStreamEvent {
                 event: Some(workflow_event::Event::TaskStarted(event.clone())),
             },
             Self::TaskCompleted { event, .. } => WorkflowEvent {
+                event: Some(workflow_event::Event::TaskCompleted(event.clone())),
+            },
+            // Wire-compatible: surface as a TaskCompleted on the proto side
+            // (downstream gRPC consumers don't need a new message type just
+            // to observe per-iteration failures inside a for-task).
+            Self::ForItemFailed { event, .. } => WorkflowEvent {
                 event: Some(workflow_event::Event::TaskCompleted(event.clone())),
             },
         }
@@ -654,6 +669,7 @@ impl WorkflowStreamEvent {
             Self::JobCompleted { event, .. } => &event.position,
             Self::TaskStarted { event } => &event.position,
             Self::TaskCompleted { event, .. } => &event.position,
+            Self::ForItemFailed { event, .. } => &event.position,
         }
     }
 
@@ -720,6 +736,26 @@ impl WorkflowStreamEvent {
                 position: position.to_string(),
             },
             context,
+        }
+    }
+
+    /// Build a per-iteration failure event for a ForTask running with
+    /// `onError: continue`. The carried `error_payload` contains the error
+    /// detail, the iteration index, and the offending item value, so stream
+    /// consumers can render or count the failure without needing a
+    /// TaskContext (which would otherwise overwrite WorkflowContext.output).
+    pub fn for_item_failed(
+        task_name: &str,
+        position: &str,
+        error_payload: serde_json::Value,
+    ) -> Self {
+        Self::ForItemFailed {
+            event: TaskCompletedEvent {
+                task_type: "forItemFailed".to_string(),
+                task_name: task_name.to_string(),
+                position: position.to_string(),
+            },
+            error_payload,
         }
     }
 

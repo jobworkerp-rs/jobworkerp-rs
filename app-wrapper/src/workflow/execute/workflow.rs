@@ -643,6 +643,23 @@ impl WorkflowExecutor {
             while let Some(result) = event_stream.next().await {
                 match result {
                     Ok(event) => {
+                        // ForItemFailed is a per-iteration failure inside a
+                        // for-task. Surface it without mutating the persisted
+                        // workflow output: clone the current snapshot and stamp
+                        // the error_payload as this event's output, but never
+                        // write that payload back into initial_wfc.
+                        if let crate::workflow::execute::context::WorkflowStreamEvent::ForItemFailed { event: ev, error_payload } = &event {
+                            let wf = initial_wfc.read().await;
+                            let mut res = (*wf).clone();
+                            drop(wf);
+                            if !ev.position.is_empty()
+                                && let Ok(pos) = WorkflowPosition::parse(&ev.position) {
+                                    res.position = pos;
+                                }
+                            res.output = Some(Arc::new(error_payload.clone()));
+                            yield Ok(Arc::new(res));
+                            continue;
+                        }
                         // Only yield completed events as WorkflowContext
                         let has_context = event.context().is_some();
                         if has_context {

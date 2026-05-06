@@ -133,9 +133,11 @@ impl ForTaskStreamExecutor {
         Ok((task_context, while_cond))
     }
 
-    // Wrap a per-item failure as an Ok(TaskCompleted) event so onError=continue
-    // doesn't abort the whole workflow. The error is preserved inside the
-    // event's output payload for downstream observability.
+    // Wrap a per-item failure as an Ok(ForItemFailed) event so onError=continue
+    // doesn't abort the whole workflow. ForItemFailed deliberately carries no
+    // TaskContext, so it does not overwrite the workflow's running output as
+    // it propagates upstream — only the for-task's single final TaskCompleted
+    // is allowed to do that.
     async fn build_item_error_event(
         task_name: &str,
         error: &workflow::Error,
@@ -143,7 +145,6 @@ impl ForTaskStreamExecutor {
         item: &serde_json::Value,
         base_context: &TaskContext,
     ) -> WorkflowStreamEvent {
-        let mut ctx = base_context.clone_with_isolated_position().await;
         let error_json = serde_json::to_value(error)
             .unwrap_or_else(|_| serde_json::json!({ "detail": error.to_string() }));
         let payload = serde_json::json!({
@@ -151,9 +152,8 @@ impl ForTaskStreamExecutor {
             "index": index,
             "item": item,
         });
-        ctx.set_raw_output(payload);
-        let pos = ctx.position.read().await.as_json_pointer();
-        WorkflowStreamEvent::task_completed_with_position("forTask", task_name, &pos, ctx)
+        let pos = base_context.position.read().await.as_json_pointer();
+        WorkflowStreamEvent::for_item_failed(task_name, &pos, payload)
     }
 
     // `then: wait` is structurally unsupported inside a ForTask. The parallel
@@ -459,10 +459,12 @@ impl ForTaskStreamExecutor {
 
                                     // On error, react per onError policy: Break signals cancel
                                     // and propagates Err; Continue records the error on the
-                                    // span and wraps the Err into an Ok(TaskCompleted) so
-                                    // upstream stream consumers do not treat it as a fatal
-                                    // abort. The span status set by record_error stays put
-                                    // because record_result no longer overwrites it on Ok.
+                                    // span and emits an Ok(ForItemFailed) so upstream stream
+                                    // consumers do not treat it as a fatal abort. We track
+                                    // the wrap so record_result's Status::Ok does not erase
+                                    // the Status::Error we just set via record_error
+                                    // (OTel status order is Ok > Error > Unset).
+                                    let mut wrapped_error_into_ok = false;
                                     let result = match result {
                                         Ok(event) => Ok(event),
                                         Err(e) => match on_error {
@@ -485,13 +487,23 @@ impl ForTaskStreamExecutor {
                                                     &original_ctx_for_err,
                                                 )
                                                 .await;
+                                                wrapped_error_into_ok = true;
                                                 Ok(event)
                                             }
                                         },
                                     };
                                     let is_error = result.is_err();
 
-                                    Self::record_result(&span, result.as_ref());
+                                    // Only mark span on terminal events. TaskStarted is fed
+                                    // through this stream too, and calling record_result(Ok)
+                                    // for it would race with record_error: OTel status order
+                                    // is Ok > Error > Unset, so an early TaskStarted Ok would
+                                    // shadow a later Error from a failing iteration.
+                                    if !wrapped_error_into_ok
+                                        && !matches!(&result, Ok(e) if e.is_start_event())
+                                    {
+                                        Self::record_result(&span, result.as_ref());
+                                    }
                                     if tx.send(result).await.is_err() {
                                         tracing::error!(
                                             "Channel closed while sending results for task {}",
@@ -560,7 +572,14 @@ impl ForTaskStreamExecutor {
                     let _ = result;
                 }
 
-                // cleanup
+                // cleanup. NOTE: original_context.output here is whatever the
+                // for-task was given as input (the iterable), so the final
+                // emitted output is "what we started with" rather than a
+                // per-iteration aggregate. Aggregating per-item results into
+                // a structured output is tracked as a follow-up — for now we
+                // intentionally avoid leaking transient per-iteration state
+                // back into the workflow output, which is why ForItemFailed
+                // does not mutate WorkflowContext.output.
                 let final_ctx = original_context;
                 final_ctx.remove_context_value(&item_name).await;
                 final_ctx.remove_context_value(&index_name).await;

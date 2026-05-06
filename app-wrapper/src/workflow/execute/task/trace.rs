@@ -98,13 +98,7 @@ pub trait TaskTracing: Tracing {
                         json_attr(&task.output),
                     )]);
                 }
-                // Deliberately do NOT call set_status(Status::Ok). OpenTelemetry's
-                // status order is Ok > Error > Unset, so an Ok set here would
-                // mask any Error set earlier in the same span — which happens
-                // when an iteration emits an Ok intermediate event before
-                // failing, or when an Err is later wrapped into an Ok event by
-                // onError=continue. Leaving the status Unset on success is the
-                // OTel convention and lets record_error remain authoritative.
+                span.set_status(opentelemetry::trace::Status::Ok);
             }
             Err(e) => {
                 span.set_status(opentelemetry::trace::Status::error(e.to_string()));
