@@ -153,13 +153,17 @@ impl ForTaskStreamExecutor {
             "item": item,
         });
         // Prefer the error's own instance pointer — it points at the inner
-        // task that actually failed (e.g. .../for/2/do/0/raise). Falling back
-        // to base_context.position would only give the for-task root, which
-        // breaks downstream position-based dedup (AG-UI's
-        // prev_position == position check).
+        // task that actually failed (e.g. .../for/2/do/0/raise). Otherwise
+        // fall back to the for-task root with the iteration index appended,
+        // so different iterations don't collapse into the same position
+        // (which would break AG-UI's prev_position == position dedup).
         let pos = match error.instance.as_ref() {
             Some(p) if !p.is_empty() => p.clone(),
-            _ => base_context.position.read().await.as_json_pointer(),
+            _ => {
+                let base = base_context.position.read().await.as_json_pointer();
+                let trimmed = base.strip_suffix('/').unwrap_or(&base);
+                format!("{trimmed}/{index}")
+            }
         };
         WorkflowStreamEvent::for_item_failed(task_name, &pos, index as u32, payload)
     }
@@ -2066,7 +2070,7 @@ mod tests {
                                 "each": "item",
                                 "at": "index"
                             },
-                            "parallel": true,  // Parallel execution
+                            "inParallel": true,  // Parallel execution
                             "do": [
                                 {
                                     "process_item": {
@@ -2768,13 +2772,13 @@ mod tests {
         });
     }
 
-    /// `execute_workflow_with_events` must stop yielding events as soon as
-    /// it has yielded an Err. Without the early return, a parallel for-task
-    /// that flipped the workflow to Faulted still has a final
-    /// TaskCompleted("forTask") in flight from its cleanup chain; consuming
-    /// that event would overwrite the faulted output with the for-task's
-    /// pre-loop input and leave the persisted state inconsistent with the
-    /// event tail. Verify that no event arrives after the Err.
+    /// After yielding Err, `execute_workflow_with_events` must not yield
+    /// any further events to the caller. It still has to drain the inner
+    /// task stream silently so the parallel for-task's JoinSet-based
+    /// cleanup chain (`final_stream` in for.rs) actually runs to completion
+    /// — but the yielded faulted output / status must survive intact.
+    /// Verifies both: no extra events are visible AND the persisted state
+    /// stays Faulted with the error payload.
     #[test]
     fn test_execute_workflow_with_events_stops_after_error() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
@@ -3046,6 +3050,84 @@ mod tests {
                     pos
                 );
             }
+        });
+    }
+
+    /// When the underlying error has no `instance` pointer (e.g. transient
+    /// infra-level errors that never went through `e.position(...)`), the
+    /// fallback must still produce a position that distinguishes
+    /// iterations. Earlier the fallback returned the for-task root for
+    /// every iteration, which collapsed AG-UI's prev_position-based dedup
+    /// onto the same step.
+    #[test]
+    fn test_for_item_failed_position_fallback_distinguishes_iterations() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::workflow::execute::context::TaskContext;
+
+            // Build a TaskContext whose position mirrors what the for-task
+            // hands to build_item_error_event in production: the for-task
+            // root, e.g. "/ROOT/do/0/loop/for".
+            let ctx = TaskContext::new_empty();
+            ctx.position.write().await.push(
+                crate::workflow::definition::workflow::tasks::TaskTrait::task_type(
+                    &workflow::Task::DoTask(workflow::DoTask::default()),
+                )
+                .to_string(),
+            );
+            ctx.position.write().await.push("loop".to_string());
+            ctx.position.write().await.push("for".to_string());
+
+            // No `instance` recorded: forces the fallback path.
+            let err_no_instance = workflow::errors::ErrorFactory::new().bad_argument(
+                "transient".to_string(),
+                None,
+                None,
+            );
+            assert!(err_no_instance.instance.is_none());
+
+            let item = serde_json::json!("alpha");
+            let ev0 = ForTaskStreamExecutor::build_item_error_event(
+                "loop",
+                &err_no_instance,
+                0,
+                &item,
+                &ctx,
+            )
+            .await;
+            let ev2 = ForTaskStreamExecutor::build_item_error_event(
+                "loop",
+                &err_no_instance,
+                2,
+                &item,
+                &ctx,
+            )
+            .await;
+
+            let pos0 = match &ev0 {
+                WorkflowStreamEvent::ForItemFailed { position, .. } => position.clone(),
+                _ => panic!("expected ForItemFailed"),
+            };
+            let pos2 = match &ev2 {
+                WorkflowStreamEvent::ForItemFailed { position, .. } => position.clone(),
+                _ => panic!("expected ForItemFailed"),
+            };
+
+            // Different iterations must NOT collapse to the same fallback
+            // position; the iteration index distinguishes them.
+            assert_ne!(
+                pos0, pos2,
+                "iteration 0 and 2 must surface distinct fallback positions"
+            );
+            assert!(
+                pos0.ends_with("/0"),
+                "fallback must encode the iteration index, got {}",
+                pos0
+            );
+            assert!(
+                pos2.ends_with("/2"),
+                "fallback must encode the iteration index, got {}",
+                pos2
+            );
         });
     }
 }

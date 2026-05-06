@@ -481,11 +481,17 @@ impl WorkflowExecutor {
                         drop(wf);
                         Self::record_error(&span, &e.to_string());
                         yield Err(e);
-                        // Stop draining the task stream. Continuing would let a
-                        // late TaskCompleted (e.g. the for-task's final cleanup
-                        // event sent after a parallel branch errored) overwrite
-                        // the faulted output we just recorded, leaving the
-                        // event tail and the persisted state inconsistent.
+                        // Drain the rest of the task stream WITHOUT yielding
+                        // anything further and WITHOUT touching the workflow
+                        // context. This keeps the persisted faulted output
+                        // intact (a late TaskCompleted from e.g. a parallel
+                        // for-task's cleanup chain would otherwise overwrite
+                        // it), while still polling the inner stream to
+                        // completion so that JoinSet-based cleanup such as
+                        // for.rs's final_stream chain — which awaits all
+                        // spawned iterations via join_next — actually runs.
+                        // Returning early here would detach those spawns.
+                        while task_stream.next().await.is_some() {}
                         return;
                     }
                 }
