@@ -2129,6 +2129,49 @@ where
                             }
                         }
 
+                        // ForItemFailed: per-iteration failure surfaced by a
+                        // for-task running with onError=continue. The for-task
+                        // itself will still emit a single TaskCompleted at the
+                        // end, so we only close out any open step here. The
+                        // failure detail is logged for observability — UI
+                        // adapters can pick this up over time by extending
+                        // task_finished to take a result payload.
+                        if let WorkflowStreamEvent::ForItemFailed {
+                            task_name,
+                            position,
+                            index,
+                            error_payload,
+                        } = &event
+                        {
+                            tracing::warn!(
+                                task_name = %task_name,
+                                position = %position,
+                                index = %index,
+                                error_payload = %error_payload,
+                                "for-task iteration failed under onError=continue"
+                            );
+                            if prev_position.as_deref() == Some(position) {
+                                let finished_event = {
+                                    let mut adapter_lock = adapter.lock().await;
+                                    adapter_lock.task_finished(None)
+                                };
+                                if let Some(finished_event) = finished_event {
+                                    let event_id = Self::encode_event_with_logging(
+                                        &encoder,
+                                        &finished_event,
+                                    );
+                                    event_store
+                                        .store_event(&run_id, event_id, finished_event.clone())
+                                        .await;
+                                    yield (event_id, finished_event);
+                                }
+                                prev_position = None;
+                            }
+                            // ForItemFailed exposes no TaskContext, so the
+                            // context() fallback below would no-op anyway.
+                            continue;
+                        }
+
                         // Extract context from completed events for workflow state updates
                         if let Some(tc) = event.context() {
                             // Read position from TaskContext

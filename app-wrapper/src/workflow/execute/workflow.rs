@@ -481,6 +481,12 @@ impl WorkflowExecutor {
                         drop(wf);
                         Self::record_error(&span, &e.to_string());
                         yield Err(e);
+                        // Stop draining the task stream. Continuing would let a
+                        // late TaskCompleted (e.g. the for-task's final cleanup
+                        // event sent after a parallel branch errored) overwrite
+                        // the faulted output we just recorded, leaving the
+                        // event tail and the persisted state inconsistent.
+                        return;
                     }
                 }
             }
@@ -648,12 +654,12 @@ impl WorkflowExecutor {
                         // workflow output: clone the current snapshot and stamp
                         // the error_payload as this event's output, but never
                         // write that payload back into initial_wfc.
-                        if let crate::workflow::execute::context::WorkflowStreamEvent::ForItemFailed { event: ev, error_payload } = &event {
+                        if let crate::workflow::execute::context::WorkflowStreamEvent::ForItemFailed { position, error_payload, .. } = &event {
                             let wf = initial_wfc.read().await;
                             let mut res = (*wf).clone();
                             drop(wf);
-                            if !ev.position.is_empty()
-                                && let Ok(pos) = WorkflowPosition::parse(&ev.position) {
+                            if !position.is_empty()
+                                && let Ok(pos) = WorkflowPosition::parse(position) {
                                     res.position = pos;
                                 }
                             res.output = Some(Arc::new(error_payload.clone()));

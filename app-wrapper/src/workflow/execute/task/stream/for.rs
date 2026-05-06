@@ -153,7 +153,7 @@ impl ForTaskStreamExecutor {
             "item": item,
         });
         let pos = base_context.position.read().await.as_json_pointer();
-        WorkflowStreamEvent::for_item_failed(task_name, &pos, payload)
+        WorkflowStreamEvent::for_item_failed(task_name, &pos, index as u32, payload)
     }
 
     // `then: wait` is structurally unsupported inside a ForTask. The parallel
@@ -2758,5 +2758,165 @@ mod tests {
                 "skipped task span must still carry workflow.task.position"
             );
         });
+    }
+
+    /// `execute_workflow_with_events` must stop yielding events as soon as
+    /// it has yielded an Err. Without the early return, a parallel for-task
+    /// that flipped the workflow to Faulted still has a final
+    /// TaskCompleted("forTask") in flight from its cleanup chain; consuming
+    /// that event would overwrite the faulted output with the for-task's
+    /// pre-loop input and leave the persisted state inconsistent with the
+    /// event tail. Verify that no event arrives after the Err.
+    #[test]
+    fn test_execute_workflow_with_events_stops_after_error() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+            use futures::StreamExt;
+
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+            // Sequential break + raise: ForTask faults on the second item.
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "stop-after-error",
+                    "version": "1.0.0",
+                    "metadata": {}
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object",
+                            "properties": {
+                                "items": {"type": "array", "items": {"type": "string"}}
+                            }
+                        }
+                    }
+                },
+                "do": [
+                    {
+                        "loop": {
+                            "for": {"in": "${.items}", "each": "item", "at": "index"},
+                            "inParallel": true,
+                            "onError": "break",
+                            "do": [
+                                {
+                                    "boom": {
+                                        "if": "${ $index == 0 }",
+                                        "raise": {
+                                            "error": {
+                                                "type": "https://serverlessworkflow.io/errors/generic",
+                                                "status": 500,
+                                                "title": "fail"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            });
+
+            let workflow =
+                Arc::new(serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap());
+            let input = Arc::new(serde_json::json!({"items": ["a", "b", "c"]}));
+            let context = Arc::new(serde_json::json!({}));
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+
+            let executor = WorkflowExecutor {
+                default_task_timeout_sec: 30,
+                job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
+                workflow: workflow.clone(),
+                workflow_context: workflow_context.clone(),
+                execution_id: None,
+                metadata: Arc::new(HashMap::new()),
+                checkpoint_repository: None,
+            };
+
+            let event_stream =
+                executor.execute_workflow_with_events(Arc::new(opentelemetry::Context::current()), false);
+            tokio::pin!(event_stream);
+
+            let mut saw_err = false;
+            let mut events_after_err = 0usize;
+            while let Some(item) = event_stream.next().await {
+                if saw_err {
+                    events_after_err += 1;
+                    continue;
+                }
+                if item.is_err() {
+                    saw_err = true;
+                }
+            }
+            assert!(saw_err, "expected an Err yield from the faulted for-task");
+            assert_eq!(
+                events_after_err, 0,
+                "execute_workflow_with_events must not emit further events after Err; got {} extra",
+                events_after_err
+            );
+
+            // The persisted workflow context must remain Faulted with the
+            // error payload — the late TaskCompleted("forTask") from the
+            // for-task cleanup chain MUST NOT overwrite it.
+            let final_status = workflow_context.read().await.status.clone();
+            assert_eq!(final_status, WorkflowStatus::Faulted);
+            let final_output = workflow_context
+                .read()
+                .await
+                .output
+                .clone()
+                .map(|o| (*o).clone());
+            assert!(
+                final_output
+                    .as_ref()
+                    .and_then(|v| v.get("error"))
+                    .is_some(),
+                "faulted output must still carry the error payload, got {:?}",
+                final_output
+            );
+        });
+    }
+
+    /// ForItemFailed must round-trip the per-iteration error_payload through
+    /// the proto serialisation. Earlier we surfaced it as a generic
+    /// TaskCompleted on the wire which dropped the payload entirely; gRPC /
+    /// AG-UI consumers therefore could not distinguish a failed iteration
+    /// from a successful one. Verify the variant maps to the dedicated
+    /// ForItemFailedEvent and carries the JSON payload.
+    #[test]
+    fn test_for_item_failed_event_to_proto_carries_payload() {
+        use proto::jobworkerp::data::workflow_event::Event as ProtoEvent;
+
+        let payload = serde_json::json!({
+            "error": { "type": "test", "title": "boom" },
+            "index": 2,
+            "item": "gamma",
+        });
+        let event = WorkflowStreamEvent::for_item_failed(
+            "loop",
+            "/ROOT/do/0/loop/for/2",
+            2,
+            payload.clone(),
+        );
+
+        let proto = event.to_proto();
+        match proto.event {
+            Some(ProtoEvent::ForItemFailed(ev)) => {
+                assert_eq!(ev.task_name, "loop");
+                assert_eq!(ev.position, "/ROOT/do/0/loop/for/2");
+                assert_eq!(ev.index, 2);
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&ev.error_payload_json).expect("payload is JSON");
+                assert_eq!(parsed, payload);
+            }
+            other => panic!("expected ForItemFailed proto event, got {:?}", other),
+        }
     }
 }

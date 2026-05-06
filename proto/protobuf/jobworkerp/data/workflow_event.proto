@@ -77,6 +77,32 @@ message TaskCompletedEvent {
   string position = 3;
 }
 
+// # For Item Failed Event
+// Per-iteration failure inside a parallel/sequential ForTask running with
+// `onError: continue`. The for-task itself still emits exactly one final
+// TaskCompleted; this event surfaces the per-item failure without claiming
+// the for-task is done. Carries the captured error/item payload as JSON so
+// gRPC clients can render or count individual failures without needing a
+// follow-up call.
+message ForItemFailedEvent {
+  // # Task Name
+  // Name of the for-task as defined in the workflow.
+  string task_name = 1;
+
+  // # Position
+  // Position in the workflow (JSON Pointer format) of the failing iteration.
+  string position = 2;
+
+  // # Iteration Index
+  // Zero-based index of the failing item within the iterable.
+  uint32 index = 3;
+
+  // # Error Payload (JSON-encoded)
+  // Self-describing payload containing at least `error`, `index`, and `item`.
+  // Encoded as a JSON string to avoid coupling to the workflow Error proto.
+  string error_payload_json = 4;
+}
+
 // # Streaming Data Event
 // Event emitted for each chunk of streaming data (e.g., LLM token)
 // Used for real-time streaming to clients (e.g., AG-UI TEXT_MESSAGE_CONTENT)
@@ -133,5 +159,11 @@ message WorkflowEvent {
     // Used for real-time streaming to AG-UI clients
     // Only emitted when emit_streaming_data flag is true
     StreamingDataEvent streaming_data = 7;
+
+    // # For Item Failed
+    // Emitted for each iteration of a ForTask that failed under
+    // `onError: continue`. The ForTask itself still emits a single final
+    // TaskCompleted alongside this stream of failure events.
+    ForItemFailedEvent for_item_failed = 8;
   }
 }

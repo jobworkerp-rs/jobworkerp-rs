@@ -1423,10 +1423,15 @@ mod tests {
                             ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
                         )
                     }
-                    WorkflowStreamEvent::ForItemFailed { event: ev, .. } => {
+                    WorkflowStreamEvent::ForItemFailed {
+                        task_name,
+                        position,
+                        index,
+                        ..
+                    } => {
                         format!(
-                            "ForItemFailed(name={}, position={})",
-                            ev.task_name, ev.position
+                            "ForItemFailed(name={}, index={}, position={})",
+                            task_name, index, position
                         )
                     }
                 };

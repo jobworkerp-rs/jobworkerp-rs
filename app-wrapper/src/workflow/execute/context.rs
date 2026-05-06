@@ -11,8 +11,8 @@ pub use proto::jobworkerp::data::{JobId, JobResultId};
 
 // Re-export protobuf types for workflow events
 pub use proto::jobworkerp::data::{
-    JobCompletedEvent, JobStartedEvent, StreamingDataEvent, TaskCompletedEvent, TaskStartedEvent,
-    WorkflowEvent, workflow_event,
+    ForItemFailedEvent, JobCompletedEvent, JobStartedEvent, StreamingDataEvent, TaskCompletedEvent,
+    TaskStartedEvent, WorkflowEvent, workflow_event,
 };
 use std::{collections::BTreeMap, fmt, ops::Deref, str::FromStr, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
@@ -557,7 +557,9 @@ pub enum WorkflowStreamEvent {
     /// for-task itself still emits exactly one final TaskCompleted, and we do
     /// not want this event to overwrite WorkflowContext.output along the way.
     ForItemFailed {
-        event: TaskCompletedEvent,
+        task_name: String,
+        position: String,
+        index: u32,
         error_payload: serde_json::Value,
     },
 }
@@ -587,11 +589,18 @@ impl WorkflowStreamEvent {
             Self::TaskCompleted { event, .. } => WorkflowEvent {
                 event: Some(workflow_event::Event::TaskCompleted(event.clone())),
             },
-            // Wire-compatible: surface as a TaskCompleted on the proto side
-            // (downstream gRPC consumers don't need a new message type just
-            // to observe per-iteration failures inside a for-task).
-            Self::ForItemFailed { event, .. } => WorkflowEvent {
-                event: Some(workflow_event::Event::TaskCompleted(event.clone())),
+            Self::ForItemFailed {
+                task_name,
+                position,
+                index,
+                error_payload,
+            } => WorkflowEvent {
+                event: Some(workflow_event::Event::ForItemFailed(ForItemFailedEvent {
+                    task_name: task_name.clone(),
+                    position: position.clone(),
+                    index: *index,
+                    error_payload_json: serde_json::to_string(error_payload).unwrap_or_default(),
+                })),
             },
         }
     }
@@ -669,7 +678,7 @@ impl WorkflowStreamEvent {
             Self::JobCompleted { event, .. } => &event.position,
             Self::TaskStarted { event } => &event.position,
             Self::TaskCompleted { event, .. } => &event.position,
-            Self::ForItemFailed { event, .. } => &event.position,
+            Self::ForItemFailed { position, .. } => position,
         }
     }
 
@@ -747,14 +756,13 @@ impl WorkflowStreamEvent {
     pub fn for_item_failed(
         task_name: &str,
         position: &str,
+        index: u32,
         error_payload: serde_json::Value,
     ) -> Self {
         Self::ForItemFailed {
-            event: TaskCompletedEvent {
-                task_type: "forItemFailed".to_string(),
-                task_name: task_name.to_string(),
-                position: position.to_string(),
-            },
+            task_name: task_name.to_string(),
+            position: position.to_string(),
+            index,
             error_payload,
         }
     }
