@@ -270,8 +270,9 @@ impl ForTaskStreamExecutor {
                 Err(e) => {
                     // prepare_for_item failures are DSL-level errors (broken jq expression
                     // or malformed `while` clause), not per-item runtime errors. They are
-                    // outside the scope of `onError: continue`. Cancel any siblings already
-                    // spawned and propagate the error so the workflow faults.
+                    // outside the scope of `onError: continue`. Propagate the error so the
+                    // workflow faults; the spawn loop below will skip launching the items
+                    // that were already prepared, so no per-item side effects fire.
                     tracing::error!(
                         "Error preparing item {} (DSL/expression error, faulting regardless of onError): {:?}",
                         i,
@@ -283,7 +284,6 @@ impl ForTaskStreamExecutor {
                     tokio::spawn(async move {
                         let _ = tx_err.send(Err(e)).await;
                     });
-                    // Stop preparing further items; let already-spawned tasks drain.
                     break;
                 }
             };
@@ -314,7 +314,19 @@ impl ForTaskStreamExecutor {
             tokio::runtime::Handle::current().metrics().num_workers()
         );
         let mut join_set = tokio::task::JoinSet::new();
-        for (i, prepared_context, item_value) in items_to_process {
+        // If a prepare-time DSL error was queued, do NOT launch the items that
+        // were prepared successfully before the failure. Spawning them and
+        // relying on `cancel_tx.send(true)` to stop them is racy: tokio's
+        // `select!` resolves a ready watch-cancel against a ready stream poll
+        // pseudo-randomly, so the stream side can win and the item executes
+        // its side effects even though we already decided to fault the
+        // workflow. Skipping the spawn entirely makes the failure deterministic.
+        let items_to_spawn = if prepare_error_pending {
+            Vec::new()
+        } else {
+            items_to_process
+        };
+        for (i, prepared_context, item_value) in items_to_spawn {
             // Clone all resources needed for this task
             let tx = tx.clone();
             let do_task_clone = do_task.clone();
@@ -1446,6 +1458,142 @@ mod tests {
                     in_parallel, final_status, top_level_err_count, faulted_status_count
                 );
             }
+        });
+    }
+
+    /// In parallel mode, when prepare succeeds for the first few items but
+    /// fails for a later item, the previously-prepared items must NOT execute
+    /// their `do` body. Relying on the cancel watch channel to stop them is
+    /// racy because tokio::select! can pick the stream side over an
+    /// already-set cancel signal pseudo-randomly. The implementation must
+    /// skip spawning entirely once a prepare error is queued so the failure
+    /// is deterministic.
+    #[test]
+    fn test_for_task_parallel_prepare_error_blocks_pending_spawns() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+            // `while` succeeds for index < 2 and triggers an undefined-jq-fn
+            // error at index 2, so items 0 and 1 are pushed into
+            // items_to_process before the prepare loop bails. Without the
+            // fix, those two items would still get spawned and may run their
+            // `set` task before the cancel signal lands.
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "for-task-parallel-prepare-late-error",
+                    "version": "1.0.0",
+                    "metadata": {}
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object",
+                            "properties": {
+                                "items": {"type": "array", "items": {"type": "string"}}
+                            }
+                        }
+                    }
+                },
+                "do": [
+                    {
+                        "process_items": {
+                            "for": {
+                                "in": "${.items}",
+                                "each": "item",
+                                "at": "index"
+                            },
+                            "while": "${ if $index < 2 then true else this_function_does_not_exist(.) end }",
+                            "inParallel": true,
+                            "onError": "continue",
+                            "do": [
+                                {
+                                    "side_effect": {
+                                        "set": { "processed_item": "${ $item }" }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            });
+
+            let workflow = Arc::new(
+                serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap()
+            );
+            let input = Arc::new(serde_json::json!({
+                "items": ["a", "b", "c", "d"]
+            }));
+            let context = Arc::new(serde_json::json!({}));
+
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+
+            let executor = WorkflowExecutor {
+                default_task_timeout_sec: 30,
+                job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
+                workflow: workflow.clone(),
+                workflow_context: workflow_context.clone(),
+                execution_id: None,
+                metadata: Arc::new(HashMap::new()),
+                checkpoint_repository: None,
+            };
+
+            let workflow_stream = executor.execute_workflow(
+                Arc::new(opentelemetry::Context::current()),
+            );
+            tokio::pin!(workflow_stream);
+
+            let timeout_duration = tokio::time::Duration::from_secs(10);
+            let timeout_result = tokio::time::timeout(timeout_duration, async {
+                let mut local_results = Vec::new();
+                while let Some(result) = workflow_stream.next().await {
+                    local_results.push(result);
+                    if local_results.len() > 30 { break; }
+                }
+                local_results
+            }).await;
+
+            let results = timeout_result.expect("test timed out");
+
+            // The workflow must fault.
+            let final_status = workflow_context.read().await.status.clone();
+            let top_level_err_count = results.iter().filter(|r| r.is_err()).count();
+            let faulted_status_count = results.iter().filter(|r| {
+                matches!(r, Ok(wc) if wc.status == WorkflowStatus::Faulted)
+            }).count();
+            assert!(
+                top_level_err_count >= 1
+                    || faulted_status_count >= 1
+                    || final_status == WorkflowStatus::Faulted,
+                "Prepare-time DSL error must fault the workflow; status={:?}, top_err={}, faulted_events={}",
+                final_status, top_level_err_count, faulted_status_count
+            );
+
+            // None of the previously-prepared items must have produced a
+            // `processed_item` output. If the spawn loop is letting them run,
+            // their `set` task surfaces it via TaskCompleted before the
+            // workflow tears down, even with --test-threads=1.
+            let processed_item_count = results.iter().filter(|r| {
+                match r {
+                    Ok(wc) => wc.output.as_ref()
+                        .and_then(|o| o.get("processed_item"))
+                        .is_some(),
+                    Err(_) => false,
+                }
+            }).count();
+            assert_eq!(
+                processed_item_count, 0,
+                "No prepared item should run its `do` body once a later item's prepare failed; got {} processed_item events",
+                processed_item_count
+            );
         });
     }
 
