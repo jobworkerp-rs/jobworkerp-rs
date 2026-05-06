@@ -156,6 +156,25 @@ impl ForTaskStreamExecutor {
         WorkflowStreamEvent::task_completed_with_position("forTask", task_name, &pos, ctx)
     }
 
+    // `then: wait` is structurally unsupported inside a ForTask. The parallel
+    // path detects it both mid-stream (when an Ok event surfaces with the
+    // workflow already flipped to Waiting) and at stream end. Both reset the
+    // workflow status back to Running and emit the same DSL error; only the
+    // error-position source differs, so factor the rest out.
+    async fn fault_unsupported_wait_in_parallel(
+        workflow_context: &Arc<RwLock<WorkflowContext>>,
+        pos_instance: Option<String>,
+    ) -> Box<workflow::Error> {
+        workflow_context.write().await.status = WorkflowStatus::Running;
+        workflow::errors::ErrorFactory::new().bad_argument(
+            "Wait directive inside ForTask is not currently supported. \
+             Move the 'then: wait' to a task outside of the for loop."
+                .to_string(),
+            pos_instance,
+            None,
+        )
+    }
+
     async fn initialize_execution(
         &self,
         task_name: &str,
@@ -314,41 +333,36 @@ impl ForTaskStreamExecutor {
             tokio::runtime::Handle::current().metrics().num_workers()
         );
         let mut join_set = tokio::task::JoinSet::new();
-        // If a prepare-time DSL error was queued, do NOT launch the items that
-        // were prepared successfully before the failure. Spawning them and
-        // relying on `cancel_tx.send(true)` to stop them is racy: tokio's
-        // `select!` resolves a ready watch-cancel against a ready stream poll
-        // pseudo-randomly, so the stream side can win and the item executes
-        // its side effects even though we already decided to fault the
-        // workflow. Skipping the spawn entirely makes the failure deterministic.
-        let items_to_spawn = if prepare_error_pending {
-            Vec::new()
-        } else {
-            items_to_process
-        };
-        for (i, prepared_context, item_value) in items_to_spawn {
-            // Clone all resources needed for this task
-            let tx = tx.clone();
-            let do_task_clone = do_task.clone();
-            let job_executor_wrapper_clone = self.job_executor_wrapper.clone();
-            let workflow_context = self.workflow_context.clone();
-            let task_name_formatted = Arc::new(format!("{task_name}_{i}"));
-            let item_name_clone = item_name.to_string();
-            let cx = cx.clone();
-            let meta = self.metadata.clone();
-            let checkpoint_repository = self.checkpoint_repository.clone();
-            let execution_id = self.execution_id.clone();
-            let default_timeout = self.default_timeout;
-            let on_error = self.task.on_error;
-            let cancel_tx_clone = cancel_tx.clone();
-            let mut cancel_rx_clone = cancel_rx.clone();
-            let emit_streaming_data = self.emit_streaming_data;
-            let item_value_for_err = item_value.clone();
-            let task_name_for_err = task_name.to_string();
-            let original_ctx_for_err = original_context.clone();
+        // Skip launching prepared items once a prepare-time DSL error is
+        // queued. Spawning them and relying on `cancel_tx.send(true)` to
+        // stop them is racy: tokio's `select!` resolves a ready watch-cancel
+        // against a ready stream poll pseudo-randomly, so the stream side
+        // can win and the item executes its side effects even though we
+        // already decided to fault the workflow.
+        if !prepare_error_pending {
+            for (i, prepared_context, item_value) in items_to_process {
+                // Clone all resources needed for this task
+                let tx = tx.clone();
+                let do_task_clone = do_task.clone();
+                let job_executor_wrapper_clone = self.job_executor_wrapper.clone();
+                let workflow_context = self.workflow_context.clone();
+                let task_name_formatted = Arc::new(format!("{task_name}_{i}"));
+                let item_name_clone = item_name.to_string();
+                let cx = cx.clone();
+                let meta = self.metadata.clone();
+                let checkpoint_repository = self.checkpoint_repository.clone();
+                let execution_id = self.execution_id.clone();
+                let default_timeout = self.default_timeout;
+                let on_error = self.task.on_error;
+                let cancel_tx_clone = cancel_tx.clone();
+                let mut cancel_rx_clone = cancel_rx.clone();
+                let emit_streaming_data = self.emit_streaming_data;
+                let item_value_for_err = item_value.clone();
+                let task_name_for_err = task_name.to_string();
+                let original_ctx_for_err = original_context.clone();
 
-            // Spawn this task asynchronously
-            join_set.spawn(async move {
+                // Spawn this task asynchronously
+                join_set.spawn(async move {
                 let span =
                     Self::start_child_otel_span(&cx, APP_WORKER_NAME, item_name_clone.clone());
                 let ccx = Arc::new(opentelemetry::Context::current_with_span(span));
@@ -416,12 +430,10 @@ impl ForTaskStreamExecutor {
                                         elapsed_ms
                                     );
 
-                                    // Check for unsupported Wait inside ForTask (parallel).
-                                    // This is a structural DSL error, not a per-item runtime
-                                    // failure, so it must NOT be swallowed by onError=continue.
-                                    // Send the Err directly and stop draining this branch, so
-                                    // the workflow faults the same way the sequential and
-                                    // post-stream-end paths do.
+                                    // Unsupported `then: wait` is a structural DSL error, not
+                                    // a per-item runtime failure, so it must NOT be swallowed
+                                    // by onError=continue. Cancel siblings unconditionally and
+                                    // surface the fault directly.
                                     if let Ok(ref event) = result {
                                         let wf_status = workflow_context.read().await.status.clone();
                                         if wf_status == WorkflowStatus::Waiting {
@@ -429,20 +441,15 @@ impl ForTaskStreamExecutor {
                                                 "Wait directive inside ForTask is not supported (parallel): task={}",
                                                 task_name_formatted
                                             );
-                                            workflow_context.write().await.status = WorkflowStatus::Running;
-                                            let pos_instance = if let Some(ctx) = event.context() {
-                                                Some(ctx.position.read().await.as_error_instance())
-                                            } else {
-                                                None
+                                            let pos_instance = match event.context() {
+                                                Some(ctx) => Some(ctx.position.read().await.as_error_instance()),
+                                                None => None,
                                             };
-                                            let error = workflow::errors::ErrorFactory::new().bad_argument(
-                                                "Wait directive inside ForTask is not currently supported. \
-                                                 Move the 'then: wait' to a task outside of the for loop.".to_string(),
+                                            let error = Self::fault_unsupported_wait_in_parallel(
+                                                &workflow_context,
                                                 pos_instance,
-                                                None,
-                                            );
-                                            // Cancel siblings so the whole for-task tears down
-                                            // promptly, regardless of onError policy.
+                                            )
+                                            .await;
                                             let _ = cancel_tx_clone.send(true);
                                             Self::record_error(&span, &error.to_string());
                                             let _ = tx.send(Err(error)).await;
@@ -500,25 +507,18 @@ impl ForTaskStreamExecutor {
                                     }
                                 }
                                 None => {
-                                    // Stream completed - check for Wait state.
-                                    // Wait inside ForTask is a structural DSL
-                                    // error, not a per-item runtime failure, so
-                                    // it must NOT honour onError=continue here:
-                                    // cancel siblings unconditionally to mirror
-                                    // the in-stream Wait detection above.
+                                    // Mirror the in-stream Wait detection above.
                                     let wf_status = workflow_context.read().await.status.clone();
                                     if wf_status == WorkflowStatus::Waiting {
                                         tracing::error!(
                                             "Wait directive inside ForTask is not supported (parallel, detected after stream end): task={}",
                                             task_name_formatted
                                         );
-                                        workflow_context.write().await.status = WorkflowStatus::Running;
-                                        let error = workflow::errors::ErrorFactory::new().bad_argument(
-                                            "Wait directive inside ForTask is not currently supported. \
-                                             Move the 'then: wait' to a task outside of the for loop.".to_string(),
+                                        let error = Self::fault_unsupported_wait_in_parallel(
+                                            &workflow_context,
                                             Some(item_position.read().await.as_error_instance()),
-                                            None,
-                                        );
+                                        )
+                                        .await;
                                         let _ = cancel_tx_clone.send(true);
                                         Self::record_error(&span, &error.to_string());
                                         let _ = tx.send(Err(error)).await;
@@ -538,6 +538,7 @@ impl ForTaskStreamExecutor {
                     result_count
                 );
             });
+            }
         }
         drop(tx);
 
@@ -920,6 +921,77 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::RwLock;
+
+    // Test-only OpenTelemetry helpers shared by the in-memory span tests
+    // below. Centralised so renames of attribute keys, the swap+restore
+    // pattern, and provider lifecycle stay in one place.
+    mod otel_test_helpers {
+        use opentelemetry::global::{self, GlobalTracerProvider};
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+
+        // Restores the previous global tracer provider on drop, even on
+        // panic. Tests rely on the workspace-wide --test-threads=1 policy
+        // (CLAUDE.md) so the swap is serialised across tests.
+        pub struct ProviderGuard {
+            saved: Option<GlobalTracerProvider>,
+            provider: Option<SdkTracerProvider>,
+        }
+
+        impl Drop for ProviderGuard {
+            fn drop(&mut self) {
+                if let Some(p) = self.provider.take() {
+                    let _ = p.shutdown();
+                }
+                if let Some(s) = self.saved.take() {
+                    global::set_tracer_provider(s);
+                }
+            }
+        }
+
+        // Swap in a fresh in-memory tracer provider and return the guard +
+        // exporter. Caller can call `provider.force_flush()` on the
+        // returned provider before reading spans; on drop we shutdown the
+        // provider and restore the previous global.
+        pub fn install_in_memory_tracer() -> (ProviderGuard, InMemorySpanExporter, SdkTracerProvider)
+        {
+            let exporter = InMemorySpanExporter::default();
+            let provider = SdkTracerProvider::builder()
+                .with_simple_exporter(exporter.clone())
+                .build();
+            let saved = global::tracer_provider();
+            global::set_tracer_provider(provider.clone());
+            (
+                ProviderGuard {
+                    saved: Some(saved),
+                    provider: Some(provider.clone()),
+                },
+                exporter,
+                provider,
+            )
+        }
+
+        pub fn span_attr_str(s: &SpanData, key: &str) -> Option<String> {
+            s.attributes.iter().find_map(|kv| {
+                if kv.key.as_str() == key
+                    && let opentelemetry::Value::String(v) = &kv.value
+                {
+                    return Some(v.to_string());
+                }
+                None
+            })
+        }
+
+        pub fn span_attr_i64(s: &SpanData, key: &str) -> Option<i64> {
+            s.attributes.iter().find_map(|kv| {
+                if kv.key.as_str() == key
+                    && let opentelemetry::Value::I64(v) = &kv.value
+                {
+                    return Some(*v);
+                }
+                None
+            })
+        }
+    }
 
     #[test]
     fn test_for_task_sequential_continue_on_error() {
@@ -2308,43 +2380,22 @@ mod tests {
     /// each mode against an identical workflow shape.
     #[test]
     fn test_for_task_span_attributes_record_per_item_input() {
-        use opentelemetry::Value as OtelValue;
-        use opentelemetry::global;
-        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-
-        // Snapshot the previous global provider and restore it via a RAII
-        // guard so a panic anywhere inside the test still puts the global
-        // back. This test relies on the workspace policy of running tests
-        // with --test-threads=1 (CLAUDE.md); without serial execution the
-        // global provider swap would race with any other test that observes
-        // it, so do not parallelise this test in isolation.
-        struct ProviderGuard {
-            saved: Option<opentelemetry::global::GlobalTracerProvider>,
-        }
-        impl Drop for ProviderGuard {
-            fn drop(&mut self) {
-                if let Some(p) = self.saved.take() {
-                    opentelemetry::global::set_tracer_provider(p);
-                }
-            }
-        }
-        let _guard = ProviderGuard {
-            saved: Some(global::tracer_provider()),
+        use crate::workflow::execute::task::trace::{
+            ATTR_FOR_INDEX, ATTR_FOR_ITEM, ATTR_TASK_INPUT,
         };
+        use otel_test_helpers::{install_in_memory_tracer, span_attr_i64, span_attr_str};
 
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             use crate::workflow::execute::workflow::WorkflowExecutor;
 
-            for in_parallel in [false, true] {
-                // Each iteration starts with its own exporter/provider so the
-                // first run's spans don't pollute the second run's assertions.
-                let exporter = InMemorySpanExporter::default();
-                let provider = SdkTracerProvider::builder()
-                    .with_simple_exporter(exporter.clone())
-                    .build();
-                global::set_tracer_provider(provider.clone());
+            // Build the hybrid app once and share it across the two
+            // sequential/parallel runs to keep test-setup cost low.
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
-                let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            for in_parallel in [false, true] {
+                // Each iteration installs its own tracer provider so the
+                // first run's spans don't pollute the second run's assertions.
+                let (_guard, exporter, provider) = install_in_memory_tracer();
 
                 // `do.process_item` uses `input.from` to project the iteration
                 // item; the post-from input must be the single string element,
@@ -2404,7 +2455,7 @@ mod tests {
 
                 let executor = WorkflowExecutor {
                     default_task_timeout_sec: 30,
-                    job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
+                    job_executors: Arc::new(JobExecutorWrapper::new(app_module.clone())),
                     workflow: workflow.clone(),
                     workflow_context: workflow_context.clone(),
                     execution_id: None,
@@ -2415,37 +2466,11 @@ mod tests {
                 let workflow_stream =
                     executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
                 tokio::pin!(workflow_stream);
-                while let Some(_r) = workflow_stream.next().await {}
+                while (workflow_stream.next().await).is_some() {}
 
                 // Force flush so all spans land in the exporter before assertion.
                 let _ = provider.force_flush();
                 let spans = exporter.get_finished_spans().expect("get spans");
-
-                // Helper: pull a string-valued attribute by key.
-                let attr_str = |s: &opentelemetry_sdk::trace::SpanData, key: &str| -> Option<String> {
-                    s.attributes.iter().find_map(|kv| {
-                        if kv.key.as_str() == key {
-                            match &kv.value {
-                                OtelValue::String(v) => Some(v.to_string()),
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                };
-                let attr_i64 = |s: &opentelemetry_sdk::trace::SpanData, key: &str| -> Option<i64> {
-                    s.attributes.iter().find_map(|kv| {
-                        if kv.key.as_str() == key {
-                            match &kv.value {
-                                OtelValue::I64(v) => Some(*v),
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                };
 
                 // 1) Each `process_item` task span must carry the per-iteration
                 //    string as its workflow.task.input — not the source array.
@@ -2454,7 +2479,7 @@ mod tests {
                 let process_item_inputs: Vec<String> = spans
                     .iter()
                     .filter(|s| s.name.ends_with(":process_item"))
-                    .filter_map(|s| attr_str(s, "workflow.task.input"))
+                    .filter_map(|s| span_attr_str(s, ATTR_TASK_INPUT))
                     .collect();
                 assert!(
                     !process_item_inputs.is_empty(),
@@ -2481,8 +2506,8 @@ mod tests {
                 let mut for_item_attrs: Vec<(i64, String)> = spans
                     .iter()
                     .filter_map(|s| {
-                        let idx = attr_i64(s, "workflow.task.for.index")?;
-                        let item = attr_str(s, "workflow.task.for.item")?;
+                        let idx = span_attr_i64(s, ATTR_FOR_INDEX)?;
+                        let item = span_attr_str(s, ATTR_FOR_ITEM)?;
                         Some((idx, item))
                     })
                     .collect();
@@ -2504,12 +2529,11 @@ mod tests {
                     );
                 }
 
-                // Drain in-flight exports for THIS iteration's provider before
-                // installing the next one, so we don't leak spans across runs.
-                let _ = provider.shutdown();
+                // The guard goes out of scope at the end of the block and
+                // shuts down THIS iteration's provider before the next loop
+                // iteration installs its own.
             }
         });
-        // ProviderGuard restores the original global on drop.
     }
 
     /// In parallel + onError=continue mode, a failed iteration is exposed
@@ -2520,33 +2544,14 @@ mod tests {
     /// status back to Ok and break alerting/error-rate dashboards.
     #[test]
     fn test_for_task_parallel_continue_keeps_error_span_status() {
-        use opentelemetry::global;
+        use crate::workflow::execute::task::trace::ATTR_FOR_INDEX;
         use opentelemetry::trace::Status;
-        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-
-        struct ProviderGuard {
-            saved: Option<opentelemetry::global::GlobalTracerProvider>,
-        }
-        impl Drop for ProviderGuard {
-            fn drop(&mut self) {
-                if let Some(p) = self.saved.take() {
-                    opentelemetry::global::set_tracer_provider(p);
-                }
-            }
-        }
-        let _guard = ProviderGuard {
-            saved: Some(global::tracer_provider()),
-        };
+        use otel_test_helpers::{install_in_memory_tracer, span_attr_i64};
 
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             use crate::workflow::execute::workflow::WorkflowExecutor;
 
-            let exporter = InMemorySpanExporter::default();
-            let provider = SdkTracerProvider::builder()
-                .with_simple_exporter(exporter.clone())
-                .build();
-            global::set_tracer_provider(provider.clone());
-
+            let (_guard, exporter, provider) = install_in_memory_tracer();
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
             // Item at index 1 raises; the for-task uses inParallel + continue
@@ -2634,15 +2639,7 @@ mod tests {
             // workflow.task.for.index attribute pinpoints which iteration.
             let mut item1_span_status: Option<Status> = None;
             for s in &spans {
-                let mut idx = None;
-                for kv in &s.attributes {
-                    if kv.key.as_str() == "workflow.task.for.index"
-                        && let opentelemetry::Value::I64(v) = &kv.value
-                    {
-                        idx = Some(*v);
-                    }
-                }
-                if idx == Some(1) {
+                if span_attr_i64(s, ATTR_FOR_INDEX) == Some(1) {
                     item1_span_status = Some(s.status.clone());
                     break;
                 }
@@ -2656,8 +2653,6 @@ mod tests {
                 "parallel for branch span for the failing iteration must report Status::Error even with onError=continue, got {:?}",
                 status
             );
-
-            let _ = provider.shutdown();
         });
     }
 
@@ -2667,33 +2662,13 @@ mod tests {
     /// can show *which* task was skipped and what its input would have been.
     #[test]
     fn test_skip_if_task_records_span_input_and_position() {
-        use opentelemetry::Value as OtelValue;
-        use opentelemetry::global;
-        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-
-        struct ProviderGuard {
-            saved: Option<opentelemetry::global::GlobalTracerProvider>,
-        }
-        impl Drop for ProviderGuard {
-            fn drop(&mut self) {
-                if let Some(p) = self.saved.take() {
-                    opentelemetry::global::set_tracer_provider(p);
-                }
-            }
-        }
-        let _guard = ProviderGuard {
-            saved: Some(global::tracer_provider()),
-        };
+        use crate::workflow::execute::task::trace::{ATTR_TASK_INPUT, ATTR_TASK_POSITION};
+        use otel_test_helpers::{install_in_memory_tracer, span_attr_str};
 
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             use crate::workflow::execute::workflow::WorkflowExecutor;
 
-            let exporter = InMemorySpanExporter::default();
-            let provider = SdkTracerProvider::builder()
-                .with_simple_exporter(exporter.clone())
-                .build();
-            global::set_tracer_provider(provider.clone());
-
+            let (_guard, exporter, provider) = install_in_memory_tracer();
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
             let workflow_json = serde_json::json!({
@@ -2755,30 +2730,14 @@ mod tests {
                 .find(|s| s.name.as_ref().contains("always_skipped"))
                 .expect("expected a span for the skipped task");
 
-            let mut has_input = false;
-            let mut has_position = false;
-            for kv in &skipped_span.attributes {
-                if kv.key.as_str() == "workflow.task.input"
-                    && let OtelValue::String(_) = &kv.value
-                {
-                    has_input = true;
-                }
-                if kv.key.as_str() == "workflow.task.position"
-                    && let OtelValue::String(_) = &kv.value
-                {
-                    has_position = true;
-                }
-            }
             assert!(
-                has_input,
+                span_attr_str(skipped_span, ATTR_TASK_INPUT).is_some(),
                 "skipped task span must still carry workflow.task.input"
             );
             assert!(
-                has_position,
+                span_attr_str(skipped_span, ATTR_TASK_POSITION).is_some(),
                 "skipped task span must still carry workflow.task.position"
             );
-
-            let _ = provider.shutdown();
         });
     }
 }

@@ -6,15 +6,15 @@ use opentelemetry::trace::SpanRef;
 
 // Span attribute keys. Centralised so renames stay consistent across
 // production code and the tests that assert on these keys.
-const ATTR_OPERATION_NAME: &str = "operation.name";
-const ATTR_TASK_INPUT: &str = "workflow.task.input";
-const ATTR_TASK_POSITION: &str = "workflow.task.position";
-const ATTR_TASK_OUTPUT: &str = "workflow.task.output";
-const ATTR_TASK_FLOW_DIRECTIVE: &str = "workflow.task.flow_directive";
-const ATTR_TASK_DURATION_MS: &str = "workflow.task.duration_ms";
-const ATTR_TASK_STATUS: &str = "workflow.task.status";
-const ATTR_FOR_INDEX: &str = "workflow.task.for.index";
-const ATTR_FOR_ITEM: &str = "workflow.task.for.item";
+pub(crate) const ATTR_OPERATION_NAME: &str = "operation.name";
+pub(crate) const ATTR_TASK_INPUT: &str = "workflow.task.input";
+pub(crate) const ATTR_TASK_POSITION: &str = "workflow.task.position";
+pub(crate) const ATTR_TASK_OUTPUT: &str = "workflow.task.output";
+pub(crate) const ATTR_TASK_FLOW_DIRECTIVE: &str = "workflow.task.flow_directive";
+pub(crate) const ATTR_TASK_DURATION_MS: &str = "workflow.task.duration_ms";
+pub(crate) const ATTR_TASK_STATUS: &str = "workflow.task.status";
+pub(crate) const ATTR_FOR_INDEX: &str = "workflow.task.for.index";
+pub(crate) const ATTR_FOR_ITEM: &str = "workflow.task.for.item";
 
 fn json_attr(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap_or_default()
