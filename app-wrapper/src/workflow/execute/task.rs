@@ -32,6 +32,7 @@ use std::{
 use stream::{do_::DoTaskStreamExecutor, for_::ForTaskStreamExecutor, try_::TryStreamTaskExecutor};
 use switch::SwitchTaskExecutor;
 use tokio::sync::{Mutex, RwLock};
+use trace::TaskTracing;
 
 pub mod call;
 pub mod fork;
@@ -64,6 +65,8 @@ pub struct TaskExecutor {
 impl UseExpression for TaskExecutor {}
 impl UseJqAndTemplateTransformer for TaskExecutor {}
 impl UseExpressionTransformer for TaskExecutor {}
+impl Tracing for TaskExecutor {}
+impl trace::TaskTracing for TaskExecutor {}
 
 impl TaskExecutor {
     #[allow(clippy::too_many_arguments)]
@@ -358,6 +361,20 @@ impl TaskExecutor {
                             &task_context.raw_input
                         );
                         let pos_str = task_context.position.read().await.as_json_pointer();
+                        // Record input on the active span before the skip path
+                        // returns. The normal path records this in
+                        // `update_context_by_input` further below; without
+                        // this, skipped tasks would have a span with no
+                        // workflow.task.input/position attributes at all.
+                        {
+                            let mut span_ref = cx.span();
+                            Self::record_task_input(
+                                &mut span_ref,
+                                self.task_name.clone(),
+                                &task_context,
+                                pos_str.clone(),
+                            );
+                        }
                         task_context.remove_position().await; // remove task_name
                         task_context.set_completed_at();
                         let event = WorkflowStreamEvent::task_completed_with_position(
@@ -395,8 +412,25 @@ impl TaskExecutor {
                 return futures::stream::once(futures::future::ready(Err(e))).boxed();
             }
         };
-        // only use in rare error
-        let err_pos = task_context.position.read().await.as_error_instance();
+        // Record the post-`from` input on the active span. The outer span was
+        // created by the caller (e.g. do.rs / for.rs) and is reachable via cx;
+        // recording here ensures `workflow.task.input` reflects the real input
+        // for THIS task rather than the parent/iteration-level value.
+        // Read position once and reuse the snapshot to avoid 3 separate RwLock
+        // acquisitions on this hot path.
+        let (task_position_ptr, err_pos) = {
+            let pos = task_context.position.read().await;
+            (pos.as_json_pointer(), pos.as_error_instance())
+        };
+        {
+            let mut span_ref = cx.span();
+            Self::record_task_input(
+                &mut span_ref,
+                self.task_name.clone(),
+                &task_context,
+                task_position_ptr.clone(),
+            );
+        }
 
         // Task-level timeout configuration
         let timeout_duration = self.resolve_timeout();
@@ -415,12 +449,8 @@ impl TaskExecutor {
             Task::TryTask(_) => "tryTask",
             Task::WaitTask(_) => "waitTask",
         };
-        let task_started_position = task_context.position.read().await.as_json_pointer();
-        let task_started_event = WorkflowStreamEvent::task_started(
-            task_type_name,
-            &self.task_name,
-            &task_started_position,
-        );
+        let task_started_event =
+            WorkflowStreamEvent::task_started(task_type_name, &self.task_name, &task_position_ptr);
 
         let res = self
             .execute_task(cx, task_context, execution_id.clone())
@@ -1391,6 +1421,17 @@ mod tests {
                         format!(
                             "StreamingJobCompleted(job_id={})",
                             ev.job_id.as_ref().map(|j| j.value).unwrap_or(0)
+                        )
+                    }
+                    WorkflowStreamEvent::ForItemFailed {
+                        task_name,
+                        position,
+                        index,
+                        ..
+                    } => {
+                        format!(
+                            "ForItemFailed(name={}, index={}, position={})",
+                            task_name, index, position
                         )
                     }
                 };

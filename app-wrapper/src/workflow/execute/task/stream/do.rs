@@ -181,7 +181,7 @@ impl DoTaskStreamExecutor {
                 );
                 let ccx = Arc::new(opentelemetry::Context::current_with_span(span));
                 let ccx_clone = ccx.clone();
-                let mut span = ccx_clone.span();
+                let span = ccx_clone.span();
 
                 tracing::info!("Starting task execution: {}", name);
 
@@ -191,8 +191,10 @@ impl DoTaskStreamExecutor {
                     prev.remove_position().await;
                     break;
                 }
-                Self::record_task_input(&mut span, name.clone(), &prev,
-                    prev.position.read().await.as_json_pointer().to_string());
+                // The real, post-`from` input is recorded inside
+                // TaskExecutor::execute (task.rs) on this span. Recording
+                // here would attribute the previous task's context to the
+                // current span, which is misleading.
 
                 tracing::info!("Executing task: {}", &name);
                 let mut stream = TaskExecutor::new(

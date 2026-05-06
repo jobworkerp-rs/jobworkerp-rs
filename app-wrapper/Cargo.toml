@@ -90,6 +90,7 @@ regex = { workspace = true }
 app = { path = "../app", features = ["test-utils"] }
 infra = { path = "../infra", features = ["test-utils"] }
 jobworkerp-runner = { path = "../runner", features = ["test-utils"] }
+opentelemetry_sdk = { version = "0.31", features = ["testing"] }
 
 [features]
 default = []

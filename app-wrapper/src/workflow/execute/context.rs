@@ -11,8 +11,8 @@ pub use proto::jobworkerp::data::{JobId, JobResultId};
 
 // Re-export protobuf types for workflow events
 pub use proto::jobworkerp::data::{
-    JobCompletedEvent, JobStartedEvent, StreamingDataEvent, TaskCompletedEvent, TaskStartedEvent,
-    WorkflowEvent, workflow_event,
+    ForItemFailedEvent, JobCompletedEvent, JobStartedEvent, StreamingDataEvent, TaskCompletedEvent,
+    TaskStartedEvent, WorkflowEvent, workflow_event,
 };
 use std::{collections::BTreeMap, fmt, ops::Deref, str::FromStr, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
@@ -551,6 +551,17 @@ pub enum WorkflowStreamEvent {
         event: TaskCompletedEvent,
         context: TaskContext,
     },
+    /// Per-iteration failure inside a parallel/sequential ForTask running with
+    /// `onError: continue`. Carries the captured error payload and a position
+    /// for observability, but intentionally does NOT expose a TaskContext: the
+    /// for-task itself still emits exactly one final TaskCompleted, and we do
+    /// not want this event to overwrite WorkflowContext.output along the way.
+    ForItemFailed {
+        task_name: String,
+        position: String,
+        index: u32,
+        error_payload: serde_json::Value,
+    },
 }
 
 impl WorkflowStreamEvent {
@@ -577,6 +588,19 @@ impl WorkflowStreamEvent {
             },
             Self::TaskCompleted { event, .. } => WorkflowEvent {
                 event: Some(workflow_event::Event::TaskCompleted(event.clone())),
+            },
+            Self::ForItemFailed {
+                task_name,
+                position,
+                index,
+                error_payload,
+            } => WorkflowEvent {
+                event: Some(workflow_event::Event::ForItemFailed(ForItemFailedEvent {
+                    task_name: task_name.clone(),
+                    position: position.clone(),
+                    index: *index,
+                    error_payload_json: serde_json::to_string(error_payload).unwrap_or_default(),
+                })),
             },
         }
     }
@@ -654,6 +678,7 @@ impl WorkflowStreamEvent {
             Self::JobCompleted { event, .. } => &event.position,
             Self::TaskStarted { event } => &event.position,
             Self::TaskCompleted { event, .. } => &event.position,
+            Self::ForItemFailed { position, .. } => position,
         }
     }
 
@@ -720,6 +745,25 @@ impl WorkflowStreamEvent {
                 position: position.to_string(),
             },
             context,
+        }
+    }
+
+    /// Build a per-iteration failure event for a ForTask running with
+    /// `onError: continue`. The carried `error_payload` contains the error
+    /// detail, the iteration index, and the offending item value, so stream
+    /// consumers can render or count the failure without needing a
+    /// TaskContext (which would otherwise overwrite WorkflowContext.output).
+    pub fn for_item_failed(
+        task_name: &str,
+        position: &str,
+        index: u32,
+        error_payload: serde_json::Value,
+    ) -> Self {
+        Self::ForItemFailed {
+            task_name: task_name.to_string(),
+            position: position.to_string(),
+            index,
+            error_payload,
         }
     }
 

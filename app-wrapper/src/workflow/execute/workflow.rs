@@ -481,6 +481,18 @@ impl WorkflowExecutor {
                         drop(wf);
                         Self::record_error(&span, &e.to_string());
                         yield Err(e);
+                        // Drain the rest of the task stream WITHOUT yielding
+                        // anything further and WITHOUT touching the workflow
+                        // context. This keeps the persisted faulted output
+                        // intact (a late TaskCompleted from e.g. a parallel
+                        // for-task's cleanup chain would otherwise overwrite
+                        // it), while still polling the inner stream to
+                        // completion so that JoinSet-based cleanup such as
+                        // for.rs's final_stream chain — which awaits all
+                        // spawned iterations via join_next — actually runs.
+                        // Returning early here would detach those spawns.
+                        while task_stream.next().await.is_some() {}
+                        return;
                     }
                 }
             }
@@ -643,6 +655,23 @@ impl WorkflowExecutor {
             while let Some(result) = event_stream.next().await {
                 match result {
                     Ok(event) => {
+                        // ForItemFailed is a per-iteration failure inside a
+                        // for-task. Surface it without mutating the persisted
+                        // workflow output: clone the current snapshot and stamp
+                        // the error_payload as this event's output, but never
+                        // write that payload back into initial_wfc.
+                        if let crate::workflow::execute::context::WorkflowStreamEvent::ForItemFailed { position, error_payload, .. } = &event {
+                            let wf = initial_wfc.read().await;
+                            let mut res = (*wf).clone();
+                            drop(wf);
+                            if !position.is_empty()
+                                && let Ok(pos) = WorkflowPosition::parse(position) {
+                                    res.position = pos;
+                                }
+                            res.output = Some(Arc::new(error_payload.clone()));
+                            yield Ok(Arc::new(res));
+                            continue;
+                        }
                         // Only yield completed events as WorkflowContext
                         let has_context = event.context().is_some();
                         if has_context {
