@@ -404,15 +404,19 @@ impl ForTaskStreamExecutor {
                                         elapsed_ms
                                     );
 
-                                    // Check for unsupported Wait inside ForTask (parallel)
-                                    let result = if let Ok(ref event) = result {
+                                    // Check for unsupported Wait inside ForTask (parallel).
+                                    // This is a structural DSL error, not a per-item runtime
+                                    // failure, so it must NOT be swallowed by onError=continue.
+                                    // Send the Err directly and stop draining this branch, so
+                                    // the workflow faults the same way the sequential and
+                                    // post-stream-end paths do.
+                                    if let Ok(ref event) = result {
                                         let wf_status = workflow_context.read().await.status.clone();
                                         if wf_status == WorkflowStatus::Waiting {
                                             tracing::error!(
                                                 "Wait directive inside ForTask is not supported (parallel): task={}",
                                                 task_name_formatted
                                             );
-                                            // Reset status to Running to allow error propagation
                                             workflow_context.write().await.status = WorkflowStatus::Running;
                                             let pos_instance = if let Some(ctx) = event.context() {
                                                 Some(ctx.position.read().await.as_error_instance())
@@ -425,13 +429,14 @@ impl ForTaskStreamExecutor {
                                                 pos_instance,
                                                 None,
                                             );
-                                            Err(error)
-                                        } else {
-                                            result
+                                            // Cancel siblings so the whole for-task tears down
+                                            // promptly, regardless of onError policy.
+                                            let _ = cancel_tx_clone.send(true);
+                                            Self::record_error(&span, &error.to_string());
+                                            let _ = tx.send(Err(error)).await;
+                                            break;
                                         }
-                                    } else {
-                                        result
-                                    };
+                                    }
 
                                     // On error, react per onError policy: Break signals cancel
                                     // and propagates Err; Continue converts the Err into an
@@ -1883,6 +1888,130 @@ mod tests {
                 "Error message should indicate wait inside ForTask is not supported, got: {}",
                 error_message
             );
+        });
+    }
+
+    /// `then: wait` inside a ForTask is structurally unsupported. `onError:
+    /// continue` only governs per-item runtime failures and must not silently
+    /// swallow this DSL-level error. Both sequential and parallel paths must
+    /// surface a faulted workflow even when continue is set.
+    #[test]
+    fn test_for_task_wait_not_supported_even_with_continue() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::modules::test::create_test_app_wrapper_module;
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+            use futures_util::pin_mut;
+
+            for in_parallel in [false, true] {
+                let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+                let app_wrapper_module =
+                    Arc::new(create_test_app_wrapper_module(app_module.clone()));
+
+                let workflow_json = serde_json::json!({
+                    "document": {
+                        "dsl": "1.0.0",
+                        "namespace": "test",
+                        "name": "for-task-wait-with-continue",
+                        "version": "1.0.0",
+                        "metadata": {}
+                    },
+                    "input": {
+                        "schema": {
+                            "document": {
+                                "type": "object",
+                                "properties": {
+                                    "items": {"type": "array", "items": {"type": "string"}}
+                                }
+                            }
+                        }
+                    },
+                    "do": [
+                        {
+                            "process_items": {
+                                "for": {
+                                    "in": "${.items}",
+                                    "each": "item",
+                                    "at": "index"
+                                },
+                                "inParallel": in_parallel,
+                                "onError": "continue",
+                                "do": [
+                                    {
+                                        "process_item": {
+                                            "set": { "processed_item": "${$item}" },
+                                            "then": "wait"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                });
+
+                let workflow =
+                    Arc::new(serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap());
+                let input = Arc::new(serde_json::json!({
+                    "items": ["item0", "item1", "item2"]
+                }));
+                let context = Arc::new(serde_json::json!({}));
+
+                let executor = WorkflowExecutor::init(
+                    app_wrapper_module,
+                    app_module,
+                    workflow,
+                    input,
+                    None,
+                    context,
+                    Arc::new(HashMap::new()),
+                    None,
+                )
+                .await
+                .unwrap();
+
+                let workflow_stream =
+                    executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+                pin_mut!(workflow_stream);
+
+                let mut surfaced_unsupported_wait = false;
+                let mut last_status = WorkflowStatus::Running;
+                let timeout_duration = tokio::time::Duration::from_secs(15);
+                let _ = tokio::time::timeout(timeout_duration, async {
+                    while let Some(result) = workflow_stream.next().await {
+                        match result {
+                            Err(e) => {
+                                let msg = format!("{}", e);
+                                if msg.contains(
+                                    "Wait directive inside ForTask is not currently supported",
+                                ) {
+                                    surfaced_unsupported_wait = true;
+                                }
+                                break;
+                            }
+                            Ok(wc) => {
+                                last_status = wc.status.clone();
+                                if wc.status == WorkflowStatus::Faulted
+                                    && let Some(output) = wc.output.as_ref()
+                                    && let Some(err) = output.get("error")
+                                {
+                                    let msg = err.to_string();
+                                    if msg.contains(
+                                        "Wait directive inside ForTask is not currently supported",
+                                    ) {
+                                        surfaced_unsupported_wait = true;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                })
+                .await;
+
+                assert!(
+                    surfaced_unsupported_wait,
+                    "in_parallel={in_parallel}: unsupported `then: wait` inside ForTask must surface as a faulting error even with onError=continue (last_status={last_status:?})"
+                );
+            }
         });
     }
 
