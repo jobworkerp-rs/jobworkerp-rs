@@ -772,6 +772,111 @@ pub mod tests {
         })
     }
 
+    // Verify that find_job_result_from_db tolerates worker deletion: the API must
+    // keep returning the stored result data so admin-ui detail pages stay usable.
+    #[test]
+    fn test_find_job_result_from_db_with_deleted_worker() -> Result<()> {
+        use super::*;
+        use command_utils::util::datetime;
+        use infra::infra::job::rows::JobqueueAndCodec;
+        use infra_utils::infra::test::TEST_RUNTIME;
+        use jobworkerp_base::codec::UseProstCodec;
+        use jobworkerp_runner::jobworkerp::runner::CommandArgs;
+        use proto::jobworkerp::data::{ResponseType, WorkerData};
+
+        let runner_settings = vec![];
+        let worker_data = WorkerData {
+            name: "deleted-worker".to_string(),
+            description: "to be deleted".to_string(),
+            runner_id: Some(proto::jobworkerp::data::RunnerId { value: 1 }),
+            runner_settings,
+            retry_policy: None,
+            periodic_interval: 0,
+            channel: Some("hoge".to_string()),
+            queue_type: proto::jobworkerp::data::QueueType::DbOnly as i32,
+            response_type: ResponseType::Direct as i32,
+            store_success: true,
+            store_failure: true,
+            use_static: false,
+            broadcast_results: false,
+        };
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_app().await?;
+            let worker_id = app.worker_app().create(&worker_data).await?;
+
+            let id = JobResultId {
+                value: app.id_generator().generate_id()?,
+            };
+            let job_id = JobId { value: 100 };
+            let args = JobqueueAndCodec::serialize_message(&CommandArgs {
+                command: "echo".to_string(),
+                args: vec!["arg1".to_string()],
+                with_memory_monitoring: false,
+                treat_nonzero_as_error: false,
+                success_exit_codes: vec![],
+                working_dir: String::new(),
+            })?;
+            let data = JobResultData {
+                job_id: Some(job_id),
+                worker_id: Some(worker_id),
+                status: ResultStatus::Success as i32,
+                worker_name: worker_data.name.clone(),
+                args,
+                uniq_key: Some("uniq".to_string()),
+                output: Some(proto::jobworkerp::data::ResultOutput {
+                    items: b"data".to_vec(),
+                }),
+                retried: 0,
+                max_retry: 0,
+                priority: proto::jobworkerp::data::Priority::High as i32,
+                timeout: 0,
+                streaming_type: 0,
+                enqueue_time: datetime::now_millis(),
+                run_after_time: 0,
+                response_type: worker_data.response_type,
+                start_time: datetime::now_millis(),
+                end_time: datetime::now_millis(),
+                store_success: worker_data.store_success,
+                store_failure: worker_data.store_failure,
+                using: None,
+                broadcast_results: worker_data.broadcast_results,
+                resolved_retry_policy: None,
+            };
+            assert!(
+                app.create_job_result_if_necessary(&id, &data, worker_data.broadcast_results)
+                    .await?
+            );
+
+            // Sanity: result is fetchable while worker exists
+            assert!(app.find_job_result_from_db(&id).await?.is_some());
+
+            // Delete the worker; result must still be returned (with stored values).
+            assert!(app.worker_app().delete(&worker_id).await?);
+
+            let res = app
+                .find_job_result_from_db(&id)
+                .await?
+                .expect("result should still be fetchable after worker deletion");
+            let res_data = res.data.expect("result data must remain");
+            assert_eq!(res_data.worker_id, Some(worker_id));
+            // worker_name is normally re-filled from the live worker; once the
+            // worker is deleted the stored (DB-empty) value comes back as-is.
+            assert_eq!(res_data.status, ResultStatus::Success as i32);
+            assert_eq!(res_data.job_id, Some(job_id));
+
+            // List-by-job-id must also tolerate the deleted worker (deleted
+            // worker is Ok(None) inside the inner fill, not an Err).
+            let listed = app.find_job_result_list_by_job_id(&job_id).await?;
+            assert_eq!(listed.len(), 1);
+            assert_eq!(
+                listed[0].data.as_ref().and_then(|d| d.worker_id),
+                Some(worker_id)
+            );
+
+            Ok(())
+        })
+    }
+
     #[test]
     fn test_error_listen_result() -> Result<()> {
         use super::*;

@@ -10,7 +10,6 @@ use futures::stream::BoxStream;
 use infra::infra::job::overrides::find_overrides_batch_tx;
 use infra::infra::job_result::rdb::{RdbJobResultRepository, UseRdbJobResultRepository};
 use infra_utils::infra::rdb::UseRdbPool;
-use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobExecutionOverrides, JobId, JobResult, JobResultData, JobResultId, JobResultSortField,
     ResultOutputItem, ResultStatus, WorkerId,
@@ -26,7 +25,11 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
             || data.status != ResultStatus::Success as i32 && data.store_failure
     }
 
-    // Batch-fill job result data with worker data (avoids N+1 overrides queries)
+    // Batch-fill job result data with worker data (avoids N+1 overrides queries).
+    // Worker deletion is already tolerated inside `_fill_worker_data_to_data_inner`
+    // (returns the stored values as-is on Ok(None)), so any error reaching us
+    // here is a real lookup failure (DB / Redis outage) and must surface to the
+    // caller rather than degrading silently into a partial success response.
     async fn _fill_worker_data_to_vec(&self, v: Vec<JobResult>) -> Result<Vec<JobResult>> {
         // Batch-fetch overrides for all job_ids to avoid N+1 queries
         let job_ids: Vec<i64> = v
@@ -36,22 +39,12 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
         let overrides_map =
             find_overrides_batch_tx(self.rdb_job_result_repository().db_pool(), &job_ids).await?;
 
-        let mut rv = Vec::new();
+        let mut rv = Vec::with_capacity(v.len());
         for it in v {
-            let original = it.clone();
-            match self
-                ._fill_worker_data_with_overrides(it, &overrides_map)
-                .await
-            {
-                Ok(filled) => rv.push(filled),
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to fill worker data in batch fill, returning original: {:?}",
-                        e
-                    );
-                    rv.push(original);
-                }
-            }
+            rv.push(
+                self._fill_worker_data_with_overrides(it, &overrides_map)
+                    .await?,
+            );
         }
         Ok(rv)
     }
@@ -96,6 +89,10 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
         self._fill_worker_data_to_data_inner(data, overrides).await
     }
 
+    // Tolerate worker deletion: when the referenced worker no longer exists we
+    // keep the raw stored values (worker_name etc. as recorded at execution
+    // time) so Find/Listen APIs stay readable instead of failing the whole
+    // request. Real lookup failures (DB / Redis outages) still propagate.
     #[inline]
     async fn _fill_worker_data_to_data_inner(
         &self,
@@ -103,11 +100,14 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
         overrides: Option<JobExecutionOverrides>,
     ) -> Result<JobResultData> {
         let mut d = data;
-        if let Ok(Some(w)) = self
+        // Distinguish "worker deleted" (Ok(None)) from a real lookup failure
+        // (Err): only the former is tolerated with a warn + raw payload, so
+        // DB / Redis outages still surface to the caller.
+        let worker = self
             .worker_app()
             .find_data_by_opt(d.worker_id.as_ref())
-            .await
-        {
+            .await?;
+        if let Some(w) = worker {
             d.worker_name.clone_from(&w.name);
 
             // Restore resolved values from job_execution_overrides if available;
@@ -145,11 +145,11 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
             tracing::debug!("filled_worker_data: {:?}", &d);
             Ok(d)
         } else {
-            Err(JobWorkerError::WorkerNotFound(format!(
-                "worker not found for worker_id: {:?}",
+            tracing::warn!(
+                "Worker not found while filling job_result (worker_id={:?}); returning stored data as-is",
                 &d.worker_id.as_ref().map(|i| i.value)
-            ))
-            .into())
+            );
+            Ok(d)
         }
     }
     async fn _fill_worker_data(&self, result: JobResult) -> Result<JobResult> {
