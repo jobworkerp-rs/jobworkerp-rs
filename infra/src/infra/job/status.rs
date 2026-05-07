@@ -9,6 +9,12 @@ use anyhow::Result;
 use proto::jobworkerp::data::{JobId, JobProcessingStatus};
 use tonic::async_trait;
 
+/// Source of truth for live job processing state.
+///
+/// Note: this trait is authoritative. The RDB-backed
+/// [`crate::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository`]
+/// is an eventually-consistent secondary index of the same data — see its
+/// docs for the inverted SoT relationship versus the rest of the codebase.
 #[async_trait]
 pub trait JobProcessingStatusRepository: Send + Sync + std::fmt::Debug + 'static {
     async fn upsert_status(&self, id: &JobId, status: &JobProcessingStatus) -> Result<bool>;

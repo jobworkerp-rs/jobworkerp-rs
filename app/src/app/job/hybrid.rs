@@ -782,6 +782,21 @@ impl JobApp for HybridJobAppImpl {
                 // TODO validate argument types (using Runner)
                 // self.validate_worker_and_job_arg(&w, data.arg.as_ref())?;
 
+                // Restore live status and the search-index row BEFORE either
+                // queue path makes the job grabbable. If the RDB upsert below
+                // were to run first, a worker could pick the job up while the
+                // index row still carried `deleted_at` from the prior
+                // completion — `index_status(Running)` would skip and the
+                // job would never appear in admin search.
+                self.job_processing_status_repository()
+                    .upsert_status(jid, &JobProcessingStatus::Pending)
+                    .await?;
+                super::reset_index_to_pending_for_retry(
+                    self.job_status_index_repository.as_ref(),
+                    jid,
+                )
+                .await;
+
                 // use db queue (run after, periodic, queue_type=DB worker)
                 let res_db = if is_run_after_job_data
                     || w.periodic_interval > 0
@@ -799,10 +814,6 @@ impl JobApp for HybridJobAppImpl {
                 } else {
                     Ok(false)
                 };
-                // update job status of redis(memory)
-                self.job_processing_status_repository()
-                    .upsert_status(jid, &JobProcessingStatus::Pending)
-                    .await?;
                 let res_redis = if !is_run_after_job_data
                     && w.periodic_interval == 0
                     && (w.queue_type == QueueType::Normal as i32
@@ -1219,15 +1230,22 @@ impl JobApp for HybridJobAppImpl {
         }
 
         super::purge_orphaned_stale_records(index_repo, stale_threshold_hours, async |job_id| {
-            if self.find_job(&job_id).await?.is_some() {
-                return Ok(false);
-            }
-            let status_exists = self
+            // Live status SoT first (Redis/Memory). The `job` table is also
+            // consulted as a secondary guard for queue types that keep the
+            // job row as their own SoT (DbOnly, periodic, future run_after)
+            // and may not have a live-status entry.
+            if self
                 .job_processing_status_repository()
                 .find_status(&job_id)
                 .await?
-                .is_some();
-            Ok(!status_exists)
+                .is_some()
+            {
+                return Ok(false);
+            }
+            if self.find_job(&job_id).await?.is_some() {
+                return Ok(false);
+            }
+            Ok(true)
         })
         .await
     }

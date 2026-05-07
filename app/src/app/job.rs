@@ -304,10 +304,47 @@ pub trait UseJobApp {
     fn job_app(&self) -> &Arc<dyn JobApp + 'static>;
 }
 
+/// Synchronously reset the RDB search index back to PENDING for the retry path.
+///
+/// Unlike most index updates this runs awaited (not via `tokio::spawn`):
+/// the row may carry `deleted_at` from a prior WAIT_RESULT/CANCELLING and
+/// `index_status(Running)` refuses to resurrect a deleted row, so a worker
+/// that grabs the job before the index is restored would silently lose the
+/// RUNNING update. Callers must invoke this before any queue path makes
+/// the job grabbable. RDB errors are logged but do not abort the retry.
+pub(crate) async fn reset_index_to_pending_for_retry(
+    index_repo: Option<&Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>>,
+    job_id: &JobId,
+) {
+    let Some(repo) = index_repo else {
+        return;
+    };
+    if let Err(e) = repo.reset_to_pending_by_job_id(job_id).await {
+        tracing::warn!(
+            error = ?e,
+            job_id = job_id.value,
+            "Failed to reset RDB index to PENDING on retry (non-critical)"
+        );
+    }
+}
+
 /// Shared orphaned-only purge logic for hybrid.rs and rdb_chan.rs.
 ///
-/// Checks each stale candidate against both the job store and the status repository.
-/// Only marks records as deleted when neither source has the job (true orphan).
+/// Walks the candidates produced by `find_stale_job_ids` and asks the caller-
+/// supplied `is_orphaned` predicate whether each one should be marked as
+/// deleted in the RDB index.
+///
+/// # Orphan determination
+///
+/// The predicate must check both:
+/// 1. the live `JobProcessingStatusRepository` (Redis/Memory SoT for normal
+///    response/queue paths), and
+/// 2. the `job` table (SoT for queue types that don't populate live status —
+///    `QueueType::DbOnly`, periodic workers, and future `run_after_time`
+///    jobs — and also a guard against transient cleanup races where the live
+///    status has just been cleared but the job row hasn't yet).
+///
+/// A row is orphan only when neither source acknowledges the job.
 pub(crate) async fn purge_orphaned_stale_records<F, Fut>(
     index_repo: &infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository,
     stale_threshold_hours: u64,
