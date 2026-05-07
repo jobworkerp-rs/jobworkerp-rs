@@ -326,12 +326,23 @@ impl RdbJobProcessingStatusIndexRepository {
     /// row exists (logical delete from a prior WAIT_RESULT/CANCELLING), so
     /// retried jobs would otherwise be stuck out of the search index.
     ///
-    /// Touches only rows where `deleted_at IS NOT NULL`. Active rows (PENDING
-    /// or RUNNING with `deleted_at = NULL`) are left untouched — this is
-    /// critical because the spawn ordering of this hook is racy against the
-    /// next worker pickup, and stomping on an in-flight RUNNING with PENDING
-    /// would clear `start_time` and bump the version backwards.
-    pub async fn reset_to_pending_by_job_id(&self, job_id: &JobId) -> Result<()> {
+    /// `retry_started_at` is the millisecond timestamp captured by the caller
+    /// at the moment the retry was initiated. The UPDATE only matches rows
+    /// whose `deleted_at` predates that mark, which is what makes this hook
+    /// safe to dispatch via `tokio::spawn`:
+    ///
+    /// * Rows with `deleted_at = NULL` (active PENDING/RUNNING) are skipped,
+    ///   so an in-flight worker is never stomped.
+    /// * Rows with `deleted_at >= retry_started_at` are skipped, which guards
+    ///   against the late-arriving variant where the worker has already raced
+    ///   ahead, finished the retry attempt, and re-deleted the row before
+    ///   this hook runs — without that bound, the stale spawn would
+    ///   resurrect the now-completed row as PENDING.
+    pub async fn reset_to_pending_by_job_id(
+        &self,
+        job_id: &JobId,
+        retry_started_at: i64,
+    ) -> Result<()> {
         if !self.config.rdb_indexing_enabled {
             return Ok(());
         }
@@ -347,11 +358,12 @@ impl RdbJobProcessingStatusIndexRepository {
                  pending_time = ?,
                  version = version + 1,
                  updated_at = ?
-             WHERE job_id = ? AND deleted_at IS NOT NULL",
+             WHERE job_id = ? AND deleted_at IS NOT NULL AND deleted_at < ?",
         )
-        .bind(now)
+        .bind(retry_started_at)
         .bind(now)
         .bind(job_id.value)
+        .bind(retry_started_at)
         .execute(&mut *conn)
         .await?
         .rows_affected();
@@ -359,7 +371,8 @@ impl RdbJobProcessingStatusIndexRepository {
         if rows_affected == 0 {
             tracing::debug!(
                 job_id = job_id.value,
-                "reset_to_pending_by_job_id: no logically-deleted row to undelete"
+                retry_started_at,
+                "reset_to_pending_by_job_id: no row matched (active, missing, or already advanced past retry mark)"
             );
         }
 
@@ -1414,8 +1427,11 @@ mod tests {
                 .execute(pool)
                 .await?;
 
-            // Reset to PENDING (retry path)
-            repo.reset_to_pending_by_job_id(&job_id).await?;
+            // Reset to PENDING (retry path); use a future timestamp so the
+            // existing logical-delete still satisfies `deleted_at < retry_started_at`.
+            let retry_started_at = datetime::now_millis() + 60_000;
+            repo.reset_to_pending_by_job_id(&job_id, retry_started_at)
+                .await?;
 
             let (status, deleted_at, start_time, pending_time, version): (
                 i32,
@@ -1456,7 +1472,8 @@ mod tests {
 
             // No row exists for this job_id; reset must succeed silently.
             let job_id = JobId { value: 999_999 };
-            repo.reset_to_pending_by_job_id(&job_id).await?;
+            repo.reset_to_pending_by_job_id(&job_id, datetime::now_millis())
+                .await?;
 
             let count: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM job_processing_status WHERE job_id = ?")
@@ -1514,7 +1531,8 @@ mod tests {
                     .fetch_one(pool)
                     .await?;
 
-            repo.reset_to_pending_by_job_id(&job_id).await?;
+            repo.reset_to_pending_by_job_id(&job_id, datetime::now_millis() + 60_000)
+                .await?;
 
             let (status, deleted_at, start_time, version): (i32, Option<i64>, Option<i64>, i64) =
                 sqlx::query_as(
@@ -1528,6 +1546,77 @@ mod tests {
             assert!(deleted_at.is_none());
             assert!(start_time.is_some(), "start_time must not be cleared");
             assert_eq!(version, pre_version, "version must not bump on RUNNING");
+
+            Ok(())
+        })
+    }
+
+    /// Late-arriving reset: a faster worker raced past the retry, completed
+    /// the job, and re-deleted the index row at `t_complete`. The retry's
+    /// reset hook (captured `retry_started_at < t_complete`) must NOT
+    /// resurrect that newly-deleted row.
+    #[test]
+    fn test_reset_to_pending_by_job_id_skips_when_deleted_after_retry_started() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let job_id = JobId { value: 700 };
+            repo.index_status(
+                &job_id,
+                &JobProcessingStatus::Pending,
+                &WorkerId { value: 1 },
+                "test_channel",
+                1,
+                700,
+                false,
+                false,
+            )
+            .await?;
+
+            let retry_started_at = datetime::now_millis();
+            // Worker has already completed the retried run and re-deleted
+            // the index row strictly after retry_started_at.
+            let post_retry_delete = retry_started_at + 1_000;
+            sqlx::query(
+                "UPDATE job_processing_status
+                 SET status = 3, deleted_at = ?, version = version + 1, updated_at = ?
+                 WHERE job_id = ?",
+            )
+            .bind(post_retry_delete)
+            .bind(post_retry_delete)
+            .bind(job_id.value)
+            .execute(pool)
+            .await?;
+
+            let pre_version: i64 =
+                sqlx::query_scalar("SELECT version FROM job_processing_status WHERE job_id = ?")
+                    .bind(job_id.value)
+                    .fetch_one(pool)
+                    .await?;
+
+            // Late-arriving reset for the prior retry attempt — must be ignored.
+            repo.reset_to_pending_by_job_id(&job_id, retry_started_at)
+                .await?;
+
+            let (status, deleted_at, version): (i32, Option<i64>, i64) = sqlx::query_as(
+                "SELECT status, deleted_at, version
+                 FROM job_processing_status WHERE job_id = ?",
+            )
+            .bind(job_id.value)
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(status, JobProcessingStatus::WaitResult as i32);
+            assert_eq!(deleted_at, Some(post_retry_delete));
+            assert_eq!(version, pre_version, "stale reset must not touch the row");
 
             Ok(())
         })
@@ -1548,7 +1637,8 @@ mod tests {
             );
 
             // When disabled, must succeed without touching DB.
-            repo.reset_to_pending_by_job_id(&JobId { value: 1 }).await?;
+            repo.reset_to_pending_by_job_id(&JobId { value: 1 }, datetime::now_millis())
+                .await?;
             Ok(())
         })
     }

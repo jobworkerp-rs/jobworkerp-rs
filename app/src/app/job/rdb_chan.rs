@@ -693,12 +693,14 @@ impl JobApp for RdbChanJobAppImpl {
                     Ok(false)
                 };
                 // update job status of redis(memory)
+                let retry_started_at = datetime::now_millis();
                 self.job_processing_status_repository()
                     .upsert_status(jid, &JobProcessingStatus::Pending)
                     .await?;
                 super::spawn_reset_index_to_pending(
                     self.job_status_index_repository.as_ref(),
                     *jid,
+                    retry_started_at,
                 );
                 let res_chan = if !is_run_after_job_data
                     && w.periodic_interval == 0

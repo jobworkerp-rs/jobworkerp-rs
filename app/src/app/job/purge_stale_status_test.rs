@@ -526,14 +526,17 @@ mod purge_stale_status_tests {
                     .bind(job_id.value)
                     .fetch_one(rdb_pool)
                     .await?;
-            let now = chrono::Utc::now().timestamp_millis();
+            // Logical-delete the index row strictly before the retry mark
+            // so the spawned reset hook (captured by update_job) is allowed
+            // to undelete it.
+            let pre_retry_delete = chrono::Utc::now().timestamp_millis() - 1_000;
             sqlx::query(
                 "UPDATE job_processing_status
                  SET status = 4, deleted_at = ?, start_time = 12345, updated_at = ?
                  WHERE job_id = ?",
             )
-            .bind(now)
-            .bind(now)
+            .bind(pre_retry_delete)
+            .bind(pre_retry_delete)
             .bind(job_id.value)
             .execute(rdb_pool)
             .await?;
@@ -704,7 +707,9 @@ mod purge_stale_status_tests {
             .execute(rdb_pool)
             .await?;
 
-            index_repo.reset_to_pending_by_job_id(&job_id).await?;
+            index_repo
+                .reset_to_pending_by_job_id(&job_id, now + 60_000)
+                .await?;
 
             let (status, deleted_at, start_time, version): (i32, Option<i64>, Option<i64>, i64) =
                 sqlx::query_as(

@@ -306,18 +306,23 @@ pub trait UseJobApp {
 
 /// Fire-and-forget retry hook for the eventually-consistent RDB search index.
 ///
-/// Called from `update_job` to mirror a Redis/Memory `upsert_status(Pending)`
-/// into the index when the index row may be in a logically-deleted state from
-/// a prior WAIT_RESULT/CANCELLING. Failures are logged at warn level.
+/// `retry_started_at` is the millisecond timestamp the caller captured when
+/// the retry was initiated; it lets the spawned UPDATE distinguish the
+/// pre-retry logical-delete (which it should undo) from any post-retry
+/// logical-delete that a faster worker may have already written.
 pub(crate) fn spawn_reset_index_to_pending(
     index_repo: Option<&Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>>,
     job_id: JobId,
+    retry_started_at: i64,
 ) {
     let Some(repo) = index_repo.cloned() else {
         return;
     };
     tokio::spawn(async move {
-        if let Err(e) = repo.reset_to_pending_by_job_id(&job_id).await {
+        if let Err(e) = repo
+            .reset_to_pending_by_job_id(&job_id, retry_started_at)
+            .await
+        {
             tracing::warn!(
                 error = ?e,
                 job_id = job_id.value,
