@@ -803,6 +803,10 @@ impl JobApp for HybridJobAppImpl {
                 self.job_processing_status_repository()
                     .upsert_status(jid, &JobProcessingStatus::Pending)
                     .await?;
+                super::spawn_reset_index_to_pending(
+                    self.job_status_index_repository.as_ref(),
+                    *jid,
+                );
                 let res_redis = if !is_run_after_job_data
                     && w.periodic_interval == 0
                     && (w.queue_type == QueueType::Normal as i32
@@ -1219,9 +1223,6 @@ impl JobApp for HybridJobAppImpl {
         }
 
         super::purge_orphaned_stale_records(index_repo, stale_threshold_hours, async |job_id| {
-            if self.find_job(&job_id).await?.is_some() {
-                return Ok(false);
-            }
             let status_exists = self
                 .job_processing_status_repository()
                 .find_status(&job_id)

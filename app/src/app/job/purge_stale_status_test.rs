@@ -318,4 +318,296 @@ mod purge_stale_status_tests {
             Ok(())
         })
     }
+
+    /// Stranded RDB index row (live status SoT empty + job row gone) must be
+    /// swept by `orphaned_only=true`.
+    #[test]
+    fn test_purge_stale_status_orphaned_only_purges_when_only_rdb_remains() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            use infra::infra::job::rdb::RdbJobRepository;
+
+            let app_module = create_rdb_chan_test_app(true, true).await?;
+            let app = &app_module.job_app;
+            let repositories = app_module
+                .repositories
+                .rdb_module
+                .as_ref()
+                .expect("RDB module should exist");
+            let index_repo = repositories
+                .rdb_job_processing_status_index_repository
+                .as_ref()
+                .expect("RDB indexing should be enabled");
+            let job_repo = &repositories.job_repository;
+            let status_repo = repositories.memory_job_processing_status_repository.as_ref();
+
+            let worker_id = app_module
+                .worker_app
+                .create(&test_worker_data("purge_only_rdb_remains"))
+                .await?;
+            let jargs = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
+                &proto::TestArgs {
+                    args: vec!["/".to_string()],
+                },
+            )?;
+
+            let metadata = Arc::new(HashMap::new());
+            let (job_id, _, _) = app
+                .enqueue_job(
+                    metadata.clone(),
+                    Some(&worker_id),
+                    None,
+                    jargs.clone(),
+                    None,
+                    0,
+                    0,
+                    0,
+                    None,
+                    StreamingType::None,
+                    None,
+                    None,
+                )
+                .await?;
+
+            let rdb_pool = index_repo.db_pool();
+            poll_until_indexed(rdb_pool, job_id.value).await;
+
+            // Simulate the leak: live SoT cleared (delete_status), `job` row
+            // already deleted, but RDB index row still has deleted_at IS NULL.
+            assert!(status_repo.delete_status(&job_id).await?);
+            job_repo.delete(&job_id).await?;
+
+            // Backdate the index row's updated_at so it qualifies as stale.
+            let stale_time = chrono::Utc::now().timestamp_millis() - 3600 * 1000 * 2;
+            sqlx::query(
+                "UPDATE job_processing_status SET updated_at = ?, deleted_at = NULL WHERE job_id = ?",
+            )
+            .bind(stale_time)
+            .bind(job_id.value)
+            .execute(rdb_pool)
+            .await?;
+
+            let (purged_count, _cutoff) = app
+                .purge_stale_job_processing_status(1, true)
+                .await?;
+
+            assert_eq!(
+                purged_count, 1,
+                "Should purge the stranded RDB index row (Redis SoT empty + job row gone)"
+            );
+
+            let deleted_at: Option<Option<i64>> =
+                sqlx::query_scalar("SELECT deleted_at FROM job_processing_status WHERE job_id = ?")
+                    .bind(job_id.value)
+                    .fetch_optional(rdb_pool)
+                    .await?;
+            assert!(
+                matches!(deleted_at, Some(Some(_))),
+                "Stranded record should be logically deleted after orphaned purge"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Live status entry present (with the `job` row already gone) must NOT
+    /// be treated as orphan — the live status SoT is authoritative.
+    #[test]
+    fn test_purge_stale_status_orphaned_only_skips_when_redis_remains_even_without_job_row()
+    -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            use infra::infra::job::rdb::RdbJobRepository;
+
+            let app_module = create_rdb_chan_test_app(true, true).await?;
+            let app = &app_module.job_app;
+            let repositories = app_module
+                .repositories
+                .rdb_module
+                .as_ref()
+                .expect("RDB module should exist");
+            let index_repo = repositories
+                .rdb_job_processing_status_index_repository
+                .as_ref()
+                .expect("RDB indexing should be enabled");
+            let job_repo = &repositories.job_repository;
+            let status_repo = repositories.memory_job_processing_status_repository.as_ref();
+
+            let worker_id = app_module
+                .worker_app
+                .create(&test_worker_data("purge_redis_remains"))
+                .await?;
+            let jargs = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
+                &proto::TestArgs {
+                    args: vec!["/".to_string()],
+                },
+            )?;
+
+            let metadata = Arc::new(HashMap::new());
+            let (job_id, _, _) = app
+                .enqueue_job(
+                    metadata.clone(),
+                    Some(&worker_id),
+                    None,
+                    jargs.clone(),
+                    None,
+                    0,
+                    0,
+                    0,
+                    None,
+                    StreamingType::None,
+                    None,
+                    None,
+                )
+                .await?;
+
+            let rdb_pool = index_repo.db_pool();
+            poll_until_indexed(rdb_pool, job_id.value).await;
+
+            // Live status entry (Redis/Memory SoT) remains; only the `job`
+            // table row is gone (typical cleanup_job ordering).
+            assert_eq!(
+                status_repo.find_status(&job_id).await?,
+                Some(JobProcessingStatus::Pending)
+            );
+            job_repo.delete(&job_id).await?;
+
+            let stale_time = chrono::Utc::now().timestamp_millis() - 3600 * 1000 * 2;
+            sqlx::query(
+                "UPDATE job_processing_status SET updated_at = ?, deleted_at = NULL WHERE job_id = ?",
+            )
+            .bind(stale_time)
+            .bind(job_id.value)
+            .execute(rdb_pool)
+            .await?;
+
+            let (purged_count, _cutoff) = app
+                .purge_stale_job_processing_status(1, true)
+                .await?;
+
+            assert_eq!(
+                purged_count, 0,
+                "Must not purge when live status SoT still has the entry"
+            );
+
+            let deleted_at: Option<Option<i64>> =
+                sqlx::query_scalar("SELECT deleted_at FROM job_processing_status WHERE job_id = ?")
+                    .bind(job_id.value)
+                    .fetch_optional(rdb_pool)
+                    .await?;
+            assert!(
+                matches!(deleted_at, Some(None)),
+                "Active SoT entry must keep the index row alive"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// `update_job` must asynchronously undelete a logically-deleted index row
+    /// and reset it to PENDING (retry/re-enqueue hook).
+    #[test]
+    fn test_update_job_resets_rdb_index_to_pending() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app_module = create_rdb_chan_test_app(true, true).await?;
+            let app = &app_module.job_app;
+            let repositories = app_module
+                .repositories
+                .rdb_module
+                .as_ref()
+                .expect("RDB module should exist");
+            let index_repo = repositories
+                .rdb_job_processing_status_index_repository
+                .as_ref()
+                .expect("RDB indexing should be enabled");
+
+            let worker_id = app_module
+                .worker_app
+                .create(&test_worker_data("retry_reset_rdb_index"))
+                .await?;
+            let jargs =
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                })?;
+
+            let metadata = Arc::new(HashMap::new());
+            let (job_id, _, _) = app
+                .enqueue_job(
+                    metadata.clone(),
+                    Some(&worker_id),
+                    None,
+                    jargs.clone(),
+                    None,
+                    0,
+                    0,
+                    0,
+                    None,
+                    StreamingType::None,
+                    None,
+                    None,
+                )
+                .await?;
+
+            let rdb_pool = index_repo.db_pool();
+            poll_until_indexed(rdb_pool, job_id.value).await;
+
+            // Capture pre-retry version, then simulate the WAIT_RESULT/CANCELLING
+            // logical-delete state directly in the index.
+            let pre_version: i64 =
+                sqlx::query_scalar("SELECT version FROM job_processing_status WHERE job_id = ?")
+                    .bind(job_id.value)
+                    .fetch_one(rdb_pool)
+                    .await?;
+            let now = chrono::Utc::now().timestamp_millis();
+            sqlx::query(
+                "UPDATE job_processing_status
+                 SET status = 4, deleted_at = ?, start_time = 12345, updated_at = ?
+                 WHERE job_id = ?",
+            )
+            .bind(now)
+            .bind(now)
+            .bind(job_id.value)
+            .execute(rdb_pool)
+            .await?;
+
+            // Build the Job for re-enqueue and call update_job (retry path).
+            let job = app
+                .find_job(&job_id)
+                .await?
+                .expect("job row should still exist for update_job");
+            app.update_job(&job).await?;
+
+            // The retry hook spawns reset_to_pending_by_job_id; poll briefly
+            // for the index row to come back as undeleted PENDING.
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            let (status, deleted_at, start_time, post_version) = loop {
+                let row: (i32, Option<i64>, Option<i64>, i64) = sqlx::query_as(
+                    "SELECT status, deleted_at, start_time, version
+                     FROM job_processing_status WHERE job_id = ?",
+                )
+                .bind(job_id.value)
+                .fetch_one(rdb_pool)
+                .await?;
+                if row.1.is_none() && row.0 == JobProcessingStatus::Pending as i32 {
+                    break row;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "Timed out waiting for retry undelete: row = {:?}",
+                    row
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            };
+
+            assert_eq!(status, JobProcessingStatus::Pending as i32);
+            assert!(deleted_at.is_none());
+            assert!(start_time.is_none(), "start_time must be cleared on retry");
+            assert!(
+                post_version > pre_version,
+                "version must bump (pre={}, post={})",
+                pre_version,
+                post_version
+            );
+
+            Ok(())
+        })
+    }
 }

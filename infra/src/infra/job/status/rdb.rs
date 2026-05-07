@@ -6,7 +6,18 @@ use jobworkerp_base::job_status_config::JobStatusConfig;
 use proto::jobworkerp::data::{JobId, JobProcessingStatus, WorkerId};
 use std::sync::Arc;
 
-/// RDB-specific JobProcessingStatus index repository
+/// RDB-specific JobProcessingStatus index repository.
+///
+/// # Architectural note (different from other repositories)
+///
+/// Unlike most repositories in jobworkerp-rs (worker, runner, function_set,
+/// job_result, job) where RDB is the source of truth and Redis acts as a cache,
+/// this index is an *eventually-consistent secondary view* of the live
+/// `JobProcessingStatusRepository` (Redis/Memory), which is the actual SoT.
+/// All writes here are intended to run via `tokio::spawn` (best-effort);
+/// failures are logged at warn level only and rely on self-healing via
+/// subsequent state transitions. Do not invert this relationship by treating
+/// this index as authoritative.
 ///
 /// # Responsibilities
 /// - INSERT/UPDATE/DELETE operations on job_processing_status table
@@ -306,6 +317,49 @@ impl RdbJobProcessingStatusIndexRepository {
                 .await?;
             }
         }
+        Ok(())
+    }
+
+    /// Retry/re-enqueue path: undelete + reset to PENDING.
+    ///
+    /// Required because `index_status(Pending)` skips inserts when a deleted
+    /// row exists (logical delete from a prior WAIT_RESULT/CANCELLING), so
+    /// retried jobs would otherwise be stuck out of the search index.
+    ///
+    /// No-op when the row is already an active PENDING; missing rows are
+    /// tolerated (next `index_status` will recreate them).
+    pub async fn reset_to_pending_by_job_id(&self, job_id: &JobId) -> Result<()> {
+        if !self.config.rdb_indexing_enabled {
+            return Ok(());
+        }
+
+        let now = datetime::now_millis();
+        let mut conn = self.rdb_pool.acquire().await?;
+
+        let rows_affected = sqlx::query(
+            "UPDATE job_processing_status
+             SET status = 1,
+                 deleted_at = NULL,
+                 start_time = NULL,
+                 pending_time = ?,
+                 version = version + 1,
+                 updated_at = ?
+             WHERE job_id = ? AND (deleted_at IS NOT NULL OR status <> 1)",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(job_id.value)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            tracing::debug!(
+                job_id = job_id.value,
+                "reset_to_pending_by_job_id: no row matched (already active PENDING or missing)"
+            );
+        }
+
         Ok(())
     }
 
@@ -1309,6 +1363,124 @@ mod tests {
                 first_deleted_at, second_deleted_at,
                 "Multiple mark_deleted calls should be idempotent"
             );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_reset_to_pending_by_job_id() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let job_id = JobId { value: 500 };
+            let worker_id = WorkerId { value: 1 };
+
+            // Insert PENDING then mark_deleted (simulates WAIT_RESULT logical deletion)
+            repo.index_status(
+                &job_id,
+                &JobProcessingStatus::Pending,
+                &worker_id,
+                "test_channel",
+                1,
+                500,
+                false,
+                false,
+            )
+            .await?;
+            repo.mark_deleted_by_job_id(&job_id).await?;
+
+            // Capture pre-reset version
+            let pre_version: i64 =
+                sqlx::query_scalar("SELECT version FROM job_processing_status WHERE job_id = ?")
+                    .bind(job_id.value)
+                    .fetch_one(pool)
+                    .await?;
+
+            // Force a non-NULL start_time to ensure reset clears it
+            sqlx::query("UPDATE job_processing_status SET start_time = 12345 WHERE job_id = ?")
+                .bind(job_id.value)
+                .execute(pool)
+                .await?;
+
+            // Reset to PENDING (retry path)
+            repo.reset_to_pending_by_job_id(&job_id).await?;
+
+            let (status, deleted_at, start_time, pending_time, version): (
+                i32,
+                Option<i64>,
+                Option<i64>,
+                Option<i64>,
+                i64,
+            ) = sqlx::query_as(
+                "SELECT status, deleted_at, start_time, pending_time, version
+                 FROM job_processing_status WHERE job_id = ?",
+            )
+            .bind(job_id.value)
+            .fetch_one(pool)
+            .await?;
+
+            assert_eq!(status, JobProcessingStatus::Pending as i32);
+            assert!(deleted_at.is_none(), "deleted_at must be cleared");
+            assert!(start_time.is_none(), "start_time must be cleared");
+            assert!(pending_time.is_some(), "pending_time must be refreshed");
+            assert!(version > pre_version, "version must be bumped");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_reset_to_pending_by_job_id_missing_row_is_noop() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            // No row exists for this job_id; reset must succeed silently.
+            let job_id = JobId { value: 999_999 };
+            repo.reset_to_pending_by_job_id(&job_id).await?;
+
+            let count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM job_processing_status WHERE job_id = ?")
+                    .bind(job_id.value)
+                    .fetch_one(pool)
+                    .await?;
+            assert_eq!(count, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_reset_to_pending_by_job_id_disabled() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: false,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            // When disabled, must succeed without touching DB.
+            repo.reset_to_pending_by_job_id(&JobId { value: 1 }).await?;
             Ok(())
         })
     }
