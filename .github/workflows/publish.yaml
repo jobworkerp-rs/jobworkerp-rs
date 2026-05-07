@@ -22,7 +22,7 @@ jobs:
       packages: write
     steps:
       # https://github.com/orgs/community/discussions/25678
-      - name: apt upgrade
+      - name: apt update
         run: |
           apt-get update
           apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates curl gnupg lsb-release docker.io

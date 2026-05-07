@@ -33,7 +33,7 @@ jobs:
           sudo docker container prune -f || true
           sudo docker image prune -af || true
           sudo docker volume prune -f || true
-      - name: apt upgrade
+      - name: apt update
         run: |
           sudo apt-get update
           sudo apt-get install -y sudo lv zsh git curl build-essential mold clang libclang-dev  gobjc gnustep gnustep-devel g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
@@ -140,7 +140,7 @@ jobs:
           sudo docker container prune -f || true
           sudo docker image prune -af || true
           sudo docker volume prune -f || true
-      - name: apt upgrade
+      - name: apt update
         run: |
           sudo apt-get update
           sudo apt-get install -y sudo lv zsh git curl build-essential mold clang libclang-dev gobjc gnustep gnustep-devel g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
