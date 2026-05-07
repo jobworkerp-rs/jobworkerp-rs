@@ -782,6 +782,24 @@ impl JobApp for HybridJobAppImpl {
                 // TODO validate argument types (using Runner)
                 // self.validate_worker_and_job_arg(&w, data.arg.as_ref())?;
 
+                // Restore live status and the search-index row BEFORE either
+                // queue path makes the job grabbable. If the RDB upsert below
+                // were to run first, a worker could pick the job up while the
+                // index row still carried `deleted_at` from the prior
+                // completion — `index_status(Running)` would skip and a
+                // late-arriving reset would later overwrite the running job
+                // back to PENDING. See `reset_index_to_pending_for_retry`.
+                let retry_started_at = datetime::now_millis();
+                self.job_processing_status_repository()
+                    .upsert_status(jid, &JobProcessingStatus::Pending)
+                    .await?;
+                super::reset_index_to_pending_for_retry(
+                    self.job_status_index_repository.as_ref(),
+                    jid,
+                    retry_started_at,
+                )
+                .await;
+
                 // use db queue (run after, periodic, queue_type=DB worker)
                 let res_db = if is_run_after_job_data
                     || w.periodic_interval > 0
@@ -799,21 +817,6 @@ impl JobApp for HybridJobAppImpl {
                 } else {
                     Ok(false)
                 };
-                // update job status of redis(memory)
-                let retry_started_at = datetime::now_millis();
-                self.job_processing_status_repository()
-                    .upsert_status(jid, &JobProcessingStatus::Pending)
-                    .await?;
-                // Reset the RDB search-index row before re-enqueuing so that
-                // when a worker picks the job up its `index_status(Running)`
-                // can land — see `reset_index_to_pending_for_retry` for why
-                // this is awaited rather than spawned.
-                super::reset_index_to_pending_for_retry(
-                    self.job_status_index_repository.as_ref(),
-                    jid,
-                    retry_started_at,
-                )
-                .await;
                 let res_redis = if !is_run_after_job_data
                     && w.periodic_interval == 0
                     && (w.queue_type == QueueType::Normal as i32
