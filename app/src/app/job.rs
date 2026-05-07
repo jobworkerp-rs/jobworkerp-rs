@@ -304,32 +304,38 @@ pub trait UseJobApp {
     fn job_app(&self) -> &Arc<dyn JobApp + 'static>;
 }
 
-/// Fire-and-forget retry hook for the eventually-consistent RDB search index.
+/// Synchronously reset the RDB search index back to PENDING for the retry path.
+///
+/// Unlike most index updates this runs awaited (not via `tokio::spawn`):
+/// the row may carry `deleted_at` from a prior WAIT_RESULT/CANCELLING and
+/// `index_status(Running)` will refuse to resurrect a deleted row, so any
+/// later spawn could land after the worker has already advanced and either
+/// silently lose the RUNNING state or overwrite it back to PENDING. Doing
+/// the reset before the actual re-enqueue closes that window.
 ///
 /// `retry_started_at` is the millisecond timestamp the caller captured when
-/// the retry was initiated; it lets the spawned UPDATE distinguish the
-/// pre-retry logical-delete (which it should undo) from any post-retry
-/// logical-delete that a faster worker may have already written.
-pub(crate) fn spawn_reset_index_to_pending(
+/// the retry was initiated; the UPDATE only matches rows whose `deleted_at`
+/// predates that mark, so legitimate logical deletes (this retry's prior
+/// completion) are undone while any post-retry deletion written by a faster
+/// worker is left alone. RDB errors are logged but do not abort the retry.
+pub(crate) async fn reset_index_to_pending_for_retry(
     index_repo: Option<&Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>>,
-    job_id: JobId,
+    job_id: &JobId,
     retry_started_at: i64,
 ) {
-    let Some(repo) = index_repo.cloned() else {
+    let Some(repo) = index_repo else {
         return;
     };
-    tokio::spawn(async move {
-        if let Err(e) = repo
-            .reset_to_pending_by_job_id(&job_id, retry_started_at)
-            .await
-        {
-            tracing::warn!(
-                error = ?e,
-                job_id = job_id.value,
-                "Failed to reset RDB index to PENDING on retry (non-critical)"
-            );
-        }
-    });
+    if let Err(e) = repo
+        .reset_to_pending_by_job_id(job_id, retry_started_at)
+        .await
+    {
+        tracing::warn!(
+            error = ?e,
+            job_id = job_id.value,
+            "Failed to reset RDB index to PENDING on retry (non-critical)"
+        );
+    }
 }
 
 /// Shared orphaned-only purge logic for hybrid.rs and rdb_chan.rs.

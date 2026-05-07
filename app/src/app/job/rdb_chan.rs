@@ -697,11 +697,16 @@ impl JobApp for RdbChanJobAppImpl {
                 self.job_processing_status_repository()
                     .upsert_status(jid, &JobProcessingStatus::Pending)
                     .await?;
-                super::spawn_reset_index_to_pending(
+                // Reset the RDB search-index row before re-enqueuing so that
+                // when a worker picks the job up its `index_status(Running)`
+                // can land — see `reset_index_to_pending_for_retry` for why
+                // this is awaited rather than spawned.
+                super::reset_index_to_pending_for_retry(
                     self.job_status_index_repository.as_ref(),
-                    *jid,
+                    jid,
                     retry_started_at,
-                );
+                )
+                .await;
                 let res_chan = if !is_run_after_job_data
                     && w.periodic_interval == 0
                     && (w.queue_type == QueueType::Normal as i32

@@ -542,33 +542,26 @@ mod purge_stale_status_tests {
             .await?;
 
             // Build the Job for re-enqueue and call update_job (retry path).
+            // The retry hook is awaited inside update_job, so by the time it
+            // returns the index row must already be undeleted PENDING.
             let job = app
                 .find_job(&job_id)
                 .await?
                 .expect("job row should still exist for update_job");
             app.update_job(&job).await?;
 
-            // The retry hook spawns reset_to_pending_by_job_id; poll briefly
-            // for the index row to come back as undeleted PENDING.
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-            let (status, deleted_at, start_time, post_version) = loop {
-                let row: (i32, Option<i64>, Option<i64>, i64) = sqlx::query_as(
-                    "SELECT status, deleted_at, start_time, version
-                     FROM job_processing_status WHERE job_id = ?",
-                )
-                .bind(job_id.value)
-                .fetch_one(rdb_pool)
-                .await?;
-                if row.1.is_none() && row.0 == JobProcessingStatus::Pending as i32 {
-                    break row;
-                }
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "Timed out waiting for retry undelete: row = {:?}",
-                    row
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            };
+            let (status, deleted_at, start_time, post_version): (
+                i32,
+                Option<i64>,
+                Option<i64>,
+                i64,
+            ) = sqlx::query_as(
+                "SELECT status, deleted_at, start_time, version
+                 FROM job_processing_status WHERE job_id = ?",
+            )
+            .bind(job_id.value)
+            .fetch_one(rdb_pool)
+            .await?;
 
             assert_eq!(status, JobProcessingStatus::Pending as i32);
             assert!(deleted_at.is_none());
