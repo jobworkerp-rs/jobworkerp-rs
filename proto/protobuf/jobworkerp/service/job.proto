@@ -176,13 +176,13 @@ message PurgeStaleJobsRequest {
   // Stale threshold in hours: records with updated_at older than this are candidates
   uint64 stale_threshold_hours = 1;
 
-  // When true, only purge stale RDB index rows whose job_id has no entry in the
-  // live JobProcessingStatusRepository (Redis or in-process memory). The live
-  // status repository is the source of truth for job processing state; the RDB
-  // `job_processing_status` table is an asynchronously-maintained search index
-  // that may lag and accumulate orphans when cleanup writes fail. The `job`
-  // table is intentionally NOT consulted (it is a separate storage that is
-  // deleted ahead of live status during `cleanup_job`).
+  // When true, only purge stale RDB index rows whose job is no longer
+  // referenced by either the live JobProcessingStatusRepository (Redis/Memory)
+  // or the `job` table. The live status repository is the source of truth for
+  // normal jobs; the `job` table is the SoT for queue types that don't keep a
+  // live status entry (DbOnly, periodic, future run_after). A row is orphan
+  // only when both sources have let go of the job_id, so still-queued or
+  // long-running jobs are preserved.
   //
   // When false (default), purge all stale records in bulk regardless of
   // source-of-truth state.
@@ -236,15 +236,15 @@ service JobProcessingStatusService {
   //
   // Modes:
   // - orphaned_only=false (default): Purges all stale records in bulk.
-  // - orphaned_only=true: Purges stale records whose job_id is absent from the live JobProcessingStatusRepository (Redis/Memory).
+  // - orphaned_only=true: Purges stale records whose job_id is absent from BOTH the live JobProcessingStatusRepository (Redis/Memory) AND the `job` table.
   //
-  // Redis/Memory is the source of truth for live job processing state; the RDB
-  // `job_processing_status` table is an eventually-consistent search view that
-  // may lag. The orphaned_only=true mode is intended to sweep leftover index
-  // rows when `cleanup_job`'s best-effort `mark_deleted_by_job_id` write
-  // failed (terminal state, no self-healing). The `job` table is intentionally
-  // NOT consulted (it is a separate storage that is deleted ahead of live
-  // status during `cleanup_job`).
+  // Redis/Memory is the source of truth for live job processing state; the
+  // `job` table is the SoT for queue types without a live-status entry
+  // (DbOnly, periodic, future run_after). The RDB `job_processing_status`
+  // table is an eventually-consistent search view that may lag. The
+  // orphaned_only=true mode is intended to sweep leftover index rows when
+  // `cleanup_job`'s best-effort `mark_deleted_by_job_id` write failed
+  // (terminal state, no self-healing).
   //
   // Requirements:
   // - JOB_STATUS_RDB_INDEXING=true (returns FAILED_PRECONDITION if disabled)

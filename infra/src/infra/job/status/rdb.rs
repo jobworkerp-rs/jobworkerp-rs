@@ -320,14 +320,17 @@ impl RdbJobProcessingStatusIndexRepository {
         Ok(())
     }
 
-    /// Retry/re-enqueue path: undelete + reset to PENDING.
+    /// Retry/re-enqueue path: undelete a logically-deleted row back to PENDING.
     ///
     /// Required because `index_status(Pending)` skips inserts when a deleted
     /// row exists (logical delete from a prior WAIT_RESULT/CANCELLING), so
     /// retried jobs would otherwise be stuck out of the search index.
     ///
-    /// No-op when the row is already an active PENDING; missing rows are
-    /// tolerated (next `index_status` will recreate them).
+    /// Touches only rows where `deleted_at IS NOT NULL`. Active rows (PENDING
+    /// or RUNNING with `deleted_at = NULL`) are left untouched — this is
+    /// critical because the spawn ordering of this hook is racy against the
+    /// next worker pickup, and stomping on an in-flight RUNNING with PENDING
+    /// would clear `start_time` and bump the version backwards.
     pub async fn reset_to_pending_by_job_id(&self, job_id: &JobId) -> Result<()> {
         if !self.config.rdb_indexing_enabled {
             return Ok(());
@@ -344,7 +347,7 @@ impl RdbJobProcessingStatusIndexRepository {
                  pending_time = ?,
                  version = version + 1,
                  updated_at = ?
-             WHERE job_id = ? AND (deleted_at IS NOT NULL OR status <> 1)",
+             WHERE job_id = ? AND deleted_at IS NOT NULL",
         )
         .bind(now)
         .bind(now)
@@ -356,7 +359,7 @@ impl RdbJobProcessingStatusIndexRepository {
         if rows_affected == 0 {
             tracing::debug!(
                 job_id = job_id.value,
-                "reset_to_pending_by_job_id: no row matched (already active PENDING or missing)"
+                "reset_to_pending_by_job_id: no logically-deleted row to undelete"
             );
         }
 
@@ -1461,6 +1464,71 @@ mod tests {
                     .fetch_one(pool)
                     .await?;
             assert_eq!(count, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_reset_to_pending_by_job_id_skips_active_running_row() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            // RUNNING with deleted_at = NULL must be untouched (the worker
+            // pickup may race with the spawned reset hook).
+            let job_id = JobId { value: 600 };
+            repo.index_status(
+                &job_id,
+                &JobProcessingStatus::Pending,
+                &WorkerId { value: 1 },
+                "test_channel",
+                1,
+                600,
+                false,
+                false,
+            )
+            .await?;
+            repo.index_status(
+                &job_id,
+                &JobProcessingStatus::Running,
+                &WorkerId { value: 1 },
+                "test_channel",
+                1,
+                600,
+                false,
+                false,
+            )
+            .await?;
+
+            let pre_version: i64 =
+                sqlx::query_scalar("SELECT version FROM job_processing_status WHERE job_id = ?")
+                    .bind(job_id.value)
+                    .fetch_one(pool)
+                    .await?;
+
+            repo.reset_to_pending_by_job_id(&job_id).await?;
+
+            let (status, deleted_at, start_time, version): (i32, Option<i64>, Option<i64>, i64) =
+                sqlx::query_as(
+                    "SELECT status, deleted_at, start_time, version
+                     FROM job_processing_status WHERE job_id = ?",
+                )
+                .bind(job_id.value)
+                .fetch_one(pool)
+                .await?;
+            assert_eq!(status, JobProcessingStatus::Running as i32);
+            assert!(deleted_at.is_none());
+            assert!(start_time.is_some(), "start_time must not be cleared");
+            assert_eq!(version, pre_version, "version must not bump on RUNNING");
+
             Ok(())
         })
     }

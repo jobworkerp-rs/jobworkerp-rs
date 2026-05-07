@@ -1089,12 +1089,22 @@ impl JobApp for RdbChanJobAppImpl {
         }
 
         super::purge_orphaned_stale_records(index_repo, stale_threshold_hours, async |job_id| {
-            let status_exists = self
+            // Live status SoT first (Redis/Memory). The `job` table is also
+            // consulted as a secondary guard for queue types that keep the
+            // job row as their own SoT (DbOnly, periodic, future run_after)
+            // and may not have a live-status entry.
+            if self
                 .job_processing_status_repository()
                 .find_status(&job_id)
                 .await?
-                .is_some();
-            Ok(!status_exists)
+                .is_some()
+            {
+                return Ok(false);
+            }
+            if self.find_job(&job_id).await?.is_some() {
+                return Ok(false);
+            }
+            Ok(true)
         })
         .await
     }

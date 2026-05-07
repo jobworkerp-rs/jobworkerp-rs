@@ -331,9 +331,19 @@ pub(crate) fn spawn_reset_index_to_pending(
 ///
 /// Walks the candidates produced by `find_stale_job_ids` and asks the caller-
 /// supplied `is_orphaned` predicate whether each one should be marked as
-/// deleted in the RDB index. The predicate must consult only the live
-/// `JobProcessingStatusRepository` (Redis/Memory SoT); see that trait's docs
-/// for the inverted SoT relationship.
+/// deleted in the RDB index.
+///
+/// # Orphan determination
+///
+/// The predicate must check both:
+/// 1. the live `JobProcessingStatusRepository` (Redis/Memory SoT for normal
+///    response/queue paths), and
+/// 2. the `job` table (SoT for queue types that don't populate live status —
+///    `QueueType::DbOnly`, periodic workers, and future `run_after_time`
+///    jobs — and also a guard against transient cleanup races where the live
+///    status has just been cleared but the job row hasn't yet).
+///
+/// A row is orphan only when neither source acknowledges the job.
 pub(crate) async fn purge_orphaned_stale_records<F, Fut>(
     index_repo: &infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository,
     stale_threshold_hours: u64,
