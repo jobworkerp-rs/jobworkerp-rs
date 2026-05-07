@@ -680,17 +680,14 @@ impl JobApp for RdbChanJobAppImpl {
                 // queue path makes the job grabbable. If the RDB upsert below
                 // were to run first, a worker could pick the job up while the
                 // index row still carried `deleted_at` from the prior
-                // completion — `index_status(Running)` would skip and a
-                // late-arriving reset would later overwrite the running job
-                // back to PENDING. See `reset_index_to_pending_for_retry`.
-                let retry_started_at = datetime::now_millis();
+                // completion — `index_status(Running)` would skip and the
+                // job would never appear in admin search.
                 self.job_processing_status_repository()
                     .upsert_status(jid, &JobProcessingStatus::Pending)
                     .await?;
                 super::reset_index_to_pending_for_retry(
                     self.job_status_index_repository.as_ref(),
                     jid,
-                    retry_started_at,
                 )
                 .await;
 

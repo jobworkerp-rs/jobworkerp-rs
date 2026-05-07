@@ -308,28 +308,18 @@ pub trait UseJobApp {
 ///
 /// Unlike most index updates this runs awaited (not via `tokio::spawn`):
 /// the row may carry `deleted_at` from a prior WAIT_RESULT/CANCELLING and
-/// `index_status(Running)` will refuse to resurrect a deleted row, so any
-/// later spawn could land after the worker has already advanced and either
-/// silently lose the RUNNING state or overwrite it back to PENDING. Doing
-/// the reset before the actual re-enqueue closes that window.
-///
-/// `retry_started_at` is the millisecond timestamp the caller captured when
-/// the retry was initiated; the UPDATE only matches rows whose `deleted_at`
-/// predates that mark, so legitimate logical deletes (this retry's prior
-/// completion) are undone while any post-retry deletion written by a faster
-/// worker is left alone. RDB errors are logged but do not abort the retry.
+/// `index_status(Running)` refuses to resurrect a deleted row, so a worker
+/// that grabs the job before the index is restored would silently lose the
+/// RUNNING update. Callers must invoke this before any queue path makes
+/// the job grabbable. RDB errors are logged but do not abort the retry.
 pub(crate) async fn reset_index_to_pending_for_retry(
     index_repo: Option<&Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>>,
     job_id: &JobId,
-    retry_started_at: i64,
 ) {
     let Some(repo) = index_repo else {
         return;
     };
-    if let Err(e) = repo
-        .reset_to_pending_by_job_id(job_id, retry_started_at)
-        .await
-    {
+    if let Err(e) = repo.reset_to_pending_by_job_id(job_id).await {
         tracing::warn!(
             error = ?e,
             job_id = job_id.value,

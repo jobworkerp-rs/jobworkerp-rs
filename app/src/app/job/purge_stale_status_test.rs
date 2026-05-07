@@ -700,9 +700,7 @@ mod purge_stale_status_tests {
             .execute(rdb_pool)
             .await?;
 
-            index_repo
-                .reset_to_pending_by_job_id(&job_id, now + 60_000)
-                .await?;
+            index_repo.reset_to_pending_by_job_id(&job_id).await?;
 
             let (status, deleted_at, start_time, version): (i32, Option<i64>, Option<i64>, i64) =
                 sqlx::query_as(
