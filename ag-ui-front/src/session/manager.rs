@@ -128,6 +128,15 @@ pub struct Session {
     pub state: SessionState,
     /// HITL waiting information (set when state is Paused)
     pub hitl_waiting_info: Option<HitlWaitingInfo>,
+    /// Tool call IDs for which TOOL_CALL_START/ARGS have already been emitted in
+    /// this session. Persisted across HITL pause→resume so the re-run does not
+    /// re-emit the bounded START–ARGS–END unit defined by the AG-UI spec.
+    pub emitted_tool_call_ids: HashSet<String>,
+    /// Tool call IDs for which TOOL_CALL_END has already been emitted in this
+    /// session. Persisted alongside `emitted_tool_call_ids` so the re-run after
+    /// a HITL approval (which emits END eagerly) does not emit END a second
+    /// time when the tool result later arrives via StreamingData.
+    pub emitted_tool_call_end_ids: HashSet<String>,
 }
 
 impl Session {
@@ -141,6 +150,8 @@ impl Session {
             last_event_id: 0,
             state: SessionState::Active,
             hitl_waiting_info: None,
+            emitted_tool_call_ids: HashSet::new(),
+            emitted_tool_call_end_ids: HashSet::new(),
         }
     }
 }
@@ -187,6 +198,24 @@ pub trait SessionManager: Send + Sync {
     /// Get the most recent active or paused session for a given thread ID.
     /// Returns None if no active/paused session exists for the thread.
     async fn get_active_session_by_thread_id(&self, thread_id: &ThreadId) -> Option<Session>;
+
+    /// Record that TOOL_CALL_START/ARGS have been emitted for `call_id` in this
+    /// session. Returns true if newly inserted, false if it was already
+    /// recorded or the session was not found.
+    async fn record_emitted_tool_call_id(&self, session_id: &str, call_id: &str) -> bool;
+
+    /// Check whether TOOL_CALL_START/ARGS have already been emitted for
+    /// `call_id` in this session.
+    async fn has_emitted_tool_call_id(&self, session_id: &str, call_id: &str) -> bool;
+
+    /// Record that TOOL_CALL_END has been emitted for `call_id` in this session.
+    /// Returns true if newly inserted, false if already recorded or the session
+    /// was not found.
+    async fn record_emitted_tool_call_end_id(&self, session_id: &str, call_id: &str) -> bool;
+
+    /// Check whether TOOL_CALL_END has already been emitted for `call_id` in
+    /// this session.
+    async fn has_emitted_tool_call_end_id(&self, session_id: &str, call_id: &str) -> bool;
 }
 
 /// Internal shared state for InMemorySessionManager
@@ -463,6 +492,42 @@ impl SessionManager for InMemorySessionManager {
         } else {
             false
         }
+    }
+
+    async fn record_emitted_tool_call_id(&self, session_id: &str, call_id: &str) -> bool {
+        let mut sessions = self.inner.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.emitted_tool_call_ids.insert(call_id.to_string())
+        } else {
+            false
+        }
+    }
+
+    async fn has_emitted_tool_call_id(&self, session_id: &str, call_id: &str) -> bool {
+        let sessions = self.inner.sessions.read().await;
+        sessions
+            .get(session_id)
+            .map(|s| s.emitted_tool_call_ids.contains(call_id))
+            .unwrap_or(false)
+    }
+
+    async fn record_emitted_tool_call_end_id(&self, session_id: &str, call_id: &str) -> bool {
+        let mut sessions = self.inner.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session
+                .emitted_tool_call_end_ids
+                .insert(call_id.to_string())
+        } else {
+            false
+        }
+    }
+
+    async fn has_emitted_tool_call_end_id(&self, session_id: &str, call_id: &str) -> bool {
+        let sessions = self.inner.sessions.read().await;
+        sessions
+            .get(session_id)
+            .map(|s| s.emitted_tool_call_end_ids.contains(call_id))
+            .unwrap_or(false)
     }
 
     async fn get_active_session_by_thread_id(&self, thread_id: &ThreadId) -> Option<Session> {
@@ -798,5 +863,124 @@ mod tests {
             .get_active_session_by_thread_id(&ThreadId::new("nonexistent"))
             .await;
         assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_emitted_tool_call_ids_persists_across_pause_resume() {
+        // The emitted_tool_call_ids set must survive HITL pause→resume so the
+        // resumed stream does not re-emit a TOOL_CALL_START/ARGS for a call_id
+        // whose bounded START–ARGS–END unit was already emitted before the pause.
+        let manager = InMemorySessionManager::new(3600);
+        let session = manager
+            .create_session(RunId::new("run_emitted"), ThreadId::new("thread_emitted"))
+            .await;
+
+        // First insertion returns true.
+        assert!(
+            manager
+                .record_emitted_tool_call_id(&session.session_id, "call_1")
+                .await
+        );
+        // Second insertion of the same id is a no-op.
+        assert!(
+            !manager
+                .record_emitted_tool_call_id(&session.session_id, "call_1")
+                .await
+        );
+
+        // Pause with HITL info.
+        let hitl = HitlWaitingInfo::new(
+            "call_1".to_string(),
+            "/0".to_string(),
+            "wf".to_string(),
+            vec![],
+            None,
+            None,
+        );
+        assert!(
+            manager
+                .set_paused_with_hitl_info(&session.session_id, hitl)
+                .await
+        );
+
+        // Re-read the session and ensure the emitted set is preserved while paused.
+        let paused = manager.get_session(&session.session_id).await.unwrap();
+        assert!(paused.emitted_tool_call_ids.contains("call_1"));
+
+        // Resume from paused.
+        assert!(
+            manager
+                .resume_from_paused(&session.session_id, SessionState::Active)
+                .await
+        );
+
+        let resumed = manager.get_session(&session.session_id).await.unwrap();
+        assert_eq!(resumed.state, SessionState::Active);
+        assert!(resumed.emitted_tool_call_ids.contains("call_1"));
+        assert!(
+            manager
+                .has_emitted_tool_call_id(&session.session_id, "call_1")
+                .await
+        );
+        assert!(
+            !manager
+                .has_emitted_tool_call_id(&session.session_id, "call_other")
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_record_emitted_tool_call_id_unknown_session() {
+        let manager = InMemorySessionManager::new(3600);
+        assert!(
+            !manager
+                .record_emitted_tool_call_id("missing-session", "call_x")
+                .await
+        );
+        assert!(
+            !manager
+                .has_emitted_tool_call_id("missing-session", "call_x")
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_emitted_tool_call_end_ids_persists_and_is_idempotent() {
+        // Same persistence guarantee as `emitted_tool_call_ids` but for END:
+        // the post-approval re-run must not emit a second TOOL_CALL_END for
+        // call_ids whose END was emitted eagerly during approval handling.
+        let manager = InMemorySessionManager::new(3600);
+        let session = manager
+            .create_session(
+                RunId::new("run_emitted_end"),
+                ThreadId::new("thread_emitted_end"),
+            )
+            .await;
+
+        assert!(
+            manager
+                .record_emitted_tool_call_end_id(&session.session_id, "call_1")
+                .await
+        );
+        assert!(
+            !manager
+                .record_emitted_tool_call_end_id(&session.session_id, "call_1")
+                .await
+        );
+        assert!(
+            manager
+                .has_emitted_tool_call_end_id(&session.session_id, "call_1")
+                .await
+        );
+        assert!(
+            !manager
+                .has_emitted_tool_call_end_id(&session.session_id, "call_other")
+                .await
+        );
+        assert!(
+            !manager
+                .record_emitted_tool_call_end_id("missing-session", "call_x")
+                .await
+        );
     }
 }

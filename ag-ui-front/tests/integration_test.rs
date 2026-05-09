@@ -611,13 +611,18 @@ async fn test_hitl_resume_event_sequence() {
             .await;
     }
 
-    // Simulate events added during resume
+    // Simulate events added during resume.
+    //
+    // AG-UI spec orders TOOL_CALL_END before TOOL_CALL_RESULT: END marks the end of
+    // argument transmission and that execution is underway, while RESULT carries the
+    // produced output. Persisting in this order keeps replay/resume semantics aligned
+    // with the live stream.
     let resume_events = [
+        AgUiEvent::tool_call_end(tool_call_id.clone()),
         AgUiEvent::tool_call_result(
             tool_call_id.clone(),
             serde_json::json!({"status": "resumed"}),
         ),
-        AgUiEvent::tool_call_end(tool_call_id.clone()),
         // Workflow continues after resume
         AgUiEvent::step_started("after_approval", "Process approval"),
         AgUiEvent::step_finished("after_approval", None),
@@ -634,8 +639,18 @@ async fn test_hitl_resume_event_sequence() {
     let all_events = event_store.get_all_events(run_id).await;
     assert_eq!(all_events.len(), 8);
 
-    // Verify TOOL_CALL_RESULT at index 3
+    // Verify TOOL_CALL_END at index 3
     match &all_events[3].1 {
+        AgUiEvent::ToolCallEnd {
+            tool_call_id: id, ..
+        } => {
+            assert_eq!(id, &tool_call_id);
+        }
+        _ => panic!("Expected ToolCallEnd at index 3"),
+    }
+
+    // Verify TOOL_CALL_RESULT at index 4
+    match &all_events[4].1 {
         AgUiEvent::ToolCallResult {
             tool_call_id: id,
             result,
@@ -644,17 +659,7 @@ async fn test_hitl_resume_event_sequence() {
             assert_eq!(id, &tool_call_id);
             assert_eq!(result["status"], "resumed");
         }
-        _ => panic!("Expected ToolCallResult at index 3"),
-    }
-
-    // Verify TOOL_CALL_END at index 4
-    match &all_events[4].1 {
-        AgUiEvent::ToolCallEnd {
-            tool_call_id: id, ..
-        } => {
-            assert_eq!(id, &tool_call_id);
-        }
-        _ => panic!("Expected ToolCallEnd at index 4"),
+        _ => panic!("Expected ToolCallResult at index 4"),
     }
 
     // Verify workflow completed
@@ -1459,5 +1464,144 @@ async fn test_hitl_atomic_resume_nonexistent_session() {
     assert!(
         !result,
         "resume_from_paused should return false for non-existent session"
+    );
+}
+
+/// Test: HITL approval emits TOOL_CALL_END for every pending call_id before
+/// any subsequent RUN_STARTED, matching the AG-UI spec definition that END
+/// signals "all arguments transmitted, tool execution underway or completed".
+///
+/// We mirror the pre-event ordering produced by `handle_llm_tool_approval`'s
+/// `futures::stream::iter(pre_events).chain(workflow_stream)` construction
+/// and verify the persisted event order is END(call_1) → END(call_2) →
+/// RUN_STARTED.
+#[tokio::test]
+async fn test_hitl_approval_emits_end_before_run_started() {
+    let event_store = InMemoryEventStore::new(1000, 3600);
+    let run_id = "approval_run";
+    let pending_call_ids = ["call_1", "call_2"];
+
+    // Pre-events emitted on approval: one TOOL_CALL_END per pending call_id.
+    for (i, cid) in pending_call_ids.iter().enumerate() {
+        let event = AgUiEvent::tool_call_end((*cid).to_string());
+        event_store
+            .store_event(run_id, i as u64, event.clone())
+            .await;
+    }
+
+    let run_started = AgUiEvent::run_started(run_id, "approval_thread");
+    event_store
+        .store_event(run_id, pending_call_ids.len() as u64, run_started.clone())
+        .await;
+
+    let all = event_store.get_all_events(run_id).await;
+    assert_eq!(all.len(), 3);
+
+    for (i, cid) in pending_call_ids.iter().enumerate() {
+        match &all[i].1 {
+            AgUiEvent::ToolCallEnd { tool_call_id, .. } => assert_eq!(tool_call_id, *cid),
+            other => panic!("expected ToolCallEnd at index {i}, got {other:?}"),
+        }
+    }
+    assert!(
+        matches!(&all[2].1, AgUiEvent::RunStarted { .. }),
+        "RUN_STARTED must come after all approval-time TOOL_CALL_END events"
+    );
+}
+
+/// Test: post-approval re-run does not emit a second TOOL_CALL_END.
+///
+/// `handle_llm_tool_approval` emits TOOL_CALL_END eagerly so the UI sees an
+/// "executing" state immediately, then re-runs the workflow. The re-run's
+/// StreamingData/StreamingJobCompleted paths would otherwise emit another
+/// TOOL_CALL_END when the tool result arrives, breaking the AG-UI bounded
+/// START–ARGS–END unit. This test reproduces the seeding behaviour
+/// `create_event_stream` uses (loading `emitted_tool_call_end_ids` from the
+/// session into a stream-local guard set) and verifies that a guarded END
+/// emission is suppressed for already-emitted call_ids while still firing
+/// for fresh ones.
+#[tokio::test]
+async fn test_post_approval_rerun_suppresses_duplicate_tool_call_end() {
+    use ag_ui_front::session::{HitlWaitingInfo, SessionState};
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+    use std::collections::HashSet;
+
+    let session_manager = InMemorySessionManager::new(3600);
+    let event_store = InMemoryEventStore::new(1000, 3600);
+
+    let run_id = RunId::new("approval_rerun_run");
+    let session = session_manager
+        .create_session(run_id.clone(), ThreadId::new("approval_rerun_thread"))
+        .await;
+
+    // Simulate the approval flow up to the END pre-events that
+    // handle_llm_tool_approval prepends.
+    let approved_call_id = "call_approved";
+    let fresh_call_id = "call_fresh";
+
+    let hitl_info = HitlWaitingInfo::new_simple(
+        approved_call_id.to_string(),
+        "/do/0".to_string(),
+        "approval_workflow".to_string(),
+        vec![],
+    );
+    assert!(
+        session_manager
+            .set_paused_with_hitl_info(&session.session_id, hitl_info)
+            .await
+    );
+
+    // Pre-event END emission persists on the session.
+    let approval_end = AgUiEvent::tool_call_end(approved_call_id.to_string());
+    event_store
+        .store_event(run_id.as_str(), 0, approval_end.clone())
+        .await;
+    session_manager
+        .record_emitted_tool_call_end_id(&session.session_id, approved_call_id)
+        .await;
+
+    // Move out of Paused so the post-approval re-run is "active".
+    assert!(
+        session_manager
+            .resume_from_paused(&session.session_id, SessionState::Active)
+            .await
+    );
+
+    // The re-run stream seeds its local guard from the session.
+    let session_snapshot = session_manager
+        .get_session(&session.session_id)
+        .await
+        .expect("session should still exist");
+    let mut sent_tool_end_ids: HashSet<String> = session_snapshot.emitted_tool_call_end_ids;
+
+    // Now simulate the re-run trying to emit END for both ids. Only the
+    // never-emitted call_id should produce a new TOOL_CALL_END.
+    let mut next_event_id = 1u64;
+    for cid in [approved_call_id, fresh_call_id] {
+        if sent_tool_end_ids.insert(cid.to_string()) {
+            let ev = AgUiEvent::tool_call_end(cid.to_string());
+            event_store
+                .store_event(run_id.as_str(), next_event_id, ev)
+                .await;
+            next_event_id += 1;
+            session_manager
+                .record_emitted_tool_call_end_id(&session.session_id, cid)
+                .await;
+        }
+    }
+
+    let all = event_store.get_all_events(run_id.as_str()).await;
+    let end_call_ids: Vec<&str> = all
+        .iter()
+        .filter_map(|(_, e)| match e {
+            AgUiEvent::ToolCallEnd { tool_call_id, .. } => Some(tool_call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        end_call_ids,
+        vec![approved_call_id, fresh_call_id],
+        "approved call_id must be emitted exactly once (pre-event), and the fresh \
+         call_id must still be emitted by the re-run"
     );
 }

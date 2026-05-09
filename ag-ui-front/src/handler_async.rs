@@ -812,6 +812,12 @@ where
                                     .await;
                                 yield (args_event_id, tool_call_args);
 
+                                // Persist on the session so a resumed stream does not re-emit the
+                                // bounded START–ARGS pair for this HUMAN_INPUT wait.
+                                session_manager
+                                    .record_emitted_tool_call_id(&session_id, &tool_call_id)
+                                    .await;
+
                                 // Save HITL info
                                 let hitl_info = HitlWaitingInfo::new(
                                     tool_call_id,
