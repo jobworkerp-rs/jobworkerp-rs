@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use infra_utils::infra::redis::RedisPool;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// Redis key prefix for sessions
 const SESSION_KEY_PREFIX: &str = "ag_ui:session:";
@@ -112,6 +113,11 @@ struct RedisSessionData {
     state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     hitl_waiting_info: Option<RedisHitlWaitingInfo>,
+    /// Persisted across HITL pause→resume; defaulted to empty for backwards
+    /// compatibility with existing Redis sessions written before this field
+    /// existed.
+    #[serde(default)]
+    emitted_tool_call_ids: HashSet<String>,
 }
 
 impl From<&Session> for RedisSessionData {
@@ -127,6 +133,7 @@ impl From<&Session> for RedisSessionData {
                 .hitl_waiting_info
                 .as_ref()
                 .map(RedisHitlWaitingInfo::from),
+            emitted_tool_call_ids: session.emitted_tool_call_ids.clone(),
         }
     }
 }
@@ -148,6 +155,7 @@ impl From<RedisSessionData> for Session {
                 _ => SessionState::Active,
             },
             hitl_waiting_info: data.hitl_waiting_info.map(HitlWaitingInfo::from),
+            emitted_tool_call_ids: data.emitted_tool_call_ids,
         }
     }
 }
@@ -699,11 +707,104 @@ impl SessionManager for RedisSessionManager {
 
         best
     }
+
+    async fn record_emitted_tool_call_id(&self, session_id: &str, call_id: &str) -> bool {
+        if let Some(mut session) = self.get_session(session_id).await {
+            // Idempotent: if already recorded, no Redis write is necessary.
+            if !session.emitted_tool_call_ids.insert(call_id.to_string()) {
+                return false;
+            }
+            let run_id = session.run_id.to_string();
+            let thread_id = session.thread_id.to_string();
+            let data = RedisSessionData::from(&session);
+
+            if let Ok(mut conn) = self.pool.get().await
+                && let Ok(json) = serde_json::to_string(&data)
+            {
+                let session_key = Self::session_key(session_id);
+                let run_id_key = Self::run_id_key(&run_id);
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        call_id = %call_id,
+                        error = %e,
+                        "Failed to persist emitted_tool_call_ids in Redis"
+                    );
+                    return false;
+                }
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        run_id = %run_id,
+                        error = %e,
+                        "Failed to refresh run_id index TTL"
+                    );
+                    return false;
+                }
+                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
+                return true;
+            }
+        }
+        false
+    }
+
+    async fn has_emitted_tool_call_id(&self, session_id: &str, call_id: &str) -> bool {
+        self.get_session(session_id)
+            .await
+            .map(|s| s.emitted_tool_call_ids.contains(call_id))
+            .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pure serde round-trip test (does not require Redis).
+    ///
+    /// Ensures `emitted_tool_call_ids` survives JSON encoding/decoding so that
+    /// HITL pause→resume across server instances retains the bounded
+    /// START–ARGS–END unit guard.
+    #[test]
+    fn test_emitted_tool_call_ids_redis_roundtrip() {
+        let mut session = Session::new(RunId::new("run_rt"), ThreadId::new("thread_rt"));
+        session.emitted_tool_call_ids.insert("call_a".to_string());
+        session.emitted_tool_call_ids.insert("call_b".to_string());
+
+        let data = RedisSessionData::from(&session);
+        let json = serde_json::to_string(&data).expect("serialize");
+        let decoded: RedisSessionData = serde_json::from_str(&json).expect("deserialize");
+        let restored = Session::from(decoded);
+
+        assert!(restored.emitted_tool_call_ids.contains("call_a"));
+        assert!(restored.emitted_tool_call_ids.contains("call_b"));
+        assert_eq!(restored.emitted_tool_call_ids.len(), 2);
+    }
+
+    /// Backwards-compatibility test: legacy Redis payloads written before this
+    /// field existed must still decode (with an empty set) thanks to
+    /// `#[serde(default)]`.
+    #[test]
+    fn test_redis_session_data_decodes_legacy_payload_without_emitted_field() {
+        let legacy_json = r#"{
+            "session_id": "s",
+            "run_id": "r",
+            "thread_id": "t",
+            "created_at": "2026-01-01T00:00:00Z",
+            "last_event_id": 0,
+            "state": "active"
+        }"#;
+        let decoded: RedisSessionData =
+            serde_json::from_str(legacy_json).expect("legacy payload should decode");
+        let restored = Session::from(decoded);
+        assert!(restored.emitted_tool_call_ids.is_empty());
+    }
 
     // Integration tests require running Redis instance
     // These tests are marked as ignored by default

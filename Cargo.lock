@@ -18,6 +18,7 @@ dependencies = [
  "command-utils 0.1.0",
  "dotenvy",
  "futures",
+ "indexmap 2.14.0",
  "infra",
  "infra-utils",
  "jobworkerp-base",

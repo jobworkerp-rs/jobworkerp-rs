@@ -25,6 +25,7 @@ use app_wrapper::workflow::execute::context::WorkflowStreamEvent;
 use app_wrapper::workflow::execute::workflow::WorkflowExecutor;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
+use indexmap::IndexMap;
 use jobworkerp_runner::jobworkerp::runner::WorkflowRunnerSettings;
 use prost::Message as ProstMessage;
 use std::collections::HashMap;
@@ -1035,13 +1036,28 @@ where
             registry.insert(run_id.to_string(), executor.clone());
         }
 
-        // 11. Create event stream (emit_run_started: true — resume is a new run per AG-UI spec)
-        // TOOL_CALL_END + TOOL_CALL_RESULT are NOT emitted here because tool execution
-        // hasn't happened yet. They will be emitted by StreamingJobCompleted's fallback
-        // logic when the auto-executed tool results arrive via pending_tool_results.
+        // 11. Build TOOL_CALL_END events for each approved pending tool call.
+        //
+        // AG-UI spec: TOOL_CALL_END marks "all arguments transmitted, tool execution underway
+        // or completed". On approval the bounded START–ARGS unit emitted before the pause is
+        // closed here so the UI can render an "executing" state immediately. TOOL_CALL_RESULT
+        // is intentionally not emitted here — the actual result arrives later through the
+        // re-run's StreamingData/StreamingJobCompleted path.
+        let mut pre_events: Vec<(u64, AgUiEvent)> =
+            Vec::with_capacity(hitl_info.pending_tool_calls.len());
+        for tc in &hitl_info.pending_tool_calls {
+            let end_event = AgUiEvent::tool_call_end(tc.call_id.clone());
+            let end_event_id = Self::encode_event_with_logging(&self.encoder, &end_event);
+            self.event_store
+                .store_event(run_id.as_str(), end_event_id, end_event.clone())
+                .await;
+            pre_events.push((end_event_id, end_event));
+        }
+
+        // 12. Create event stream (emit_run_started: true — resume is a new run per AG-UI spec).
         let executor_registry = self.executor_registry.clone();
         let run_id_for_cleanup = run_id.to_string();
-        let stream = self.create_event_stream(
+        let workflow_stream = self.create_event_stream(
             executor,
             adapter,
             run_id.to_string(),
@@ -1053,7 +1069,8 @@ where
             hitl_ctx,
         );
 
-        Ok((session, Box::pin(stream)))
+        let combined = futures::stream::iter(pre_events).chain(workflow_stream);
+        Ok((session, Box::pin(combined)))
     }
 
     /// Handle LLM tool call rejection by feeding rejection info back to LLM.
@@ -1445,18 +1462,28 @@ where
             let mut active_message_ids: HashMap<i64, MessageId> = HashMap::new();
             // Track sent tool result call_ids to prevent duplicate TOOL_CALL_RESULT events
             let mut sent_tool_result_ids = std::collections::HashSet::<String>::new();
-            // Buffer tool results from StreamingData until StreamingJobCompleted emits START/ARGS/END first
-            let mut pending_tool_results = std::collections::HashMap::<String, ExtractedToolResult>::new();
+            // Buffer tool results from StreamingData until StreamingJobCompleted emits START/ARGS/END first.
+            // IndexMap preserves insertion order so the drain() fallback flushes in a stable, predictable
+            // order — required for AG-UI clients that render events strictly as they arrive.
+            let mut pending_tool_results = IndexMap::<String, ExtractedToolResult>::new();
             // Track whether text content was sent via StreamingData for each job_id
             // Used to decide whether to emit compensating TEXT_MESSAGE_CONTENT at StreamingJobCompleted
             let mut text_content_sent = std::collections::HashSet::<i64>::new();
             // Track whether TEXT_MESSAGE_START has been emitted for each job_id
             // TEXT_MESSAGE_START is deferred until text content actually arrives
             let mut text_message_started = std::collections::HashSet::<i64>::new();
-            // Buffer ToolExecutionStarted info for real-time TOOL_CALL emission
-            let mut pending_tool_starts = std::collections::HashMap::<String, ExtractedToolStarted>::new();
-            // Track tool calls already emitted via StreamingData (to avoid duplicates at StreamingJobCompleted)
-            let mut sent_tool_call_ids = std::collections::HashSet::<String>::new();
+            // Buffer ToolExecutionStarted info for real-time TOOL_CALL emission.
+            // IndexMap preserves insertion order to match pending_tool_results ordering.
+            let mut pending_tool_starts = IndexMap::<String, ExtractedToolStarted>::new();
+            // Track tool calls already emitted via START/ARGS in this stream. Seeded from the
+            // session's persisted set so HITL pause→resume re-runs do not re-emit START/ARGS for
+            // call_ids whose bounded START–ARGS–END unit was already sent before the pause
+            // (per AG-UI spec: "Each START–ARGS–END forms a bounded unit").
+            let mut sent_tool_call_ids: std::collections::HashSet<String> = session_manager
+                .get_session(&session_id)
+                .await
+                .map(|s| s.emitted_tool_call_ids)
+                .unwrap_or_default();
 
             // Channel for nested workflow progress events (from parallel subscriptions)
             // Wrapped in Option so early-return paths can drop the sender to unblock receivers.
@@ -1547,30 +1574,44 @@ where
                                 let tool_started_opt = extract_tool_execution_started(&ev.data)
                                     .filter(|s| s.job_id > 0);
                                 if let Some(ref started) = tool_started_opt {
-                                    // Emit START/ARGS immediately for real-time UI feedback
-                                    let parent_msg_id = active_message_ids.get(&job_id_value)
-                                        .map(|m| m.to_string());
-                                    let start_event = AgUiEvent::tool_call_start(
-                                        started.call_id.clone(),
-                                        started.fn_name.clone(),
-                                        parent_msg_id,
-                                    );
-                                    let start_eid = Self::encode_event_with_logging(&encoder, &start_event);
-                                    event_store.store_event(&run_id, start_eid, start_event.clone()).await;
-                                    yield (start_eid, start_event);
+                                    // Skip START/ARGS if this call_id was already announced earlier in
+                                    // this run (e.g. pre-HITL initial emission). Emitting a second START
+                                    // for the same toolCallId would violate the AG-UI bounded START–ARGS–END
+                                    // unit. END/RESULT correlation below still runs so the unit can be
+                                    // closed when the result arrives.
+                                    let already_emitted = sent_tool_call_ids.contains(&started.call_id);
 
-                                    let args_event = AgUiEvent::tool_call_args(
-                                        started.call_id.clone(),
-                                        started.fn_arguments.clone(),
-                                    );
-                                    let args_eid = Self::encode_event_with_logging(&encoder, &args_event);
-                                    event_store.store_event(&run_id, args_eid, args_event.clone()).await;
-                                    yield (args_eid, args_event);
+                                    if !already_emitted {
+                                        // Emit START/ARGS immediately for real-time UI feedback
+                                        let parent_msg_id = active_message_ids.get(&job_id_value)
+                                            .map(|m| m.to_string());
+                                        let start_event = AgUiEvent::tool_call_start(
+                                            started.call_id.clone(),
+                                            started.fn_name.clone(),
+                                            parent_msg_id,
+                                        );
+                                        let start_eid = Self::encode_event_with_logging(&encoder, &start_event);
+                                        event_store.store_event(&run_id, start_eid, start_event.clone()).await;
+                                        yield (start_eid, start_event);
 
-                                    sent_tool_call_ids.insert(started.call_id.clone());
+                                        let args_event = AgUiEvent::tool_call_args(
+                                            started.call_id.clone(),
+                                            started.fn_arguments.clone(),
+                                        );
+                                        let args_eid = Self::encode_event_with_logging(&encoder, &args_event);
+                                        event_store.store_event(&run_id, args_eid, args_event.clone()).await;
+                                        yield (args_eid, args_event);
+
+                                        sent_tool_call_ids.insert(started.call_id.clone());
+                                        // Persist on the session so subsequent streams (e.g. resumes after
+                                        // a transient disconnect) do not re-emit the same bounded unit.
+                                        session_manager
+                                            .record_emitted_tool_call_id(&session_id, &started.call_id)
+                                            .await;
+                                    }
 
                                     // Check if a result was already buffered (arrived before Started)
-                                    if let Some(extracted) = pending_tool_results.remove(&started.call_id) {
+                                    if let Some(extracted) = pending_tool_results.shift_remove(&started.call_id) {
                                         // Emit END → RESULT immediately
                                         let end_event = AgUiEvent::tool_call_end(started.call_id.clone());
                                         let end_eid = Self::encode_event_with_logging(&encoder, &end_event);
@@ -1600,7 +1641,7 @@ where
                                     if sent_tool_result_ids.contains(call_id.as_str()) {
                                         continue;
                                     }
-                                    if let Some(_tool_start) = pending_tool_starts.remove(&call_id) {
+                                    if let Some(_tool_start) = pending_tool_starts.shift_remove(&call_id) {
                                         // START/ARGS already emitted; emit only END → RESULT
                                         let end_event = AgUiEvent::tool_call_end(call_id.clone());
                                         let end_eid = Self::encode_event_with_logging(&encoder, &end_event);
@@ -1800,6 +1841,15 @@ where
                                             event_store.store_event(&run_id, event_id, tool_event.clone()).await;
                                             yield (event_id, tool_event);
                                         }
+                                        // Persist on the session so a subsequent stream (resume after
+                                        // disconnect, or HITL re-run) does not re-emit the bounded
+                                        // START–ARGS–END unit for these call_ids.
+                                        for call in &unsent_tool_calls {
+                                            sent_tool_call_ids.insert(call.call_id.clone());
+                                            session_manager
+                                                .record_emitted_tool_call_id(&session_id, &call.call_id)
+                                                .await;
+                                        }
                                     }
 
                                     // Auto-calling mode: emit TOOL_CALL_END + TOOL_CALL_RESULT for unsent tools
@@ -1807,14 +1857,10 @@ where
                                     if !tool_calls.requires_execution {
                                         let tool_results_from_output = extract_tool_execution_results(&output_bytes);
                                         for call in &tool_calls.tool_calls {
-                                            // Emit START/ARGS only if not already sent via real-time path
-                                            if !sent_tool_call_ids.contains(&call.call_id) {
-                                                // START/ARGS were already emitted in tool_calls_to_ag_ui_events above
-                                                // for unsent_tool_calls, so just mark as sent here
-                                                sent_tool_call_ids.insert(call.call_id.clone());
-                                            }
-
-                                            // Always try to emit END/RESULT (guarded by sent_tool_result_ids)
+                                            // START/ARGS were already emitted above (either via the
+                                            // real-time StreamingData path or this iteration's
+                                            // unsent_tool_calls block, which also seeded
+                                            // sent_tool_call_ids), so only END/RESULT remains.
                                             if !sent_tool_result_ids.contains(call.call_id.as_str()) {
                                                 // TOOL_CALL_END
                                                 let end_event = AgUiEvent::tool_call_end(call.call_id.clone());
@@ -1825,7 +1871,7 @@ where
                                                 // TOOL_CALL_RESULT: buffered result (from StreamingData) takes priority,
                                                 // then fall back to output bytes, then Null
                                                 sent_tool_result_ids.insert(call.call_id.clone());
-                                                let result = pending_tool_results.remove(&call.call_id)
+                                                let result = pending_tool_results.shift_remove(&call.call_id)
                                                     .or_else(|| tool_results_from_output.get(&call.call_id).cloned())
                                                     .map(|e| e.result)
                                                     .unwrap_or(serde_json::Value::Null);
@@ -1849,13 +1895,13 @@ where
                             // 2. HITL resume: tools were executed during re-run, results arrived via
                             //    StreamingData, but the final StreamingJobCompleted has no tool_calls
                             //    (it's the LLM's text response after seeing the tool results)
-                            for (call_id, extracted) in pending_tool_results.drain() {
+                            for (call_id, extracted) in pending_tool_results.drain(..) {
                                 if !sent_tool_result_ids.contains(call_id.as_str()) {
                                     sent_tool_result_ids.insert(call_id.clone());
 
                                     // Ensure START/ARGS were emitted before END/RESULT
                                     if !sent_tool_call_ids.contains(call_id.as_str()) {
-                                        if let Some(tool_start) = pending_tool_starts.remove(&call_id) {
+                                        if let Some(tool_start) = pending_tool_starts.shift_remove(&call_id) {
                                             let start_event = AgUiEvent::tool_call_start(
                                                 call_id.clone(),
                                                 tool_start.fn_name.clone(),
@@ -1874,6 +1920,9 @@ where
                                             yield (args_eid, args_event);
                                         }
                                         sent_tool_call_ids.insert(call_id.clone());
+                                        session_manager
+                                            .record_emitted_tool_call_id(&session_id, &call_id)
+                                            .await;
                                     }
 
                                     let end_event = AgUiEvent::tool_call_end(call_id.clone());
@@ -2307,6 +2356,13 @@ where
                                 let args_event_id = Self::encode_event_with_logging(&encoder, &tool_call_args);
                                 event_store.store_event(&run_id, args_event_id, tool_call_args.clone()).await;
                                 yield (args_event_id, tool_call_args);
+
+                                // Persist on the session so a resumed stream does not re-emit the
+                                // bounded START–ARGS pair for this HUMAN_INPUT wait.
+                                sent_tool_call_ids.insert(tool_call_id.clone());
+                                session_manager
+                                    .record_emitted_tool_call_id(&session_id, &tool_call_id)
+                                    .await;
 
                                 // Update session state to Paused with HITL info for later resume
                                 let hitl_info = HitlWaitingInfo::new(
