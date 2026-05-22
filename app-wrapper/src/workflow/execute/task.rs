@@ -475,12 +475,17 @@ impl TaskExecutor {
             // faulting position propagates upstream.
             let mut last_completed_ctx: Option<TaskContext> = None;
             let mut saw_any = false;
+            let mut ended_with_error = false;
             let mut timed_out = false;
 
             loop {
                 match tokio::time::timeout_at(deadline, res.next()).await {
                     Ok(Some(item)) => {
                         saw_any = true;
+                        // Track whether the latest item is an error so the
+                        // post-loop pop matches the old "only pop when the final
+                        // item is a successful completed event" semantics.
+                        ended_with_error = item.is_err();
                         if let Ok(event) = &item
                             && let Some(tc) = event.context() {
                                 last_completed_ctx = Some(tc.clone());
@@ -507,9 +512,11 @@ impl TaskExecutor {
 
             // Pop the task name from the shared position stack after the inner
             // stream finished. Done for the normal completion path only: on
-            // timeout/error we leave the position so the faulting position is
-            // reported correctly upstream.
+            // timeout, or when the stream ended with an error, we leave the
+            // position in place so the faulting position is reported correctly
+            // upstream (matching the pre-streaming behavior).
             if !timed_out
+                && !ended_with_error
                 && let Some(tc) = last_completed_ctx.take() {
                     tc.remove_position().await; // remove task name from position stack
                 }
