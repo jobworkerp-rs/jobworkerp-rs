@@ -455,54 +455,43 @@ impl TaskExecutor {
         let res = self
             .execute_task(cx, task_context, execution_id.clone())
             .await;
-        // remove task position after execution (last task context)
-        // NOTE: For streaming events (StreamingJobStarted, StreamingData), we yield immediately
-        // to ensure real-time delivery. Only the final completed event needs position cleanup.
+        // Yield every event as soon as it arrives so multi-event tasks (e.g. a
+        // sequential `for` loop emitting one TaskCompleted per iteration) stream
+        // in real time. Position cleanup pops the task name pushed at L231 from
+        // the shared position stack; because TaskCompletedEvent.position is a
+        // string snapshotted at construction time, popping after the event has
+        // been yielded does not change what downstream consumers observe. We keep
+        // the last completed event's context to pop the right (shared) Arc once
+        // the inner stream finishes, preserving the previous semantics without
+        // the one-event buffering delay.
         Box::pin(stream! {
             // Emit TaskStarted at the beginning of task execution
             yield Ok(task_started_event);
 
             pin_mut!(res);
-            // Track non-streaming events to find the final one for position cleanup
-            let mut previous_item: Option<Result<WorkflowStreamEvent, Box<workflow::Error>>> = None;
+            // Hold the most recent completed event's context so we can pop its
+            // position once the stream ends. Only Ok(completed) events carry a
+            // context; errors deliberately leave the position in place so the
+            // faulting position propagates upstream.
+            let mut last_completed_ctx: Option<TaskContext> = None;
+            let mut saw_any = false;
+            let mut ended_with_error = false;
             let mut timed_out = false;
 
             loop {
                 match tokio::time::timeout_at(deadline, res.next()).await {
                     Ok(Some(item)) => {
-                        match &item {
-                            Ok(event) => {
-                                // Check if this is a streaming event that should be yielded immediately
-                                let is_streaming_event = matches!(
-                                    event,
-                                    WorkflowStreamEvent::StreamingJobStarted { .. } |
-                                    WorkflowStreamEvent::StreamingData { .. }
-                                );
-
-                                if is_streaming_event {
-                                    // Flush previous_item before yielding streaming event to preserve order
-                                    if let Some(prev) = previous_item.take() {
-                                        yield prev;
-                                    }
-                                    // Yield streaming events immediately for real-time delivery
-                                    yield item;
-                                } else {
-                                    // For non-streaming events, use previous_item pattern
-                                    // to identify the final event for position cleanup
-                                    if let Some(prev) = previous_item.take() {
-                                        yield prev;
-                                    }
-                                    previous_item = Some(item);
-                                }
+                        saw_any = true;
+                        // Track whether the latest item is an error so the
+                        // post-loop pop matches the old "only pop when the final
+                        // item is a successful completed event" semantics.
+                        ended_with_error = item.is_err();
+                        if let Ok(event) = &item
+                            && let Some(tc) = event.context() {
+                                last_completed_ctx = Some(tc.clone());
                             }
-                            Err(_) => {
-                                // For errors, use previous_item pattern as well
-                                if let Some(prev) = previous_item.take() {
-                                    yield prev;
-                                }
-                                previous_item = Some(item);
-                            }
-                        }
+                        // Forward immediately for real-time delivery.
+                        yield item;
                     }
                     Ok(None) => {
                         // Stream ended normally
@@ -521,12 +510,18 @@ impl TaskExecutor {
                 }
             }
 
-            // Handle timeout case
-            if timed_out {
-                // Flush any pending item before yielding timeout error
-                if let Some(prev) = previous_item.take() {
-                    yield prev;
+            // Pop the task name from the shared position stack after the inner
+            // stream finished. Done for the normal completion path only: on
+            // timeout, or when the stream ended with an error, we leave the
+            // position in place so the faulting position is reported correctly
+            // upstream (matching the pre-streaming behavior).
+            if !timed_out
+                && !ended_with_error
+                && let Some(tc) = last_completed_ctx.take() {
+                    tc.remove_position().await; // remove task name from position stack
                 }
+
+            if timed_out {
                 yield Err(workflow::errors::ErrorFactory::new().request_timeout(
                     format!(
                         "Task '{}' timed out after {:?}",
@@ -536,24 +531,9 @@ impl TaskExecutor {
                     Some(err_pos.clone()),
                     None,
                 ));
-            } else if let Some(final_item) = previous_item {
-                // Handle the final non-streaming item - call remove_position() only if it's Ok
-                match final_item {
-                    Ok(event) => {
-                        // Remove position from context if this is a completed event
-                        if let Some(tc) = event.context() {
-                            tc.remove_position().await; // remove task name from position stack
-                        }
-                        yield Ok(event);
-                    }
-                    Err(e) => {
-                        // If the final item is an error, yield it as is
-                        yield Err(e);
-                    }
-                }
-            } else {
-                // If no non-streaming item was returned, yield an error
-                // (This shouldn't happen normally as workflows should always have a completion event)
+            } else if !saw_any {
+                // No event was produced at all - this shouldn't happen normally
+                // as tasks should always emit a completion event.
                 yield Err(workflow::errors::ErrorFactory::create(
                     workflow::errors::ErrorCode::NotFound,
                     Some("No task context returned".to_string()),
