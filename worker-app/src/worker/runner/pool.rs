@@ -148,6 +148,11 @@ impl RunnerFactoryWithPool {
                 .unwrap(),
         })
     }
+    /// Current pool status (size/available). Used in tests to verify that a
+    /// timed-out runner was detached (size shrinks) rather than recycled.
+    pub fn status(&self) -> deadpool::Status {
+        self.pool.status()
+    }
     /// get runner from pool (delegate to pool)
     pub async fn get(&self) -> Result<Object<RunnerPoolManagerImpl>> {
         self.pool
@@ -172,6 +177,8 @@ mod tests {
     use app::module::test::TEST_PLUGIN_DIR;
     use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use proto::jobworkerp::data::{RunnerType, WorkerData};
+    use std::collections::HashMap;
+    use std::time::Duration;
 
     #[test]
     fn test_runner_pool() -> Result<()> {
@@ -219,6 +226,88 @@ mod tests {
                     .await
                     .is_ok()
             );
+        });
+        Ok(())
+    }
+
+    // Verifies that taking a timed-out plugin runner out of the pool (as run_job
+    // does on timeout) shrinks the pool and lets the next get() create a fresh
+    // instance immediately, without waiting for the old instance's blocking run()
+    // to release its variant lock.
+    #[test]
+    fn test_plugin_detach_on_timeout_frees_pool_slot() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(app::module::test::create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module =
+                app_wrapper::modules::test::create_test_app_wrapper_module(app_module.clone());
+            let runner_factory = RunnerFactory::new(
+                app_module,
+                Arc::new(app_wrapper_module),
+                Arc::new(McpServerFactory::default()),
+            );
+            runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
+            let factory = RunnerFactoryWithPool::new(
+                Arc::new(RunnerData {
+                    name: "Test".to_string(), // Test plugin (test_runner)
+                    ..Default::default()
+                }),
+                Arc::new(WorkerData {
+                    runner_settings: Vec::new(),
+                    channel: None,
+                    use_static: true,
+                    ..Default::default()
+                }),
+                Arc::new(runner_factory),
+                Arc::new(WorkerConfig {
+                    default_concurrency: 1, // pool size 1
+                    ..WorkerConfig::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+            // Plugin runner must opt into detach-on-timeout.
+            let runner = factory.get().await.unwrap();
+            assert!(runner.lock().await.should_detach_on_timeout());
+
+            // Start a long blocking run() that holds the variant write lock, mimicking
+            // a job that overran its timeout. The test plugin treats a "sleep:<ms>"
+            // arg as a blocking sleep; raw bytes are accepted via its decode fallback.
+            let args = b"sleep:1500".to_vec();
+            let runner_for_run = runner.clone();
+            let run_handle = tokio::spawn(async move {
+                runner_for_run
+                    .lock()
+                    .await
+                    .run(&args, HashMap::new(), None)
+                    .await
+            });
+            // Let run() acquire the variant write lock on the blocking pool.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // Simulate run_job's timeout detach: take the instance out of the pool.
+            let _ = Object::take(runner);
+            assert_eq!(
+                factory.status().size,
+                0,
+                "detach must shrink the pool so a fresh instance is created next"
+            );
+
+            // The next get() must return promptly with a brand-new instance whose
+            // lock is free — it must NOT wait for the old run()'s ~1.4s remaining.
+            let start = std::time::Instant::now();
+            let fresh = factory.get().await.unwrap();
+            // Acquiring the fresh runner's lock proves it is a different instance
+            // (the old variant lock is still held by the blocking run()).
+            let _g = fresh.lock().await;
+            assert!(
+                start.elapsed() < Duration::from_millis(800),
+                "next job waited on the old plugin lock: {:?}",
+                start.elapsed()
+            );
+
+            drop(_g);
+            let _ = run_handle.await;
         });
         Ok(())
     }

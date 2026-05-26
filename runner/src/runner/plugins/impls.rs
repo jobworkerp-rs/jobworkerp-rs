@@ -158,6 +158,13 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         }
     }
 
+    // run() executes the synchronous plugin call on a blocking thread holding the
+    // variant write lock; a timeout cannot stop it, so the lock stays held. Reusing
+    // this instance would block the next job — discard it instead.
+    fn should_detach_on_timeout(&self) -> bool {
+        true
+    }
+
     /// Collect streaming plugin output into a single result.
     ///
     /// For MultiMethod plugins, delegates to the plugin's collect_stream.
@@ -272,22 +279,57 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
             }
         }
 
-        // 4. Execute plugin
+        // 4. Execute plugin on a blocking thread.
+        // The plugin run() is a synchronous FFI call that may block for a long
+        // time (CPU-bound work or blocking I/O). Running it on a tokio worker
+        // would stall every other task sharing that worker, so move it onto the
+        // blocking pool. This mirrors run_stream(), which already offloads the
+        // synchronous receive loop. Uses futures::executor::block_on for the
+        // lock acquisition (no tokio runtime re-entry risk).
+        //
+        // Cancellation note: the synchronous run() cannot be interrupted once
+        // started. On timeout the caller drops this future, which drops the
+        // JoinHandle; per tokio semantics that does NOT cancel the blocking task,
+        // so the plugin runs to completion on the blocking thread and its result
+        // is discarded. This is intentional and no worse than the previous
+        // inline call (which also ran to completion, but blocked a tokio worker).
+        // The variant write lock is held for the whole run(); request_cancellation
+        // uses try_read/try_write so it never blocks the timeout path on this lock.
         let variant = self.variant.clone();
         let arg1 = arg.to_vec();
-        let mut guard = variant.write().await;
+        let using_owned: Option<String> = using.map(|s| s.to_string());
+        // Kept for the JoinError (panic) path, where the blocking task returns nothing.
+        let metadata_for_error = metadata.clone();
 
-        let (r, meta) = match &mut *guard {
-            super::PluginRunnerVariant::Legacy(plugin) => plugin.run(arg1, metadata),
-            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.run(arg1, metadata, using),
-        };
-        (
-            r.map_err(|e| {
-                tracing::warn!("in running pluginRunner: {:?}", e);
-                e
-            }),
-            meta,
-        )
+        let blocking_handle = tokio::task::spawn_blocking(move || {
+            let mut guard = block_on(variant.write());
+            match &mut *guard {
+                super::PluginRunnerVariant::Legacy(plugin) => plugin.run(arg1, metadata),
+                super::PluginRunnerVariant::MultiMethod(plugin) => {
+                    plugin.run(arg1, metadata, using_owned.as_deref())
+                }
+            }
+        });
+
+        match blocking_handle.await {
+            Ok((r, meta)) => (
+                r.map_err(|e| {
+                    tracing::warn!("in running pluginRunner: {:?}", e);
+                    e
+                }),
+                meta,
+            ),
+            Err(join_err) => {
+                // Plugin panicked across the FFI boundary on the blocking thread.
+                // The caller's catch_unwind cannot observe a panic on another
+                // thread, so surface it here as a normal Err instead.
+                tracing::error!("plugin run blocking task failed: {:?}", join_err);
+                (
+                    Err(anyhow!("plugin runner panicked: {:?}", join_err)),
+                    metadata_for_error,
+                )
+            }
+        }
     }
 
     async fn run_stream(
@@ -554,25 +596,46 @@ impl CancelMonitoring for PluginRunnerWrapperImpl {
             tracing::warn!("PluginRunnerWrapperImpl: no cancellation helper available");
         }
 
-        // 2. Call plugin's cancel() for plugin-specific cleanup
-        // Legacy plugins use &self, MultiMethod plugins use &mut self
+        // 2. Call plugin's cancel() for plugin-specific cleanup, best-effort.
+        // Legacy plugins use &self, MultiMethod plugins use &mut self.
+        //
+        // run() (and run_stream) offload the synchronous plugin call to a blocking
+        // thread while holding the variant write lock for its whole duration, so the
+        // lock needed here may be held. We must NOT await it: request_cancellation is
+        // called from the timeout branch of the job runner, and blocking on the lock
+        // would defer the timeout result until the plugin call finishes, defeating
+        // the timeout. Use try_read/try_write so a busy plugin is left untouched and
+        // we return immediately. The cancellation token signaled in step 1 already
+        // covers token-observing paths (run_stream); a synchronous run() is
+        // uninterruptible anyway, so skipping cancel() here loses nothing.
+        const BUSY_MSG: &str = "PluginRunnerWrapperImpl: variant lock held (plugin call in progress), skipping cancel()";
         let cancelled = match self.variant_type {
-            PluginVariantType::Legacy => {
-                let guard = self.variant.read().await;
-                if let super::PluginRunnerVariant::Legacy(plugin) = &*guard {
-                    plugin.cancel()
-                } else {
+            PluginVariantType::Legacy => match self.variant.try_read() {
+                Ok(guard) => {
+                    if let super::PluginRunnerVariant::Legacy(plugin) = &*guard {
+                        plugin.cancel()
+                    } else {
+                        false
+                    }
+                }
+                Err(_) => {
+                    tracing::debug!("{}", BUSY_MSG);
                     false
                 }
-            }
-            PluginVariantType::MultiMethod => {
-                let mut guard = self.variant.write().await;
-                if let super::PluginRunnerVariant::MultiMethod(plugin) = &mut *guard {
-                    plugin.cancel()
-                } else {
+            },
+            PluginVariantType::MultiMethod => match self.variant.try_write() {
+                Ok(mut guard) => {
+                    if let super::PluginRunnerVariant::MultiMethod(plugin) = &mut *guard {
+                        plugin.cancel()
+                    } else {
+                        false
+                    }
+                }
+                Err(_) => {
+                    tracing::debug!("{}", BUSY_MSG);
                     false
                 }
-            }
+            },
         };
         if cancelled {
             tracing::info!("PluginRunnerWrapperImpl: plugin cancelled successfully");
@@ -594,5 +657,162 @@ impl CancelMonitoring for PluginRunnerWrapperImpl {
 impl UseCancelMonitoringHelper for PluginRunnerWrapperImpl {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::MultiMethodPluginRunner;
+    use super::*;
+
+    /// Minimal MultiMethodPluginRunner mock whose run() is configurable, used to
+    /// exercise the spawn_blocking path of PluginRunnerWrapperImpl::run() without
+    /// loading a real .so (avoids FFI unwinding concerns in the panic test).
+    struct MockPlugin {
+        // Behavior selector for run(): "panic", "sleep", or "ok".
+        behavior: &'static str,
+    }
+
+    impl MultiMethodPluginRunner for MockPlugin {
+        fn name(&self) -> String {
+            "MockPlugin".to_string()
+        }
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn load(&mut self, _settings: Vec<u8>) -> Result<()> {
+            Ok(())
+        }
+        fn run(
+            &mut self,
+            _args: Vec<u8>,
+            metadata: HashMap<String, String>,
+            _using: Option<&str>,
+        ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+            match self.behavior {
+                "panic" => panic!("intentional test panic"),
+                "sleep" => {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    (Ok(b"slept".to_vec()), metadata)
+                }
+                _ => (Ok(b"ok".to_vec()), metadata),
+            }
+        }
+        fn cancel(&mut self) -> bool {
+            false
+        }
+        fn is_canceled(&self) -> bool {
+            false
+        }
+        fn runner_settings_proto(&self) -> String {
+            String::new()
+        }
+        fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+            // A single DEFAULT_METHOD_NAME entry makes the wrapper treat this as a
+            // legacy-style single-method plugin, so the 'using' validation in run()
+            // is bypassed and execution reaches the MultiMethod branch directly.
+            HashMap::from([(
+                proto::DEFAULT_METHOD_NAME.to_string(),
+                proto::jobworkerp::data::MethodSchema::default(),
+            )])
+        }
+    }
+
+    fn wrapper_with(behavior: &'static str) -> PluginRunnerWrapperImpl {
+        let variant = PluginRunnerVariant::MultiMethod(Box::new(MockPlugin { behavior }));
+        PluginRunnerWrapperImpl::new(Arc::new(RwLock::new(variant)))
+    }
+
+    #[tokio::test]
+    async fn run_panic_returns_err_and_preserves_metadata() {
+        let mut w = wrapper_with("panic");
+        let input_meta = HashMap::from([("k".to_string(), "v".to_string())]);
+        let (r, meta) = w.run(b"x", input_meta.clone(), None).await;
+        assert!(r.is_err(), "panic in plugin run() must surface as Err");
+        // metadata_for_error clone must be returned on the JoinError path.
+        assert_eq!(meta, input_meta);
+    }
+
+    #[tokio::test]
+    async fn run_multimethod_returns_result() {
+        let mut w = wrapper_with("ok");
+        let input_meta = HashMap::from([("k".to_string(), "v".to_string())]);
+        let (r, meta) = w.run(b"x", input_meta.clone(), None).await;
+        assert_eq!(r.unwrap(), b"ok".to_vec());
+        assert_eq!(meta, input_meta);
+    }
+
+    // Plugin runners hold the variant lock on a blocking thread past a timeout, so
+    // they must be discarded from the pool rather than reused.
+    #[tokio::test]
+    async fn plugin_should_detach_on_timeout() {
+        let w = wrapper_with("ok");
+        assert!(w.should_detach_on_timeout());
+    }
+
+    // Verifies request_cancellation() does not block on the variant lock while a
+    // synchronous run() holds it on the blocking pool. Without try_read/try_write,
+    // the MultiMethod write-lock acquisition here would wait until run() finishes,
+    // deferring the timeout path. We assert request_cancellation returns well before
+    // the 500ms run() completes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_cancellation_does_not_block_on_running_plugin() {
+        let mut w = wrapper_with("sleep");
+
+        // Spawn run() on a separate task so it holds the variant write lock while
+        // sleeping ~500ms on the blocking pool.
+        let mut w_run = w.clone();
+        let run_handle = tokio::spawn(async move { w_run.run(b"x", HashMap::new(), None).await });
+
+        // Give run() time to acquire the write lock inside spawn_blocking.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let start = std::time::Instant::now();
+        w.request_cancellation().await.unwrap();
+        let elapsed = start.elapsed();
+
+        // If try_write blocked on the held lock, this would take ~450ms (until run
+        // finishes). It must return promptly instead.
+        assert!(
+            elapsed < std::time::Duration::from_millis(200),
+            "request_cancellation blocked on the plugin lock: {elapsed:?}"
+        );
+
+        let (r, _meta) = run_handle.await.unwrap();
+        assert!(r.is_ok());
+    }
+
+    // Verifies the synchronous plugin run() runs on the blocking pool rather than
+    // a tokio worker: with worker_threads=1, a concurrent lightweight task must
+    // still make progress while run() sleeps. The old inline implementation would
+    // starve the concurrent task on a single-worker runtime.
+    // Ignored by default because it is timing-dependent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[ignore]
+    async fn run_does_not_block_worker() {
+        use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let counter = StdArc::new(AtomicU64::new(0));
+        let counter_clone = counter.clone();
+        let ticker = tokio::spawn(async move {
+            for _ in 0..40 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let mut w = wrapper_with("sleep");
+        let (r, _meta) = w.run(b"x", HashMap::new(), None).await;
+        assert!(r.is_ok());
+
+        // While run() slept ~500ms on the blocking pool, the ticker on the single
+        // tokio worker should have advanced. If run() had blocked the worker, the
+        // counter would still be 0.
+        assert!(
+            counter.load(Ordering::SeqCst) > 0,
+            "concurrent task was starved; plugin run() likely blocked the tokio worker"
+        );
+        ticker.abort();
     }
 }

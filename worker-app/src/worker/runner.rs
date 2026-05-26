@@ -8,6 +8,7 @@ pub mod stream_guard;
 mod integration_tests;
 
 use self::map::UseRunnerPoolMap;
+use self::pool::RunnerPoolManagerImpl;
 use self::result::RunnerResultHandler;
 use self::stream_guard::{StreamWithCancelGuard, StreamWithPoolGuard};
 use anyhow::Result;
@@ -16,6 +17,7 @@ use app_wrapper::runner::UseRunnerFactory;
 use async_trait::async_trait;
 use command_utils::trace::Tracing;
 use command_utils::util::datetime;
+use deadpool::managed::Object;
 use futures::{future::FutureExt, stream::BoxStream};
 use infra::infra::UseIdGenerator;
 use infra::infra::job::rows::UseJobqueueAndCodec;
@@ -33,6 +35,43 @@ use std::collections::HashMap;
 use std::{panic::AssertUnwindSafe, time::Duration};
 use tokio::sync::mpsc;
 use tracing;
+
+/// Whether a job finished normally or was dropped by its timeout. Used by run_job
+/// to decide whether a timed-out runner must be detached from the pool.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum RunnerOutcome {
+    #[default]
+    Normal,
+    TimedOut,
+}
+
+/// run_and_result / run_and_stream signal a timeout by returning
+/// JobWorkerError::TimeoutError; recognize it so the runner can be detached.
+fn outcome_of<T>(res: &Result<T>) -> RunnerOutcome {
+    let is_timeout = res.as_ref().err().is_some_and(|e| {
+        matches!(
+            e.downcast_ref::<JobWorkerError>(),
+            Some(JobWorkerError::TimeoutError(_))
+        )
+    });
+    if is_timeout {
+        RunnerOutcome::TimedOut
+    } else {
+        RunnerOutcome::Normal
+    }
+}
+
+/// Remove a runner from its pool when `detach` is set (shrinking the pool so the
+/// next get() creates a fresh instance), otherwise let it return to the pool on
+/// drop. The taken instance is dropped here; its still-running blocking work, if
+/// any, releases the internal lock only when it finishes.
+fn detach_runner_if(detach: bool, runner: Object<RunnerPoolManagerImpl>) {
+    if detach {
+        let _ = Object::take(runner);
+        tracing::warn!("runner detached from pool after timeout; pool will recreate it");
+    }
+    // else: `runner` drops here and returns to the pool normally.
+}
 
 // execute runner
 #[async_trait]
@@ -119,8 +158,10 @@ pub trait JobRunner:
                             _ => None,
                         };
 
-                        let (job_result, stream) =
+                        let (job_result, stream, outcome) =
                             self.run_job_inner(worker_data, job, &mut r).await;
+                        let detach =
+                            outcome == RunnerOutcome::TimedOut && r.should_detach_on_timeout();
                         drop(r); // unlock
 
                         let final_stream = if let Some(s) = stream {
@@ -140,6 +181,9 @@ pub trait JobRunner:
                             if let Some(id) = registered_feed_job_id {
                                 self.unregister_feed_sender(id);
                             }
+                            // A timed-out plugin keeps its lock on a blocking thread,
+                            // so discard the instance instead of returning it to the pool.
+                            detach_runner_if(detach, runner);
                             None
                         };
 
@@ -149,8 +193,16 @@ pub trait JobRunner:
                         let mut r = runner.lock().await;
                         tracing::debug!("static runner found (non-streaming): {:?}", r.name());
 
-                        // runner is automatically dropped and returned to Pool
-                        self.run_job_inner(worker_data, job, &mut r).await
+                        let (job_result, stream, outcome) =
+                            self.run_job_inner(worker_data, job, &mut r).await;
+                        let detach =
+                            outcome == RunnerOutcome::TimedOut && r.should_detach_on_timeout();
+                        drop(r); // unlock before detach so take() does not move a locked runner
+
+                        // A timed-out plugin keeps its lock on a blocking thread, so
+                        // discard the instance; otherwise it returns to the pool on drop.
+                        detach_runner_if(detach, runner);
+                        (job_result, stream)
                     }
                 }
                 Ok(None) => (self.handle_error_option(worker_data, job, None), None),
@@ -176,7 +228,8 @@ pub trait JobRunner:
                         let cancel_helper = runner.clone_cancel_helper_for_stream();
 
                         let mut runner = runner;
-                        let (job_result, stream) =
+                        // Non-static runners are not pooled, so timeout detach does not apply.
+                        let (job_result, stream, _outcome) =
                             self.run_job_inner(worker_data, job, &mut runner).await;
 
                         let final_stream = if let Some(stream) = stream {
@@ -194,7 +247,10 @@ pub trait JobRunner:
                     } else {
                         // Non-streaming: Existing behavior
                         let mut runner = runner;
-                        self.run_job_inner(worker_data, job, &mut runner).await
+                        // Non-static runners are not pooled, so timeout detach does not apply.
+                        let (job_result, stream, _outcome) =
+                            self.run_job_inner(worker_data, job, &mut runner).await;
+                        (job_result, stream)
                     }
                 }
                 Err(e) => (self.handle_error_option(worker_data, job, Some(e)), None),
@@ -319,7 +375,11 @@ pub trait JobRunner:
         worker_data: &WorkerData,
         job: Job,
         runner_impl: &mut Box<dyn CancellableRunner + Send + Sync>,
-    ) -> (JobResult, Option<BoxStream<'static, ResultOutputItem>>) {
+    ) -> (
+        JobResult,
+        Option<BoxStream<'static, ResultOutputItem>>,
+        RunnerOutcome,
+    ) {
         let data = job.data.as_ref().unwrap(); // XXX unwrap
 
         // Setup cancellation monitoring if runner supports it
@@ -329,7 +389,7 @@ pub trait JobRunner:
             .await
         {
             // Job was already cancelled, return the cancellation result immediately
-            return (cancelled_result, None);
+            return (cancelled_result, None, RunnerOutcome::Normal);
         }
 
         let run_after_time = data.run_after_time;
@@ -362,6 +422,7 @@ pub trait JobRunner:
                     .run_and_stream(&job, runner_impl)
                     .await
                     .map(ResultOutputEnum::Stream);
+                let outcome = outcome_of(&res);
                 let end = datetime::now_millis();
                 tracing::debug!(
                     "end runner(stream response: {}): {}, duration:{}(ms)",
@@ -391,6 +452,7 @@ pub trait JobRunner:
                         mes.metadata().cloned(),
                     ),
                     mes.stream(),
+                    outcome,
                 )
             }
             StreamingType::Internal => {
@@ -401,6 +463,7 @@ pub trait JobRunner:
                     .run_and_stream(&job, runner_impl)
                     .await
                     .map(ResultOutputEnum::Stream);
+                let outcome = outcome_of(&res);
                 let end = datetime::now_millis();
                 tracing::debug!(
                     "end runner(stream internal: {}): {}, duration:{}(ms)",
@@ -429,6 +492,7 @@ pub trait JobRunner:
                         mes.metadata().cloned(),
                     ),
                     mes.stream(),
+                    outcome,
                 )
             }
             StreamingType::None => {
@@ -438,6 +502,7 @@ pub trait JobRunner:
                     .run_and_result(&job, runner_impl)
                     .await
                     .map(|(a, b)| ResultOutputEnum::Normal(a, b));
+                let outcome = outcome_of(&res);
                 let end = datetime::now_millis();
                 tracing::debug!("end runner: {}, duration:{}(ms)", &name, end - start);
 
@@ -459,6 +524,7 @@ pub trait JobRunner:
                         mes.metadata().cloned(),
                     ),
                     None,
+                    outcome,
                 )
             }
         }
@@ -735,6 +801,19 @@ pub(crate) mod tests {
         fn id_generator(&self) -> &IdGeneratorWrapper {
             &self.id_generator
         }
+    }
+
+    #[test]
+    fn outcome_of_detects_timeout_error() {
+        let timeout: Result<()> =
+            Err(JobWorkerError::TimeoutError("timeout: 1000ms".to_string()).into());
+        assert_eq!(outcome_of(&timeout), RunnerOutcome::TimedOut);
+
+        let other: Result<()> = Err(anyhow!("some other failure"));
+        assert_eq!(outcome_of(&other), RunnerOutcome::Normal);
+
+        let ok: Result<()> = Ok(());
+        assert_eq!(outcome_of(&ok), RunnerOutcome::Normal);
     }
 
     // create test for run_job() using command runner (sleep)
