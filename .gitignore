@@ -351,3 +351,5 @@ manual/site/
 # spec docs
 spec-docs/
 
+mcp-settings.toml
+
