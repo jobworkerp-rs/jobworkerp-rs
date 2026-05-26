@@ -154,6 +154,19 @@ pub trait RunnerSpec: Send + Sync + Any {
     /// - Plugin with using: returns "{}" (schemas in tools field)
     fn settings_schema(&self) -> String;
 
+    /// Whether a timed-out job must discard this runner instead of returning it
+    /// to the pool.
+    ///
+    /// Default `false`: a timed-out runner is recycled normally because dropping
+    /// its run future actually stops the work. Override to `true` for runners that
+    /// execute uninterruptible synchronous work on a blocking thread while holding
+    /// an internal lock (plugin runners): there the work outlives the timeout and
+    /// keeps the lock, so reusing the instance would stall the next job. Discarding
+    /// it lets the pool create a fresh instance with its own lock.
+    fn should_detach_on_timeout(&self) -> bool {
+        false
+    }
+
     /// Collect streaming output into a single result
     ///
     /// This method collects all items from a streaming output and combines them

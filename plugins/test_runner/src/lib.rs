@@ -45,6 +45,15 @@ impl TestPlugin {
             args: vec![String::from_utf8_lossy(arg).to_string()],
         });
         let data = arg.args;
+        // Test hook: "sleep:<ms>" blocks the synchronous run() to exercise
+        // timeout/detach behavior in the worker. Not used in production.
+        if let Some(ms) = data
+            .first()
+            .and_then(|s| s.strip_prefix("sleep:"))
+            .and_then(|n| n.parse::<u64>().ok())
+        {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         Ok(format!("end test arg={:?}", &data).into_bytes())
     }
 }
