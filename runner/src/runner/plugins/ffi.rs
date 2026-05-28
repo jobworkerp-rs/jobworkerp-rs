@@ -9,4 +9,6 @@
 //! See `manual/{en,ja}/src/plugin-development-v2.md` for the plugin author
 //! contract.
 
+pub mod cancel;
+pub mod sink;
 pub mod types;
