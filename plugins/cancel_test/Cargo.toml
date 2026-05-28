@@ -13,11 +13,9 @@ proto = { path = "../../proto" }
 jobworkerp-runner = { path = "../../runner" }
 
 anyhow = { workspace = true }
-# Must match the host's async-ffi pin so the FfiFuture layout agrees across the
-# FFI boundary.
-async-ffi = { workspace = true }
+async-trait = { workspace = true }
+# Required by `register_plugin_v2!` for sync-side panic catch (the macro
+# wraps the high-level trait return values in `catch_unwind`).
+futures = { workspace = true }
 tokio = { workspace = true }
-# Must match the host's tokio-util pin so the CancellationToken layout agrees
-# across the FFI boundary.
-tokio-util = { workspace = true }
 tracing = { workspace = true }

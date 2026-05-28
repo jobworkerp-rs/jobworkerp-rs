@@ -30,17 +30,35 @@ pub enum PluginVariantType {
 
 // Boundary conversions for V2 plugins: `HashMap<String,String>` is not
 // ABI-stable across separately-compiled crates, so the FFI uses
-// `Vec<(String, String)>`.
-fn meta_to_vec(m: HashMap<String, String>) -> Vec<(String, String)> {
-    let mut v = Vec::with_capacity(m.len());
-    v.extend(m);
-    v
+// `FfiKvPairList = FfiVec<FfiKvPair>` carrying UTF-8 bytes per pair.
+fn meta_to_ffi(m: HashMap<String, String>) -> super::ffi::FfiKvPairList {
+    let pairs: Vec<super::ffi::FfiKvPair> = m
+        .into_iter()
+        .map(|(k, v)| super::ffi::FfiKvPair {
+            key: super::ffi::FfiBytes::from_vec(k.into_bytes()),
+            value: super::ffi::FfiBytes::from_vec(v.into_bytes()),
+        })
+        .collect();
+    super::ffi::FfiVec::from_vec(pairs)
 }
 
-fn meta_from_vec(v: Vec<(String, String)>) -> HashMap<String, String> {
-    let mut m = HashMap::with_capacity(v.len());
-    m.extend(v);
-    m
+fn meta_from_ffi(list: super::ffi::FfiKvPairList) -> HashMap<String, String> {
+    list.into_vec()
+        .into_iter()
+        .map(|p| {
+            let k = String::from_utf8(p.key.into_vec())
+                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+            let v = String::from_utf8(p.value.into_vec())
+                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+            (k, v)
+        })
+        .collect()
+}
+
+fn using_to_ffi(using: Option<&str>) -> super::ffi::FfiOption<super::ffi::FfiBytes> {
+    super::ffi::FfiOption::from_option(
+        using.map(|s| super::ffi::FfiBytes::from_vec(s.as_bytes().to_vec())),
+    )
 }
 
 /// Stable label for a `PluginRunnerVariant` enum arm. Used by safe
@@ -58,8 +76,14 @@ fn variant_kind(v: &PluginRunnerVariant) -> &'static str {
 /// Outcome of awaiting a V2 plugin's `run_stream` `JoinHandle`. Outer
 /// `Result` is the join result (panic / cancellation); inner is the
 /// plugin's own success/failure (`Ok(final_metadata)` / `Err(message)`).
-type V2RunStreamOutcome =
-    std::result::Result<std::result::Result<Vec<(String, String)>, String>, tokio::task::JoinError>;
+///
+/// FFI types (`FfiKvPairList` / `FfiBytes`) are decoded into
+/// `HashMap<String, String>` / `String` immediately after the future
+/// resolves, so downstream code keeps using ordinary Rust types.
+type V2RunStreamOutcome = std::result::Result<
+    std::result::Result<HashMap<String, String>, String>,
+    tokio::task::JoinError,
+>;
 
 /// Convert the outcome of a V2 plugin's `run_stream` future, observed
 /// **before any chunk has been yielded downstream**, into either:
@@ -70,11 +94,9 @@ type V2RunStreamOutcome =
 ///   an outer `run_stream` Err so the job is marked failed.
 fn finalize_pre_stream(res: V2RunStreamOutcome) -> Result<BoxStream<'static, ResultOutputItem>> {
     match res {
-        Ok(Ok(meta_vec)) => {
+        Ok(Ok(metadata)) => {
             let end = ResultOutputItem {
-                item: Some(result_output_item::Item::End(Trailer {
-                    metadata: meta_from_vec(meta_vec),
-                })),
+                item: Some(result_output_item::Item::End(Trailer { metadata })),
             };
             Ok(futures::stream::iter(std::iter::once(end)).boxed())
         }
@@ -123,11 +145,9 @@ impl PluginRunnerWrapperImpl {
     /// Gated on `test-utils` so the public API does not expose
     /// `PluginRunnerVariant`'s internal representation to general callers.
     #[cfg(any(test, feature = "test-utils"))]
-    pub fn from_v2_for_test(
-        plugin: Box<dyn super::MultiMethodPluginRunnerV2 + Send + Sync>,
-    ) -> Self {
+    pub fn from_v2_for_test(instance: super::ffi::PluginInstance) -> Self {
         Self::new(Arc::new(RwLock::new(PluginRunnerVariant::MultiMethodV2(
-            plugin,
+            instance,
         ))))
     }
 
@@ -170,7 +190,22 @@ impl PluginRunnerWrapperImpl {
                 let mut guard = variant_clone.write().await;
                 match &mut *guard {
                     super::PluginRunnerVariant::MultiMethodV2(plugin) => {
-                        plugin.run_stream(arg_owned, meta_to_vec(metadata), using_owned, raw_tx)
+                        let sink = super::ffi::OutputSink::from_sender(raw_tx);
+                        let args_ffi = super::ffi::FfiBytes::from_vec(arg_owned);
+                        let meta_ffi = meta_to_ffi(metadata);
+                        let using_ffi = using_to_ffi(using_owned.as_deref());
+                        // SAFETY: state and vtable were validated at load
+                        // time; the FFI types own their buffers and are
+                        // consumed by the plugin.
+                        unsafe {
+                            (plugin.vtable.run_stream)(
+                                plugin.state,
+                                args_ffi,
+                                meta_ffi,
+                                using_ffi,
+                                sink,
+                            )
+                        }
                     }
                     other => {
                         // Cached variant_type and the actual variant disagree.
@@ -182,7 +217,13 @@ impl PluginRunnerWrapperImpl {
                     }
                 }
             };
-            fut.await
+            // Decode FFI types to plain HashMap/String for downstream code.
+            match fut.await {
+                super::ffi::FfiResult::Ok(meta_ffi) => Ok(meta_from_ffi(meta_ffi)),
+                super::ffi::FfiResult::Err(err_bytes) => {
+                    Err(String::from_utf8_lossy(err_bytes.as_slice()).into_owned())
+                }
+            }
         });
 
         // Race the first chunk against `plugin_fut`:
@@ -262,7 +303,7 @@ impl PluginRunnerWrapperImpl {
                 None => plugin_fut.await,
             };
             let final_meta = match outcome {
-                Ok(Ok(meta_vec)) => meta_from_vec(meta_vec),
+                Ok(Ok(meta)) => meta,
                 Ok(Err(e)) => {
                     // Mid-stream error: the consumer already received some
                     // data, so we cannot promote this to a hard Err on
@@ -294,7 +335,11 @@ impl PluginRunnerWrapperImpl {
             let fut = {
                 let mut guard = self.variant.write().await;
                 match &mut *guard {
-                    super::PluginRunnerVariant::MultiMethodV2(plugin) => plugin.load(settings),
+                    super::PluginRunnerVariant::MultiMethodV2(plugin) => {
+                        let settings_ffi = super::ffi::FfiBytes::from_vec(settings);
+                        // SAFETY: state and vtable were validated at load time.
+                        unsafe { (plugin.vtable.load)(plugin.state, settings_ffi) }
+                    }
                     other => {
                         return Err(anyhow!(
                             "internal: variant_type cached as MultiMethodV2 but variant is {}",
@@ -303,8 +348,13 @@ impl PluginRunnerWrapperImpl {
                     }
                 }
             };
-            fut.await.map_err(|e| anyhow!("plugin load error: {}", e))?;
-            return Ok(());
+            match fut.await {
+                super::ffi::FfiResult::Ok(()) => return Ok(()),
+                super::ffi::FfiResult::Err(err_bytes) => {
+                    let msg = String::from_utf8_lossy(err_bytes.as_slice()).into_owned();
+                    return Err(anyhow!("plugin load error: {}", msg));
+                }
+            }
         }
 
         let variant = Arc::clone(&self.variant);
@@ -383,13 +433,15 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
 
         Box::pin(async move {
             match variant_type {
-                PluginVariantType::Legacy => {
-                    // Legacy plugins: keep only the last chunk (no custom collect_stream)
-                    // Process stream without holding any lock
+                PluginVariantType::Legacy | PluginVariantType::MultiMethodV2 => {
+                    // Legacy + V2: keep only the last chunk (or FinalCollected
+                    // payload if the plugin provides one). V2 no longer exposes
+                    // a per-plugin collect_stream — host applies the same
+                    // last-data semantics that Legacy uses, which is what every
+                    // existing V2 plugin (only cancel_test today) expects.
                     let mut last_data: Option<Vec<u8>> = None;
                     let mut metadata = HashMap::new();
                     let mut stream = stream;
-                    // Store FinalCollected data if received, to return after End(trailer)
                     let mut final_collected: Option<Vec<u8>> = None;
 
                     while let Some(item) = stream.next().await {
@@ -402,24 +454,20 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                                 break;
                             }
                             Some(result_output_item::Item::FinalCollected(data)) => {
-                                // Store FinalCollected data and continue loop to capture End(trailer) metadata
                                 final_collected = Some(data);
                             }
                             None => {}
                         }
                     }
 
-                    // If FinalCollected was received, return it with collected metadata
                     if let Some(data) = final_collected {
                         return Ok((data, metadata));
                     }
 
                     Ok((last_data.unwrap_or_default(), metadata))
                 }
-                PluginVariantType::MultiMethod | PluginVariantType::MultiMethodV2 => {
+                PluginVariantType::MultiMethod => {
                     // Get the collect_stream future from plugin (brief lock).
-                    // V2 no longer shares a supertrait with V1, so dispatch on
-                    // the enum directly rather than via as_multi_method_v1() upcast.
                     let future = {
                         let guard = variant.read().await;
                         let using_ref = using_owned.as_deref();
@@ -427,11 +475,9 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                             super::PluginRunnerVariant::MultiMethod(p) => {
                                 Ok(p.collect_stream(stream, using_ref))
                             }
-                            super::PluginRunnerVariant::MultiMethodV2(p) => {
-                                Ok(p.collect_stream(stream, using_ref))
-                            }
-                            super::PluginRunnerVariant::Legacy(_) => Err(anyhow!(
-                                "internal: variant_type cached as MultiMethod(V2) but variant is Legacy"
+                            super::PluginRunnerVariant::Legacy(_)
+                            | super::PluginRunnerVariant::MultiMethodV2(_) => Err(anyhow!(
+                                "internal: variant_type cached as MultiMethod but variant differs"
                             )),
                         }
                     };
@@ -505,11 +551,13 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
             let fut = {
                 let mut guard = self.variant.write().await;
                 match &mut *guard {
-                    super::PluginRunnerVariant::MultiMethodV2(plugin) => plugin.run(
-                        arg.to_vec(),
-                        meta_to_vec(metadata.clone()),
-                        using.map(|s| s.to_string()),
-                    ),
+                    super::PluginRunnerVariant::MultiMethodV2(plugin) => {
+                        let args_ffi = super::ffi::FfiBytes::from_vec(arg.to_vec());
+                        let meta_ffi = meta_to_ffi(metadata.clone());
+                        let using_ffi = using_to_ffi(using);
+                        // SAFETY: state and vtable were validated at load time.
+                        unsafe { (plugin.vtable.run)(plugin.state, args_ffi, meta_ffi, using_ffi) }
+                    }
                     other => {
                         let kind = variant_kind(other);
                         return (
@@ -521,14 +569,17 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                     }
                 }
             };
-            let (r_str, meta_vec) = fut.await;
-            return (
-                r_str.map_err(|s| {
-                    tracing::warn!("in running pluginRunner (v2): {}", s);
-                    anyhow!("plugin error: {}", s)
-                }),
-                meta_from_vec(meta_vec),
-            );
+            let outcome = fut.await;
+            let meta_back = meta_from_ffi(outcome.metadata);
+            let result = match outcome.result {
+                super::ffi::FfiResult::Ok(bytes) => Ok(bytes.into_vec()),
+                super::ffi::FfiResult::Err(err_bytes) => {
+                    let msg = String::from_utf8_lossy(err_bytes.as_slice()).into_owned();
+                    tracing::warn!("in running pluginRunner (v2): {}", msg);
+                    Err(anyhow!("plugin error: {}", msg))
+                }
+            };
+            return (result, meta_back);
         }
 
         // V1/legacy path: synchronous FFI call on blocking pool.
@@ -784,26 +835,47 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         using: Option<&str>,
     ) -> Option<mpsc::Sender<FeedData>> {
         let mut guard = block_on(self.variant.write());
-        // V2 has no V1 supertrait, so match the enum directly to cover all
-        // three variants.
-        let raw_tx = match &mut *guard {
-            super::PluginRunnerVariant::MultiMethod(p) => p.setup_client_stream_channel(using)?,
-            super::PluginRunnerVariant::MultiMethodV2(p) => p.setup_client_stream_channel(using)?,
-            super::PluginRunnerVariant::Legacy(_) => return None,
-        };
-        // Plugin provides Sender<Vec<u8>>, bridge to Sender<FeedData>
-        let (feed_tx, mut feed_rx) = mpsc::channel::<FeedData>(32);
-        tokio::spawn(async move {
-            while let Some(feed) = feed_rx.recv().await {
-                if raw_tx.send(feed.data).await.is_err() {
-                    break;
-                }
-                if feed.is_final {
-                    break;
-                }
+        match &mut *guard {
+            super::PluginRunnerVariant::MultiMethod(p) => {
+                let raw_tx = p.setup_client_stream_channel(using)?;
+                let (feed_tx, mut feed_rx) = mpsc::channel::<FeedData>(32);
+                tokio::spawn(async move {
+                    while let Some(feed) = feed_rx.recv().await {
+                        if raw_tx.send(feed.data).await.is_err() {
+                            break;
+                        }
+                        if feed.is_final {
+                            break;
+                        }
+                    }
+                });
+                Some(feed_tx)
             }
-        });
-        Some(feed_tx)
+            super::PluginRunnerVariant::MultiMethodV2(plugin) => {
+                let using_ffi = using_to_ffi(using);
+                // SAFETY: state and vtable validated at load time. The vtable
+                // returns FfiOption<OutputSink>; None means the plugin doesn't
+                // support client streaming for the given method.
+                let sink_opt =
+                    unsafe { (plugin.vtable.setup_client_stream_channel)(plugin.state, using_ffi) };
+                let sink = sink_opt.into_option()?;
+                let (feed_tx, mut feed_rx) = mpsc::channel::<FeedData>(32);
+                tokio::spawn(async move {
+                    while let Some(feed) = feed_rx.recv().await {
+                        let send_result = sink.send_raw(feed.data).await;
+                        if matches!(send_result, super::ffi::FfiResult::Err(_)) {
+                            break;
+                        }
+                        if feed.is_final {
+                            break;
+                        }
+                    }
+                    // `sink` drop closes the plugin's mpsc Receiver.
+                });
+                Some(feed_tx)
+            }
+            super::PluginRunnerVariant::Legacy(_) => None,
+        }
     }
 }
 

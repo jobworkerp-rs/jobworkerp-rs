@@ -1,7 +1,10 @@
 use super::PluginLoader;
+use crate::runner::plugins::ffi::{
+    PLUGIN_V2_ABI_MAJOR, PLUGIN_V2_ABI_MINOR, PluginInstance, PluginInstanceRaw, PluginVtable,
+    VTABLE_SIZE_MAX, VTABLE_SIZE_MIN,
+};
 use crate::runner::plugins::{
-    MultiMethodPluginRunner, MultiMethodPluginRunnerV2, PluginRunner, PluginRunnerVariant,
-    impls::PluginRunnerWrapperImpl,
+    MultiMethodPluginRunner, PluginRunner, PluginRunnerVariant, impls::PluginRunnerWrapperImpl,
 };
 use crate::runner::timeout_config::RunnerTimeoutConfig;
 use anyhow::Result;
@@ -21,15 +24,77 @@ type LoaderFunc<'a> = Symbol<'a, extern "C" fn() -> Box<dyn PluginRunner + Send 
 type MultiMethodLoaderFunc<'a> =
     Symbol<'a, extern "C" fn() -> Box<dyn MultiMethodPluginRunner + Send + Sync>>;
 
-/// FFI symbol for V2 multi-method plugins (adds cooperative cancellation).
-/// Older plugins do not export this symbol; the loader falls back to v1 then legacy.
+/// FFI symbol for V2 multi-method plugins. Returns a `#[repr(C)]`
+/// `PluginInstanceRaw`; the loader validates the vtable header before
+/// wrapping in a `PluginInstance`. The symbol name is kept stable so
+/// existing plugin source code does not have to change, but the return
+/// type is incompatible with the previous V2 trait object — `.so` files
+/// built against the old V2 ABI are rejected by the vtable validation
+/// below.
 #[allow(improper_ctypes_definitions)]
-type MultiMethodLoaderFuncV2<'a> =
-    Symbol<'a, extern "C" fn() -> Box<dyn MultiMethodPluginRunnerV2 + Send + Sync>>;
+type MultiMethodLoaderFuncV2<'a> = Symbol<'a, extern "C" fn() -> PluginInstanceRaw>;
 
 // Global library cache for plugin libraries (physical memory management)
 static PLUGIN_LIBRARY_CACHE: OnceLock<TokioRwLock<HashMap<PathBuf, &'static Library>>> =
     OnceLock::new();
+
+/// Validate a V2 plugin's vtable header before trusting the rest of the
+/// instance. Rejects:
+///   * null or misaligned vtable pointers (most common signal of an old
+///     `Box<dyn Trait>` V2 plugin being misinterpreted under the new
+///     symbol contract).
+///   * `vtable_size` outside the documented range — anything below the
+///     minimum or above the maximum points at memory corruption rather
+///     than a legitimate plugin.
+///   * ABI major mismatch — plugin must match the host's major version.
+///   * Plugin minor version newer than host: host cannot promise to
+///     support method slots the plugin assumes are present.
+///   * Plugin's `vtable_size` larger than the host's struct size — host
+///     would interpret out-of-bounds memory as method pointers.
+fn validate_v2_vtable(raw: &PluginInstanceRaw) -> Result<()> {
+    let vtable_ptr = raw.vtable as *const PluginVtable;
+    if vtable_ptr.is_null() || (vtable_ptr as usize) < 4096 {
+        return Err(anyhow::anyhow!(
+            "V2 vtable pointer looks invalid ({:p}); likely an old V2 plugin",
+            vtable_ptr
+        ));
+    }
+    let plugin_major = (raw.vtable.abi_version >> 16) as u16;
+    let plugin_minor = (raw.vtable.abi_version & 0xFFFF) as u16;
+    let host_size = std::mem::size_of::<PluginVtable>() as u32;
+    let plugin_size = raw.vtable.vtable_size;
+
+    if plugin_major != PLUGIN_V2_ABI_MAJOR {
+        return Err(anyhow::anyhow!(
+            "V2 plugin major ABI mismatch: plugin {}, host {}",
+            plugin_major,
+            PLUGIN_V2_ABI_MAJOR
+        ));
+    }
+    if plugin_minor > PLUGIN_V2_ABI_MINOR {
+        return Err(anyhow::anyhow!(
+            "V2 plugin minor ABI too new: plugin {}, host {}",
+            plugin_minor,
+            PLUGIN_V2_ABI_MINOR
+        ));
+    }
+    if plugin_size > host_size {
+        return Err(anyhow::anyhow!(
+            "V2 plugin vtable_size too large: plugin {}, host {}",
+            plugin_size,
+            host_size
+        ));
+    }
+    if !(VTABLE_SIZE_MIN..=VTABLE_SIZE_MAX).contains(&plugin_size) {
+        return Err(anyhow::anyhow!(
+            "V2 plugin vtable_size out of range: {} (allowed {}..={})",
+            plugin_size,
+            VTABLE_SIZE_MIN,
+            VTABLE_SIZE_MAX
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 pub struct RunnerPluginLoader {
@@ -133,11 +198,32 @@ impl RunnerPluginLoader {
                 if let Ok(load_v2) =
                     lib.get::<MultiMethodLoaderFuncV2>(b"load_multi_method_plugin_v2\0")
                 {
-                    let plugin = load_v2();
-                    let variant = PluginRunnerVariant::MultiMethodV2(plugin);
-                    return Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
-                        variant,
-                    ))));
+                    let raw = load_v2();
+                    match validate_v2_vtable(&raw) {
+                        Ok(()) => {
+                            let inst = PluginInstance {
+                                state: raw.state,
+                                vtable: raw.vtable,
+                                library: lib,
+                            };
+                            let variant = PluginRunnerVariant::MultiMethodV2(inst);
+                            return Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
+                                variant,
+                            ))));
+                        }
+                        Err(e) => {
+                            tracing::error!("V2 plugin rejected: {e}");
+                            // Best-effort cleanup if the vtable pointer is valid
+                            // enough to invoke. We only call drop_state when the
+                            // pointer passes basic sanity, otherwise leaving it
+                            // is safer than dereferencing garbage.
+                            if (raw.vtable as *const PluginVtable as usize) >= 4096 {
+                                (raw.vtable.drop_state)(raw.state);
+                            }
+                            // fall through to V1/legacy probing in case the dylib
+                            // exports multiple loader symbols
+                        }
+                    }
                 }
 
                 // Fall back to v1 multi-method plugin
@@ -227,8 +313,24 @@ impl PluginLoader for RunnerPluginLoader {
                 if let Ok(load_v2) =
                     lib.get::<MultiMethodLoaderFuncV2>(b"load_multi_method_plugin_v2\0")
                 {
-                    let plugin = load_v2();
-                    return Ok::<_, anyhow::Error>((plugin.name(), plugin.description()));
+                    let raw = load_v2();
+                    if let Err(e) = validate_v2_vtable(&raw) {
+                        tracing::error!("V2 plugin rejected during load_path: {e}");
+                        if (raw.vtable as *const PluginVtable as usize) >= 4096 {
+                            (raw.vtable.drop_state)(raw.state);
+                        }
+                        // fall through to V1/legacy probing
+                    } else {
+                        let name_bytes = (raw.vtable.name)(raw.state);
+                        let desc_bytes = (raw.vtable.description)(raw.state);
+                        let name = String::from_utf8_lossy(name_bytes.as_slice()).into_owned();
+                        let desc = String::from_utf8_lossy(desc_bytes.as_slice()).into_owned();
+                        // Drop the temporary instance state; the actual instance
+                        // for the runner is created lazily inside
+                        // `find_plugin_runner_by_name`.
+                        (raw.vtable.drop_state)(raw.state);
+                        return Ok::<_, anyhow::Error>((name, desc));
+                    }
                 }
 
                 // Fall back to v1 multi-method plugin

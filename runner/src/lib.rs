@@ -3,9 +3,11 @@ pub mod validation;
 
 // Re-export crates used inside `register_plugin_v2!` so plugin authors only
 // need to depend on `jobworkerp-runner` itself (the macro references these
-// paths via `::jobworkerp_runner::futures` / `::async_ffi`).
+// paths via `::jobworkerp_runner::*`).
 pub use async_ffi;
+pub use async_trait;
 pub use futures;
+pub use prost;
 // Proc macro for FFI plugin registration.
 pub use jobworkerp_runner_macros::register_plugin_v2;
 

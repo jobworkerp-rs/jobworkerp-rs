@@ -25,7 +25,6 @@ use super::cancel::FfiCancellationToken;
 use super::sink::OutputSink;
 use super::types::{FfiBytes, FfiKvPairList, FfiOption, FfiResult};
 use async_ffi::FfiFuture;
-use std::sync::Arc;
 
 /// ABI major version. Bump on breaking layout / signature changes.
 pub const PLUGIN_V2_ABI_MAJOR: u16 = 1;
@@ -112,31 +111,35 @@ pub struct PluginInstanceRaw {
 }
 
 /// Host-side wrapper around `PluginInstanceRaw` that anchors the dylib
-/// `Arc<Library>` to the instance lifetime. Dropping `PluginInstance`
-/// first calls `vtable.drop_state` on the plugin state, then releases
-/// the `Library` Arc — guaranteeing that the vtable pointers stay valid
-/// for `drop_state`. This ordering is structural; do not bypass it.
+/// to the instance lifetime. Dropping `PluginInstance` calls
+/// `vtable.drop_state` on the plugin state; the dylib itself is kept
+/// alive by the global plugin library cache (`Box::leak()` in
+/// `RunnerPluginLoader`), so the vtable function pointers remain valid
+/// for the duration of the process.
 pub struct PluginInstance {
     pub state: *mut (),
     pub vtable: &'static PluginVtable,
-    /// Keeps the dynamic library mapped while `state` is alive.
-    pub library: Arc<libloading::Library>,
+    /// Anchors the leaked `&'static Library` for traceability. The
+    /// reference is never dropped, but storing it keeps the lifetime
+    /// relationship explicit and makes future code that wants to switch
+    /// to ref-counted libraries easier to retrofit.
+    pub library: &'static libloading::Library,
 }
 
 // SAFETY: the underlying state is the plugin's responsibility (it must
 // honour `Send`/`Sync` for its own object). The vtable pointers and the
-// `Arc<Library>` are themselves `Send + Sync`.
+// `&'static Library` are themselves `Send + Sync`.
 unsafe impl Send for PluginInstance {}
 unsafe impl Sync for PluginInstance {}
 
 impl Drop for PluginInstance {
     fn drop(&mut self) {
-        // Order matters: free the plugin state via the vtable's
-        // `drop_state` thunk first, while the dylib (and therefore the
-        // function pointer) is still mapped.
+        // The plugin library is leaked into a `'static` slot at load
+        // time, so the vtable function pointer is guaranteed to outlive
+        // this Drop. Calling drop_state here frees the plugin's boxed
+        // state; the library itself stays mapped for the rest of the
+        // process lifetime (intentional: see RunnerPluginLoader docs).
         unsafe { (self.vtable.drop_state)(self.state) };
-        // `library` Drop then runs, releasing the `Arc<Library>` strong
-        // reference; if it was the last one, `dlclose` happens here.
     }
 }
 

@@ -78,11 +78,12 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 HighLevelSink,
                 PluginV2,
             };
-            use ::jobworkerp_runner::futures::FutureExt as _RunnerFutureExt;
+            use ::jobworkerp_runner::futures::{self, FutureExt as _RunnerFutureExt};
             use ::jobworkerp_runner::async_ffi::{
                 FfiFuture,
                 FutureExt as _AsyncFfiFutureExt,
             };
+            use ::jobworkerp_runner::prost::Message as _PluginV2ProstMessage;
             use ::std::collections::HashMap;
             use ::std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -119,7 +120,7 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                     .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
             }
 
-            fn schema_map_to_kv<S: ::prost::Message>(
+            fn schema_map_to_kv<S: _PluginV2ProstMessage>(
                 map: HashMap<String, S>,
             ) -> FfiKvPairList {
                 let pairs: Vec<FfiKvPair> = map
@@ -239,17 +240,31 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 }));
             }
 
+            // Pointer wrapper used to carry the plugin state pointer into
+            // async blocks. `impl` blocks must live at module scope, so we
+            // declare the wrapper once and reuse it across thunks.
+            struct StatePtr(*mut ());
+            // SAFETY: the plugin author guarantees its state is `Send`; the
+            // V2 docs require this. The pointer is treated as opaque inside
+            // the thunks (only dereferenced through the plugin trait).
+            unsafe impl Send for StatePtr {}
+
             unsafe extern "C" fn __thunk_load(
                 state: *mut (),
                 settings: FfiBytes,
             ) -> FfiFuture<FfiResult<(), FfiBytes>> {
-                // Capture state pointer (Send across the future boundary
-                // is the plugin author's responsibility per V2 docs).
-                struct StatePtr(*mut ());
-                unsafe impl Send for StatePtr {}
                 let captured = StatePtr(state);
                 async move {
-                    let plugin = unsafe { &mut *(captured.0 as *mut PluginTy) };
+                    // Resolve the plugin reference once and drop the
+                    // `StatePtr` immediately so the raw pointer is no
+                    // longer captured across the await boundary.
+                    let plugin: &mut PluginTy = unsafe { &mut *(captured.0 as *mut PluginTy) };
+                    // Drop the StatePtr immediately so the raw pointer is no
+                    // longer in scope across the await boundary; otherwise the
+                    // resulting future would not be Send (the `*mut ()` field
+                    // is captured by reference into the async block).
+                    #[allow(clippy::drop_non_drop)]
+                    drop(captured);
                     let fut = plugin.load(settings.into_vec());
                     let result = AssertUnwindSafe(fut).catch_unwind().await;
                     match result {
@@ -269,12 +284,16 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 metadata: FfiKvPairList,
                 using: FfiOption<FfiBytes>,
             ) -> FfiFuture<V2RunOutcome> {
-                struct StatePtr(*mut ());
-                unsafe impl Send for StatePtr {}
                 let captured = StatePtr(state);
                 let using_owned: Option<String> = using.into_option().map(ffi_string_to_string);
                 async move {
-                    let plugin = unsafe { &mut *(captured.0 as *mut PluginTy) };
+                    let plugin: &mut PluginTy = unsafe { &mut *(captured.0 as *mut PluginTy) };
+                    // Drop the StatePtr immediately so the raw pointer is no
+                    // longer in scope across the await boundary; otherwise the
+                    // resulting future would not be Send (the `*mut ()` field
+                    // is captured by reference into the async block).
+                    #[allow(clippy::drop_non_drop)]
+                    drop(captured);
                     let meta = kv_to_hashmap(metadata);
                     let fut = plugin.run(args.into_vec(), meta, using_owned);
                     let outcome = AssertUnwindSafe(fut).catch_unwind().await;
@@ -305,12 +324,16 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 using: FfiOption<FfiBytes>,
                 output: OutputSink,
             ) -> FfiFuture<FfiResult<FfiKvPairList, FfiBytes>> {
-                struct StatePtr(*mut ());
-                unsafe impl Send for StatePtr {}
                 let captured = StatePtr(state);
                 let using_owned: Option<String> = using.into_option().map(ffi_string_to_string);
                 async move {
-                    let plugin = unsafe { &mut *(captured.0 as *mut PluginTy) };
+                    let plugin: &mut PluginTy = unsafe { &mut *(captured.0 as *mut PluginTy) };
+                    // Drop the StatePtr immediately so the raw pointer is no
+                    // longer in scope across the await boundary; otherwise the
+                    // resulting future would not be Send (the `*mut ()` field
+                    // is captured by reference into the async block).
+                    #[allow(clippy::drop_non_drop)]
+                    drop(captured);
                     let meta = kv_to_hashmap(metadata);
                     let sink = HighLevelSink::from_ffi(output);
                     let fut = plugin.run_stream(args.into_vec(), meta, using_owned, sink);

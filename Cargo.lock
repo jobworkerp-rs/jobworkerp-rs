@@ -3958,11 +3958,11 @@ name = "plugin_runner_cancel_test"
 version = "0.22.0"
 dependencies = [
  "anyhow",
- "async-ffi",
+ "async-trait",
+ "futures",
  "jobworkerp-runner",
  "proto",
  "tokio",
- "tokio-util",
  "tracing",
 ]
 

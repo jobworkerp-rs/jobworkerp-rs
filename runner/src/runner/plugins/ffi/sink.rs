@@ -86,10 +86,12 @@ pub struct OutputSink {
     drop_state: unsafe extern "C" fn(*mut ()),
 }
 
-// SAFETY: the sink owns its state. `Sync` is not implemented because the
-// plugin must serialize sends — sending in parallel from multiple tasks
-// would race the underlying mpsc channel's internal state.
+// SAFETY: the sink owns its state and the internal `Mutex<Option<Sender>>`
+// serialises concurrent access. Plugin authors are still expected to drive
+// `send` sequentially (the drop contract requires awaiting in-flight
+// futures before drop), but the underlying state is thread-safe.
 unsafe impl Send for OutputSink {}
+unsafe impl Sync for OutputSink {}
 
 impl OutputSink {
     /// Wrap a `tokio::sync::mpsc::Sender<Vec<u8>>` for use across the FFI

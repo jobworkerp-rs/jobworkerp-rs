@@ -3,10 +3,10 @@ pub mod impls;
 pub mod loader;
 pub mod v2;
 
+use self::ffi::PluginInstance;
 use self::loader::RunnerPluginLoader;
 use crate::schema_to_json_string;
 use anyhow::Result;
-use async_ffi::FfiFuture;
 use itertools::Itertools;
 use jobworkerp_base::error::JobWorkerError;
 use std::{
@@ -19,17 +19,10 @@ use tokio::sync::RwLock as TokioRwLock;
 // `async-ffi` re-export so plugin authors do not have to pin the version
 // themselves (host pin is authoritative; mismatches break FfiFuture layout).
 pub use async_ffi::{self, FutureExt as FfiFutureExt};
-// `CancellationToken` crosses the FFI boundary as a `tokio_util` type;
-// host and plugin MUST share the same workspace pin for its layout to agree.
+// Kept as a host-internal re-export. V2 plugins no longer see this type
+// across the FFI boundary; the host uses `CancellationToken` to drive the
+// `from_tokio_util` bridge that yields an `FfiCancellationToken`.
 pub use tokio_util::sync::CancellationToken;
-
-/// FFI-safe `metadata` payload used by V2 plugins. `HashMap` is not ABI-stable
-/// across separately-compiled crates, so V2 trades it for `Vec<(String, String)>`
-/// at the boundary; the host converts to/from `HashMap` outside the FFI call.
-pub type V2Metadata = Vec<(String, String)>;
-
-/// Return type of `MultiMethodPluginRunnerV2::run()`.
-pub type V2RunResult = (Result<Vec<u8>, String>, V2Metadata);
 
 pub struct PluginMetadata {
     pub name: String,
@@ -415,223 +408,58 @@ pub trait MultiMethodPluginRunner: Send + Sync {
     }
 }
 
-/// V2 multi-method plugin trait: async-ffi based plugin interface with
-/// cooperative cancellation. Loaded via the FFI symbol
-/// `load_multi_method_plugin_v2`.
-///
-/// V2 is **independent** of the legacy `MultiMethodPluginRunner` trait — the
-/// vtable layout is separate, and existing V1/legacy plugin binaries are not
-/// affected by changes here.
-///
-/// # FFI safety
-/// - Async methods return `async_ffi::FfiFuture<T>` (a `#[repr(C)]` wrapper
-///   over `Box<dyn Future<Output=T> + Send + 'static>`). Plugin authors
-///   construct them with `async move { ... }.into_ffi()`.
-/// - `metadata` crosses the boundary as `Vec<(String, String)>` because
-///   `HashMap`'s layout is not ABI-stable across separately-compiled crates.
-///   The host converts to/from `HashMap<String, String>` at the wrapper.
-/// - Errors cross as `Result<T, String>`; `anyhow::Error` is not ABI-stable.
-///   The host re-wraps `String` into `anyhow::Error` for upstream callers.
-/// - `CancellationToken` crosses the boundary safely only because host and
-///   plugin link the exact same `tokio_util` version (workspace pin).
-/// - The `load_multi_method_plugin_v2` loader still returns
-///   `Box<dyn MultiMethodPluginRunnerV2 + Send + Sync>`, so the trait's
-///   vtable layout itself is Rust-ABI: host and plugin MUST share the same
-///   `rustc` version. Pinning `async-ffi` only makes the returned futures
-///   ABI-stable, not the trait dispatch.
-///
-/// # Constraints from `FfiFuture<T> = Send + 'static`
-/// The returned future is `'static` and cannot borrow `&mut self`. Plugin
-/// implementations MUST move any needed state into the `async move { ... }`
-/// block (typically by `clone()` on cheap handles like `CancellationToken`,
-/// or via `Arc<Mutex<_>>` for shared mutable state). The host expects this:
-/// after the trait method returns the `FfiFuture`, the host may release its
-/// borrow on `self` and even drop the future at any time (e.g., on timeout).
-///
-/// # Tokio runtime (dylib constraint)
-/// Plugins are loaded as `cdylib`, so the `tokio` crate linked into the
-/// plugin has its own `thread_local!` runtime context that is **invisible
-/// to the host**. Calling `tokio::time::sleep`, `tokio::spawn`, or any
-/// other `Handle::current()`-using API directly inside the `async move {}`
-/// block driven by the host will panic with `there is no reactor running`.
-///
-/// To make async work runnable, the plugin MUST:
-/// 1. Own a `tokio::runtime::Runtime` built with `Builder::new_multi_thread()`
-///    and **at least one worker thread**. (`new_current_thread()` does not
-///    progress tasks unless someone calls `block_on(...)`, so `handle.spawn`
-///    queues but never executes — defeating cooperative cancellation.)
-/// 2. `handle.spawn(...)` the actual async work onto that runtime.
-/// 3. Return an `FfiFuture` that awaits the resulting `JoinHandle` and
-///    bridges the result back to the host.
-///
-/// See `plugins/cancel_test/src/lib.rs` for the canonical implementation
-/// pattern and `manual/en/src/plugin-development-v2.md` (or the Japanese
-/// edition at `manual/ja/src/plugin-development-v2.md`) for the full
-/// rationale.
-///
-/// # Drop safety
-/// On timeout the host drops the returned `FfiFuture`. Dropping a
-/// `JoinHandle` does NOT cancel the spawned task; the plugin-side task
-/// keeps running on the plugin runtime until it observes the
-/// `CancellationToken` or completes naturally. Always `select!` on
-/// `token.cancelled()` inside long-running spawned work.
-///
-/// Avoid tokio I/O inside `Drop` impls — they may run during shutdown of
-/// either runtime and panic outside a runtime context.
-pub trait MultiMethodPluginRunnerV2: Send + Sync {
-    // === Sync metadata methods ===
-    fn name(&self) -> String;
-    fn description(&self) -> String;
-    fn runner_settings_proto(&self) -> String;
+// === V2 vtable conversion helpers ===
+//
+// V2 method results come back as FfiBytes / FfiKvPairList; convert to the
+// `String` / `HashMap` shapes the rest of the runner expects. UTF-8
+// validation is lossy because plugin authors set these strings and the
+// host cannot reasonably reject them at this layer.
 
-    /// Key: method name, Value: MethodSchema (input and output schemas).
-    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema>;
+fn v2_bytes_to_string(b: ffi::FfiBytes) -> String {
+    String::from_utf8(b.into_vec())
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
 
-    /// Optional: custom JSON schemas. Returning `None` triggers automatic
-    /// conversion from `method_proto_map()`.
-    fn method_json_schema_map(
-        &self,
-    ) -> Option<HashMap<String, proto::jobworkerp::data::MethodJsonSchema>> {
-        None
-    }
+fn v2_using_to_ffi(using: Option<&str>) -> ffi::FfiOption<ffi::FfiBytes> {
+    ffi::FfiOption::from_option(using.map(|s| ffi::FfiBytes::from_vec(s.as_bytes().to_vec())))
+}
 
-    fn settings_schema(&self) -> String {
-        schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
-    }
-
-    /// Whether this plugin supports client streaming input for the given method.
-    fn supports_client_stream(&self, _using: Option<&str>) -> bool {
-        false
-    }
-
-    /// Proto definition for client streaming data of the given method.
-    fn client_stream_data_proto(&self, _using: Option<&str>) -> Option<String> {
-        None
-    }
-
-    /// Set up a client stream channel for receiving raw bytes during streaming
-    /// execution. The wrapper bridges this to FeedData by spawning an adapter.
-    fn setup_client_stream_channel(
-        &mut self,
-        _using: Option<&str>,
-    ) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
-        None
-    }
-
-    // === Cancellation ===
-
-    /// Host calls this BEFORE each job's `run()`/`run_stream()` (once per
-    /// job; pooled plugin instances are reused across jobs and receive a fresh
-    /// token each time). The plugin should simply replace any previously
-    /// stored token — old tokens belong to completed or cancelled jobs and are
-    /// no longer relevant.
-    ///
-    /// Plugins await `token.cancelled().await` inside the future returned by
-    /// `run()`/`run_stream()` to cooperatively abort.
-    fn set_cancellation_token(&mut self, token: CancellationToken);
-
-    // === Async surface (async-ffi) ===
-
-    /// Initialize the plugin instance with settings. Errors cross the FFI as
-    /// `String` (re-wrapped to `anyhow::Error` by the host).
-    fn load(&mut self, settings: Vec<u8>) -> FfiFuture<Result<(), String>>;
-
-    /// Execute one unary job.
-    ///
-    /// # Arguments
-    /// * `args` - protobuf-encoded binary
-    /// * `metadata` - job metadata as `Vec<(String, String)>` (HashMap form
-    ///   on the host side is converted at the wrapper boundary)
-    /// * `using` - optional method selector for multi-method plugins
-    ///
-    /// # Return
-    /// A future yielding `(Result<output, error_message>, metadata)`. The
-    /// metadata is passed back so plugins can attach trace/telemetry fields.
-    fn run(
-        &mut self,
-        args: Vec<u8>,
-        metadata: V2Metadata,
-        using: Option<String>,
-    ) -> FfiFuture<V2RunResult>;
-
-    /// Execute one streaming job.
-    ///
-    /// Unlike V1's pull-based `begin_stream`/`receive_stream` split, V2 takes
-    /// a push-based design: the host creates an `mpsc::Sender<Vec<u8>>` and
-    /// hands it to the plugin. The plugin sends each output chunk via
-    /// `output.send(chunk).await` and returns the final metadata when done.
-    /// Dropping the sender (the plugin returning, or the host dropping the
-    /// future) signals end of stream to the host's receiver.
-    ///
-    /// # Arguments
-    /// * `args` - protobuf-encoded binary
-    /// * `metadata` - job metadata as `V2Metadata`
-    /// * `using` - optional method selector for multi-method plugins
-    /// * `output` - host-provided sink for stream chunks. The plugin sends
-    ///   `Vec<u8>` chunks here; the host wraps them into `ResultOutputItem`
-    ///   and forwards downstream. The sender is `tokio::sync::mpsc::Sender`,
-    ///   whose ABI is stable as long as host and plugin pin the same `tokio`
-    ///   workspace version (the same constraint as `CancellationToken`).
-    ///
-    /// # Return
-    /// A future yielding `Result<final_metadata, error_message>`. The
-    /// metadata is attached to the End trailer of the host-side stream.
-    ///
-    /// # Cancellation
-    /// If the host drops the returned `FfiFuture` (e.g., on timeout) the
-    /// plugin's spawned task continues until it observes the cancellation
-    /// token or completes naturally. Plugins that perform long-running work
-    /// MUST select on `token.cancelled()` to abort early.
-    ///
-    /// Default impl returns `Err("not implemented")` immediately.
-    fn run_stream(
-        &mut self,
-        args: Vec<u8>,
-        metadata: V2Metadata,
-        using: Option<String>,
-        output: tokio::sync::mpsc::Sender<Vec<u8>>,
-    ) -> FfiFuture<Result<V2Metadata, String>> {
-        let _ = (args, metadata, using, output);
-        async move { Err("not implemented".to_string()) }.into_ffi()
-    }
-
-    /// Collect streaming output into a single result.
-    ///
-    /// Default implementation: keeps only the last data chunk (concatenating
-    /// protobuf binaries is invalid). Plugins should override this for custom
-    /// collection logic (e.g., merging proto messages).
-    fn collect_stream(
-        &self,
-        stream: futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
-        _using: Option<&str>,
-    ) -> crate::runner::CollectStreamFuture {
-        use futures::StreamExt;
-        use proto::jobworkerp::data::result_output_item;
-
-        Box::pin(async move {
-            let mut last_data: Option<Vec<u8>> = None;
-            let mut metadata = HashMap::new();
-            let mut stream = stream;
-            let mut final_collected: Option<Vec<u8>> = None;
-
-            while let Some(item) = stream.next().await {
-                match item.item {
-                    Some(result_output_item::Item::Data(data)) => {
-                        last_data = Some(data);
-                    }
-                    Some(result_output_item::Item::FinalCollected(data)) => {
-                        final_collected = Some(data);
-                    }
-                    Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
-                        break;
-                    }
-                    None => {}
+fn v2_decode_proto_map(
+    list: ffi::FfiKvPairList,
+) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+    use prost::Message;
+    list.into_vec()
+        .into_iter()
+        .filter_map(|pair| {
+            let key = v2_bytes_to_string(pair.key);
+            match proto::jobworkerp::data::MethodSchema::decode(pair.value.as_slice()) {
+                Ok(schema) => Some((key, schema)),
+                Err(e) => {
+                    tracing::warn!("V2 plugin method_proto_map decode error: {e}");
+                    None
                 }
             }
-            Ok((final_collected.or(last_data).unwrap_or_default(), metadata))
         })
-    }
+        .collect()
+}
+
+fn v2_decode_json_schema_map(
+    list: ffi::FfiKvPairList,
+) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
+    use prost::Message;
+    list.into_vec()
+        .into_iter()
+        .filter_map(|pair| {
+            let key = v2_bytes_to_string(pair.key);
+            match proto::jobworkerp::data::MethodJsonSchema::decode(pair.value.as_slice()) {
+                Ok(schema) => Some((key, schema)),
+                Err(e) => {
+                    tracing::warn!("V2 plugin method_json_schema_map decode error: {e}");
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 /// Enum to wrap legacy and multi-method plugins
@@ -640,9 +468,12 @@ pub enum PluginRunnerVariant {
     Legacy(Box<dyn PluginRunner + Send + Sync>),
     /// Multi-method plugins (multiple methods with collect_stream support)
     MultiMethod(Box<dyn MultiMethodPluginRunner + Send + Sync>),
-    /// V2 multi-method plugins: superset of MultiMethod with cooperative
-    /// cancellation. Loaded via `load_multi_method_plugin_v2`.
-    MultiMethodV2(Box<dyn MultiMethodPluginRunnerV2 + Send + Sync>),
+    /// V2 multi-method plugins: async-ffi based plugins reached through a
+    /// `#[repr(C)]` vtable so host and plugin can use independent
+    /// `rustc` / `tokio` versions. Loaded via
+    /// `load_multi_method_plugin_v2` and the FFI types in
+    /// [`crate::runner::plugins::ffi`].
+    MultiMethodV2(PluginInstance),
 }
 
 impl PluginRunnerVariant {
@@ -668,23 +499,31 @@ impl PluginRunnerVariant {
         }
     }
     /// Hand the cancellation token to a v2 plugin; no-op for v1/legacy.
+    ///
+    /// V2 plugins receive an `FfiCancellationToken` derived from the
+    /// host's `tokio_util::CancellationToken` via `ffi::from_tokio_util`.
+    /// The token ownership moves into the plugin's stored state.
     pub fn set_cancellation_token(&mut self, token: CancellationToken) {
         if let PluginRunnerVariant::MultiMethodV2(p) = self {
-            p.set_cancellation_token(token);
+            let ffi_token = ffi::from_tokio_util(token);
+            // SAFETY: vtable thunk; ownership of `ffi_token` transfers
+            // into the plugin's stored slot.
+            unsafe { (p.vtable.set_cancellation_token)(p.state, ffi_token) };
         }
     }
 
     // === Sync metadata accessors (3-way dispatch) ===
     //
-    // V2 plugins drop the supertrait relation to `MultiMethodPluginRunner`, so
-    // `as_multi_method_v1()` cannot upcast V2. These accessors let callers
-    // read metadata uniformly without caring which variant they hold.
+    // V2 plugins reach metadata via vtable thunks that return FFI types;
+    // we convert here so callers continue to see `String` / `HashMap`.
 
     pub fn name(&self) -> String {
         match self {
             PluginRunnerVariant::Legacy(p) => p.name(),
             PluginRunnerVariant::MultiMethod(p) => p.name(),
-            PluginRunnerVariant::MultiMethodV2(p) => p.name(),
+            PluginRunnerVariant::MultiMethodV2(p) => {
+                v2_bytes_to_string(unsafe { (p.vtable.name)(p.state) })
+            }
         }
     }
 
@@ -692,7 +531,9 @@ impl PluginRunnerVariant {
         match self {
             PluginRunnerVariant::Legacy(p) => p.description(),
             PluginRunnerVariant::MultiMethod(p) => p.description(),
-            PluginRunnerVariant::MultiMethodV2(p) => p.description(),
+            PluginRunnerVariant::MultiMethodV2(p) => {
+                v2_bytes_to_string(unsafe { (p.vtable.description)(p.state) })
+            }
         }
     }
 
@@ -700,7 +541,9 @@ impl PluginRunnerVariant {
         match self {
             PluginRunnerVariant::Legacy(p) => p.runner_settings_proto(),
             PluginRunnerVariant::MultiMethod(p) => p.runner_settings_proto(),
-            PluginRunnerVariant::MultiMethodV2(p) => p.runner_settings_proto(),
+            PluginRunnerVariant::MultiMethodV2(p) => {
+                v2_bytes_to_string(unsafe { (p.vtable.runner_settings_proto)(p.state) })
+            }
         }
     }
 
@@ -723,7 +566,10 @@ impl PluginRunnerVariant {
                 map
             }
             PluginRunnerVariant::MultiMethod(p) => p.method_proto_map(),
-            PluginRunnerVariant::MultiMethodV2(p) => p.method_proto_map(),
+            PluginRunnerVariant::MultiMethodV2(p) => {
+                let list = unsafe { (p.vtable.method_proto_map)(p.state) };
+                v2_decode_proto_map(list)
+            }
         }
     }
 
@@ -751,11 +597,15 @@ impl PluginRunnerVariant {
                 })
             }
             PluginRunnerVariant::MultiMethodV2(p) => {
-                p.method_json_schema_map().unwrap_or_else(|| {
+                let list = unsafe { (p.vtable.method_json_schema_map)(p.state) };
+                let decoded = v2_decode_json_schema_map(list);
+                if decoded.is_empty() {
                     proto::jobworkerp::data::MethodJsonSchema::from_proto_map(
                         self.method_proto_map(),
                     )
-                })
+                } else {
+                    decoded
+                }
             }
         }
     }
@@ -764,7 +614,9 @@ impl PluginRunnerVariant {
         match self {
             PluginRunnerVariant::Legacy(p) => p.settings_schema(),
             PluginRunnerVariant::MultiMethod(p) => p.settings_schema(),
-            PluginRunnerVariant::MultiMethodV2(p) => p.settings_schema(),
+            PluginRunnerVariant::MultiMethodV2(p) => {
+                v2_bytes_to_string(unsafe { (p.vtable.settings_schema)(p.state) })
+            }
         }
     }
 
@@ -772,7 +624,10 @@ impl PluginRunnerVariant {
         match self {
             PluginRunnerVariant::Legacy(_) => false,
             PluginRunnerVariant::MultiMethod(p) => p.supports_client_stream(using),
-            PluginRunnerVariant::MultiMethodV2(p) => p.supports_client_stream(using),
+            PluginRunnerVariant::MultiMethodV2(p) => {
+                let using_ffi = v2_using_to_ffi(using);
+                unsafe { (p.vtable.supports_client_stream)(p.state, using_ffi) }
+            }
         }
     }
 
@@ -780,7 +635,15 @@ impl PluginRunnerVariant {
         match self {
             PluginRunnerVariant::Legacy(_) => None,
             PluginRunnerVariant::MultiMethod(p) => p.client_stream_data_proto(using),
-            PluginRunnerVariant::MultiMethodV2(p) => p.client_stream_data_proto(using),
+            PluginRunnerVariant::MultiMethodV2(p) => {
+                let using_ffi = v2_using_to_ffi(using);
+                let bytes = unsafe { (p.vtable.client_stream_data_proto)(p.state, using_ffi) };
+                if bytes.is_empty() {
+                    None
+                } else {
+                    Some(v2_bytes_to_string(bytes))
+                }
+            }
         }
     }
 
