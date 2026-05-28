@@ -1,46 +1,22 @@
 //! V2 plugin sample (async-ffi).
 //!
-//! Demonstrates the V2 plugin contract:
-//! - async surface implemented via `async_ffi::FfiFuture<T>`
-//! - cooperative cancellation via a host-supplied `CancellationToken`
+//! Reference implementation cited from the plugin development guide; the
+//! authoritative documentation lives in the manual and rustdoc:
+//! - `manual/en/src/plugin-development-v2.md` (English) /
+//!   `manual/ja/src/plugin-development-v2.md` (Japanese): step-by-step
+//!   author guide, including the six dylib/runtime constraints summarized
+//!   below.
+//! - `MultiMethodPluginRunnerV2` rustdoc: trait-level contract.
 //!
-//! Build as a dylib and load via the `load_multi_method_plugin_v2` FFI symbol.
-//!
-//! # Plugin author guide (read before writing your own V2 plugin)
-//!
-//! 1. **Bring your own multi-threaded tokio runtime.** The plugin is loaded
-//!    as a `dylib`, so tokio's `thread_local!` runtime context inside the
-//!    plugin's linked tokio is independent of the host's. Calling
-//!    `tokio::time::sleep` or any other `Handle::current()`-using API from a
-//!    future polled directly on the host runtime panics with "there is no
-//!    reactor running". The plugin MUST `handle.spawn(...)` its async work
-//!    onto its own `tokio::runtime::Runtime` and return a `JoinHandle::await`
-//!    inside the `FfiFuture`.
-//!
-//!    The runtime MUST be `new_multi_thread()` with at least one worker.
-//!    `new_current_thread()` advances tasks only inside `block_on(...)`, so
-//!    `handle.spawn(...)` would queue the task and never advance, breaking
-//!    cooperative cancellation (the task never reaches its `tokio::select!`).
-//!
-//! 2. **`FfiFuture<T>` is `Send + 'static`.** The returned future cannot
-//!    borrow `&mut self`. Move any state into the `async move { ... }` block:
-//!    clone cheap handles like `CancellationToken` or `Handle`, or hold
-//!    mutable state behind `Arc<Mutex<_>>`.
-//!
-//! 3. **The host can drop the FfiFuture at any time (e.g., on timeout).**
-//!    When that happens, the `JoinHandle` inside the future is dropped, but
-//!    the task spawned on the plugin runtime keeps running until it observes
-//!    the cancellation token. This is the cooperative cancellation contract:
-//!    always select on `token.cancelled()` somewhere reachable inside your
-//!    spawned task, otherwise the plugin runtime will leak the task until
-//!    natural completion.
-//!
-//! 4. **No tokio I/O in `Drop`.** Plugin destructors may run while the host
-//!    runtime is shutting down; tokio operations there can panic.
-//!
-//! 5. **Pin `async-ffi`, `tokio`, and `tokio-util` to the same workspace
-//!    version as the host.** These types cross the FFI boundary, so layout
-//!    must match.
+//! Constraints in one line:
+//! 1. Bring your own multi-thread tokio runtime (>=1 worker); spawn there.
+//! 2. `FfiFuture<T>` is `Send + 'static`; move state in via clone/`Arc`.
+//! 3. `CancellationToken` is the only cancel channel; `select!` on it.
+//! 4. Host drops the future on timeout; plugin task continues until it
+//!    observes the token — so always race against `token.cancelled()`.
+//! 5. No tokio I/O in `Drop`.
+//! 6. Pin `async-ffi`, `tokio`, `tokio-util` to the host's workspace
+//!    versions; their layouts cross the FFI boundary.
 
 use anyhow::Result;
 use async_ffi::{FfiFuture, FutureExt};

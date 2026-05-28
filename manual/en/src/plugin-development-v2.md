@@ -8,13 +8,11 @@ directly; it is loaded through an independent FFI symbol
 ([Plugin Development (V1)](./plugin-development.md)) on the same host
 and does not break the binary compatibility of existing V1 plugins.
 
-> **Caution**: **Server Stability Warning (same as V1)**
-> Plugins are loaded as dynamic libraries into the host process. A **panic**
-> inside a plugin will **crash the entire server**.
-> - Avoid `unwrap()` / `expect()`. Always return `Result`.
-> - Validate every input.
-> - Handle initialization failures (e.g. `tokio::runtime::Runtime::new()`)
->   inside `load()` and return `Err` instead of panicking in `new()`.
+> **Caution**: The
+> [Server Stability Warning in the V1 guide](./plugin-development.md#overview)
+> applies unchanged: a panic in your plugin crashes the host. V2 adds one
+> rule on top: build `tokio::runtime::Runtime` inside `load()` (which can
+> return `Err`) rather than in `new()` (which cannot).
 
 ## Why V2
 
@@ -99,36 +97,20 @@ workspace version as the host**:
 
 ### 1. Cargo.toml
 
+Start from the V1
+[Cargo.toml block](./plugin-development.md#1-configure-cargotoml) and add
+these crates (versions must exactly match the host's workspace pins):
+
 ```toml
-[package]
-name = "my_v2_plugin"
-version = "0.1.0"
-edition = "2024"
-
-[lib]
-crate-type = ["dylib"]
-
 [dependencies]
-jobworkerp-runner = { git = "https://github.com/jobworkerp-rs/jobworkerp-rs", path = "runner" }
-proto = { git = "https://github.com/jobworkerp-rs/jobworkerp-rs", path = "proto" }
-
-anyhow = "1"
-# Must exactly match the host's pin.
 async-ffi = "0.5"
-tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["full"] }
-tracing = "0.1"
-
-prost = "0.14"
-
-[build-dependencies]
-prost-build = "0.14"
 ```
 
 ### 2. Protobuf definitions and build.rs
 
 Identical to V1 (see
-[V1 guide](./plugin-development.md#2-define-protobuf)).
+[V1 guide](./plugin-development.md#2-define-protobufs)).
 The sync metadata methods (`runner_settings_proto` /
 `method_proto_map` / ...) have the same signatures and the same proto
 definition constraints as V1.
@@ -136,7 +118,6 @@ definition constraints as V1.
 ### 3. Plugin implementation
 
 ```rust
-use anyhow::Result;
 use async_ffi::{FfiFuture, FutureExt};
 use jobworkerp_runner::runner::plugins::{
     CancellationToken, MultiMethodPluginRunnerV2,
@@ -212,16 +193,16 @@ impl MultiMethodPluginRunnerV2 for MyV2Plugin {
         self.token = Some(token);
     }
 
-    fn load(&mut self, _settings: Vec<u8>) -> FfiFuture<std::result::Result<(), String>> {
+    fn load(&mut self, _settings: Vec<u8>) -> FfiFuture<Result<(), String>> {
         async move { Ok(()) }.into_ffi()
     }
 
     fn run(
         &mut self,
-        args: Vec<u8>,
+        _args: Vec<u8>,
         metadata: Vec<(String, String)>,
         _using: Option<String>,
-    ) -> FfiFuture<(std::result::Result<Vec<u8>, String>, Vec<(String, String)>)> {
+    ) -> FfiFuture<(Result<Vec<u8>, String>, Vec<(String, String)>)> {
         // Move state into the async block — the returned future is 'static
         // and cannot borrow &mut self.
         let token = self.token.clone();
@@ -273,7 +254,7 @@ fn run_stream(
     // Dropping the sender (typically by returning from the future)
     // signals end-of-stream and the host emits the End trailer.
     output: tokio::sync::mpsc::Sender<Vec<u8>>,
-) -> FfiFuture<std::result::Result<Vec<(String, String)>, String>>;
+) -> FfiFuture<Result<Vec<(String, String)>, String>>;
 ```
 
 - **Emit chunks**: call `output.send(chunk).await?` in order.
@@ -296,11 +277,11 @@ fn run_stream(
 ```rust
 fn run_stream(
     &mut self,
-    args: Vec<u8>,
+    _args: Vec<u8>,
     metadata: Vec<(String, String)>,
     _using: Option<String>,
     output: tokio::sync::mpsc::Sender<Vec<u8>>,
-) -> FfiFuture<std::result::Result<Vec<(String, String)>, String>> {
+) -> FfiFuture<Result<Vec<(String, String)>, String>> {
     let token = self.token.clone();
     let handle = self.rt.handle().clone();
 
@@ -335,11 +316,10 @@ fn run_stream(
 
 ### Compatibility note
 
-`tokio::sync::mpsc::Sender<T>` is `Semaphore`-based and **runtime-independent**
-(it does not call `Handle::current()`), so a sender created on the host
-runtime can be `.send().await`'d safely on the plugin runtime. This is the
-same property `CancellationToken` relies on. The `tokio` crate version
-must still match between host and plugin.
+`tokio::sync::mpsc::Sender<T>` is runtime-independent for the same reason
+as `CancellationToken` (see [Constraint #3](#3-cancellation-goes-through-cancellationtoken-only)),
+so the host-created sender works on the plugin runtime. The `tokio` crate
+version must still match between host and plugin.
 
 ## Build and Deploy
 
@@ -359,7 +339,7 @@ motivation. The mechanical changes are:
 | `fn run(&mut self, ...) -> (Result<Vec<u8>>, HashMap<String, String>)` | `fn run(&mut self, ...) -> FfiFuture<(Result<Vec<u8>, String>, Vec<(String, String)>)>` |
 | `metadata: HashMap<String, String>` | `metadata: Vec<(String, String)>` (ABI-stable) |
 | `Result<Vec<u8>>` (anyhow) | `Result<Vec<u8>, String>` (ABI-stable) |
-| `fn begin_stream` + `fn receive_stream` | `fn run_stream(.., output: Sender<Vec<u8>>) -> FfiFuture<Result<Metadata, String>>` |
+| `fn begin_stream` + `fn receive_stream` | `fn run_stream(.., output: Sender<Vec<u8>>) -> FfiFuture<Result<Vec<(String, String)>, String>>` |
 | `fn cancel(&mut self) -> bool` | `fn set_cancellation_token(&mut self, token)` + observe via `tokio::select!` |
 | `self.rt.block_on(async {...})` | `self.rt.handle().spawn(async {...})` + `JoinHandle::await` |
 

@@ -518,14 +518,14 @@ pub trait MultiMethodPluginRunnerV2: Send + Sync {
 
     // === Cancellation ===
 
-    /// Host calls this BEFORE each job's `run()`/`begin_stream()` (once per
+    /// Host calls this BEFORE each job's `run()`/`run_stream()` (once per
     /// job; pooled plugin instances are reused across jobs and receive a fresh
     /// token each time). The plugin should simply replace any previously
     /// stored token — old tokens belong to completed or cancelled jobs and are
     /// no longer relevant.
     ///
     /// Plugins await `token.cancelled().await` inside the future returned by
-    /// `run()`/`receive_stream()` to cooperatively abort.
+    /// `run()`/`run_stream()` to cooperatively abort.
     fn set_cancellation_token(&mut self, token: CancellationToken);
 
     // === Async surface (async-ffi) ===
