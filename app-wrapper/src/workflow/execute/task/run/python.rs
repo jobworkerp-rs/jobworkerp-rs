@@ -33,7 +33,7 @@ use tokio::sync::RwLock;
 /// Python script task executor implementing Serverless Workflow v1.0.0 script process
 pub struct PythonTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
-    default_task_timeout: Duration,
+    task_timeout: Duration,
     task: workflow::RunScript,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
     metadata: Arc<HashMap<String, String>>,
@@ -49,14 +49,14 @@ use infra::bail_with_position;
 impl PythonTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        default_task_timeout: Duration,
+        task_timeout: Duration,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         task: workflow::RunScript,
         metadata: Arc<HashMap<String, String>>,
     ) -> Self {
         Self {
             workflow_context,
-            default_task_timeout,
+            task_timeout,
             task,
             job_executor_wrapper,
             metadata,
@@ -363,7 +363,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
                     worker_data,
                     args_bytes, // Use protobuf binary directly, not JSON
                     None,       // No unique key
-                    self.default_task_timeout.as_secs() as u32,
+                    self.task_timeout.as_secs() as u32,
                     StreamingType::None,
                     None, // using not used for Python script execution
                 )

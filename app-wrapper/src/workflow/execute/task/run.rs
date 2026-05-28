@@ -32,6 +32,22 @@ impl UseExpression for RunTaskExecutor {}
 impl UseJqAndTemplateTransformer for RunTaskExecutor {}
 impl UseExpressionTransformer for RunTaskExecutor {}
 impl Tracing for RunTaskExecutor {}
+
+/// Convert a task's optional YAML `timeout` block to job timeout in seconds.
+/// `max(1, ...)` prevents sub-second durations from immediately tripping the
+/// receiver-side timeout. Shared by `RunTaskExecutor` and `stream::run` so the
+/// two execution paths stay in lockstep with the receiver-side timeout
+/// contract.
+pub(crate) fn resolve_run_task_timeout_sec(
+    timeout: Option<&workflow::TaskTimeout>,
+    default_task_timeout: Duration,
+) -> u32 {
+    if let Some(workflow::TaskTimeout::Timeout(duration)) = timeout {
+        std::cmp::max(1, duration.after.to_millis().div_ceil(1000) as u32)
+    } else {
+        default_task_timeout.as_secs() as u32
+    }
+}
 impl RunTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
@@ -120,6 +136,10 @@ impl RunTaskExecutor {
         job_args: serde_json::Value,
         worker_name: &str,
         using: Option<String>,
+        // Effective task timeout in seconds (YAML `timeout` block, else default).
+        // Threaded through so RunRunner / RunFunction paths honor it instead of
+        // silently capping at `default_task_timeout`.
+        timeout_sec: u32,
     ) -> Result<serde_json::Value> {
         let runner = self
             .job_executor_wrapper
@@ -162,7 +182,7 @@ impl RunTaskExecutor {
                 worker_data,
                 job_args,
                 None, // XXX no uniq_key,
-                self.default_task_timeout.as_secs() as u32,
+                timeout_sec,
                 StreamingType::None,
                 using,
             )
@@ -187,12 +207,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             run,
             ..
         } = &self.task;
-        // Round up to at least 1 second to avoid immediate timeouts for sub-second durations
-        let timeout_sec = if let Some(workflow::TaskTimeout::Timeout(duration)) = timeout {
-            std::cmp::max(1, duration.after.to_millis().div_ceil(1000) as u32)
-        } else {
-            self.default_task_timeout.as_secs() as u32
-        };
+        let timeout_sec = resolve_run_task_timeout_sec(timeout.as_ref(), self.default_task_timeout);
 
         // merge metadata: create new metadata with both self.metadata and task metadata
         let mut metadata = (*self.metadata).clone();
@@ -395,6 +410,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         args,
                         task_name,
                         transformed_using,
+                        timeout_sec,
                     )
                     .await
                 {
@@ -609,6 +625,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         args,
                         task_name,
                         transformed_using,
+                        timeout_sec,
                     )
                     .await
                 {
@@ -722,5 +739,60 @@ mod tests {
 
         assert_eq!(worker_data.queue_type, QueueType::Normal as i32);
         assert_eq!(worker_data.response_type, ResponseType::Direct as i32);
+    }
+
+    fn task_timeout_hours(h: i64) -> workflow::TaskTimeout {
+        workflow::TaskTimeout::Timeout(workflow::Timeout {
+            after: workflow::Duration::Inline {
+                days: None,
+                hours: Some(h),
+                minutes: None,
+                seconds: None,
+                milliseconds: None,
+            },
+        })
+    }
+
+    // Regression: a YAML task-level `timeout: hours: 24` used to be dropped
+    // on the run.function / run.runner paths because execute_by_jobworkerp
+    // hard-coded `default_task_timeout` (3600s) as the job timeout. This
+    // test pins the conversion contract so the bug cannot silently come back.
+    #[test]
+    fn timeout_sec_honors_24_hour_yaml_timeout() {
+        let t = task_timeout_hours(24);
+        let resolved = super::resolve_run_task_timeout_sec(
+            Some(&t),
+            std::time::Duration::from_secs(3600), // fallback that must NOT win
+        );
+        assert_eq!(
+            resolved, 86_400,
+            "24h must resolve to 86400s, not the default"
+        );
+    }
+
+    #[test]
+    fn timeout_sec_uses_default_when_yaml_omits_timeout() {
+        let resolved =
+            super::resolve_run_task_timeout_sec(None, std::time::Duration::from_secs(3600));
+        assert_eq!(resolved, 3600);
+    }
+
+    #[test]
+    fn timeout_sec_rounds_sub_second_durations_up_to_one() {
+        let t = workflow::TaskTimeout::Timeout(workflow::Timeout {
+            after: workflow::Duration::Inline {
+                days: None,
+                hours: None,
+                minutes: None,
+                seconds: None,
+                milliseconds: Some(250),
+            },
+        });
+        let resolved =
+            super::resolve_run_task_timeout_sec(Some(&t), std::time::Duration::from_secs(3600));
+        assert_eq!(
+            resolved, 1,
+            "sub-second durations must round up to 1s, not 0"
+        );
     }
 }
