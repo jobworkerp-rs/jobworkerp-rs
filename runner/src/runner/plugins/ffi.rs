@@ -12,3 +12,12 @@
 pub mod cancel;
 pub mod sink;
 pub mod types;
+pub mod vtable;
+
+pub use cancel::{FfiCancellationToken, OwnedCancelHandle, from_tokio_util};
+pub use sink::OutputSink;
+pub use types::{FfiBytes, FfiKvPair, FfiKvPairList, FfiOption, FfiResult, FfiVec};
+pub use vtable::{
+    PLUGIN_V2_ABI_MAJOR, PLUGIN_V2_ABI_MINOR, PLUGIN_V2_ABI_VERSION, PluginInstance,
+    PluginInstanceRaw, PluginVtable, V2RunOutcome, VTABLE_SIZE_MAX, VTABLE_SIZE_MIN,
+};

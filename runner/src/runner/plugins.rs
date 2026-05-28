@@ -1,6 +1,7 @@
 pub mod ffi;
 pub mod impls;
 pub mod loader;
+pub mod v2;
 
 use self::loader::RunnerPluginLoader;
 use crate::schema_to_json_string;
