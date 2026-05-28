@@ -9,7 +9,7 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext, WorkflowStreamEvent},
         expression::UseExpression,
-        task::StreamTaskExecutorTrait,
+        task::{StreamTaskExecutorTrait, run::resolve_run_task_timeout_sec},
     },
 };
 use anyhow::Result;
@@ -253,11 +253,7 @@ async fn prepare_streaming_job(
     } = task;
 
     // === 1. Timeout setting ===
-    let timeout_sec = if let Some(workflow::TaskTimeout::Timeout(duration)) = timeout {
-        std::cmp::max(1, duration.after.to_millis().div_ceil(1000) as u32)
-    } else {
-        default_timeout.as_secs() as u32
-    };
+    let timeout_sec = resolve_run_task_timeout_sec(timeout.as_ref(), default_timeout);
 
     // === 2. Metadata merge ===
     let mut metadata = (**base_metadata).clone();
