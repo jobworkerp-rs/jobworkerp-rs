@@ -1,3 +1,4 @@
+pub mod ffi;
 pub mod impls;
 pub mod loader;
 
