@@ -36,7 +36,18 @@ license = "Apache 2.0"
 
 [workspace.dependencies]
 anyhow = "1.0"
-async-ffi = "0.5"
+# `=` exact-requirement: `FfiFuture<T>` is the one type that still crosses
+# the V2 plugin FFI boundary (see runner/src/runner/plugins/ffi/vtable.rs).
+# Host and every plugin MUST link the same patch version — caret would let
+# them resolve to different 0.5.x versions and silently mismatch the
+# FfiFuture / FfiContext / FfiPoll layout. Plugin repos
+# (e.g. llama-cpp-plugin) and modules/jobworkerp-client also carry the same
+# exact pin and need to be bumped in lockstep when upgrading.
+#
+# Everything else that used to require lockstep pinning (`tokio`,
+# `tokio-util`, the trait object vtable) is now hidden behind `#[repr(C)]`
+# types so the host and plugins can resolve those crates independently.
+async-ffi = "=0.5.0"
 async-trait = "0.1"
 async-stream = "0.3"
 base64 = "0.22"
@@ -122,6 +133,11 @@ tonic-health = "0.14"
 tonic-reflection = "0.14"
 tonic-web = "0.14"
 tokio-stream = { version = "0.1", features = ["full"] }
+# tokio / tokio-util used to be exact-pinned because their types crossed the
+# V2 plugin FFI boundary (mpsc::Sender, CancellationToken). They no longer
+# do — the boundary uses `#[repr(C)]` types from
+# `runner/src/runner/plugins/ffi`. Plugins may freely use their own
+# tokio / tokio-util versions; only `async-ffi` is exact-pinned.
 tokio-util = { version = "0.7", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
