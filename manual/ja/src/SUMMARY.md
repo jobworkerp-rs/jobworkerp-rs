@@ -17,5 +17,7 @@
 - [gRPC-Web API](./grpc-web-api.md)
 - [設定と環境変数](./configuration.md)
   - [詳細設定](./configuration-advanced.md)
-- [プラグイン開発](./plugin-development.md)
+- [プラグイン開発]()
+  - [V1 トレイト](./plugin-development.md)
+  - [V2 トレイト (async-ffi)](./plugin-development-v2.md)
 - [運用上の注意点](./operations.md)

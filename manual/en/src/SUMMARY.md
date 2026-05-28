@@ -17,5 +17,7 @@
 - [gRPC-Web API](./grpc-web-api.md)
 - [Configuration](./configuration.md)
   - [Advanced Configuration](./configuration-advanced.md)
-- [Plugin Development](./plugin-development.md)
+- [Plugin Development]()
+  - [V1 Trait](./plugin-development.md)
+  - [V2 Trait (async-ffi)](./plugin-development-v2.md)
 - [Operations](./operations.md)

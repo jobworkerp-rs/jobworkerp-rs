@@ -1,6 +1,8 @@
-# JobWorkerP Plugin Development Guide
+# JobWorkerP Plugin Development Guide (V1)
 
 This guide explains how to create a plugin for JobWorkerP using Rust. Plugins allow you to extend JobWorkerP's functionality by implementing custom runners that can execute jobs.
+
+> **Writing a new plugin?** A newer **V2 trait** (async-ffi based, cooperative cancellation via `CancellationToken`, push-style streaming) is also available. See [Plugin Development (V2 / async-ffi)](./plugin-development-v2.md). V1 and V2 coexist on the same host, and existing V1 plugin binaries remain compatible.
 
 ## Overview
 

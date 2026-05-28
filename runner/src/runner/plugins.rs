@@ -463,7 +463,9 @@ pub trait MultiMethodPluginRunner: Send + Sync {
 ///    bridges the result back to the host.
 ///
 /// See `plugins/cancel_test/src/lib.rs` for the canonical implementation
-/// pattern and `docs/plugin-development-v2-async.md` for the full rationale.
+/// pattern and `manual/en/src/plugin-development-v2.md` (or the Japanese
+/// edition at `manual/ja/src/plugin-development-v2.md`) for the full
+/// rationale.
 ///
 /// # Drop safety
 /// On timeout the host drops the returned `FfiFuture`. Dropping a
