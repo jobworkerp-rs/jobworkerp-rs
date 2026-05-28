@@ -302,6 +302,23 @@ repositories using V2 should:
 `llama-cpp-plugin` is the only known V2 user in the wild; it must be
 released in lockstep with this change.
 
+## Performance
+
+The streaming hot path was benchmarked with
+`cargo run --release --bin sink_throughput -p jobworkerp-runner`
+(`runner/benches/sink_throughput.rs`):
+
+| Path | 10000 × 10 bytes |
+|------|------------------|
+| Baseline `tokio::mpsc::Sender::send` | ~2.7 ms |
+| `OutputSink::send_raw` (V2) | ~2.5 ms |
+
+`OutputSink::send_raw` runs within the 1.5x budget we set for the FFI
+boundary; in this measurement it was actually slightly faster than the
+tokio baseline. If a future change pushes the ratio outside the budget,
+swap the per-call `FfiFuture` allocation for a `try_send` + readiness
+notification scheme.
+
 ## Reference implementation
 
 See `plugins/cancel_test/src/lib.rs` for a complete working example
