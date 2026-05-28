@@ -2690,6 +2690,7 @@ dependencies = [
  "itertools 0.14.0",
  "jobworkerp-base",
  "jobworkerp-runner",
+ "jobworkerp-runner-macros",
  "jsonschema",
  "libloading 0.9.0",
  "memory-utils 0.1.0",
@@ -2727,6 +2728,15 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "jobworkerp-runner-macros"
+version = "0.22.0"
+dependencies = [
+ "proc-macro2",
+ "quote 1.0.45",
+ "syn 2.0.117",
 ]
 
 [[package]]

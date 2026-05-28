@@ -1,0 +1,398 @@
+//! Procedural macros for the V2 plugin trait.
+//!
+//! See the host crate `jobworkerp-runner` for trait definitions and the
+//! `plugin-development-v2.md` manual for the plugin author guide.
+
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::parse::{Parse, ParseStream};
+use syn::{Expr, Result, Token, Type, parse_macro_input};
+
+struct RegisterArgs {
+    plugin_ty: Type,
+    init_expr: Expr,
+}
+
+impl Parse for RegisterArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let plugin_ty: Type = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let init_expr: Expr = input.parse()?;
+        // Allow a trailing comma for cosmetic reasons.
+        let _ = input.parse::<Token![,]>();
+        Ok(Self {
+            plugin_ty,
+            init_expr,
+        })
+    }
+}
+
+/// Register a `PluginV2` implementation as a dynamically-loadable V2
+/// plugin. Expands to:
+///
+/// * A `static PluginVtable` populated with per-method `extern "C" fn`
+///   thunks that translate FFI-safe argument types to the high-level
+///   `PluginV2` trait.
+/// * Each thunk wraps the synchronous setup in `std::panic::catch_unwind`
+///   and the asynchronous body in `futures::FutureExt::catch_unwind` so
+///   panics never cross the FFI boundary.
+/// * `load_multi_method_plugin_v2`: builds an instance using the provided
+///   initialization expression (`MyPlugin::new()` or any expression
+///   returning a `MyPlugin`), boxes it, and returns a `PluginInstanceRaw`
+///   referencing the static vtable.
+///
+/// # Example
+///
+/// ```ignore
+/// register_plugin_v2!(MyPlugin, MyPlugin::new());
+/// // or with a fallible constructor:
+/// register_plugin_v2!(MyPlugin, MyPlugin::from_env().expect("init"));
+/// ```
+#[proc_macro]
+pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
+    let RegisterArgs {
+        plugin_ty,
+        init_expr,
+    } = parse_macro_input!(input as RegisterArgs);
+
+    let expanded = quote! {
+        const _: () = {
+            // Pull every type referenced by the thunks into scope. The
+            // plugin crate re-exports these via `jobworkerp_runner`.
+            use ::jobworkerp_runner::runner::plugins::ffi::{
+                FfiBytes,
+                FfiKvPair,
+                FfiKvPairList,
+                FfiOption,
+                FfiResult,
+                FfiVec,
+                FfiCancellationToken,
+                OutputSink,
+                PluginInstanceRaw,
+                PluginVtable,
+                V2RunOutcome,
+                PLUGIN_V2_ABI_VERSION,
+            };
+            use ::jobworkerp_runner::runner::plugins::v2::{
+                CancelToken,
+                HighLevelSink,
+                PluginV2,
+            };
+            use ::jobworkerp_runner::futures::FutureExt as _RunnerFutureExt;
+            use ::jobworkerp_runner::async_ffi::{
+                FfiFuture,
+                FutureExt as _AsyncFfiFutureExt,
+            };
+            use ::std::collections::HashMap;
+            use ::std::panic::{catch_unwind, AssertUnwindSafe};
+
+            // ------------------------------------------------------------------
+            // Helpers
+            // ------------------------------------------------------------------
+
+            fn kv_to_hashmap(list: FfiKvPairList) -> HashMap<String, String> {
+                list.into_vec()
+                    .into_iter()
+                    .map(|p| {
+                        let k = String::from_utf8(p.key.into_vec())
+                            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+                        let v = String::from_utf8(p.value.into_vec())
+                            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+                        (k, v)
+                    })
+                    .collect()
+            }
+
+            fn hashmap_to_kv(map: HashMap<String, String>) -> FfiKvPairList {
+                let pairs: Vec<FfiKvPair> = map
+                    .into_iter()
+                    .map(|(k, v)| FfiKvPair {
+                        key: FfiBytes::from_vec(k.into_bytes()),
+                        value: FfiBytes::from_vec(v.into_bytes()),
+                    })
+                    .collect();
+                FfiVec::from_vec(pairs)
+            }
+
+            fn ffi_string_to_string(b: FfiBytes) -> String {
+                String::from_utf8(b.into_vec())
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+            }
+
+            fn schema_map_to_kv<S: ::prost::Message>(
+                map: HashMap<String, S>,
+            ) -> FfiKvPairList {
+                let pairs: Vec<FfiKvPair> = map
+                    .into_iter()
+                    .map(|(k, schema)| FfiKvPair {
+                        key: FfiBytes::from_vec(k.into_bytes()),
+                        value: FfiBytes::from_vec(schema.encode_to_vec()),
+                    })
+                    .collect();
+                FfiVec::from_vec(pairs)
+            }
+
+            // ------------------------------------------------------------------
+            // Thunks
+            // ------------------------------------------------------------------
+
+            type PluginTy = #plugin_ty;
+
+            unsafe fn plugin_mut<'a>(state: *mut ()) -> &'a mut PluginTy {
+                unsafe { &mut *(state as *mut PluginTy) }
+            }
+            unsafe fn plugin_ref<'a>(state: *mut ()) -> &'a PluginTy {
+                unsafe { &*(state as *const PluginTy) }
+            }
+
+            unsafe extern "C" fn __thunk_name(state: *mut ()) -> FfiBytes {
+                let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+                    plugin_ref(state).name()
+                }));
+                FfiBytes::from_vec(result.unwrap_or_else(|_| String::new()).into_bytes())
+            }
+            unsafe extern "C" fn __thunk_description(state: *mut ()) -> FfiBytes {
+                let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+                    plugin_ref(state).description()
+                }));
+                FfiBytes::from_vec(result.unwrap_or_else(|_| String::new()).into_bytes())
+            }
+            unsafe extern "C" fn __thunk_runner_settings_proto(state: *mut ()) -> FfiBytes {
+                let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+                    plugin_ref(state).runner_settings_proto()
+                }));
+                FfiBytes::from_vec(result.unwrap_or_else(|_| String::new()).into_bytes())
+            }
+            unsafe extern "C" fn __thunk_settings_schema(state: *mut ()) -> FfiBytes {
+                let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+                    plugin_ref(state).settings_schema()
+                }));
+                FfiBytes::from_vec(result.unwrap_or_else(|_| String::new()).into_bytes())
+            }
+            unsafe extern "C" fn __thunk_method_proto_map(state: *mut ()) -> FfiKvPairList {
+                let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+                    plugin_ref(state).method_proto_map()
+                }));
+                match result {
+                    Ok(map) => schema_map_to_kv(map),
+                    Err(_) => FfiVec::empty(),
+                }
+            }
+            unsafe extern "C" fn __thunk_method_json_schema_map(state: *mut ()) -> FfiKvPairList {
+                let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+                    plugin_ref(state).method_json_schema_map()
+                }));
+                match result {
+                    Ok(Some(map)) => schema_map_to_kv(map),
+                    Ok(None) | Err(_) => FfiVec::empty(),
+                }
+            }
+            unsafe extern "C" fn __thunk_supports_client_stream(
+                state: *mut (),
+                using: FfiOption<FfiBytes>,
+            ) -> bool {
+                let using_str: Option<String> =
+                    using.into_option().map(ffi_string_to_string);
+                catch_unwind(AssertUnwindSafe(|| unsafe {
+                    plugin_ref(state).supports_client_stream(using_str.as_deref())
+                }))
+                .unwrap_or(false)
+            }
+            unsafe extern "C" fn __thunk_client_stream_data_proto(
+                state: *mut (),
+                using: FfiOption<FfiBytes>,
+            ) -> FfiBytes {
+                let using_str: Option<String> =
+                    using.into_option().map(ffi_string_to_string);
+                let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+                    plugin_ref(state).client_stream_data_proto(using_str.as_deref())
+                }));
+                match result {
+                    Ok(Some(s)) => FfiBytes::from_vec(s.into_bytes()),
+                    _ => FfiBytes::empty(),
+                }
+            }
+            unsafe extern "C" fn __thunk_setup_client_stream_channel(
+                state: *mut (),
+                using: FfiOption<FfiBytes>,
+            ) -> FfiOption<OutputSink> {
+                let using_str: Option<String> =
+                    using.into_option().map(ffi_string_to_string);
+                let plugin = unsafe { plugin_mut(state) };
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    ::futures::executor::block_on(
+                        plugin.setup_client_stream_channel(using_str.as_deref()),
+                    )
+                }));
+                match outcome {
+                    Ok(Some(sink)) => FfiOption::Some(sink),
+                    _ => FfiOption::None,
+                }
+            }
+            unsafe extern "C" fn __thunk_set_cancellation_token(
+                state: *mut (),
+                token: FfiCancellationToken,
+            ) {
+                let plugin = unsafe { plugin_mut(state) };
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    plugin.set_cancellation_token(CancelToken::from_ffi(token));
+                }));
+            }
+
+            unsafe extern "C" fn __thunk_load(
+                state: *mut (),
+                settings: FfiBytes,
+            ) -> FfiFuture<FfiResult<(), FfiBytes>> {
+                // Capture state pointer (Send across the future boundary
+                // is the plugin author's responsibility per V2 docs).
+                struct StatePtr(*mut ());
+                unsafe impl Send for StatePtr {}
+                let captured = StatePtr(state);
+                async move {
+                    let plugin = unsafe { &mut *(captured.0 as *mut PluginTy) };
+                    let fut = plugin.load(settings.into_vec());
+                    let result = AssertUnwindSafe(fut).catch_unwind().await;
+                    match result {
+                        Ok(Ok(())) => FfiResult::Ok(()),
+                        Ok(Err(e)) => FfiResult::Err(FfiBytes::from_vec(e.into_bytes())),
+                        Err(_) => FfiResult::Err(FfiBytes::from_vec(
+                            b"panic during PluginV2::load".to_vec(),
+                        )),
+                    }
+                }
+                .into_ffi()
+            }
+
+            unsafe extern "C" fn __thunk_run(
+                state: *mut (),
+                args: FfiBytes,
+                metadata: FfiKvPairList,
+                using: FfiOption<FfiBytes>,
+            ) -> FfiFuture<V2RunOutcome> {
+                struct StatePtr(*mut ());
+                unsafe impl Send for StatePtr {}
+                let captured = StatePtr(state);
+                let using_owned: Option<String> = using.into_option().map(ffi_string_to_string);
+                async move {
+                    let plugin = unsafe { &mut *(captured.0 as *mut PluginTy) };
+                    let meta = kv_to_hashmap(metadata);
+                    let fut = plugin.run(args.into_vec(), meta, using_owned);
+                    let outcome = AssertUnwindSafe(fut).catch_unwind().await;
+                    match outcome {
+                        Ok((Ok(payload), meta)) => V2RunOutcome {
+                            result: FfiResult::Ok(FfiBytes::from_vec(payload)),
+                            metadata: hashmap_to_kv(meta),
+                        },
+                        Ok((Err(e), meta)) => V2RunOutcome {
+                            result: FfiResult::Err(FfiBytes::from_vec(e.into_bytes())),
+                            metadata: hashmap_to_kv(meta),
+                        },
+                        Err(_) => V2RunOutcome {
+                            result: FfiResult::Err(FfiBytes::from_vec(
+                                b"panic during PluginV2::run".to_vec(),
+                            )),
+                            metadata: FfiVec::empty(),
+                        },
+                    }
+                }
+                .into_ffi()
+            }
+
+            unsafe extern "C" fn __thunk_run_stream(
+                state: *mut (),
+                args: FfiBytes,
+                metadata: FfiKvPairList,
+                using: FfiOption<FfiBytes>,
+                output: OutputSink,
+            ) -> FfiFuture<FfiResult<FfiKvPairList, FfiBytes>> {
+                struct StatePtr(*mut ());
+                unsafe impl Send for StatePtr {}
+                let captured = StatePtr(state);
+                let using_owned: Option<String> = using.into_option().map(ffi_string_to_string);
+                async move {
+                    let plugin = unsafe { &mut *(captured.0 as *mut PluginTy) };
+                    let meta = kv_to_hashmap(metadata);
+                    let sink = HighLevelSink::from_ffi(output);
+                    let fut = plugin.run_stream(args.into_vec(), meta, using_owned, sink);
+                    let outcome = AssertUnwindSafe(fut).catch_unwind().await;
+                    match outcome {
+                        Ok(Ok(meta)) => FfiResult::Ok(hashmap_to_kv(meta)),
+                        Ok(Err(e)) => FfiResult::Err(FfiBytes::from_vec(e.into_bytes())),
+                        Err(_) => FfiResult::Err(FfiBytes::from_vec(
+                            b"panic during PluginV2::run_stream".to_vec(),
+                        )),
+                    }
+                }
+                .into_ffi()
+            }
+
+            unsafe extern "C" fn __thunk_drop_state(state: *mut ()) {
+                // Drop the boxed plugin. Wrapped in catch_unwind so a
+                // panicking destructor cannot tear down the host.
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    drop(unsafe { Box::from_raw(state as *mut PluginTy) });
+                }));
+            }
+
+            // Plugins that predate the tail-appended slot return a smaller
+            // vtable_size. The current cancel_test plugin opts to keep the
+            // reserved slot populated by reusing this default thunk so the
+            // host can exercise the slot end-to-end.
+            unsafe extern "C" fn __thunk_reserved_method_0(
+                _state: *mut (),
+            ) -> FfiResult<FfiBytes, FfiBytes> {
+                FfiResult::Err(FfiBytes::from_vec(
+                    b"reserved_method_0 not implemented".to_vec(),
+                ))
+            }
+
+            // ------------------------------------------------------------------
+            // Static vtable
+            // ------------------------------------------------------------------
+
+            static __PLUGIN_V2_VTABLE: PluginVtable = PluginVtable {
+                abi_version: PLUGIN_V2_ABI_VERSION,
+                // sizeof(PluginVtable) at the time the plugin was built.
+                vtable_size: ::std::mem::size_of::<PluginVtable>() as u32,
+                name: __thunk_name,
+                description: __thunk_description,
+                runner_settings_proto: __thunk_runner_settings_proto,
+                settings_schema: __thunk_settings_schema,
+                method_proto_map: __thunk_method_proto_map,
+                method_json_schema_map: __thunk_method_json_schema_map,
+                supports_client_stream: __thunk_supports_client_stream,
+                client_stream_data_proto: __thunk_client_stream_data_proto,
+                setup_client_stream_channel: __thunk_setup_client_stream_channel,
+                set_cancellation_token: __thunk_set_cancellation_token,
+                load: __thunk_load,
+                run: __thunk_run,
+                run_stream: __thunk_run_stream,
+                drop_state: __thunk_drop_state,
+                reserved_method_0: __thunk_reserved_method_0,
+            };
+
+            // ------------------------------------------------------------------
+            // FFI entry point
+            // ------------------------------------------------------------------
+
+            #[unsafe(no_mangle)]
+            #[allow(improper_ctypes_definitions)]
+            pub unsafe extern "C" fn load_multi_method_plugin_v2() -> PluginInstanceRaw {
+                let plugin: PluginTy = #init_expr;
+                let boxed = Box::new(plugin);
+                PluginInstanceRaw {
+                    state: Box::into_raw(boxed) as *mut (),
+                    vtable: &__PLUGIN_V2_VTABLE,
+                }
+            }
+
+            #[unsafe(no_mangle)]
+            #[allow(improper_ctypes_definitions)]
+            pub unsafe extern "C" fn free_multi_method_plugin_v2(inst: PluginInstanceRaw) {
+                unsafe { (__PLUGIN_V2_VTABLE.drop_state)(inst.state) };
+            }
+        };
+    };
+
+    expanded.into()
+}

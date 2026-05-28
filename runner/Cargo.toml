@@ -16,6 +16,7 @@ command-utils = { path = "../modules/command-utils" }
 memory-utils = { path = "../modules/memory-utils" }
 net-utils = { path = "../modules/net-utils" }
 jobworkerp-base = { path = "../base" }
+jobworkerp-runner-macros = { path = "../modules/jobworkerp-runner-macros" }
 # runner = { path = "../runner" }
 
 anyhow = { workspace = true }
