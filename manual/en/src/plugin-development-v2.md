@@ -1,219 +1,241 @@
-# JobWorkerP Plugin Development Guide (V2 / async-ffi)
+# JobWorkerP plugin development (V2 / async-ffi)
 
-This guide explains how to build a JobWorkerP plugin against the **V2 plugin
-trait (`MultiMethodPluginRunnerV2`)**. V2 is the newer trait that improves
-cancellation handling and lets plugin authors write async work
-directly; it is loaded through an independent FFI symbol
-(`load_multi_method_plugin_v2`). V2 coexists with V1
-([Plugin Development (V1)](./plugin-development.md)) on the same host
-and does not break the binary compatibility of existing V1 plugins.
+This guide describes how to build a V2 JobWorkerP plugin against the
+`PluginV2` trait and the `register_plugin_v2!` proc macro. V2 plugins are
+loaded through the FFI symbol `load_multi_method_plugin_v2`. V1 (see
+[Plugin development (V1)](./plugin-development.md)) and V2 plugins can
+coexist on the same host process.
 
-> **Caution**: The
-> [Server Stability Warning in the V1 guide](./plugin-development.md#overview)
-> applies unchanged: a panic in your plugin crashes the host. V2 adds one
-> rule on top: build `tokio::runtime::Runtime` inside `load()` (which can
-> return `Err`) rather than in `new()` (which cannot).
+> **Warning**: the server stability constraints from the V1 guide
+> ([overview](./plugin-development.md#overview)) still apply — a panic
+> inside a plugin will tear down the whole host process. V2 additionally
+> requires that `tokio::runtime::Runtime` construction live inside
+> `load()` (which is fallible) rather than in `new()`.
 
 ## Why V2
 
-V1 (`MultiMethodPluginRunner`) is a synchronous trait. When a long-running
-`run()` is interrupted by a timeout, the host cannot reclaim the variant
-write lock and has to discard the wrapper instance. V2 fixes this:
+V1 (`MultiMethodPluginRunner`) was a synchronous trait: a long-running
+`run()` blocked on the host thread, so on timeout the host could not
+reclaim the wrapper instance — it had to be discarded. V2 fixes that:
 
 | Aspect | V1 | V2 |
 |--------|----|----|
-| async surface | `fn` (synchronous) | `async_ffi::FfiFuture<T>` |
-| cancellation | `cancel()` / `is_canceled()` | observe `CancellationToken` via `select!` |
-| streaming | `begin_stream` + pull-based `receive_stream` | push-based `run_stream(args, ..., output: Sender<Vec<u8>>)` |
-| lock release on timeout | held by the blocking call → wrapper discarded | future drop releases immediately, wrapper reusable |
+| Async surface | `fn` (synchronous) | `async fn` via `PluginV2` (the macro lowers to `FfiFuture<T>`) |
+| Cancellation | `cancel()` / `is_canceled()` | `CancelToken::cancelled().await` inside `select!` |
+| Streaming | `begin_stream` + pull `receive_stream` | `run_stream(args, ..., output: HighLevelSink)` (push-based) |
+| Lock release on timeout | wrapper discarded | future drop releases the lock immediately |
 | FFI symbol | `load_multi_method_plugin` | `load_multi_method_plugin_v2` |
 
-New plugins should target V2.
+Prefer V2 for new plugins.
 
-## V2-specific Constraints (Read First)
+## Architecture: two-layer API
+
+The plugin author writes a **high-level** `PluginV2` impl using plain
+Rust types (`Vec<u8>`, `HashMap<String, String>`, `Result<_, String>`).
+The `register_plugin_v2!` proc macro lowers it to the **low-level**
+`#[repr(C)]` FFI surface:
+
+```text
+impl PluginV2 for MyPlugin { async fn run(...) -> ... }
+        |
+        | register_plugin_v2!(MyPlugin, MyPlugin::new());
+        v
+static PLUGIN_VTABLE: PluginVtable = PluginVtable {
+    name:  __thunk_name,   // extern "C" fn(*mut ()) -> FfiBytes
+    run:   __thunk_run,    // extern "C" fn(...) -> FfiFuture<V2RunOutcome>
+    ...
+};
+load_multi_method_plugin_v2() -> PluginInstanceRaw { state, vtable }
+```
+
+`#[repr(C)]` everywhere means:
+
+- The host and plugin can use **independent rustc versions** (the trait
+  object vtable no longer crosses the boundary).
+- The host and plugin can use **independent `tokio` / `tokio-util`
+  versions** (their types stay inside the plugin or host runtime; only
+  `FfiCancellationToken` / `OutputSink` cross).
+- The only required exact-pin is `async-ffi` (the `FfiFuture<T>` layout
+  must match).
+
+## V2-specific constraints (must read)
 
 ### 1. Bring your own tokio runtime
 
-Plugins are loaded as `cdylib`, so the `tokio` crate linked into the plugin
-keeps its own `thread_local!` runtime context that is **invisible to the
-host**. Calling `tokio::time::sleep`, `Handle::current()`, etc. inside an
-`async move {}` block awaited directly on the host runtime will panic with
+The plugin is loaded as a `cdylib`, so its linked `tokio` crate has
+its own `thread_local!` runtime context that the **host runtime cannot
+see**. Awaiting `tokio::time::sleep` / `Handle::current()` directly
+inside the future returned to the host panics with
 `there is no reactor running`.
 
-Plugins MUST:
+Therefore a V2 plugin must:
 
-1. Own a `tokio::runtime::Runtime` built with `Builder::new_multi_thread()`
-   and **at least one worker thread**.
-   - `new_current_thread()` does not advance spawned tasks unless someone
-     calls `block_on(...)`, so `handle.spawn(...)` queues but never runs,
-     defeating cooperative cancellation.
-2. `handle.spawn(...)` the actual async work onto that runtime.
-3. Return an `FfiFuture` that awaits the resulting `JoinHandle` to bridge
-   the result back to the host.
+1. Build its own `tokio::runtime::Runtime` with
+   `Builder::new_multi_thread()` and **at least one worker thread**.
+   (`new_current_thread()` only advances tasks while `block_on(...)`
+   is on the stack, so `handle.spawn(...)` would queue work that never
+   runs, defeating cooperative cancellation.)
+2. Spawn actual async work via `handle.spawn(...)`.
+3. Use `.await` to bridge the spawned `JoinHandle` back to the host
+   through the high-level trait return value (see `cancel_test` for the
+   canonical pattern).
 
-### 2. `FfiFuture<T>` is `Send + 'static`
+### 2. The future returned by `async fn run/run_stream` is `Send + 'static`
 
-The returned future cannot borrow `&mut self`. Move any state into the
-`async move {}` block — `clone()` cheap handles like `CancellationToken`,
-or hold mutable state behind `Arc<Mutex<_>>`.
+Internally the proc macro converts your `async fn` body into an
+`FfiFuture<T>` (which is `Send + 'static`). State you reference must be
+cloned into the `async move {}` block or shared via `Arc<Mutex<...>>` —
+the future cannot hold a `&mut self` borrow.
 
-### 3. Cancellation goes through `CancellationToken` only
+### 3. Cancellation goes through `CancelToken` only
 
-V2 removed `cancel()` / `is_canceled()`. The host calls
-`set_cancellation_token(token)` with a `tokio_util::sync::CancellationToken`;
-plugins observe `token.cancelled().await` inside their spawned task via
-`tokio::select!`.
+V2 has no `cancel()` / `is_canceled()`. The host calls
+`set_cancellation_token(token)` once per job (before `run`/`run_stream`).
+Plugins observe cancellation by selecting on `token.cancelled().await`
+inside their spawned task.
 
-`CancellationToken` is `Arc<AtomicBool> + Notify` internally — it is
-**runtime-independent**, so cancelling on the host runtime and observing
-on the plugin runtime works correctly.
+`CancelToken` wraps an `FfiCancellationToken` whose internals are an
+`Arc<AtomicBool> + waker map`. **No tokio runtime is involved** — the
+host can `cancel()` from any thread and the plugin's
+`cancelled().await` resolves promptly.
 
-### 4. Behaviour on timeout
+### 4. Timeout behaviour
 
-The wrapper reports `should_detach_on_timeout() == false`, so a timeout
-drops the host-side `FfiFuture` while keeping the wrapper instance
-reusable. However the **task spawned on the plugin runtime keeps
-running** until it either completes naturally or observes
-`token.cancelled()`. The host therefore signals the token on timeout to
-abort plugin-side work; without that signal the plugin will finish its
-work as scheduled.
+The host's `should_detach_on_timeout()` returns `false` for V2 plugins,
+so on timeout the host drops the `FfiFuture` but keeps the wrapper. The
+plugin-side spawned task, however, **keeps running on the plugin runtime
+until it observes the token or completes naturally**.
 
-### 5. No tokio I/O in `Drop`
+The host must `token.cancel()` together with the timeout to free
+plugin-side resources promptly.
 
-Do not call tokio I/O inside `Drop` impls of plugin structs. Either runtime
-may already be shutting down by the time `Drop` runs, and tokio calls
-outside a runtime context panic.
+### 5. No tokio I/O inside `Drop`
 
-### 6. Pin workspace dependencies to match the host
+Don't call `tokio::time::sleep` (or other Handle-dependent APIs) inside
+a `Drop` impl. The host runtime may already be in shutdown when the drop
+runs, and the call would panic outside a runtime context.
 
-The following crates cross the FFI boundary; pin them to the **same
-workspace version as the host**:
+### 6. Pin only `async-ffi`
 
-- `async-ffi` — `FfiFuture<T>` layout
-- `tokio` — `JoinHandle`, plus `Sender<Vec<u8>>` for `run_stream`
-- `tokio-util` — `CancellationToken` layout
+The single exact-pinned dependency is `async-ffi = "=0.5.0"`. Tokio,
+tokio-util and rustc can move freely between host and plugin. The
+historic Constraint 6 has been narrowed to this single line.
 
-## Step-by-Step Guide
+## FFI safety contract
+
+The proc macro buries the unsafe surface, but the contract underneath
+remains:
+
+1. **Panics are caught** at the FFI boundary. Each thunk wraps the
+   synchronous portion in `std::panic::catch_unwind` and the async
+   portion in `futures::FutureExt::catch_unwind`; panics from your code
+   become `FfiResult::Err`. Catch-unwind cannot recover from
+   foreign-exception panics — those abort per Rust 1.81+ semantics, so
+   keep panicking paths short and explicit.
+2. **Never `mem::forget`** an `FfiBytes` / `FfiVec` / `OutputSink` /
+   `FfiCancellationToken` / `PluginInstance` — Drop is how the matching
+   allocator hook is invoked.
+3. **Sink concurrency** — `OutputSink::send` (via `HighLevelSink::send`)
+   should be called sequentially per plugin task. Drop the sink (or let
+   the spawned future drop it) only after all `send` futures have
+   completed.
+4. **Allocator hint** — `FfiBytes` carries its own free function so a
+   plugin built against `#[global_allocator] = mimalloc` works against a
+   host using the system allocator. Sharing the global allocator is
+   still recommended for performance.
+
+## Step-by-step guide
 
 ### 1. Cargo.toml
 
-Start from the V1
-[Cargo.toml block](./plugin-development.md#1-configure-cargotoml) and add
-these crates (versions must exactly match the host's workspace pins):
-
 ```toml
+[package]
+name = "my_plugin"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]
-async-ffi = "0.5"
-tokio-util = { version = "0.7", features = ["full"] }
+proto       = { path = "../../proto" }
+jobworkerp-runner = { path = "../../runner" }
+
+anyhow      = "1.0"
+async-trait = "0.1"
+# Required by the proc-macro-generated thunks for async panic catching.
+futures     = "0.3"
+tokio       = { version = "1", features = ["full"] }
 ```
 
-### 2. Protobuf definitions and build.rs
+`jobworkerp-runner` re-exports `async-ffi`, `async-trait`, `futures`,
+`prost`, and the `register_plugin_v2!` macro, so the plugin author does
+not need to depend on them directly. The macro looks them up via
+`::jobworkerp_runner::*` paths.
 
-Identical to V1 (see
-[V1 guide](./plugin-development.md#2-define-protobufs)).
-The sync metadata methods (`runner_settings_proto` /
-`method_proto_map` / ...) have the same signatures and the same proto
-definition constraints as V1.
+### 2. Protobuf definition and build.rs
+
+Identical to V1 — `runner_settings_proto` and `method_proto_map`
+produce the same payloads. See the
+[V1 guide section "Protobuf definitions"](./plugin-development.md#2-protobuf-definitions).
 
 ### 3. Plugin implementation
 
 ```rust
-use async_ffi::{FfiFuture, FutureExt};
-use jobworkerp_runner::runner::plugins::{
-    CancellationToken, MultiMethodPluginRunnerV2,
-};
+use jobworkerp_runner::register_plugin_v2;
+use jobworkerp_runner::runner::plugins::v2::{CancelToken, HighLevelSink, PluginV2};
+use proto::DEFAULT_METHOD_NAME;
+use proto::jobworkerp::data::{MethodSchema, MethodJsonSchema};
 use std::collections::HashMap;
 use std::time::Duration;
 
-// 1. FFI loader (V2 symbol: load_multi_method_plugin_v2)
-#[unsafe(no_mangle)]
-#[allow(improper_ctypes_definitions)]
-pub extern "C" fn load_multi_method_plugin_v2()
-    -> Box<dyn MultiMethodPluginRunnerV2 + Send + Sync>
-{
-    Box::new(MyV2Plugin::new())
-}
-
-#[unsafe(no_mangle)]
-#[allow(improper_ctypes_definitions)]
-pub extern "C" fn free_multi_method_plugin_v2(
-    ptr: Box<dyn MultiMethodPluginRunnerV2 + Send + Sync>,
-) {
-    drop(ptr);
-}
-
-// 2. Plugin struct
-pub struct MyV2Plugin {
-    /// Plugin-owned tokio runtime — the plugin's `tokio` has its own
-    /// `thread_local!` context that the host cannot share. All async work
-    /// must run on this runtime.
+pub struct MyPlugin {
     rt: tokio::runtime::Runtime,
-    token: Option<CancellationToken>,
+    token: Option<CancelToken>,
 }
 
-impl MyV2Plugin {
+impl Default for MyPlugin {
+    fn default() -> Self { Self::new() }
+}
+
+impl MyPlugin {
     pub fn new() -> Self {
-        // multi_thread with >= 1 worker is required. current_thread won't
-        // advance spawned tasks unless someone calls block_on(), which
-        // would defeat cooperative cancellation. One worker is enough if
-        // the plugin does not need internal parallelism.
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
-            .expect("failed to build plugin tokio runtime");
+            .expect("plugin runtime");
         Self { rt, token: None }
     }
 }
 
-// 3. trait impl
-impl MultiMethodPluginRunnerV2 for MyV2Plugin {
-    fn name(&self) -> String { "MyV2Plugin".to_string() }
-    fn description(&self) -> String { "V2 sample".to_string() }
-    fn runner_settings_proto(&self) -> String {
-        include_str!("../protobuf/my_runner.proto").to_string()
+#[async_trait::async_trait]
+impl PluginV2 for MyPlugin {
+    fn name(&self) -> String { "MyPlugin".to_string() }
+    fn description(&self) -> String { "Sample V2 plugin".to_string() }
+    fn settings_schema(&self) -> String { String::new() }
+    fn method_proto_map(&self) -> HashMap<String, MethodSchema> {
+        HashMap::from([(DEFAULT_METHOD_NAME.to_string(), MethodSchema::default())])
     }
+    fn method_json_schema_map(&self) -> Option<HashMap<String, MethodJsonSchema>> { None }
 
-    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
-        HashMap::from([(
-            "run".to_string(),
-            proto::jobworkerp::data::MethodSchema {
-                args_proto: include_str!("../protobuf/my_job_args.proto").to_string(),
-                result_proto: include_str!("../protobuf/my_result.proto").to_string(),
-                description: Some("Main execution method".to_string()),
-                output_type: proto::jobworkerp::data::StreamingOutputType::Both as i32,
-                ..Default::default()
-            },
-        )])
-    }
-
-    fn set_cancellation_token(&mut self, token: CancellationToken) {
-        // The host hands a fresh token per job. Older tokens belong to
-        // completed/cancelled jobs; just overwrite.
+    fn set_cancellation_token(&mut self, token: CancelToken) {
         self.token = Some(token);
     }
 
-    fn load(&mut self, _settings: Vec<u8>) -> FfiFuture<Result<(), String>> {
-        async move { Ok(()) }.into_ffi()
-    }
+    async fn load(&mut self, _settings: Vec<u8>) -> Result<(), String> { Ok(()) }
 
-    fn run(
+    async fn run(
         &mut self,
         _args: Vec<u8>,
-        metadata: Vec<(String, String)>,
+        metadata: HashMap<String, String>,
         _using: Option<String>,
-    ) -> FfiFuture<(Result<Vec<u8>, String>, Vec<(String, String)>)> {
-        // Move state into the async block — the returned future is 'static
-        // and cannot borrow &mut self.
+    ) -> (Result<Vec<u8>, String>, HashMap<String, String>) {
         let token = self.token.clone();
         let handle = self.rt.handle().clone();
-
-        // Spawn on the plugin runtime, then await the JoinHandle from the
-        // FfiFuture so the result reaches the host.
         let join = handle.spawn(async move {
             match token {
                 Some(t) => tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    _ = tokio::time::sleep(Duration::from_millis(500)) => {
                         (Ok(b"done".to_vec()), metadata)
                     }
                     _ = t.cancelled() => {
@@ -221,127 +243,68 @@ impl MultiMethodPluginRunnerV2 for MyV2Plugin {
                     }
                 },
                 None => {
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                     (Ok(b"done".to_vec()), metadata)
                 }
             }
         });
+        join.await.unwrap_or_else(|e| (Err(format!("join: {e}")), HashMap::new()))
+    }
 
-        async move {
-            match join.await {
-                Ok(out) => out,
-                Err(e) => (Err(format!("join error: {e}")), Vec::new()),
+    async fn run_stream(
+        &mut self,
+        _args: Vec<u8>,
+        metadata: HashMap<String, String>,
+        _using: Option<String>,
+        output: HighLevelSink,
+    ) -> Result<HashMap<String, String>, String> {
+        let token = self.token.clone();
+        let handle = self.rt.handle().clone();
+        let join = handle.spawn(async move {
+            for i in 0..5u32 {
+                if let Some(t) = &token {
+                    if t.is_cancelled() { return Err("cancelled".to_string()); }
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                output.send(format!("chunk {i}").into_bytes()).await
+                    .map_err(|e| format!("sink closed: {e}"))?;
             }
-        }
-        .into_ffi()
+            Ok(metadata)
+        });
+        join.await.unwrap_or_else(|e| Err(format!("join: {e}")))
     }
 }
+
+register_plugin_v2!(MyPlugin, MyPlugin::new());
 ```
 
-## Streaming: `run_stream(output_sender)`
+The macro form is `register_plugin_v2!(PluginType, init_expr)`. The
+init expression runs once per `load_multi_method_plugin_v2` call (one
+per logical plugin instance), so plugin authors can perform environment
+reads or other fallible setup before returning the constructed plugin.
 
-V2 streaming is push-based: the host creates an mpsc channel and hands
-the sender to the plugin, instead of V1's pull-based
-`begin_stream` + `receive_stream` loop.
+## Migration from earlier V2 builds
 
-```rust
-fn run_stream(
-    &mut self,
-    args: Vec<u8>,
-    metadata: Vec<(String, String)>,
-    using: Option<String>,
-    // Host-created output channel. The plugin sends chunks via `send()`.
-    // Dropping the sender (typically by returning from the future)
-    // signals end-of-stream and the host emits the End trailer.
-    output: tokio::sync::mpsc::Sender<Vec<u8>>,
-) -> FfiFuture<Result<Vec<(String, String)>, String>>;
-```
+Plugins built against the previous V2 trait-object surface
+(`Box<dyn MultiMethodPluginRunnerV2>`) must be recompiled against the
+new API. The FFI symbol name has not changed, but the return type has:
+the host now expects `PluginInstanceRaw { state, vtable }` and rejects
+old `Box<dyn Trait>` payloads via vtable-header sanity checks. Plugin
+repositories using V2 should:
 
-- **Emit chunks**: call `output.send(chunk).await?` in order.
-- **Termination**: when the plugin's future resolves with
-  `Ok(final_metadata)`, the host attaches `final_metadata` to the End
-  trailer and closes the stream.
-- **Error before any chunk**: returning `Err(message)` without ever
-  sending a chunk surfaces as the outer `run_stream` `Err`, marking the
-  job as failed.
-- **Error after some chunks**: the host emits the End trailer with the
-  input metadata and logs the error; consumers have already received
-  data, so the failure cannot be promoted to an outer `Err`
-  (`ResultOutputItem` has no in-band error variant).
-- **Cancellation**: dropping the host-side future drops the receiver;
-  `output.send` then returns `Err`, or the plugin can `select!` on
-  `token.cancelled()` to abort early.
+1. Update the `jobworkerp-runner` (and `jobworkerp-client`) dependency
+   to a commit that includes this work.
+2. Replace `impl MultiMethodPluginRunnerV2 for ...` with the
+   `impl PluginV2 for ...` shape shown above.
+3. Replace `extern "C" fn load_multi_method_plugin_v2(...)` with
+   `register_plugin_v2!(MyPlugin, MyPlugin::new());`.
 
-### Example
+`llama-cpp-plugin` is the only known V2 user in the wild; it must be
+released in lockstep with this change.
 
-```rust
-fn run_stream(
-    &mut self,
-    _args: Vec<u8>,
-    metadata: Vec<(String, String)>,
-    _using: Option<String>,
-    output: tokio::sync::mpsc::Sender<Vec<u8>>,
-) -> FfiFuture<Result<Vec<(String, String)>, String>> {
-    let token = self.token.clone();
-    let handle = self.rt.handle().clone();
+## Reference implementation
 
-    let join = handle.spawn(async move {
-        for i in 0..5 {
-            let tick = tokio::time::sleep(Duration::from_millis(100));
-            let cancelled = match &token {
-                Some(t) => tokio::select! {
-                    _ = tick => false,
-                    _ = t.cancelled() => true,
-                },
-                None => { tick.await; false }
-            };
-            if cancelled { return Err("cancelled".to_string()); }
-            if output.send(format!("chunk-{i}").into_bytes()).await.is_err() {
-                // The host stopped consuming.
-                return Err("output channel closed".to_string());
-            }
-        }
-        Ok(metadata)
-    });
-
-    async move {
-        match join.await {
-            Ok(r) => r,
-            Err(e) => Err(format!("join error: {e}")),
-        }
-    }
-    .into_ffi()
-}
-```
-
-### Compatibility note
-
-`tokio::sync::mpsc::Sender<T>` is runtime-independent for the same reason
-as `CancellationToken` (see [Constraint #3](#3-cancellation-goes-through-cancellationtoken-only)),
-so the host-created sender works on the plugin runtime. The `tokio` crate
-version must still match between host and plugin.
-
-## Build and Deploy
-
-Same as V1. `cargo build --release` produces the `.so`; drop it into the
-directory pointed to by the `PLUGINS_RUNNER_DIR` env var. The host probes
-for the V2 symbol (`load_multi_method_plugin_v2`) first, then falls back
-to V1 (`load_multi_method_plugin`) and legacy (`load_plugin`).
-
-## Migrating from V1 to V2
-
-V1 ([Plugin Development (V1)](./plugin-development.md)) is still
-supported; migration is optional. See the comparison table above for the
-motivation. The mechanical changes are:
-
-| V1 | V2 |
-|----|----|
-| `fn run(&mut self, ...) -> (Result<Vec<u8>>, HashMap<String, String>)` | `fn run(&mut self, ...) -> FfiFuture<(Result<Vec<u8>, String>, Vec<(String, String)>)>` |
-| `metadata: HashMap<String, String>` | `metadata: Vec<(String, String)>` (ABI-stable) |
-| `Result<Vec<u8>>` (anyhow) | `Result<Vec<u8>, String>` (ABI-stable) |
-| `fn begin_stream` + `fn receive_stream` | `fn run_stream(.., output: Sender<Vec<u8>>) -> FfiFuture<Result<Vec<(String, String)>, String>>` |
-| `fn cancel(&mut self) -> bool` | `fn set_cancellation_token(&mut self, token)` + observe via `tokio::select!` |
-| `self.rt.block_on(async {...})` | `self.rt.handle().spawn(async {...})` + `JoinHandle::await` |
-
-Reference implementation:
-[`plugins/cancel_test/src/lib.rs`](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/plugins/cancel_test/src/lib.rs)
+See `plugins/cancel_test/src/lib.rs` for a complete working example
+that exercises every path: sync metadata, cooperative cancellation,
+streaming with the Drop contract honoured, and `register_plugin_v2!`
+usage.
