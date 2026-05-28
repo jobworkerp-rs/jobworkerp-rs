@@ -123,17 +123,18 @@ impl FfiBytes {
         copy
     }
 
-    /// Convert the `FfiBytes` back into a `Vec<u8>` *without copying*.
+    /// Reclaim the buffer as a `Vec<u8>` *without copying*.
     ///
-    /// # Safety contract
+    /// # Safety
     ///
-    /// Only valid when the buffer was produced by `from_vec` **on the same
-    /// allocator** as the current crate. Calling this on an `FfiBytes`
-    /// received across an FFI boundary where host and plugin use different
-    /// `#[global_allocator]`s is undefined behaviour because `Vec::from_raw_parts`
-    /// will deallocate with the wrong allocator. Use [`copy_to_vec`] for
-    /// cross-boundary buffers.
-    pub fn into_vec(self) -> Vec<u8> {
+    /// The caller must guarantee the buffer was produced by `from_vec`
+    /// **on the same allocator** as the current crate. Calling this on
+    /// an `FfiBytes` received across an FFI boundary where host and
+    /// plugin link different `#[global_allocator]`s is undefined behaviour:
+    /// `Vec::from_raw_parts` will route deallocation through the wrong
+    /// allocator. Use [`copy_to_vec`](Self::copy_to_vec) for buffers that
+    /// crossed an FFI boundary.
+    pub unsafe fn into_vec_unchecked(self) -> Vec<u8> {
         let me = std::mem::ManuallyDrop::new(self);
         if me.cap == 0 {
             Vec::new()
@@ -283,15 +284,24 @@ impl<T> FfiVec<T> {
         }
     }
 
-    /// Convert the `FfiVec<T>` back into a `Vec<T>` *without copying the
-    /// outer buffer*. **Only safe when the buffer was produced by
-    /// `from_vec` on the same allocator as the current crate.** Cross-FFI
-    /// callers must drain elements via [`drain_into`] instead.
-    pub fn into_vec(self) -> Vec<T> {
+    /// Reclaim the outer buffer as a `Vec<T>` *without copying*.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee the buffer was produced by
+    /// [`from_vec`](Self::from_vec) **on the same allocator** as the
+    /// current crate. Calling this on an `FfiVec<T>` received across an
+    /// FFI boundary where host and plugin link different
+    /// `#[global_allocator]`s is undefined behaviour:
+    /// `Vec::from_raw_parts` will route deallocation through the wrong
+    /// allocator. Use [`drain_into`](Self::drain_into) for buffers that
+    /// crossed an FFI boundary.
+    pub unsafe fn into_vec_unchecked(self) -> Vec<T> {
         let me = std::mem::ManuallyDrop::new(self);
         if me.cap == 0 {
             Vec::new()
         } else {
+            // SAFETY: caller guarantees same-allocator round-trip with `from_vec`.
             unsafe { Vec::from_raw_parts(me.ptr, me.len, me.cap) }
         }
     }
@@ -404,7 +414,10 @@ mod tests {
         assert_eq!(ffi.len(), len);
         assert_eq!(ffi.as_slice(), original.as_slice());
 
-        let restored = ffi.into_vec();
+        // SAFETY: `ffi` was produced in this test from `from_vec` on the
+        // current crate's global allocator, so the unchecked reclamation
+        // round-trips through the same allocator.
+        let restored = unsafe { ffi.into_vec_unchecked() };
         assert_eq!(restored, original);
         // Capacity should round-trip when no reallocation happens in between.
         assert_eq!(restored.capacity(), cap);
@@ -422,10 +435,11 @@ mod tests {
 
     #[test]
     fn ffi_bytes_drop_no_leak_via_into_vec() {
-        // Round-trip without explicit drop: `into_vec` re-acquires ownership
-        // and lets the standard allocator handle release.
+        // Round-trip without explicit drop: `into_vec_unchecked` re-acquires
+        // ownership and lets the standard allocator handle release.
         let ffi = FfiBytes::from_vec(vec![1, 2, 3, 4, 5]);
-        let v = ffi.into_vec();
+        // SAFETY: same-allocator round-trip within this test.
+        let v = unsafe { ffi.into_vec_unchecked() };
         assert_eq!(v, vec![1, 2, 3, 4, 5]);
     }
 
@@ -486,14 +500,17 @@ mod tests {
         assert_eq!(list.len(), original.len());
 
         let restored: HashMap<String, Vec<u8>> = list
-            .into_vec()
-            .into_iter()
-            .map(|p| {
-                let k = String::from_utf8(p.key.into_vec()).expect("utf-8 key");
-                let v = p.value.into_vec();
+            .drain_into(|p| {
+                // SAFETY: same-allocator round-trip within this test (the
+                // inner FfiBytes were produced via from_vec on the current
+                // crate's allocator).
+                let k =
+                    String::from_utf8(unsafe { p.key.into_vec_unchecked() }).expect("utf-8 key");
+                let v = unsafe { p.value.into_vec_unchecked() };
                 (k, v)
             })
-            .collect();
+            .into_iter()
+            .collect::<HashMap<_, _>>();
         assert_eq!(restored, original);
     }
 

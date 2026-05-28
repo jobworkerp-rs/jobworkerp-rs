@@ -308,23 +308,29 @@ impl PluginRunnerWrapperImpl {
         // the host runtime is correct (spawn_blocking would prevent the
         // future from being driven cooperatively).
         if self.variant_type == PluginVariantType::MultiMethodV2 {
-            let fut = {
-                let mut guard = self.variant.write().await;
-                match &mut *guard {
-                    super::PluginRunnerVariant::MultiMethodV2(plugin) => {
-                        let settings_ffi = super::ffi::FfiBytes::from_vec(settings);
-                        // SAFETY: state and vtable were validated at load time.
-                        unsafe { (plugin.vtable.load)(plugin.state, settings_ffi) }
-                    }
-                    other => {
-                        return Err(anyhow!(
-                            "internal: variant_type cached as MultiMethodV2 but variant is {}",
-                            variant_kind(other)
-                        ));
-                    }
+            // Hold the write guard across the FfiFuture await: the
+            // proc-macro-generated thunk captures `&mut PluginTy` across
+            // the await, so dropping the guard mid-load would let a
+            // concurrent `run`/`run_stream`/`load` on a wrapper clone
+            // construct a second `&mut` to the same plugin state — the
+            // same aliasing UB the run paths guard against.
+            let mut guard = self.variant.write().await;
+            let fut = match &mut *guard {
+                super::PluginRunnerVariant::MultiMethodV2(plugin) => {
+                    let settings_ffi = super::ffi::FfiBytes::from_vec(settings);
+                    // SAFETY: state and vtable were validated at load time.
+                    unsafe { (plugin.vtable.load)(plugin.state, settings_ffi) }
+                }
+                other => {
+                    return Err(anyhow!(
+                        "internal: variant_type cached as MultiMethodV2 but variant is {}",
+                        variant_kind(other)
+                    ));
                 }
             };
-            match fut.await {
+            let outcome = fut.await;
+            drop(guard);
+            match outcome {
                 super::ffi::FfiResult::Ok(()) => return Ok(()),
                 super::ffi::FfiResult::Err(err_bytes) => {
                     return Err(anyhow!(
