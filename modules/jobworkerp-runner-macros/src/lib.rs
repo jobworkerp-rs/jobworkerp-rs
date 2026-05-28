@@ -91,33 +91,19 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
             // Helpers
             // ------------------------------------------------------------------
 
-            fn kv_to_hashmap(list: FfiKvPairList) -> HashMap<String, String> {
-                list.into_vec()
-                    .into_iter()
-                    .map(|p| {
-                        let k = String::from_utf8(p.key.into_vec())
-                            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-                        let v = String::from_utf8(p.value.into_vec())
-                            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-                        (k, v)
-                    })
-                    .collect()
-            }
-
-            fn hashmap_to_kv(map: HashMap<String, String>) -> FfiKvPairList {
-                let pairs: Vec<FfiKvPair> = map
-                    .into_iter()
-                    .map(|(k, v)| FfiKvPair {
-                        key: FfiBytes::from_vec(k.into_bytes()),
-                        value: FfiBytes::from_vec(v.into_bytes()),
-                    })
-                    .collect();
-                FfiVec::from_vec(pairs)
-            }
+            // Re-use the host-side conversion helpers so allocation
+            // ownership rules (each FfiBytes drops on its embedded
+            // `drop_fn`) are enforced in one place. These re-exports
+            // live in `jobworkerp_runner::runner::plugins::ffi`.
+            use ::jobworkerp_runner::runner::plugins::ffi::{
+                kv_to_string_map as kv_to_hashmap,
+                string_map_to_kv as hashmap_to_kv,
+            };
 
             fn ffi_string_to_string(b: FfiBytes) -> String {
-                String::from_utf8(b.into_vec())
-                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+                // Goes through `copy_to_vec` internally, so the FfiBytes
+                // (possibly host-allocated) drops via its own drop_fn.
+                b.into_string_lossy()
             }
 
             fn schema_map_to_kv<S: _PluginV2ProstMessage>(
@@ -265,7 +251,10 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                     // is captured by reference into the async block).
                     #[allow(clippy::drop_non_drop)]
                     drop(captured);
-                    let fut = plugin.load(settings.into_vec());
+                    // Use `copy_to_vec` so the host-allocated `settings`
+                    // buffer drops through its own embedded drop_fn rather
+                    // than via the plugin's allocator.
+                    let fut = plugin.load(settings.copy_to_vec());
                     let result = AssertUnwindSafe(fut).catch_unwind().await;
                     match result {
                         Ok(Ok(())) => FfiResult::Ok(()),
@@ -295,7 +284,7 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                     #[allow(clippy::drop_non_drop)]
                     drop(captured);
                     let meta = kv_to_hashmap(metadata);
-                    let fut = plugin.run(args.into_vec(), meta, using_owned);
+                    let fut = plugin.run(args.copy_to_vec(), meta, using_owned);
                     let outcome = AssertUnwindSafe(fut).catch_unwind().await;
                     match outcome {
                         Ok((Ok(payload), meta)) => V2RunOutcome {
@@ -336,7 +325,7 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                     drop(captured);
                     let meta = kv_to_hashmap(metadata);
                     let sink = HighLevelSink::from_ffi(output);
-                    let fut = plugin.run_stream(args.into_vec(), meta, using_owned, sink);
+                    let fut = plugin.run_stream(args.copy_to_vec(), meta, using_owned, sink);
                     let outcome = AssertUnwindSafe(fut).catch_unwind().await;
                     match outcome {
                         Ok(Ok(meta)) => FfiResult::Ok(hashmap_to_kv(meta)),

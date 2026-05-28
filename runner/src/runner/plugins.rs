@@ -417,19 +417,29 @@ fn v2_decode_schema_map<M: prost::Message + Default>(
     list: ffi::FfiKvPairList,
     label: &'static str,
 ) -> HashMap<String, M> {
-    list.into_vec()
-        .into_iter()
-        .filter_map(|pair| {
-            let key = pair.key.into_string_lossy();
-            match M::decode(pair.value.as_slice()) {
-                Ok(schema) => Some((key, schema)),
-                Err(e) => {
-                    tracing::warn!("V2 plugin {label} decode error: {e}");
-                    None
-                }
+    // Use `drain_into` so the outer buffer and the inner `FfiBytes`
+    // allocations are released through their own embedded `drop_fn`s.
+    // A plain `into_vec` would route deallocation through the host
+    // global allocator, which causes UB when the plugin links a different
+    // `#[global_allocator]`.
+    list.drain_into(|pair| {
+        // Decode while `pair.value` still owns the plugin allocation; the
+        // decoded `M` is host-allocated. `pair` drops at the end of the
+        // closure, releasing both inner `FfiBytes` through their
+        // plugin-side `drop_fn`s.
+        let decoded = match M::decode(pair.value.as_slice()) {
+            Ok(schema) => Some(schema),
+            Err(e) => {
+                tracing::warn!("V2 plugin {label} decode error: {e}");
+                None
             }
-        })
-        .collect()
+        };
+        let key = pair.key.into_string_lossy();
+        decoded.map(|schema| (key, schema))
+    })
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// Enum to wrap legacy and multi-method plugins

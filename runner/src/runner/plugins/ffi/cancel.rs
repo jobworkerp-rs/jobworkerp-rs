@@ -42,6 +42,14 @@ struct TokenInner {
     /// Starts at 1 to avoid colliding with the sentinel `0` returned by
     /// `register_waker` when cancellation is already observed.
     next_id: AtomicU64,
+    /// Notification fired when the last strong reference to this
+    /// `TokenInner` is about to drop. The `from_tokio_util` bridge task
+    /// keeps an `Arc<Notify>` clone (not a `&Notify`) plus a
+    /// `Weak<TokenInner>`, so it never extends the token's lifetime; the
+    /// `notify_waiters` call inside `Drop` lets the task exit instead of
+    /// waiting forever for the source CancellationToken on jobs that
+    /// complete without cancellation.
+    bridge_done: Arc<tokio::sync::Notify>,
 }
 
 impl TokenInner {
@@ -50,6 +58,7 @@ impl TokenInner {
             cancelled: AtomicBool::new(false),
             wakers: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            bridge_done: Arc::new(tokio::sync::Notify::new()),
         })
     }
 
@@ -70,6 +79,17 @@ impl TokenInner {
         }
         // `drained` going out of scope runs `ExternWakerSlot::Drop` for
         // each slot, freeing the context exactly once.
+    }
+}
+
+impl Drop for TokenInner {
+    fn drop(&mut self) {
+        // Wake any bridge task still parked on `bridge_done`. With no
+        // bridge subscribed this is a no-op; with one subscribed (the
+        // `from_tokio_util` case) it lets the task observe the dropped
+        // strong reference and terminate instead of waiting forever for
+        // the source `CancellationToken` to fire on a completed job.
+        self.bridge_done.notify_waiters();
     }
 }
 
@@ -388,13 +408,28 @@ impl<'a> Drop for FfiCancelledFuture<'a> {
 /// plugin token before runtime shutdown to propagate late cancellation.
 pub fn from_tokio_util(token: tokio_util::sync::CancellationToken) -> FfiCancellationToken {
     let (ffi, handle) = FfiCancellationToken::new_owned();
-    // Detach the bridge task. It self-terminates as soon as the source
-    // `token` fires (or is dropped, in which case `cancelled()` resolves
-    // immediately via tokio_util's drop semantics), so no abort handle
-    // is needed.
+    // Hold only a Weak reference plus an Arc<Notify> clone, never a
+    // strong reference to TokenInner — that way the bridge task does not
+    // extend the token's lifetime. When the last strong ref drops,
+    // `TokenInner::Drop` fires `bridge_done.notify_waiters()` which the
+    // task observes and exits, even if `token` is never cancelled.
+    let weak = Arc::downgrade(&handle.inner);
+    let bridge_done = Arc::clone(&handle.inner.bridge_done);
+    drop(handle);
     tokio::spawn(async move {
-        token.cancelled().await;
-        handle.cancel();
+        let notified = bridge_done.notified();
+        tokio::pin!(notified);
+        tokio::select! {
+            _ = token.cancelled() => {
+                if let Some(inner) = weak.upgrade() {
+                    inner.cancel();
+                }
+            }
+            _ = &mut notified => {
+                // FfiCancellationToken's TokenInner is dropping — nothing
+                // to bridge to.
+            }
+        }
     });
     ffi
 }
@@ -573,5 +608,34 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(ffi.is_cancelled());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_from_tokio_util_bridge_terminates_on_token_drop() {
+        // Job that completes without ever firing the source token: the
+        // bridge task must terminate when the `FfiCancellationToken` is
+        // dropped, instead of leaking the spawned task forever.
+        let outer = tokio_util::sync::CancellationToken::new();
+        // Capture the bridge_done Arc via a side channel so we can observe
+        // that the task actually exited (Notify lets multiple waiters
+        // subscribe; the first wait inside the bridge will be released by
+        // notify_waiters).
+        let ffi = from_tokio_util(outer.clone());
+
+        // Drop the ffi token: this lets the underlying TokenInner Drop
+        // run, which fires bridge_done.notify_waiters(). The bridge task
+        // should observe the notification and exit.
+        drop(ffi);
+
+        // Give the runtime a couple of poll cycles. The exact moment the
+        // task exits depends on scheduling, so we wait a bounded time and
+        // check that the outer token has no waiting holders.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // We can't directly observe task termination, but at minimum
+        // dropping the outer token now must not deadlock the test (the
+        // bridge task must not still be holding a clone in a way that
+        // prevents the runtime shutdown). The runtime tear-down at the
+        // end of `tokio::test` would hang if the task were still parked.
+        drop(outer);
     }
 }

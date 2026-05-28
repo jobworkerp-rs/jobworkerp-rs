@@ -159,44 +159,47 @@ impl PluginRunnerWrapperImpl {
         let metadata_for_fallback = metadata.clone();
 
         let mut plugin_fut = tokio::spawn(async move {
-            let fut = {
-                let mut guard = variant_clone.write().await;
-                match &mut *guard {
-                    super::PluginRunnerVariant::MultiMethodV2(plugin) => {
-                        let sink = super::ffi::OutputSink::from_sender(raw_tx);
-                        let args_ffi = super::ffi::FfiBytes::from_vec(arg_owned);
-                        let meta_ffi = meta_to_ffi(metadata);
-                        let using_ffi = using_to_ffi(using_owned.as_deref());
-                        // SAFETY: state and vtable were validated at load
-                        // time; the FFI types own their buffers and are
-                        // consumed by the plugin.
-                        unsafe {
-                            (plugin.vtable.run_stream)(
-                                plugin.state,
-                                args_ffi,
-                                meta_ffi,
-                                using_ffi,
-                                sink,
-                            )
-                        }
+            // Hold the write guard for the lifetime of the FfiFuture: the
+            // proc-macro-generated thunk captures `&mut PluginTy` across
+            // the await, so dropping the guard before the future resolves
+            // would let a concurrent `run`/`run_stream` create a second
+            // `&mut` to the same plugin state — aliasing UB.
+            let mut guard = variant_clone.write().await;
+            let fut = match &mut *guard {
+                super::PluginRunnerVariant::MultiMethodV2(plugin) => {
+                    let sink = super::ffi::OutputSink::from_sender(raw_tx);
+                    let args_ffi = super::ffi::FfiBytes::from_vec(arg_owned);
+                    let meta_ffi = meta_to_ffi(metadata);
+                    let using_ffi = using_to_ffi(using_owned.as_deref());
+                    // SAFETY: state and vtable were validated at load
+                    // time; the FFI types own their buffers and are
+                    // consumed by the plugin.
+                    unsafe {
+                        (plugin.vtable.run_stream)(
+                            plugin.state,
+                            args_ffi,
+                            meta_ffi,
+                            using_ffi,
+                            sink,
+                        )
                     }
-                    other => {
-                        // Cached variant_type and the actual variant disagree.
-                        // Bail safely instead of panicking the worker process.
-                        return Err(format!(
-                            "internal: variant_type cached as MultiMethodV2 but variant is {}",
-                            variant_kind(other)
-                        ));
-                    }
+                }
+                other => {
+                    // Cached variant_type and the actual variant disagree.
+                    // Bail safely instead of panicking the worker process.
+                    return Err(format!(
+                        "internal: variant_type cached as MultiMethodV2 but variant is {}",
+                        variant_kind(other)
+                    ));
                 }
             };
             // Decode FFI types to plain HashMap/String for downstream code.
-            match fut.await {
+            let outcome = match fut.await {
                 super::ffi::FfiResult::Ok(meta_ffi) => Ok(meta_from_ffi(meta_ffi)),
-                super::ffi::FfiResult::Err(err_bytes) => {
-                    Err(String::from_utf8_lossy(err_bytes.as_slice()).into_owned())
-                }
-            }
+                super::ffi::FfiResult::Err(err_bytes) => Err(err_bytes.into_string_lossy()),
+            };
+            drop(guard);
+            outcome
         });
 
         // Race the first chunk against `plugin_fut`:
@@ -324,8 +327,10 @@ impl PluginRunnerWrapperImpl {
             match fut.await {
                 super::ffi::FfiResult::Ok(()) => return Ok(()),
                 super::ffi::FfiResult::Err(err_bytes) => {
-                    let msg = String::from_utf8_lossy(err_bytes.as_slice()).into_owned();
-                    return Err(anyhow!("plugin load error: {}", msg));
+                    return Err(anyhow!(
+                        "plugin load error: {}",
+                        err_bytes.into_string_lossy()
+                    ));
                 }
             }
         }
@@ -516,38 +521,43 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         // timeout the caller drops the future, the guard drops with it, and
         // the lock is reclaimed immediately so the instance can be reused.
         if self.variant_type == PluginVariantType::MultiMethodV2 {
-            // Drop the guard after obtaining the FfiFuture so concurrent
-            // callers can grab the lock for unrelated bookkeeping while this
-            // future runs. On timeout the caller drops the future and any
-            // resources it captured are released; the wrapper instance is
-            // reusable (see `should_detach_on_timeout`).
-            let fut = {
-                let mut guard = self.variant.write().await;
-                match &mut *guard {
-                    super::PluginRunnerVariant::MultiMethodV2(plugin) => {
-                        let args_ffi = super::ffi::FfiBytes::from_vec(arg.to_vec());
-                        let meta_ffi = meta_to_ffi(metadata.clone());
-                        let using_ffi = using_to_ffi(using);
-                        // SAFETY: state and vtable were validated at load time.
-                        unsafe { (plugin.vtable.run)(plugin.state, args_ffi, meta_ffi, using_ffi) }
-                    }
-                    other => {
-                        let kind = variant_kind(other);
-                        return (
-                            Err(anyhow!(
-                                "internal: variant_type cached as MultiMethodV2 but variant is {kind}"
-                            )),
-                            metadata,
-                        );
-                    }
+            // Hold the write guard across the FfiFuture await: the
+            // proc-macro-generated thunk captures `&mut PluginTy` across
+            // the await, so dropping the guard mid-flight would let a
+            // concurrent `run`/`run_stream` on the same wrapper (clones
+            // share the Arc<RwLock>) create a second `&mut` to the same
+            // plugin state — aliasing UB. Dropping the future on timeout
+            // still releases the guard immediately, so wrappers stay
+            // reusable (`should_detach_on_timeout = false`).
+            let mut guard = self.variant.write().await;
+            let fut = match &mut *guard {
+                super::PluginRunnerVariant::MultiMethodV2(plugin) => {
+                    let args_ffi = super::ffi::FfiBytes::from_vec(arg.to_vec());
+                    let meta_ffi = meta_to_ffi(metadata.clone());
+                    let using_ffi = using_to_ffi(using);
+                    // SAFETY: state and vtable were validated at load time.
+                    unsafe { (plugin.vtable.run)(plugin.state, args_ffi, meta_ffi, using_ffi) }
+                }
+                other => {
+                    let kind = variant_kind(other);
+                    return (
+                        Err(anyhow!(
+                            "internal: variant_type cached as MultiMethodV2 but variant is {kind}"
+                        )),
+                        metadata,
+                    );
                 }
             };
             let outcome = fut.await;
+            drop(guard);
             let meta_back = meta_from_ffi(outcome.metadata);
             let result = match outcome.result {
-                super::ffi::FfiResult::Ok(bytes) => Ok(bytes.into_vec()),
+                // V2 plugin returns plugin-allocator bytes; copy through
+                // the host allocator before releasing the FfiBytes via its
+                // embedded drop_fn (see `FfiBytes::copy_to_vec` docs).
+                super::ffi::FfiResult::Ok(bytes) => Ok(bytes.copy_to_vec()),
                 super::ffi::FfiResult::Err(err_bytes) => {
-                    let msg = String::from_utf8_lossy(err_bytes.as_slice()).into_owned();
+                    let msg = err_bytes.into_string_lossy();
                     tracing::warn!("in running pluginRunner (v2): {}", msg);
                     Err(anyhow!("plugin error: {}", msg))
                 }

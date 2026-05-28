@@ -78,7 +78,11 @@ impl HighLevelSink {
         match fut.await {
             FfiResult::Ok(()) => Ok(()),
             FfiResult::Err(unsent) => {
-                let payload = unsent.into_vec();
+                // `unsent` was allocated on the host side (sink thunk),
+                // so the plugin must consume it through `copy_to_vec`
+                // rather than reclaiming the buffer with its own
+                // allocator.
+                let payload = unsent.copy_to_vec();
                 Err(format!(
                     "output sink closed; {} bytes undelivered",
                     payload.len()

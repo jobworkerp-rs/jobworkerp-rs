@@ -63,9 +63,18 @@ unsafe extern "C" fn host_send(
         let Some(tx) = maybe_tx else {
             return FfiResult::Err(FfiBytes::from_vec(b"sink already closed".to_vec()));
         };
-        let payload = bytes.into_vec();
+        // The plugin allocator may not match the host's; consume the
+        // incoming FfiBytes via copy_to_vec so the original buffer is
+        // released by its own `drop_fn` rather than Vec::from_raw_parts
+        // routing through the wrong allocator.
+        let payload = bytes.copy_to_vec();
         match tx.send(payload).await {
             Ok(()) => FfiResult::Ok(()),
+            // `unsent` was allocated on the host (we just produced it via
+            // copy_to_vec), so wrapping it back into `FfiBytes::from_vec`
+            // is safe — the plugin must use `copy_to_vec` (or
+            // `into_string_lossy`) to inspect the bytes safely. This is
+            // the documented sink contract.
             Err(mpsc::error::SendError(unsent)) => FfiResult::Err(FfiBytes::from_vec(unsent)),
         }
     }

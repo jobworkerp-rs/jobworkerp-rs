@@ -94,10 +94,15 @@ impl FfiBytes {
     }
 
     /// Decode the buffer as UTF-8, falling back to lossy replacement on
-    /// invalid bytes. Used by host wrappers to recover `String` values
-    /// produced by plugin code without panicking on garbage input.
+    /// invalid bytes. Safe to call on FFI-received buffers because the
+    /// underlying allocation is consumed via `copy_to_vec` (which goes
+    /// through `as_slice` + `to_vec`) and then released by `FfiBytes::Drop`.
     pub fn into_string_lossy(self) -> String {
-        String::from_utf8(self.into_vec())
+        // Borrow first, then let `self` drop normally so the embedded
+        // `drop_fn` runs on the original (possibly plugin-side) allocator.
+        let copy = self.as_slice().to_vec();
+        drop(self);
+        String::from_utf8(copy)
             .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
     }
 
@@ -106,17 +111,34 @@ impl FfiBytes {
         String::from_utf8_lossy(self.as_slice()).into_owned()
     }
 
-    /// Convert the `FfiBytes` back into a `Vec<u8>`. Only valid when the
-    /// buffer was created by the same allocator (i.e. `from_vec` in this
-    /// process). Crossing the FFI boundary requires the receiver to use the
-    /// embedded `drop_fn` instead — call `as_slice().to_vec()` to obtain an
-    /// owned copy from the receiver side.
+    /// Copy the bytes into a fresh `Vec<u8>` using the **current** crate's
+    /// allocator, then release the original buffer via its embedded
+    /// `drop_fn`. This is the cross-allocator-safe way to consume an
+    /// `FfiBytes` that may have been produced by code linking a different
+    /// `#[global_allocator]` (e.g. a plugin built with mimalloc against a
+    /// host using the system allocator).
+    pub fn copy_to_vec(self) -> Vec<u8> {
+        let copy = self.as_slice().to_vec();
+        drop(self);
+        copy
+    }
+
+    /// Convert the `FfiBytes` back into a `Vec<u8>` *without copying*.
+    ///
+    /// # Safety contract
+    ///
+    /// Only valid when the buffer was produced by `from_vec` **on the same
+    /// allocator** as the current crate. Calling this on an `FfiBytes`
+    /// received across an FFI boundary where host and plugin use different
+    /// `#[global_allocator]`s is undefined behaviour because `Vec::from_raw_parts`
+    /// will deallocate with the wrong allocator. Use [`copy_to_vec`] for
+    /// cross-boundary buffers.
     pub fn into_vec(self) -> Vec<u8> {
         let me = std::mem::ManuallyDrop::new(self);
         if me.cap == 0 {
             Vec::new()
         } else {
-            // SAFETY: round-trip with `from_vec` on the same allocator.
+            // SAFETY: caller guarantees same-allocator round-trip with `from_vec`.
             unsafe { Vec::from_raw_parts(me.ptr, me.len, me.cap) }
         }
     }
@@ -261,6 +283,10 @@ impl<T> FfiVec<T> {
         }
     }
 
+    /// Convert the `FfiVec<T>` back into a `Vec<T>` *without copying the
+    /// outer buffer*. **Only safe when the buffer was produced by
+    /// `from_vec` on the same allocator as the current crate.** Cross-FFI
+    /// callers must drain elements via [`drain_into`] instead.
     pub fn into_vec(self) -> Vec<T> {
         let me = std::mem::ManuallyDrop::new(self);
         if me.cap == 0 {
@@ -268,6 +294,40 @@ impl<T> FfiVec<T> {
         } else {
             unsafe { Vec::from_raw_parts(me.ptr, me.len, me.cap) }
         }
+    }
+
+    /// Drain elements one-by-one, applying `f` to each, then release the
+    /// outer buffer via its own `drop_fn`. Safe to call across an FFI
+    /// boundary because:
+    ///
+    /// * Each element is moved out with `std::ptr::read` before `f` runs,
+    ///   so element destructors fire inside `f` against whatever inner
+    ///   allocator the element captured (e.g. inner `FfiBytes::drop_fn`).
+    /// * The outer buffer is then released by invoking `drop_fn` with a
+    ///   doctored `len = 0`. `ffi_vec_drop_rust_global<T>` reconstructs
+    ///   `Vec::from_raw_parts(ptr, 0, cap)` so it deallocates the backing
+    ///   storage without re-running element destructors (which would
+    ///   double-drop the values `f` already consumed).
+    pub fn drain_into<R>(self, mut f: impl FnMut(T) -> R) -> Vec<R> {
+        let mut out = Vec::with_capacity(self.len);
+        let len = self.len;
+        let ptr = self.ptr;
+        for i in 0..len {
+            // SAFETY: `i < len`, `ptr` is valid for `len` initialised T's.
+            let element = unsafe { std::ptr::read(ptr.add(i)) };
+            out.push(f(element));
+        }
+        // Suppress the default Drop (which would re-run element destructors
+        // through Vec::drop), then release the outer buffer manually with
+        // `len = 0` so only the allocation itself is freed.
+        let me = std::mem::ManuallyDrop::new(self);
+        if me.cap != 0 {
+            // SAFETY: drop_fn matches the allocator that produced this
+            // buffer; `len = 0` tells the hook to skip element destructors
+            // and only release the storage.
+            unsafe { (me.drop_fn)(me.ptr.cast::<u8>(), 0, me.cap) };
+        }
+        out
     }
 }
 
@@ -319,10 +379,13 @@ pub fn string_map_to_kv(m: std::collections::HashMap<String, String>) -> FfiKvPa
     FfiVec::from_vec(pairs)
 }
 
+/// Decode a plugin-produced metadata list into a host-owned `HashMap`.
+/// Uses `FfiVec::drain_into` so the outer buffer and inner `FfiBytes`
+/// allocations are released through their own `drop_fn`s — never through
+/// the host allocator.
 pub fn kv_to_string_map(list: FfiKvPairList) -> std::collections::HashMap<String, String> {
-    list.into_vec()
+    list.drain_into(|p| (p.key.into_string_lossy(), p.value.into_string_lossy()))
         .into_iter()
-        .map(|p| (p.key.into_string_lossy(), p.value.into_string_lossy()))
         .collect()
 }
 
@@ -448,6 +511,35 @@ mod tests {
         assert_eq!(list.len(), 0);
         assert!(list.is_empty());
         drop(list);
+    }
+
+    #[test]
+    fn ffi_vec_drain_into_preserves_elements_and_releases_outer() {
+        // Build a kv list, drain each pair into a (String, String), and
+        // verify both the content and that we don't double-drop on the
+        // outer buffer (would crash if `drain_into` ran element destructors
+        // twice).
+        let pairs = vec![
+            FfiKvPair::from_string_pair("a".into(), "alpha".into()),
+            FfiKvPair::from_string_pair("b".into(), "beta".into()),
+        ];
+        let list = FfiKvPairList::from_vec(pairs);
+        let drained: Vec<(String, String)> =
+            list.drain_into(|p| (p.key.into_string_lossy(), p.value.into_string_lossy()));
+        assert_eq!(drained.len(), 2);
+        assert!(drained.contains(&("a".to_string(), "alpha".to_string())));
+        assert!(drained.contains(&("b".to_string(), "beta".to_string())));
+    }
+
+    #[test]
+    fn ffi_bytes_copy_to_vec_copies_and_releases_original() {
+        // copy_to_vec must produce a host-owned Vec equal to the original,
+        // while releasing the FfiBytes through its own drop_fn. We can't
+        // observe the drop_fn directly without instrumentation, but the
+        // copy invariant is enough to lock the behaviour.
+        let ffi = FfiBytes::from_vec(b"hello".to_vec());
+        let copy = ffi.copy_to_vec();
+        assert_eq!(copy, b"hello");
     }
 
     #[test]

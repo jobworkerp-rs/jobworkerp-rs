@@ -213,16 +213,18 @@ impl RunnerPluginLoader {
                         }
                         Err(e) => {
                             tracing::error!("V2 plugin rejected: {e}");
-                            // Best-effort cleanup if the vtable pointer is valid
-                            // enough to invoke. We only call drop_state when the
-                            // pointer passes basic sanity, otherwise leaving it
-                            // is safer than dereferencing garbage.
-                            if (raw.vtable as *const PluginVtable as usize) >= MIN_VALID_VTABLE_PTR
-                            {
-                                (raw.vtable.drop_state)(raw.state);
-                            }
-                            // fall through to V1/legacy probing in case the dylib
-                            // exports multiple loader symbols
+                            // Do NOT call `raw.vtable.drop_state` here: when
+                            // the rejection is caused by an old V2 plugin
+                            // (`Box<dyn Trait>` payload misinterpreted as
+                            // `PluginInstanceRaw`), `raw.vtable` points at a
+                            // Rust trait vtable, and `drop_state` resolves to
+                            // an arbitrary offset (drop_in_place or similar)
+                            // that crashes the host when called. We leak the
+                            // state on rejection — rejections only happen at
+                            // load time, so the bound is one leak per
+                            // misloaded plugin file.
+                            // Fall through to V1/legacy probing in case the
+                            // dylib exports multiple loader symbols.
                         }
                     }
                 }
@@ -317,15 +319,13 @@ impl PluginLoader for RunnerPluginLoader {
                     let raw = load_v2();
                     if let Err(e) = validate_v2_vtable(&raw) {
                         tracing::error!("V2 plugin rejected during load_path: {e}");
-                        if (raw.vtable as *const PluginVtable as usize) >= MIN_VALID_VTABLE_PTR {
-                            (raw.vtable.drop_state)(raw.state);
-                        }
-                        // fall through to V1/legacy probing
+                        // Do NOT call `raw.vtable.drop_state` here — see
+                        // `find_plugin_runner_by_name` for the rationale
+                        // (old V2 trait-object payload misinterpreted as
+                        // `PluginInstanceRaw` would crash on dispatch).
                     } else {
-                        let name_bytes = (raw.vtable.name)(raw.state);
-                        let desc_bytes = (raw.vtable.description)(raw.state);
-                        let name = String::from_utf8_lossy(name_bytes.as_slice()).into_owned();
-                        let desc = String::from_utf8_lossy(desc_bytes.as_slice()).into_owned();
+                        let name = (raw.vtable.name)(raw.state).into_string_lossy();
+                        let desc = (raw.vtable.description)(raw.state).into_string_lossy();
                         // Drop the temporary instance state; the actual instance
                         // for the runner is created lazily inside
                         // `find_plugin_runner_by_name`.
