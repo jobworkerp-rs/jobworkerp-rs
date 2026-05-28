@@ -93,6 +93,19 @@ impl FfiBytes {
         }
     }
 
+    /// Decode the buffer as UTF-8, falling back to lossy replacement on
+    /// invalid bytes. Used by host wrappers to recover `String` values
+    /// produced by plugin code without panicking on garbage input.
+    pub fn into_string_lossy(self) -> String {
+        String::from_utf8(self.into_vec())
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+    }
+
+    /// Borrowed counterpart of `into_string_lossy`.
+    pub fn to_string_lossy(&self) -> String {
+        String::from_utf8_lossy(self.as_slice()).into_owned()
+    }
+
     /// Convert the `FfiBytes` back into a `Vec<u8>`. Only valid when the
     /// buffer was created by the same allocator (i.e. `from_vec` in this
     /// process). Crossing the FFI boundary requires the receiver to use the
@@ -277,6 +290,41 @@ pub struct FfiKvPair {
 
 /// FFI-safe owned list of key/value pairs (protobuf-encoded values).
 pub type FfiKvPairList = FfiVec<FfiKvPair>;
+
+/// Build an `FfiOption<FfiBytes>` from an optional UTF-8 string slice.
+/// Used by host wrappers when forwarding the `using` argument across the
+/// FFI boundary.
+pub fn option_str_to_ffi(s: Option<&str>) -> FfiOption<FfiBytes> {
+    FfiOption::from_option(s.map(|s| FfiBytes::from_vec(s.as_bytes().to_vec())))
+}
+
+impl FfiKvPair {
+    /// Convenience constructor for UTF-8 string metadata pairs.
+    pub fn from_string_pair(key: String, value: String) -> Self {
+        Self {
+            key: FfiBytes::from_vec(key.into_bytes()),
+            value: FfiBytes::from_vec(value.into_bytes()),
+        }
+    }
+}
+
+/// HashMap<String, String> ↔ FfiKvPairList helpers used on both the host
+/// and plugin sides to marshal job metadata. UTF-8 conversion is lossy on
+/// invalid bytes.
+pub fn string_map_to_kv(m: std::collections::HashMap<String, String>) -> FfiKvPairList {
+    let pairs: Vec<FfiKvPair> = m
+        .into_iter()
+        .map(|(k, v)| FfiKvPair::from_string_pair(k, v))
+        .collect();
+    FfiVec::from_vec(pairs)
+}
+
+pub fn kv_to_string_map(list: FfiKvPairList) -> std::collections::HashMap<String, String> {
+    list.into_vec()
+        .into_iter()
+        .map(|p| (p.key.into_string_lossy(), p.value.into_string_lossy()))
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {

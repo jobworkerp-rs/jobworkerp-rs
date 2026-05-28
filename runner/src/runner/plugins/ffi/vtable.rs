@@ -41,6 +41,11 @@ pub const VTABLE_SIZE_MIN: u32 = 128;
 /// expansion; rejects garbage values from misloaded plugins.
 pub const VTABLE_SIZE_MAX: u32 = 4096;
 
+/// Pointers below this value are treated as obviously invalid (null,
+/// misaligned, or stale Box<dyn Trait> fat-pointer halves). Page-aligned
+/// addresses on all supported OSes start well above 4 KiB.
+pub const MIN_VALID_VTABLE_PTR: usize = 4096;
+
 /// Outcome of a `run` call. The result and metadata are split into named
 /// fields so future additions stay tail-appendable without breaking ABI.
 #[repr(C)]
@@ -101,6 +106,18 @@ pub struct PluginVtable {
     pub reserved_method_0: unsafe extern "C" fn(*mut ()) -> FfiResult<FfiBytes, FfiBytes>,
 }
 
+impl PluginVtable {
+    /// Major component of the packed `abi_version` field.
+    pub fn abi_major(&self) -> u16 {
+        (self.abi_version >> 16) as u16
+    }
+
+    /// Minor component of the packed `abi_version` field.
+    pub fn abi_minor(&self) -> u16 {
+        (self.abi_version & 0xFFFF) as u16
+    }
+}
+
 /// FFI-safe instance produced by `load_multi_method_plugin_v2`. The host
 /// wraps it in [`PluginInstance`] before storing so the underlying dylib
 /// stays loaded as long as the instance lives.
@@ -120,10 +137,11 @@ pub struct PluginInstance {
     pub state: *mut (),
     pub vtable: &'static PluginVtable,
     /// Anchors the leaked `&'static Library` for traceability. The
-    /// reference is never dropped, but storing it keeps the lifetime
-    /// relationship explicit and makes future code that wants to switch
-    /// to ref-counted libraries easier to retrofit.
-    pub library: &'static libloading::Library,
+    /// reference is never dereferenced after construction; storing it
+    /// keeps the lifetime relationship explicit and makes future code
+    /// that wants to switch to ref-counted libraries easier to retrofit.
+    /// Prefixed with `_` so it isn't mistakenly accessed.
+    pub _library: &'static libloading::Library,
 }
 
 // SAFETY: the underlying state is the plugin's responsibility (it must

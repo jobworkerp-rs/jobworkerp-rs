@@ -1,7 +1,7 @@
 use super::PluginLoader;
 use crate::runner::plugins::ffi::{
-    PLUGIN_V2_ABI_MAJOR, PLUGIN_V2_ABI_MINOR, PluginInstance, PluginInstanceRaw, PluginVtable,
-    VTABLE_SIZE_MAX, VTABLE_SIZE_MIN,
+    MIN_VALID_VTABLE_PTR, PLUGIN_V2_ABI_MAJOR, PLUGIN_V2_ABI_MINOR, PluginInstance,
+    PluginInstanceRaw, PluginVtable, VTABLE_SIZE_MAX, VTABLE_SIZE_MIN,
 };
 use crate::runner::plugins::{
     MultiMethodPluginRunner, PluginRunner, PluginRunnerVariant, impls::PluginRunnerWrapperImpl,
@@ -53,14 +53,14 @@ static PLUGIN_LIBRARY_CACHE: OnceLock<TokioRwLock<HashMap<PathBuf, &'static Libr
 ///     would interpret out-of-bounds memory as method pointers.
 fn validate_v2_vtable(raw: &PluginInstanceRaw) -> Result<()> {
     let vtable_ptr = raw.vtable as *const PluginVtable;
-    if vtable_ptr.is_null() || (vtable_ptr as usize) < 4096 {
+    if vtable_ptr.is_null() || (vtable_ptr as usize) < MIN_VALID_VTABLE_PTR {
         return Err(anyhow::anyhow!(
             "V2 vtable pointer looks invalid ({:p}); likely an old V2 plugin",
             vtable_ptr
         ));
     }
-    let plugin_major = (raw.vtable.abi_version >> 16) as u16;
-    let plugin_minor = (raw.vtable.abi_version & 0xFFFF) as u16;
+    let plugin_major = raw.vtable.abi_major();
+    let plugin_minor = raw.vtable.abi_minor();
     let host_size = std::mem::size_of::<PluginVtable>() as u32;
     let plugin_size = raw.vtable.vtable_size;
 
@@ -204,7 +204,7 @@ impl RunnerPluginLoader {
                             let inst = PluginInstance {
                                 state: raw.state,
                                 vtable: raw.vtable,
-                                library: lib,
+                                _library: lib,
                             };
                             let variant = PluginRunnerVariant::MultiMethodV2(inst);
                             return Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
@@ -217,7 +217,8 @@ impl RunnerPluginLoader {
                             // enough to invoke. We only call drop_state when the
                             // pointer passes basic sanity, otherwise leaving it
                             // is safer than dereferencing garbage.
-                            if (raw.vtable as *const PluginVtable as usize) >= 4096 {
+                            if (raw.vtable as *const PluginVtable as usize) >= MIN_VALID_VTABLE_PTR
+                            {
                                 (raw.vtable.drop_state)(raw.state);
                             }
                             // fall through to V1/legacy probing in case the dylib
@@ -316,7 +317,7 @@ impl PluginLoader for RunnerPluginLoader {
                     let raw = load_v2();
                     if let Err(e) = validate_v2_vtable(&raw) {
                         tracing::error!("V2 plugin rejected during load_path: {e}");
-                        if (raw.vtable as *const PluginVtable as usize) >= 4096 {
+                        if (raw.vtable as *const PluginVtable as usize) >= MIN_VALID_VTABLE_PTR {
                             (raw.vtable.drop_state)(raw.state);
                         }
                         // fall through to V1/legacy probing

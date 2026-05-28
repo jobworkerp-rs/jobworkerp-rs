@@ -408,53 +408,23 @@ pub trait MultiMethodPluginRunner: Send + Sync {
     }
 }
 
-// === V2 vtable conversion helpers ===
-//
-// V2 method results come back as FfiBytes / FfiKvPairList; convert to the
-// `String` / `HashMap` shapes the rest of the runner expects. UTF-8
-// validation is lossy because plugin authors set these strings and the
-// host cannot reasonably reject them at this layer.
+// V2 method results come back as FfiBytes / FfiKvPairList; decode protobuf
+// payloads back into the strongly-typed proto messages. UTF-8 conversion
+// goes through `FfiBytes::into_string_lossy` so plugin-supplied byte
+// strings cannot panic the host.
 
-fn v2_bytes_to_string(b: ffi::FfiBytes) -> String {
-    String::from_utf8(b.into_vec())
-        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
-}
-
-fn v2_using_to_ffi(using: Option<&str>) -> ffi::FfiOption<ffi::FfiBytes> {
-    ffi::FfiOption::from_option(using.map(|s| ffi::FfiBytes::from_vec(s.as_bytes().to_vec())))
-}
-
-fn v2_decode_proto_map(
+fn v2_decode_schema_map<M: prost::Message + Default>(
     list: ffi::FfiKvPairList,
-) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
-    use prost::Message;
+    label: &'static str,
+) -> HashMap<String, M> {
     list.into_vec()
         .into_iter()
         .filter_map(|pair| {
-            let key = v2_bytes_to_string(pair.key);
-            match proto::jobworkerp::data::MethodSchema::decode(pair.value.as_slice()) {
+            let key = pair.key.into_string_lossy();
+            match M::decode(pair.value.as_slice()) {
                 Ok(schema) => Some((key, schema)),
                 Err(e) => {
-                    tracing::warn!("V2 plugin method_proto_map decode error: {e}");
-                    None
-                }
-            }
-        })
-        .collect()
-}
-
-fn v2_decode_json_schema_map(
-    list: ffi::FfiKvPairList,
-) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
-    use prost::Message;
-    list.into_vec()
-        .into_iter()
-        .filter_map(|pair| {
-            let key = v2_bytes_to_string(pair.key);
-            match proto::jobworkerp::data::MethodJsonSchema::decode(pair.value.as_slice()) {
-                Ok(schema) => Some((key, schema)),
-                Err(e) => {
-                    tracing::warn!("V2 plugin method_json_schema_map decode error: {e}");
+                    tracing::warn!("V2 plugin {label} decode error: {e}");
                     None
                 }
             }
@@ -522,7 +492,7 @@ impl PluginRunnerVariant {
             PluginRunnerVariant::Legacy(p) => p.name(),
             PluginRunnerVariant::MultiMethod(p) => p.name(),
             PluginRunnerVariant::MultiMethodV2(p) => {
-                v2_bytes_to_string(unsafe { (p.vtable.name)(p.state) })
+                unsafe { (p.vtable.name)(p.state) }.into_string_lossy()
             }
         }
     }
@@ -532,7 +502,7 @@ impl PluginRunnerVariant {
             PluginRunnerVariant::Legacy(p) => p.description(),
             PluginRunnerVariant::MultiMethod(p) => p.description(),
             PluginRunnerVariant::MultiMethodV2(p) => {
-                v2_bytes_to_string(unsafe { (p.vtable.description)(p.state) })
+                unsafe { (p.vtable.description)(p.state) }.into_string_lossy()
             }
         }
     }
@@ -542,7 +512,7 @@ impl PluginRunnerVariant {
             PluginRunnerVariant::Legacy(p) => p.runner_settings_proto(),
             PluginRunnerVariant::MultiMethod(p) => p.runner_settings_proto(),
             PluginRunnerVariant::MultiMethodV2(p) => {
-                v2_bytes_to_string(unsafe { (p.vtable.runner_settings_proto)(p.state) })
+                unsafe { (p.vtable.runner_settings_proto)(p.state) }.into_string_lossy()
             }
         }
     }
@@ -568,7 +538,7 @@ impl PluginRunnerVariant {
             PluginRunnerVariant::MultiMethod(p) => p.method_proto_map(),
             PluginRunnerVariant::MultiMethodV2(p) => {
                 let list = unsafe { (p.vtable.method_proto_map)(p.state) };
-                v2_decode_proto_map(list)
+                v2_decode_schema_map(list, "method_proto_map")
             }
         }
     }
@@ -598,14 +568,22 @@ impl PluginRunnerVariant {
             }
             PluginRunnerVariant::MultiMethodV2(p) => {
                 let list = unsafe { (p.vtable.method_json_schema_map)(p.state) };
-                let decoded = v2_decode_json_schema_map(list);
-                if decoded.is_empty() {
-                    proto::jobworkerp::data::MethodJsonSchema::from_proto_map(
-                        self.method_proto_map(),
-                    )
-                } else {
-                    decoded
+                let decoded = v2_decode_schema_map::<proto::jobworkerp::data::MethodJsonSchema>(
+                    list,
+                    "method_json_schema_map",
+                );
+                if !decoded.is_empty() {
+                    return decoded;
                 }
+                // Fallback: reuse the V2 proto map without going back through
+                // `self.method_proto_map()` (which would trigger a second
+                // FFI call + decode loop).
+                let proto_list = unsafe { (p.vtable.method_proto_map)(p.state) };
+                let proto_map = v2_decode_schema_map::<proto::jobworkerp::data::MethodSchema>(
+                    proto_list,
+                    "method_proto_map",
+                );
+                proto::jobworkerp::data::MethodJsonSchema::from_proto_map(proto_map)
             }
         }
     }
@@ -615,7 +593,7 @@ impl PluginRunnerVariant {
             PluginRunnerVariant::Legacy(p) => p.settings_schema(),
             PluginRunnerVariant::MultiMethod(p) => p.settings_schema(),
             PluginRunnerVariant::MultiMethodV2(p) => {
-                v2_bytes_to_string(unsafe { (p.vtable.settings_schema)(p.state) })
+                unsafe { (p.vtable.settings_schema)(p.state) }.into_string_lossy()
             }
         }
     }
@@ -625,7 +603,7 @@ impl PluginRunnerVariant {
             PluginRunnerVariant::Legacy(_) => false,
             PluginRunnerVariant::MultiMethod(p) => p.supports_client_stream(using),
             PluginRunnerVariant::MultiMethodV2(p) => {
-                let using_ffi = v2_using_to_ffi(using);
+                let using_ffi = ffi::option_str_to_ffi(using);
                 unsafe { (p.vtable.supports_client_stream)(p.state, using_ffi) }
             }
         }
@@ -636,12 +614,12 @@ impl PluginRunnerVariant {
             PluginRunnerVariant::Legacy(_) => None,
             PluginRunnerVariant::MultiMethod(p) => p.client_stream_data_proto(using),
             PluginRunnerVariant::MultiMethodV2(p) => {
-                let using_ffi = v2_using_to_ffi(using);
+                let using_ffi = ffi::option_str_to_ffi(using);
                 let bytes = unsafe { (p.vtable.client_stream_data_proto)(p.state, using_ffi) };
                 if bytes.is_empty() {
                     None
                 } else {
-                    Some(v2_bytes_to_string(bytes))
+                    Some(bytes.into_string_lossy())
                 }
             }
         }

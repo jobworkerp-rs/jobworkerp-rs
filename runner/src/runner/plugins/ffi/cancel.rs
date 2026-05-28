@@ -29,6 +29,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Waker;
 
+/// Panic message used when the wakers Mutex is poisoned. A poisoned lock
+/// here means a previous holder panicked while holding it, which would
+/// only happen if a waker thunk panicked — recovery is impossible because
+/// the slots map is in an unknown state.
+const WAKERS_POISONED: &str = "FfiCancellationToken wakers mutex poisoned";
+
 /// Internal state shared between host and plugin via `Arc`.
 struct TokenInner {
     cancelled: AtomicBool,
@@ -53,10 +59,7 @@ impl TokenInner {
         // releasing the lock. This avoids deadlock when the woken task
         // immediately re-polls and re-registers.
         let drained: Vec<ExternWakerSlot> = {
-            let mut map = self
-                .wakers
-                .lock()
-                .expect("FfiCancellationToken wakers poisoned");
+            let mut map = self.wakers.lock().expect(WAKERS_POISONED);
             map.drain().map(|(_, slot)| slot).collect()
         };
         for slot in &drained {
@@ -114,10 +117,7 @@ unsafe extern "C" fn host_register_waker(
     // ownership into the slot. If we reject the registration (sentinel
     // path), we must call `drop_ctx` ourselves to avoid leaking.
     let inner = unsafe { &*(state as *const TokenInner) };
-    let mut map = inner
-        .wakers
-        .lock()
-        .expect("FfiCancellationToken wakers poisoned");
+    let mut map = inner.wakers.lock().expect(WAKERS_POISONED);
     // Re-check after acquiring the lock. If a concurrent `cancel()` already
     // drained the map, return sentinel 0 instead of stashing a slot that
     // would never be woken.
@@ -144,10 +144,7 @@ unsafe extern "C" fn host_unregister_waker(state: *const (), id: u64) {
     if let Some(nz) = NonZeroU64::new(id) {
         // SAFETY: `state` originates from `Arc::into_raw`.
         let inner = unsafe { &*(state as *const TokenInner) };
-        let mut map = inner
-            .wakers
-            .lock()
-            .expect("FfiCancellationToken wakers poisoned");
+        let mut map = inner.wakers.lock().expect(WAKERS_POISONED);
         // The removed `ExternWakerSlot` is dropped here, which invokes
         // `drop_ctx` exactly once.
         let _ = map.remove(&nz);
@@ -391,24 +388,14 @@ impl<'a> Drop for FfiCancelledFuture<'a> {
 /// plugin token before runtime shutdown to propagate late cancellation.
 pub fn from_tokio_util(token: tokio_util::sync::CancellationToken) -> FfiCancellationToken {
     let (ffi, handle) = FfiCancellationToken::new_owned();
-    let abort_handle = tokio::spawn(async move {
+    // Detach the bridge task. It self-terminates as soon as the source
+    // `token` fires (or is dropped, in which case `cancelled()` resolves
+    // immediately via tokio_util's drop semantics), so no abort handle
+    // is needed.
+    tokio::spawn(async move {
         token.cancelled().await;
         handle.cancel();
     });
-    // Keep the bridge alive as long as the plugin token lives by stashing
-    // the abort handle into a side channel. We attach it via a sidecar
-    // task using `tokio_util::task::AbortOnDropHandle`. Storing the abort
-    // handle requires a small Box that we leak intentionally — the abort
-    // happens when the bridged task naturally finishes (after `cancel`).
-    // The leaked handle is bounded: one per bridge instance.
-    //
-    // NOTE: we cannot easily attach the AbortOnDropHandle to `ffi` without
-    // changing its layout, so for now we let the bridge task drive itself
-    // to completion. This is acceptable because:
-    //   * Bridge tasks always terminate naturally when either side cancels.
-    //   * Worst case is a long-lived task per outstanding plugin job,
-    //     which mirrors the existing host wrapper's tokio_util usage.
-    std::mem::forget(tokio_util::task::AbortOnDropHandle::new(abort_handle));
     ffi
 }
 

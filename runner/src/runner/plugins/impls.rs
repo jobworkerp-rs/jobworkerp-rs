@@ -28,38 +28,11 @@ pub enum PluginVariantType {
     MultiMethodV2,
 }
 
-// Boundary conversions for V2 plugins: `HashMap<String,String>` is not
-// ABI-stable across separately-compiled crates, so the FFI uses
-// `FfiKvPairList = FfiVec<FfiKvPair>` carrying UTF-8 bytes per pair.
-fn meta_to_ffi(m: HashMap<String, String>) -> super::ffi::FfiKvPairList {
-    let pairs: Vec<super::ffi::FfiKvPair> = m
-        .into_iter()
-        .map(|(k, v)| super::ffi::FfiKvPair {
-            key: super::ffi::FfiBytes::from_vec(k.into_bytes()),
-            value: super::ffi::FfiBytes::from_vec(v.into_bytes()),
-        })
-        .collect();
-    super::ffi::FfiVec::from_vec(pairs)
-}
-
-fn meta_from_ffi(list: super::ffi::FfiKvPairList) -> HashMap<String, String> {
-    list.into_vec()
-        .into_iter()
-        .map(|p| {
-            let k = String::from_utf8(p.key.into_vec())
-                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-            let v = String::from_utf8(p.value.into_vec())
-                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-            (k, v)
-        })
-        .collect()
-}
-
-fn using_to_ffi(using: Option<&str>) -> super::ffi::FfiOption<super::ffi::FfiBytes> {
-    super::ffi::FfiOption::from_option(
-        using.map(|s| super::ffi::FfiBytes::from_vec(s.as_bytes().to_vec())),
-    )
-}
+// Re-exports for readability at the call sites inside this file.
+use super::ffi::{
+    kv_to_string_map as meta_from_ffi, option_str_to_ffi as using_to_ffi,
+    string_map_to_kv as meta_to_ffi,
+};
 
 /// Stable label for a `PluginRunnerVariant` enum arm. Used by safe
 /// error-fallback paths when the cached `variant_type` and the actual
