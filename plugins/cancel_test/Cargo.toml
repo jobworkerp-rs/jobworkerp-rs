@@ -1,0 +1,23 @@
+[package]
+name = "plugin_runner_cancel_test"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "V2 plugin sample: cooperative cancellation via CancellationToken"
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+proto = { path = "../../proto" }
+jobworkerp-runner = { path = "../../runner" }
+
+anyhow = { workspace = true }
+# Must match the host's async-ffi pin so the FfiFuture layout agrees across the
+# FFI boundary.
+async-ffi = { workspace = true }
+tokio = { workspace = true }
+# Must match the host's tokio-util pin so the CancellationToken layout agrees
+# across the FFI boundary.
+tokio-util = { workspace = true }
+tracing = { workspace = true }

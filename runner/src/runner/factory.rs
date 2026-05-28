@@ -226,7 +226,7 @@ mod test {
                 .await
                 .active_plugin_info()
                 .len(),
-            3 // Test, Hello, LegacyCompat (MistralLocalLLM moved to separate repository)
+            4 // Test, Hello, LegacyCompat, CancelTest (MistralLocalLLM moved to separate repository)
         );
         // from plugins
         assert_eq!(

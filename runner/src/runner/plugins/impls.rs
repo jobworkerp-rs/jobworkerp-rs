@@ -4,7 +4,7 @@ use crate::runner::RunnerTrait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::PluginRunnerVariant;
+use super::{CancellationToken, PluginRunnerVariant};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures::executor::block_on;
@@ -25,6 +25,65 @@ use proto::jobworkerp::data::{JobData, JobId, JobResult};
 pub enum PluginVariantType {
     Legacy,
     MultiMethod,
+    MultiMethodV2,
+}
+
+// Boundary conversions for V2 plugins: `HashMap<String,String>` is not
+// ABI-stable across separately-compiled crates, so the FFI uses
+// `Vec<(String, String)>`.
+fn meta_to_vec(m: HashMap<String, String>) -> Vec<(String, String)> {
+    let mut v = Vec::with_capacity(m.len());
+    v.extend(m);
+    v
+}
+
+fn meta_from_vec(v: Vec<(String, String)>) -> HashMap<String, String> {
+    let mut m = HashMap::with_capacity(v.len());
+    m.extend(v);
+    m
+}
+
+/// Stable label for a `PluginRunnerVariant` enum arm. Used by safe
+/// error-fallback paths when the cached `variant_type` and the actual
+/// variant disagree — we surface the discrepancy in logs/errors instead
+/// of panicking the worker process.
+fn variant_kind(v: &PluginRunnerVariant) -> &'static str {
+    match v {
+        PluginRunnerVariant::Legacy(_) => "Legacy",
+        PluginRunnerVariant::MultiMethod(_) => "MultiMethod",
+        PluginRunnerVariant::MultiMethodV2(_) => "MultiMethodV2",
+    }
+}
+
+/// Outcome of awaiting a V2 plugin's `run_stream` `JoinHandle`. Outer
+/// `Result` is the join result (panic / cancellation); inner is the
+/// plugin's own success/failure (`Ok(final_metadata)` / `Err(message)`).
+type V2RunStreamOutcome =
+    std::result::Result<std::result::Result<Vec<(String, String)>, String>, tokio::task::JoinError>;
+
+/// Convert the outcome of a V2 plugin's `run_stream` future, observed
+/// **before any chunk has been yielded downstream**, into either:
+/// - `Ok(empty_stream)` — the plugin completed successfully without
+///   producing any data; emit only the End trailer with its metadata.
+/// - `Err(...)` — the plugin returned Err (e.g. the default "not
+///   implemented" impl), was cancelled, or its task panicked. Surface as
+///   an outer `run_stream` Err so the job is marked failed.
+fn finalize_pre_stream(res: V2RunStreamOutcome) -> Result<BoxStream<'static, ResultOutputItem>> {
+    match res {
+        Ok(Ok(meta_vec)) => {
+            let end = ResultOutputItem {
+                item: Some(result_output_item::Item::End(Trailer {
+                    metadata: meta_from_vec(meta_vec),
+                })),
+            };
+            Ok(futures::stream::iter(std::iter::once(end)).boxed())
+        }
+        Ok(Err(e)) => Err(anyhow!("v2 plugin run_stream error: {}", e)),
+        Err(join_err) if join_err.is_cancelled() => {
+            Err(anyhow!("v2 plugin run_stream was cancelled"))
+        }
+        Err(join_err) => Err(anyhow!("v2 plugin task join error: {:?}", join_err)),
+    }
 }
 
 /**
@@ -47,6 +106,7 @@ impl PluginRunnerWrapperImpl {
             match &*guard {
                 PluginRunnerVariant::Legacy(_) => PluginVariantType::Legacy,
                 PluginRunnerVariant::MultiMethod(_) => PluginVariantType::MultiMethod,
+                PluginRunnerVariant::MultiMethodV2(_) => PluginVariantType::MultiMethodV2,
             }
         };
         Self {
@@ -55,14 +115,211 @@ impl PluginRunnerWrapperImpl {
             cancel_helper: None,
         }
     }
+
+    /// Build a wrapper around an in-process V2 plugin. Intended for tests
+    /// that exercise the wrapper without loading a real `.so`; the
+    /// production loader (`find_plugin_runner_by_name`) uses `new` directly.
+    ///
+    /// Gated on `test-utils` so the public API does not expose
+    /// `PluginRunnerVariant`'s internal representation to general callers.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn from_v2_for_test(
+        plugin: Box<dyn super::MultiMethodPluginRunnerV2 + Send + Sync>,
+    ) -> Self {
+        Self::new(Arc::new(RwLock::new(PluginRunnerVariant::MultiMethodV2(
+            plugin,
+        ))))
+    }
+
+    /// Attach a cancellation monitoring helper. Used by the app-wrapper layer to
+    /// inject the pubsub-backed cancellation manager after the plugin is loaded;
+    /// V2 plugins additionally receive the token at setup time.
+    pub fn set_cancel_helper(&mut self, helper: CancelMonitoringHelper) {
+        self.cancel_helper = Some(helper);
+    }
+    /// V2 stream path: spawn the plugin's `run_stream` future on the host
+    /// runtime, then yield chunks directly from the raw mpsc receiver inside
+    /// the output stream. The plugin's final metadata becomes the End trailer.
+    ///
+    /// Errors surfaced before any chunk has been sent (e.g. the default
+    /// `Err("not implemented")` impl, parameter validation, internal
+    /// `variant_type` drift) are returned as `Err(...)` from this function
+    /// so callers like `run_and_stream` mark the job as failed instead of
+    /// emitting an empty success stream.
+    ///
+    /// Mid-stream errors (the plugin sent some chunks, then returned Err)
+    /// still terminate the stream with an End trailer — there is no
+    /// in-band error item on `ResultOutputItem`, so consumers must consult
+    /// metadata / logs to detect partial failures. This matches V1's
+    /// `receive_stream` behaviour.
+    async fn run_stream_v2(
+        &self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+        using: Option<&str>,
+        cancel_token: Option<CancellationToken>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        let (raw_tx, mut raw_rx) = mpsc::channel::<Vec<u8>>(16);
+        let variant_clone = self.variant.clone();
+        let arg_owned = arg.to_vec();
+        let using_owned = using.map(|s| s.to_string());
+        let metadata_for_fallback = metadata.clone();
+
+        let mut plugin_fut = tokio::spawn(async move {
+            let fut = {
+                let mut guard = variant_clone.write().await;
+                match &mut *guard {
+                    super::PluginRunnerVariant::MultiMethodV2(plugin) => {
+                        plugin.run_stream(arg_owned, meta_to_vec(metadata), using_owned, raw_tx)
+                    }
+                    other => {
+                        // Cached variant_type and the actual variant disagree.
+                        // Bail safely instead of panicking the worker process.
+                        return Err(format!(
+                            "internal: variant_type cached as MultiMethodV2 but variant is {}",
+                            variant_kind(other)
+                        ));
+                    }
+                }
+            };
+            fut.await
+        });
+
+        // Race the first chunk against `plugin_fut`:
+        //
+        // - `plugin_fut` completes first: the plugin may have buffered
+        //   chunks into the channel before exiting (e.g. a short synchronous
+        //   `send(chunk).await; Ok(meta)`). Drain those chunks; only if
+        //   none arrived treat this as a pre-stream outcome
+        //   (empty-success Ok or hard Err via `finalize_pre_stream`).
+        //   Without the drain biased select! would silently lose data.
+        // - `raw_rx.recv()` yields the first chunk: enter the streaming
+        //   loop with that chunk; `plugin_fut` is resolved later for the
+        //   End trailer.
+        // - `raw_rx.recv()` yields `None`: the sender was dropped before
+        //   any chunk; await `plugin_fut` for the outcome.
+        let mut plugin_outcome: Option<V2RunStreamOutcome> = None;
+        // Pending chunks buffered into the channel before `plugin_fut`
+        // returned, in the order they were sent. Yielded ahead of the
+        // streaming loop so consumers see every chunk the plugin emitted.
+        let mut pending_chunks: Vec<Vec<u8>> = Vec::new();
+        let first_chunk: Vec<u8> = tokio::select! {
+            biased;
+            res = &mut plugin_fut => {
+                raw_rx.close();
+                while let Ok(c) = raw_rx.try_recv() {
+                    pending_chunks.push(c);
+                }
+                if pending_chunks.is_empty() {
+                    return finalize_pre_stream(res);
+                }
+                plugin_outcome = Some(res);
+                pending_chunks.remove(0)
+            }
+            v = raw_rx.recv() => match v {
+                Some(chunk) => chunk,
+                None => return finalize_pre_stream(plugin_fut.await),
+            },
+        };
+
+        let st = async_stream::stream! {
+            yield ResultOutputItem {
+                item: Some(result_output_item::Item::Data(first_chunk)),
+            };
+            for chunk in pending_chunks {
+                yield ResultOutputItem {
+                    item: Some(result_output_item::Item::Data(chunk)),
+                };
+            }
+
+            // Skip the streaming loop entirely when the plugin already
+            // finished before we entered the stream — `raw_rx` is closed
+            // and `pending_chunks` is already exhausted.
+            if plugin_outcome.is_none() {
+                loop {
+                    let chunk_opt = match cancel_token.as_ref() {
+                        Some(token) => tokio::select! {
+                            v = raw_rx.recv() => v,
+                            _ = token.cancelled() => {
+                                tracing::info!("Plugin stream cancelled by token");
+                                plugin_fut.abort();
+                                None
+                            }
+                        },
+                        None => raw_rx.recv().await,
+                    };
+                    match chunk_opt {
+                        Some(chunk) => yield ResultOutputItem {
+                            item: Some(result_output_item::Item::Data(chunk)),
+                        },
+                        None => break,
+                    }
+                }
+            }
+
+            let outcome = match plugin_outcome {
+                Some(o) => o,
+                None => plugin_fut.await,
+            };
+            let final_meta = match outcome {
+                Ok(Ok(meta_vec)) => meta_from_vec(meta_vec),
+                Ok(Err(e)) => {
+                    // Mid-stream error: the consumer already received some
+                    // data, so we cannot promote this to a hard Err on
+                    // `run_stream` — log loudly and terminate with End.
+                    tracing::error!("v2 plugin run_stream error after partial output: {}", e);
+                    metadata_for_fallback
+                }
+                Err(join_err) if join_err.is_cancelled() => metadata_for_fallback,
+                Err(join_err) => {
+                    tracing::error!("v2 plugin task join error: {:?}", join_err);
+                    metadata_for_fallback
+                }
+            };
+            yield ResultOutputItem {
+                item: Some(result_output_item::Item::End(Trailer {
+                    metadata: final_meta,
+                })),
+            };
+        }
+        .boxed();
+        Ok(st)
+    }
+
     async fn create(&self, settings: Vec<u8>) -> Result<()> {
+        // V2 plugins return an FfiFuture from load(); awaiting it directly on
+        // the host runtime is correct (spawn_blocking would prevent the
+        // future from being driven cooperatively).
+        if self.variant_type == PluginVariantType::MultiMethodV2 {
+            let fut = {
+                let mut guard = self.variant.write().await;
+                match &mut *guard {
+                    super::PluginRunnerVariant::MultiMethodV2(plugin) => plugin.load(settings),
+                    other => {
+                        return Err(anyhow!(
+                            "internal: variant_type cached as MultiMethodV2 but variant is {}",
+                            variant_kind(other)
+                        ));
+                    }
+                }
+            };
+            fut.await.map_err(|e| anyhow!("plugin load error: {}", e))?;
+            return Ok(());
+        }
+
         let variant = Arc::clone(&self.variant);
         #[allow(unstable_name_collisions)]
         tokio::task::spawn_blocking(|| async move {
             let mut guard = variant.write().await;
-            match &mut *guard {
-                super::PluginRunnerVariant::Legacy(plugin) => plugin.load(settings),
-                super::PluginRunnerVariant::MultiMethod(plugin) => plugin.load(settings),
+            if let Some(p) = guard.as_multi_method_v1_mut() {
+                p.load(settings)
+            } else if let super::PluginRunnerVariant::Legacy(plugin) = &mut *guard {
+                plugin.load(settings)
+            } else {
+                Err(anyhow!(
+                    "internal: variant_type cached as V1/Legacy but variant is {}",
+                    variant_kind(&guard)
+                ))
             }
         })
         .await
@@ -74,95 +331,34 @@ impl PluginRunnerWrapperImpl {
 
 impl RunnerSpec for PluginRunnerWrapperImpl {
     fn name(&self) -> String {
-        let guard = block_on(self.variant.read());
-        match &*guard {
-            super::PluginRunnerVariant::Legacy(plugin) => plugin.name(),
-            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.name(),
-        }
+        block_on(self.variant.read()).name()
     }
     fn runner_settings_proto(&self) -> String {
-        let guard = block_on(self.variant.read());
-        match &*guard {
-            super::PluginRunnerVariant::Legacy(plugin) => plugin.runner_settings_proto(),
-            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.runner_settings_proto(),
-        }
+        block_on(self.variant.read()).runner_settings_proto()
     }
     fn method_proto_map(
         &self,
     ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
-        let guard = block_on(self.variant.read());
-        match &*guard {
-            super::PluginRunnerVariant::Legacy(plugin) => {
-                // Auto-convert from legacy methods
-                let mut map = HashMap::new();
-                map.insert(
-                    proto::DEFAULT_METHOD_NAME.to_string(),
-                    proto::jobworkerp::data::MethodSchema {
-                        args_proto: plugin.job_args_proto(),
-                        result_proto: plugin.result_output_proto().unwrap_or_default(),
-                        description: Some(plugin.description()),
-                        output_type: plugin.output_type() as i32,
-                        ..Default::default()
-                    },
-                );
-                tracing::debug!(
-                    "Auto-converted legacy plugin '{}' to method_proto_map with '{}' method",
-                    plugin.name(),
-                    proto::DEFAULT_METHOD_NAME
-                );
-                map
-            }
-            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.method_proto_map(),
-        }
+        block_on(self.variant.read()).method_proto_map()
     }
 
     fn method_json_schema_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
-        let guard = block_on(self.variant.read());
-        match &*guard {
-            super::PluginRunnerVariant::Legacy(plugin) => {
-                // This is a legacy plugin - use arguments_schema() and output_json_schema()
-                let mut map = HashMap::new();
-                map.insert(
-                    proto::DEFAULT_METHOD_NAME.to_string(),
-                    proto::jobworkerp::data::MethodJsonSchema {
-                        args_schema: plugin.arguments_schema(),
-                        result_schema: plugin.output_json_schema(),
-                        client_stream_data_schema: None,
-                    },
-                );
-                tracing::debug!(
-                    "Auto-converted legacy plugin '{}' JSON schemas with '{}' method",
-                    plugin.name(),
-                    proto::DEFAULT_METHOD_NAME
-                );
-                map
-            }
-            super::PluginRunnerVariant::MultiMethod(plugin) => {
-                if let Some(custom_schemas) = plugin.method_json_schema_map() {
-                    custom_schemas
-                } else {
-                    // Fall back to automatic Protobuf→JSON Schema conversion
-                    proto::jobworkerp::data::MethodJsonSchema::from_proto_map(
-                        self.method_proto_map(),
-                    )
-                }
-            }
-        }
+        block_on(self.variant.read()).method_json_schema_map()
     }
 
     fn settings_schema(&self) -> String {
-        let guard = block_on(self.variant.read());
-        match &*guard {
-            super::PluginRunnerVariant::Legacy(plugin) => plugin.settings_schema(),
-            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.settings_schema(),
-        }
+        block_on(self.variant.read()).settings_schema()
     }
 
-    // run() executes the synchronous plugin call on a blocking thread holding the
-    // variant write lock; a timeout cannot stop it, so the lock stays held. Reusing
-    // this instance would block the next job — discard it instead.
+    // V1/legacy plugins block on a synchronous run() while holding the variant
+    // write lock, so on timeout the lock cannot be reclaimed — the wrapper
+    // instance must be discarded.
+    //
+    // V2 plugins return an FfiFuture awaited by the wrapper; on timeout the
+    // caller drops the future and the guard drops with it, freeing the lock
+    // immediately. The instance can be safely reused.
     fn should_detach_on_timeout(&self) -> bool {
-        true
+        block_on(self.variant.read()).should_detach_on_timeout()
     }
 
     /// Collect streaming plugin output into a single result.
@@ -177,10 +373,13 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
     fn collect_stream(
         &self,
         stream: BoxStream<'static, ResultOutputItem>,
-        _using: Option<&str>,
+        using: Option<&str>,
     ) -> crate::runner::CollectStreamFuture {
         let variant = self.variant.clone();
         let variant_type = self.variant_type;
+        // Forwarded to multi-method plugins for method-aware aggregation;
+        // owned because `CollectStreamFuture` outlives the caller borrow.
+        let using_owned: Option<String> = using.map(|s| s.to_string());
 
         Box::pin(async move {
             match variant_type {
@@ -217,20 +416,27 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
 
                     Ok((last_data.unwrap_or_default(), metadata))
                 }
-                PluginVariantType::MultiMethod => {
-                    // Get the collect_stream future from plugin (brief lock)
+                PluginVariantType::MultiMethod | PluginVariantType::MultiMethodV2 => {
+                    // Get the collect_stream future from plugin (brief lock).
+                    // V2 no longer shares a supertrait with V1, so dispatch on
+                    // the enum directly rather than via as_multi_method_v1() upcast.
                     let future = {
                         let guard = variant.read().await;
-                        if let super::PluginRunnerVariant::MultiMethod(plugin) = &*guard {
-                            // Pass None for using since we don't have access to it here
-                            // The plugin's collect_stream should handle this appropriately
-                            plugin.collect_stream(stream, None)
-                        } else {
-                            unreachable!("variant_type mismatch")
+                        let using_ref = using_owned.as_deref();
+                        match &*guard {
+                            super::PluginRunnerVariant::MultiMethod(p) => {
+                                Ok(p.collect_stream(stream, using_ref))
+                            }
+                            super::PluginRunnerVariant::MultiMethodV2(p) => {
+                                Ok(p.collect_stream(stream, using_ref))
+                            }
+                            super::PluginRunnerVariant::Legacy(_) => Err(anyhow!(
+                                "internal: variant_type cached as MultiMethod(V2) but variant is Legacy"
+                            )),
                         }
                     };
                     // Lock released, now await the future which processes the stream
-                    future.await
+                    future?.await
                 }
             }
         })
@@ -279,20 +485,53 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
             }
         }
 
-        // 4. Execute plugin on a blocking thread.
-        // The plugin run() is a synchronous FFI call that may block for a long
-        // time (CPU-bound work or blocking I/O). Running it on a tokio worker
-        // would stall every other task sharing that worker, so move it onto the
-        // blocking pool. This mirrors run_stream(), which already offloads the
-        // synchronous receive loop. Uses futures::executor::block_on for the
-        // lock acquisition (no tokio runtime re-entry risk).
+        // 4. Execute plugin.
         //
-        // Cancellation note: the synchronous run() cannot be interrupted once
-        // started. On timeout the caller drops this future, which drops the
-        // JoinHandle; per tokio semantics that does NOT cancel the blocking task,
-        // so the plugin runs to completion on the blocking thread and its result
-        // is discarded. This is intentional and no worse than the previous
-        // inline call (which also ran to completion, but blocked a tokio worker).
+        // V1/legacy: synchronous run() is offloaded to spawn_blocking with the
+        // variant write lock held for the whole call. The lock cannot be
+        // reclaimed on timeout (the blocking task keeps running), so the
+        // wrapper instance must be detached afterwards.
+        //
+        // V2: run() returns an FfiFuture<...> awaited on the host runtime.
+        // The write lock is held only for the duration of the await; on
+        // timeout the caller drops the future, the guard drops with it, and
+        // the lock is reclaimed immediately so the instance can be reused.
+        if self.variant_type == PluginVariantType::MultiMethodV2 {
+            // Drop the guard after obtaining the FfiFuture so concurrent
+            // callers can grab the lock for unrelated bookkeeping while this
+            // future runs. On timeout the caller drops the future and any
+            // resources it captured are released; the wrapper instance is
+            // reusable (see `should_detach_on_timeout`).
+            let fut = {
+                let mut guard = self.variant.write().await;
+                match &mut *guard {
+                    super::PluginRunnerVariant::MultiMethodV2(plugin) => plugin.run(
+                        arg.to_vec(),
+                        meta_to_vec(metadata.clone()),
+                        using.map(|s| s.to_string()),
+                    ),
+                    other => {
+                        let kind = variant_kind(other);
+                        return (
+                            Err(anyhow!(
+                                "internal: variant_type cached as MultiMethodV2 but variant is {kind}"
+                            )),
+                            metadata,
+                        );
+                    }
+                }
+            };
+            let (r_str, meta_vec) = fut.await;
+            return (
+                r_str.map_err(|s| {
+                    tracing::warn!("in running pluginRunner (v2): {}", s);
+                    anyhow!("plugin error: {}", s)
+                }),
+                meta_from_vec(meta_vec),
+            );
+        }
+
+        // V1/legacy path: synchronous FFI call on blocking pool.
         // The variant write lock is held for the whole run(); request_cancellation
         // uses try_read/try_write so it never blocks the timeout path on this lock.
         let variant = self.variant.clone();
@@ -303,11 +542,18 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
 
         let blocking_handle = tokio::task::spawn_blocking(move || {
             let mut guard = block_on(variant.write());
-            match &mut *guard {
-                super::PluginRunnerVariant::Legacy(plugin) => plugin.run(arg1, metadata),
-                super::PluginRunnerVariant::MultiMethod(plugin) => {
-                    plugin.run(arg1, metadata, using_owned.as_deref())
-                }
+            if let Some(p) = guard.as_multi_method_v1_mut() {
+                p.run(arg1, metadata, using_owned.as_deref())
+            } else if let super::PluginRunnerVariant::Legacy(plugin) = &mut *guard {
+                plugin.run(arg1, metadata)
+            } else {
+                let kind = variant_kind(&guard);
+                (
+                    Err(anyhow!(
+                        "internal: variant_type cached as V1/Legacy but variant is {kind}"
+                    )),
+                    metadata,
+                )
             }
         });
 
@@ -365,18 +611,42 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         }
 
         // 4. Begin stream
+        //
+        // V2 plugins use a push-based `run_stream(output_sender)`: the host
+        // creates an mpsc channel, hands the sender to the plugin, drains
+        // the receiver directly inside the output stream, and emits the End
+        // trailer with the metadata returned by the plugin's future.
+        //
+        // V1/legacy uses pull-based `begin_stream` + `receive_stream` with a
+        // blocking pool task feeding an mpsc channel that the output stream
+        // forwards.
+        let cancel_token = if let Some(helper) = &self.cancel_helper {
+            Some(helper.get_cancellation_token().await)
+        } else {
+            None
+        };
+
+        if self.variant_type == PluginVariantType::MultiMethodV2 {
+            return self.run_stream_v2(arg, metadata, using, cancel_token).await;
+        }
+
+        // ----- V1/legacy below -----
         let variant = self.variant.clone();
         let arg1 = arg.to_vec();
+        let (result_tx, mut result_rx) = mpsc::channel::<ResultOutputItem>(16);
+        let metadata_for_blocking = metadata.clone();
+
         {
             let mut guard = variant.write().await;
-            // begin stream (set argument and setup stream)
-            let result = match &mut *guard {
-                super::PluginRunnerVariant::Legacy(plugin) => {
-                    plugin.begin_stream(arg1, metadata.clone())
-                }
-                super::PluginRunnerVariant::MultiMethod(plugin) => {
-                    plugin.begin_stream(arg1, metadata.clone(), using)
-                }
+            let result = if let Some(p) = guard.as_multi_method_v1_mut() {
+                p.begin_stream(arg1, metadata.clone(), using)
+            } else if let super::PluginRunnerVariant::Legacy(plugin) = &mut *guard {
+                plugin.begin_stream(arg1, metadata.clone())
+            } else {
+                Err(anyhow!(
+                    "internal: variant_type cached as V1/Legacy but variant is {}",
+                    variant_kind(&guard)
+                ))
             };
             result.map_err(|e| {
                 tracing::warn!("in running pluginRunner: {:?}", e);
@@ -385,50 +655,37 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         }
         let variant_clone = self.variant.clone();
 
-        let cancel_token = if let Some(helper) = &self.cancel_helper {
-            Some(helper.get_cancellation_token().await)
-        } else {
-            None
-        };
-
-        // Run the entire receive loop in a single spawn_blocking task to minimize
-        // latency between receive_stream() calls. Each per-iteration spawn_blocking
-        // added ~30ms overhead (thread scheduling + RwLock acquisition), causing feed
-        // data to accumulate in the plugin's internal buffer and multiple chunks to be
-        // processed in a single receive_stream() call. This broke streaming plugins
-        // (e.g. WhisperPlugin) that expect 1 chunk per call for correct incremental output.
-        //
-        // Cancellation constraint: if receive_stream() blocks for a long time, cancel
-        // latency equals that blocking duration. Current plugins (Hello, Whisper) use
-        // rt.block_on(rx.recv()) which returns promptly when the feed channel closes.
-        // Plugin implementations MUST ensure receive_stream() does not block indefinitely
-        // (see PluginRunner::receive_stream() doc for the contract).
-        //
-        // Uses futures::executor::block_on (lightweight, no tokio runtime re-entry risk)
-        // rather than tokio's Handle::block_on, so there is no thread starvation concern
-        // from runtime re-entry. spawn_blocking thread pool saturation is bounded by
-        // the number of active plugin instances (typically 1-3).
-        let (result_tx, mut result_rx) = mpsc::channel::<ResultOutputItem>(16);
-        // Clone metadata for the blocking task (End marker trailer).
-        // The original `metadata` is kept for the async stream's abnormal-termination fallback.
-        let metadata_for_blocking = metadata.clone();
-
+        // Per-iteration lock acquisition so request_cancellation can call
+        // plugin.cancel() between iterations. Lock is released before send()
+        // so the consumer never blocks the sender.
         let blocking_handle = tokio::task::spawn_blocking(move || {
             loop {
-                // Acquire lock per iteration so request_cancellation can call plugin.cancel()
-                // between iterations. Lock is released before send() to avoid blocking the sender.
                 let (maybe_v, is_cancelled) = {
                     let mut guard = block_on(variant_clone.write());
-                    let v = match &mut *guard {
-                        super::PluginRunnerVariant::Legacy(plugin) => plugin.receive_stream(),
-                        super::PluginRunnerVariant::MultiMethod(plugin) => plugin.receive_stream(),
+                    let v = if let Some(p) = guard.as_multi_method_v1_mut() {
+                        p.receive_stream()
+                    } else if let super::PluginRunnerVariant::Legacy(plugin) = &mut *guard {
+                        plugin.receive_stream()
+                    } else {
+                        // variant_type cached as V1/Legacy but the variant is
+                        // something else: end the stream safely instead of
+                        // panicking the worker process.
+                        let kind = variant_kind(&guard);
+                        Err(anyhow!(
+                            "internal: variant_type cached as V1/Legacy but variant is {kind}"
+                        ))
                     };
-                    let c = match &*guard {
-                        super::PluginRunnerVariant::Legacy(plugin) => plugin.is_canceled(),
-                        super::PluginRunnerVariant::MultiMethod(plugin) => plugin.is_canceled(),
+                    let c = if let Some(p) = guard.as_multi_method_v1() {
+                        p.is_canceled()
+                    } else if let super::PluginRunnerVariant::Legacy(plugin) = &*guard {
+                        plugin.is_canceled()
+                    } else {
+                        // Cached/actual mismatch: treat as cancelled to terminate
+                        // the loop quickly. The receive_stream Err above will
+                        // also send the End marker.
+                        true
                     };
                     (v, c)
-                    // guard dropped here
                 };
 
                 match maybe_v {
@@ -437,7 +694,6 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                             item: Some(result_output_item::Item::Data(v)),
                         };
                         if block_on(result_tx.send(item)).is_err() {
-                            // Receiver dropped (consumer cancelled)
                             break;
                         }
                     }
@@ -460,7 +716,6 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                     }
                 }
                 if is_cancelled {
-                    // Send End marker before breaking to avoid relying on async stream fallback
                     let _ = block_on(result_tx.send(ResultOutputItem {
                         item: Some(result_output_item::Item::End(Trailer {
                             metadata: metadata_for_blocking.clone(),
@@ -509,7 +764,6 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
             // preventing deadlock when blocking_handle.await waits for task completion.
             result_rx.close();
             while result_rx.recv().await.is_some() {}
-            // Await the blocking task to detect panics (e.g. from FFI boundary)
             match blocking_handle.await {
                 Ok(()) => {}
                 Err(e) => {
@@ -522,11 +776,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
     }
 
     fn supports_client_stream(&self, using: Option<&str>) -> bool {
-        let guard = block_on(self.variant.read());
-        match &*guard {
-            PluginRunnerVariant::Legacy(_) => false,
-            PluginRunnerVariant::MultiMethod(plugin) => plugin.supports_client_stream(using),
-        }
+        block_on(self.variant.read()).supports_client_stream(using)
     }
 
     fn setup_client_stream_channel(
@@ -534,40 +784,53 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         using: Option<&str>,
     ) -> Option<mpsc::Sender<FeedData>> {
         let mut guard = block_on(self.variant.write());
-        match &mut *guard {
-            PluginRunnerVariant::Legacy(_) => None,
-            PluginRunnerVariant::MultiMethod(plugin) => {
-                // Plugin provides Sender<Vec<u8>>, bridge to Sender<FeedData>
-                plugin.setup_client_stream_channel(using).map(|raw_tx| {
-                    let (feed_tx, mut feed_rx) = mpsc::channel::<FeedData>(32);
-                    tokio::spawn(async move {
-                        while let Some(feed) = feed_rx.recv().await {
-                            if raw_tx.send(feed.data).await.is_err() {
-                                break;
-                            }
-                            if feed.is_final {
-                                break;
-                            }
-                        }
-                    });
-                    feed_tx
-                })
+        // V2 has no V1 supertrait, so match the enum directly to cover all
+        // three variants.
+        let raw_tx = match &mut *guard {
+            super::PluginRunnerVariant::MultiMethod(p) => p.setup_client_stream_channel(using)?,
+            super::PluginRunnerVariant::MultiMethodV2(p) => p.setup_client_stream_channel(using)?,
+            super::PluginRunnerVariant::Legacy(_) => return None,
+        };
+        // Plugin provides Sender<Vec<u8>>, bridge to Sender<FeedData>
+        let (feed_tx, mut feed_rx) = mpsc::channel::<FeedData>(32);
+        tokio::spawn(async move {
+            while let Some(feed) = feed_rx.recv().await {
+                if raw_tx.send(feed.data).await.is_err() {
+                    break;
+                }
+                if feed.is_final {
+                    break;
+                }
             }
-        }
+        });
+        Some(feed_tx)
     }
 }
 
 #[async_trait]
 impl CancelMonitoring for PluginRunnerWrapperImpl {
-    /// Initialize cancellation monitoring for specific job
+    /// Initialize cancellation monitoring for specific job.
+    ///
+    /// For V2 plugins, additionally hand the cancellation token to the plugin
+    /// here — BEFORE run() starts. run() later takes the variant write lock on
+    /// a blocking thread and holds it for the entire FFI call; injecting the
+    /// token after that point would either deadlock or require touching the
+    /// plugin past the lock. Doing it during setup is the only window where the
+    /// wrapper can safely push state into the plugin.
     async fn setup_cancellation_monitoring(
         &mut self,
         job_id: JobId,
         job_data: &JobData,
     ) -> Result<Option<JobResult>> {
-        // Clear branching based on helper availability
         if let Some(helper) = &mut self.cancel_helper {
-            helper.setup_monitoring_impl(job_id, job_data).await
+            let result = helper.setup_monitoring_impl(job_id, job_data).await?;
+            if self.variant_type == PluginVariantType::MultiMethodV2 {
+                let token = helper.get_cancellation_token().await;
+                // run() has not started yet, so this write lock does not race
+                // with the blocking task's lock.
+                self.variant.write().await.set_cancellation_token(token);
+            }
+            Ok(result)
         } else {
             tracing::debug!("No cancel monitoring configured for job {}", job_id.value);
             Ok(None)
@@ -608,6 +871,12 @@ impl CancelMonitoring for PluginRunnerWrapperImpl {
         // we return immediately. The cancellation token signaled in step 1 already
         // covers token-observing paths (run_stream); a synchronous run() is
         // uninterruptible anyway, so skipping cancel() here loses nothing.
+        // V2 has no plugin.cancel() — the token signaled above is the only
+        // cancellation channel, so there is nothing else to do here.
+        if self.variant_type == PluginVariantType::MultiMethodV2 {
+            return Ok(());
+        }
+
         const BUSY_MSG: &str = "PluginRunnerWrapperImpl: variant lock held (plugin call in progress), skipping cancel()";
         let cancelled = match self.variant_type {
             PluginVariantType::Legacy => match self.variant.try_read() {
@@ -625,8 +894,8 @@ impl CancelMonitoring for PluginRunnerWrapperImpl {
             },
             PluginVariantType::MultiMethod => match self.variant.try_write() {
                 Ok(mut guard) => {
-                    if let super::PluginRunnerVariant::MultiMethod(plugin) = &mut *guard {
-                        plugin.cancel()
+                    if let Some(p) = guard.as_multi_method_v1_mut() {
+                        p.cancel()
                     } else {
                         false
                     }
@@ -636,6 +905,10 @@ impl CancelMonitoring for PluginRunnerWrapperImpl {
                     false
                 }
             },
+            // V2 returns early at the top of this function before this match.
+            // Should never reach here in practice; return false as a safe
+            // no-op if it ever does (e.g., after future refactors).
+            PluginVariantType::MultiMethodV2 => false,
         };
         if cancelled {
             tracing::info!("PluginRunnerWrapperImpl: plugin cancelled successfully");

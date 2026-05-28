@@ -19,6 +19,7 @@ jobworkerp-base = { path = "../base" }
 # runner = { path = "../runner" }
 
 anyhow = { workspace = true }
+async-ffi = { workspace = true }
 async-trait = { workspace = true }
 async-stream = { workspace = true }
 base64 = { workspace = true }
@@ -77,6 +78,9 @@ tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true }
+# Self-reference so integration tests can access the test-utils gated module
+# (runner::test_common::mock), reusing the shared MockCancellationManager.
+jobworkerp-runner = { path = ".", features = ["test-utils"] }
 
 [features]
 default = []
