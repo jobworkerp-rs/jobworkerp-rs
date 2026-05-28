@@ -140,14 +140,20 @@ impl RunnerFactory {
                         }
                     }
                 } else {
-                    // TODO: Add cancellation monitoring support to Plugin Runners
+                    // Inject the same cancel helper used by other runners. v1/legacy
+                    // plugins ignore the token (their FFI run() cannot observe it),
+                    // but v2 plugins receive it via setup_cancellation_monitoring and
+                    // poll it cooperatively inside run().
                     self.plugins
                         .runner_plugins()
                         .write()
                         .await
                         .find_plugin_runner_by_name(name)
                         .await
-                        .map(|r| Box::new(r) as Box<dyn CancellableRunner + Send + Sync>)
+                        .map(|mut r| {
+                            r.set_cancel_helper(create_cancel_helper());
+                            Box::new(r) as Box<dyn CancellableRunner + Send + Sync>
+                        })
                 }
             }
         }

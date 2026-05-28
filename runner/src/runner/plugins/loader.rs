@@ -1,6 +1,7 @@
 use super::PluginLoader;
 use crate::runner::plugins::{
-    MultiMethodPluginRunner, PluginRunner, PluginRunnerVariant, impls::PluginRunnerWrapperImpl,
+    MultiMethodPluginRunner, MultiMethodPluginRunnerV2, PluginRunner, PluginRunnerVariant,
+    impls::PluginRunnerWrapperImpl,
 };
 use crate::runner::timeout_config::RunnerTimeoutConfig;
 use anyhow::Result;
@@ -19,6 +20,12 @@ type LoaderFunc<'a> = Symbol<'a, extern "C" fn() -> Box<dyn PluginRunner + Send 
 #[allow(improper_ctypes_definitions)]
 type MultiMethodLoaderFunc<'a> =
     Symbol<'a, extern "C" fn() -> Box<dyn MultiMethodPluginRunner + Send + Sync>>;
+
+/// FFI symbol for V2 multi-method plugins (adds cooperative cancellation).
+/// Older plugins do not export this symbol; the loader falls back to v1 then legacy.
+#[allow(improper_ctypes_definitions)]
+type MultiMethodLoaderFuncV2<'a> =
+    Symbol<'a, extern "C" fn() -> Box<dyn MultiMethodPluginRunnerV2 + Send + Sync>>;
 
 // Global library cache for plugin libraries (physical memory management)
 static PLUGIN_LIBRARY_CACHE: OnceLock<TokioRwLock<HashMap<PathBuf, &'static Library>>> =
@@ -103,8 +110,9 @@ impl RunnerPluginLoader {
     /// Find plugin by name and create wrapper instance
     ///
     /// Priority order for FFI symbol detection:
-    /// 1. `load_multi_method_plugin` - Multi-method plugins (newest, supports multiple methods + collect_stream)
-    /// 2. `load_plugin` - Legacy plugins (origin/main compatible, no collect_stream)
+    /// 1. `load_multi_method_plugin_v2` - V2 multi-method plugins (cooperative cancellation)
+    /// 2. `load_multi_method_plugin` - Multi-method plugins (supports multiple methods + collect_stream)
+    /// 3. `load_plugin` - Legacy plugins (origin/main compatible, no collect_stream)
     pub async fn find_plugin_runner_by_name(&self, name: &str) -> Option<PluginRunnerWrapperImpl> {
         // Search only in logically "available" plugins
         let path = self
@@ -121,7 +129,18 @@ impl RunnerPluginLoader {
         tokio::time::timeout(
             timeout_config.plugin_instantiate,
             tokio::task::spawn_blocking(move || unsafe {
-                // Try multi-method plugin first (highest priority)
+                // Try V2 multi-method plugin first (highest priority: cooperative cancellation)
+                if let Ok(load_v2) =
+                    lib.get::<MultiMethodLoaderFuncV2>(b"load_multi_method_plugin_v2\0")
+                {
+                    let plugin = load_v2();
+                    let variant = PluginRunnerVariant::MultiMethodV2(plugin);
+                    return Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
+                        variant,
+                    ))));
+                }
+
+                // Fall back to v1 multi-method plugin
                 if let Ok(load_multi) =
                     lib.get::<MultiMethodLoaderFunc>(b"load_multi_method_plugin\0")
                 {
@@ -204,7 +223,15 @@ impl PluginLoader for RunnerPluginLoader {
         let (plugin_name, description) = tokio::time::timeout(
             timeout_config.plugin_instantiate,
             tokio::task::spawn_blocking(move || unsafe {
-                // Try multi-method plugin first (highest priority)
+                // Try V2 multi-method plugin first
+                if let Ok(load_v2) =
+                    lib.get::<MultiMethodLoaderFuncV2>(b"load_multi_method_plugin_v2\0")
+                {
+                    let plugin = load_v2();
+                    return Ok::<_, anyhow::Error>((plugin.name(), plugin.description()));
+                }
+
+                // Fall back to v1 multi-method plugin
                 if let Ok(load_multi) =
                     lib.get::<MultiMethodLoaderFunc>(b"load_multi_method_plugin\0")
                 {
@@ -219,7 +246,7 @@ impl PluginLoader for RunnerPluginLoader {
                 }
 
                 Err(anyhow::anyhow!(
-                    "Plugin missing all FFI symbols (load_plugin, load_multi_method_plugin)"
+                    "Plugin missing all FFI symbols (load_plugin, load_multi_method_plugin, load_multi_method_plugin_v2)"
                 ))
             }),
         )

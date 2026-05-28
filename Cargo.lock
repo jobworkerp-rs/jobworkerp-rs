@@ -332,6 +332,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-ffi"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4de21c0feef7e5a556e51af767c953f0501f7f300ba785cc99c47bdc8081a50"
+
+[[package]]
 name = "async-io"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2666,6 +2672,7 @@ name = "jobworkerp-runner"
 version = "0.22.0"
 dependencies = [
  "anyhow",
+ "async-ffi",
  "async-stream",
  "async-trait",
  "base64",
@@ -2682,6 +2689,7 @@ dependencies = [
  "http",
  "itertools 0.14.0",
  "jobworkerp-base",
+ "jobworkerp-runner",
  "jsonschema",
  "libloading 0.9.0",
  "memory-utils 0.1.0",
@@ -3934,6 +3942,19 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
+
+[[package]]
+name = "plugin_runner_cancel_test"
+version = "0.22.0"
+dependencies = [
+ "anyhow",
+ "async-ffi",
+ "jobworkerp-runner",
+ "proto",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
 
 [[package]]
 name = "plugin_runner_hello"
