@@ -21,9 +21,9 @@
 //! See `manual/{en,ja}/src/plugin-development-v2.md` for the policy
 //! documented to plugin authors.
 
-use super::cancel::FfiCancellationToken;
-use super::sink::OutputSink;
-use super::types::{FfiBytes, FfiKvPairList, FfiOption, FfiResult};
+use crate::cancel::FfiCancellationToken;
+use crate::sink::OutputSink;
+use crate::types::{FfiBytes, FfiKvPairList, FfiOption, FfiResult};
 use async_ffi::FfiFuture;
 
 /// ABI major version. Bump on breaking layout / signature changes.

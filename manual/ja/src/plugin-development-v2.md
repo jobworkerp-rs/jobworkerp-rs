@@ -153,20 +153,27 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
+# V2 プラグイン ABI 定義は jobworkerp-rs ホストと jobworkerp-client SDK
+# で共有される `jobworkerp-plugin-abi` crate に集約されています。
+# jobworkerp-rs リポジトリから git 経由で取得してください。
+jobworkerp-plugin-abi = { git = "https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs.git", branch = "main", package = "jobworkerp-plugin-abi" }
+jobworkerp-plugin-abi-macros = { git = "https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs.git", branch = "main", package = "jobworkerp-plugin-abi-macros" }
+
+# `MethodSchema` を encode するための proto crate (host runtime proto、
+# jobworkerp-client proto、自前 proto のいずれでも可)。
 proto       = { path = "../../proto" }
-jobworkerp-runner = { path = "../../runner" }
+prost       = "0.14"
 
 anyhow      = "1.0"
 async-trait = "0.1"
-# proc マクロが生成する async 部の panic catch で使用します。
-futures     = "0.3"
 tokio       = { version = "1", features = ["full"] }
 ```
 
-`jobworkerp-runner` は `async-ffi` / `async-trait` / `futures` /
-`prost` および `register_plugin_v2!` マクロを再 export しているため、
-プラグイン作者は上記以外を直接依存に追加する必要はありません。マクロは
-`::jobworkerp_runner::*` のパスでこれらを参照します。
+`jobworkerp-plugin-abi` は `async-ffi` / `async-trait` / `futures` /
+`prost` を re-export しているため、proc マクロは
+`::jobworkerp_plugin_abi::*` 経由でこれらを参照します。プラグイン作者は
+上記以外を直接依存に追加する必要はありません。`register_plugin_v2!`
+マクロは `jobworkerp-plugin-abi-macros` に含まれます。
 
 ### 2. Protobuf 定義と build.rs
 
@@ -177,10 +184,11 @@ V1 と同じです (`runner_settings_proto` / `method_proto_map` の payload
 ### 3. プラグイン実装
 
 ```rust
-use jobworkerp_runner::register_plugin_v2;
-use jobworkerp_runner::runner::plugins::v2::{CancelToken, HighLevelSink, PluginV2};
+use jobworkerp_plugin_abi::v2::{CancelToken, HighLevelSink, PluginV2};
+use jobworkerp_plugin_abi_macros::register_plugin_v2;
+use prost::Message;
 use proto::DEFAULT_METHOD_NAME;
-use proto::jobworkerp::data::{MethodSchema, MethodJsonSchema};
+use proto::jobworkerp::data::MethodSchema;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -209,10 +217,17 @@ impl PluginV2 for MyPlugin {
     fn name(&self) -> String { "MyPlugin".to_string() }
     fn description(&self) -> String { "Sample V2 plugin".to_string() }
     fn settings_schema(&self) -> String { String::new() }
-    fn method_proto_map(&self) -> HashMap<String, MethodSchema> {
-        HashMap::from([(DEFAULT_METHOD_NAME.to_string(), MethodSchema::default())])
+    fn method_proto_map(&self) -> HashMap<String, Vec<u8>> {
+        // `PluginV2` は schema を protobuf-encoded bytes でやり取りする
+        // ため、ABI crate は proto に依存しません。`prost::Message` の
+        // `encode_to_vec()` で encode してください。
+        HashMap::from([(
+            DEFAULT_METHOD_NAME.to_string(),
+            MethodSchema::default().encode_to_vec(),
+        )])
     }
-    fn method_json_schema_map(&self) -> Option<HashMap<String, MethodJsonSchema>> { None }
+    // `method_json_schema_map` のデフォルトは `None`、ホスト側で
+    // `method_proto_map` から JSON schema を自動生成します。
 
     fn set_cancellation_token(&mut self, token: CancelToken) {
         self.token = Some(token);

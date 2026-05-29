@@ -1,7 +1,8 @@
 //! Procedural macros for the V2 plugin trait.
 //!
-//! See the host crate `jobworkerp-runner` for trait definitions and the
-//! `plugin-development-v2.md` manual for the plugin author guide.
+//! See `jobworkerp-plugin-abi` for the trait/type definitions reached via
+//! `::jobworkerp_plugin_abi::*` paths, and `plugin-development-v2.md` in
+//! the jobworkerp-rs manual for the plugin author guide.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -57,9 +58,12 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         const _: () = {
-            // Pull every type referenced by the thunks into scope. The
-            // plugin crate re-exports these via `jobworkerp_runner`.
-            use ::jobworkerp_runner::runner::plugins::ffi::{
+            // Pull every type referenced by the thunks into scope from
+            // the shared ABI crate; the plugin only needs a dependency on
+            // `jobworkerp-plugin-abi` (and this proc-macro crate) — every
+            // helper, including the `async-ffi` / `futures` / `prost`
+            // re-exports, lives behind a single dependency.
+            use ::jobworkerp_plugin_abi::ffi::{
                 FfiBytes,
                 FfiKvPair,
                 FfiKvPairList,
@@ -73,17 +77,16 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 V2RunOutcome,
                 PLUGIN_V2_ABI_VERSION,
             };
-            use ::jobworkerp_runner::runner::plugins::v2::{
+            use ::jobworkerp_plugin_abi::v2::{
                 CancelToken,
                 HighLevelSink,
                 PluginV2,
             };
-            use ::jobworkerp_runner::futures::{self, FutureExt as _RunnerFutureExt};
-            use ::jobworkerp_runner::async_ffi::{
+            use ::jobworkerp_plugin_abi::futures::{self, FutureExt as _RunnerFutureExt};
+            use ::jobworkerp_plugin_abi::async_ffi::{
                 FfiFuture,
                 FutureExt as _AsyncFfiFutureExt,
             };
-            use ::jobworkerp_runner::prost::Message as _PluginV2ProstMessage;
             use ::std::collections::HashMap;
             use ::std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -91,11 +94,11 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
             // Helpers
             // ------------------------------------------------------------------
 
-            // Re-use the host-side conversion helpers so allocation
+            // Re-use the shared ABI conversion helpers so allocation
             // ownership rules (each FfiBytes drops on its embedded
-            // `drop_fn`) are enforced in one place. These re-exports
-            // live in `jobworkerp_runner::runner::plugins::ffi`.
-            use ::jobworkerp_runner::runner::plugins::ffi::{
+            // `drop_fn`) are enforced in one place. These helpers live
+            // in `::jobworkerp_plugin_abi::ffi`.
+            use ::jobworkerp_plugin_abi::ffi::{
                 kv_to_string_map as kv_to_hashmap,
                 string_map_to_kv as hashmap_to_kv,
             };
@@ -106,14 +109,14 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 b.into_string_lossy()
             }
 
-            fn schema_map_to_kv<S: _PluginV2ProstMessage>(
-                map: HashMap<String, S>,
-            ) -> FfiKvPairList {
+            /// Pack a `HashMap<String, Vec<u8>>` (the plugin already
+            /// supplies protobuf-encoded values) into an FfiKvPairList.
+            fn schema_map_to_kv(map: HashMap<String, Vec<u8>>) -> FfiKvPairList {
                 let pairs: Vec<FfiKvPair> = map
                     .into_iter()
-                    .map(|(k, schema)| FfiKvPair {
+                    .map(|(k, bytes)| FfiKvPair {
                         key: FfiBytes::from_vec(k.into_bytes()),
-                        value: FfiBytes::from_vec(schema.encode_to_vec()),
+                        value: FfiBytes::from_vec(bytes),
                     })
                     .collect();
                 FfiVec::from_vec(pairs)
@@ -207,7 +210,7 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                     using.into_option().map(ffi_string_to_string);
                 let plugin = unsafe { plugin_mut(state) };
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    ::futures::executor::block_on(
+                    ::jobworkerp_plugin_abi::futures::executor::block_on(
                         plugin.setup_client_stream_channel(using_str.as_deref()),
                     )
                 }));

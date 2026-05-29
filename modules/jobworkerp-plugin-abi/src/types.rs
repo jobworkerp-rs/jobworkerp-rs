@@ -559,24 +559,9 @@ mod tests {
         assert_eq!(copy, b"hello");
     }
 
-    #[test]
-    fn method_schema_protobuf_round_trip() {
-        // Protobuf bytes is how MethodSchema crosses the FFI boundary in
-        // the new design. Verify a representative encode/decode round-trip
-        // so the wrapper can decode plugin output.
-        use prost::Message;
-        let original = proto::jobworkerp::data::MethodSchema {
-            args_proto: "syntax = \"proto3\"; message Args { string s = 1; }".to_string(),
-            result_proto: "syntax = \"proto3\"; message R { int32 i = 1; }".to_string(),
-            description: Some("test method".to_string()),
-            output_type: 0,
-            require_client_stream: false,
-            client_stream_data_proto: None,
-        };
-        let bytes = original.encode_to_vec();
-        let ffi = FfiBytes::from_vec(bytes);
-        let decoded =
-            proto::jobworkerp::data::MethodSchema::decode(ffi.as_slice()).expect("decode succeeds");
-        assert_eq!(decoded, original);
-    }
+    // Note: a protobuf round-trip test exists in the host `jobworkerp-runner`
+    // crate (`runner/src/runner/plugins.rs` test module) where the real
+    // `MethodSchema` proto type is available. This crate stays
+    // proto-independent so plugin authors can encode/decode against any
+    // matching proto definition.
 }

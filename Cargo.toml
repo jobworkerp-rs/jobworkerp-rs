@@ -3,7 +3,8 @@
 members = [
     "modules/command-utils",
     "modules/infra-utils",
-    "modules/jobworkerp-runner-macros",
+    "modules/jobworkerp-plugin-abi",
+    "modules/jobworkerp-plugin-abi-macros",
     "proto",
     "base",
     "runner",

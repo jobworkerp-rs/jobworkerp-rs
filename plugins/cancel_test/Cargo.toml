@@ -9,13 +9,15 @@ description = "V2 plugin sample: cooperative cancellation via CancellationToken"
 crate-type = ["dylib"]
 
 [dependencies]
+# Proto crate is only needed because this sample uses the host's
+# `MethodSchema` to populate `method_proto_map`. A standalone plugin
+# author would depend on a proto crate of their choice.
 proto = { path = "../../proto" }
-jobworkerp-runner = { path = "../../runner" }
+jobworkerp-plugin-abi = { path = "../../modules/jobworkerp-plugin-abi" }
+jobworkerp-plugin-abi-macros = { path = "../../modules/jobworkerp-plugin-abi-macros" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-# Required by `register_plugin_v2!` for sync-side panic catch (the macro
-# wraps the high-level trait return values in `catch_unwind`).
-futures = { workspace = true }
+prost = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

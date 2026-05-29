@@ -25,7 +25,7 @@
 //! overhead exceeds the 1.5x baseline budget we switch to a try_send +
 //! wait_writable scheme in a follow-up.
 
-use super::types::{FfiBytes, FfiResult};
+use crate::types::{FfiBytes, FfiResult};
 use async_ffi::{FfiFuture, FutureExt};
 use std::sync::Mutex;
 use tokio::sync::mpsc;

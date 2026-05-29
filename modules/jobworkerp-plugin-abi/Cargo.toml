@@ -1,0 +1,19 @@
+[package]
+name = "jobworkerp-plugin-abi"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Stable ABI definitions for V2 jobworkerp plugins (FFI types, vtable, PluginV2 trait)"
+
+[dependencies]
+# Only async-ffi has an exact-pin contract; tokio / tokio-util can move
+# freely between host and plugin now that no tokio type crosses the
+# boundary directly.
+async-ffi = "=0.5.0"
+async-trait = "0.1"
+futures = "0.3"
+libloading = "0.9"
+prost = "0.14"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["full"] }
+tracing = "0.1"

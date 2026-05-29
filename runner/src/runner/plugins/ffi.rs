@@ -1,27 +1,9 @@
 //! FFI-safe primitive types and helpers for the V2 plugin trait.
 //!
-//! The submodules in this directory replace `tokio` / `tokio_util` / `HashMap`
-//! types that previously crossed the FFI boundary, removing the Rust-ABI
-//! pinning requirement on `tokio`. Only `async-ffi`'s `FfiFuture<T>` retains
-//! an exact-pin contract; everything else uses `#[repr(C)]` data structures
-//! with self-describing allocator vtables.
-//!
-//! See `manual/{en,ja}/src/plugin-development-v2.md` for the plugin author
-//! contract.
+//! All definitions live in the shared `jobworkerp-plugin-abi` crate so
+//! the host runner and the `jobworkerp-client-rs` plugin SDK resolve
+//! identical types automatically. This module is kept as a thin
+//! re-export shim for compatibility with code that still imports
+//! through `jobworkerp_runner::runner::plugins::ffi::*`.
 
-pub mod cancel;
-pub mod sink;
-pub mod types;
-pub mod vtable;
-
-pub use cancel::{FfiCancellationToken, OwnedCancelHandle, from_tokio_util};
-pub use sink::OutputSink;
-pub use types::{
-    FfiBytes, FfiKvPair, FfiKvPairList, FfiOption, FfiResult, FfiVec, kv_to_string_map,
-    option_str_to_ffi, string_map_to_kv,
-};
-pub use vtable::{
-    MIN_VALID_VTABLE_PTR, PLUGIN_V2_ABI_MAJOR, PLUGIN_V2_ABI_MINOR, PLUGIN_V2_ABI_VERSION,
-    PluginInstance, PluginInstanceRaw, PluginVtable, V2RunOutcome, VTABLE_SIZE_MAX,
-    VTABLE_SIZE_MIN,
-};
+pub use jobworkerp_plugin_abi::ffi::*;

@@ -157,20 +157,26 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
+# V2 plugin ABI: shared between jobworkerp-rs host and jobworkerp-client.
+# Resolve via the jobworkerp-rs git repository so layout stays in sync.
+jobworkerp-plugin-abi = { git = "https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs.git", branch = "main", package = "jobworkerp-plugin-abi" }
+jobworkerp-plugin-abi-macros = { git = "https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs.git", branch = "main", package = "jobworkerp-plugin-abi-macros" }
+
+# A proto crate of your choice (host runtime proto, jobworkerp-client
+# proto, or your own) to produce protobuf-encoded `MethodSchema` bytes.
 proto       = { path = "../../proto" }
-jobworkerp-runner = { path = "../../runner" }
+prost       = "0.14"
 
 anyhow      = "1.0"
 async-trait = "0.1"
-# Required by the proc-macro-generated thunks for async panic catching.
-futures     = "0.3"
 tokio       = { version = "1", features = ["full"] }
 ```
 
-`jobworkerp-runner` re-exports `async-ffi`, `async-trait`, `futures`,
-`prost`, and the `register_plugin_v2!` macro, so the plugin author does
-not need to depend on them directly. The macro looks them up via
-`::jobworkerp_runner::*` paths.
+`jobworkerp-plugin-abi` re-exports `async-ffi`, `async-trait`, `futures`
+and `prost`, so the proc-macro generated thunks resolve them through
+`::jobworkerp_plugin_abi::*` without the plugin author needing extra
+dependencies. The `register_plugin_v2!` macro itself lives in
+`jobworkerp-plugin-abi-macros`.
 
 ### 2. Protobuf definition and build.rs
 
@@ -181,10 +187,11 @@ produce the same payloads. See the
 ### 3. Plugin implementation
 
 ```rust
-use jobworkerp_runner::register_plugin_v2;
-use jobworkerp_runner::runner::plugins::v2::{CancelToken, HighLevelSink, PluginV2};
+use jobworkerp_plugin_abi::v2::{CancelToken, HighLevelSink, PluginV2};
+use jobworkerp_plugin_abi_macros::register_plugin_v2;
+use prost::Message;
 use proto::DEFAULT_METHOD_NAME;
-use proto::jobworkerp::data::{MethodSchema, MethodJsonSchema};
+use proto::jobworkerp::data::MethodSchema;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -213,10 +220,16 @@ impl PluginV2 for MyPlugin {
     fn name(&self) -> String { "MyPlugin".to_string() }
     fn description(&self) -> String { "Sample V2 plugin".to_string() }
     fn settings_schema(&self) -> String { String::new() }
-    fn method_proto_map(&self) -> HashMap<String, MethodSchema> {
-        HashMap::from([(DEFAULT_METHOD_NAME.to_string(), MethodSchema::default())])
+    fn method_proto_map(&self) -> HashMap<String, Vec<u8>> {
+        // `PluginV2` exchanges schemas as protobuf-encoded bytes so the
+        // ABI crate stays proto-free. Encode with `prost::Message`.
+        HashMap::from([(
+            DEFAULT_METHOD_NAME.to_string(),
+            MethodSchema::default().encode_to_vec(),
+        )])
     }
-    fn method_json_schema_map(&self) -> Option<HashMap<String, MethodJsonSchema>> { None }
+    // `method_json_schema_map` defaults to `None` — the host derives
+    // JSON schemas from `method_proto_map` automatically.
 
     fn set_cancellation_token(&mut self, token: CancelToken) {
         self.token = Some(token);

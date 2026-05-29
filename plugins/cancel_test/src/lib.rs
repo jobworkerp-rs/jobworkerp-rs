@@ -8,10 +8,11 @@
 //!
 //! See `manual/{en,ja}/src/plugin-development-v2.md` for the author guide.
 
-use jobworkerp_runner::register_plugin_v2;
-use jobworkerp_runner::runner::plugins::v2::{CancelToken, HighLevelSink, PluginV2};
+use jobworkerp_plugin_abi::v2::{CancelToken, HighLevelSink, PluginV2};
+use jobworkerp_plugin_abi_macros::register_plugin_v2;
+use prost::Message;
 use proto::DEFAULT_METHOD_NAME;
-use proto::jobworkerp::data::{MethodJsonSchema, MethodSchema};
+use proto::jobworkerp::data::MethodSchema;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -60,14 +61,18 @@ impl PluginV2 for CancelTestPlugin {
         // No configurable settings.
         String::new()
     }
-    fn method_proto_map(&self) -> HashMap<String, MethodSchema> {
+    fn method_proto_map(&self) -> HashMap<String, Vec<u8>> {
         // Single DEFAULT_METHOD_NAME entry so the wrapper treats this as a
-        // single-method plugin and bypasses `using` validation.
-        HashMap::from([(DEFAULT_METHOD_NAME.to_string(), MethodSchema::default())])
+        // single-method plugin and bypasses `using` validation. The
+        // `PluginV2` trait exchanges protobuf-encoded bytes so the ABI
+        // crate doesn't have to depend on the proto definitions.
+        HashMap::from([(
+            DEFAULT_METHOD_NAME.to_string(),
+            MethodSchema::default().encode_to_vec(),
+        )])
     }
-    fn method_json_schema_map(&self) -> Option<HashMap<String, MethodJsonSchema>> {
-        None
-    }
+    // `method_json_schema_map` defaults to `None`, which lets the host
+    // synthesise JSON schemas from `method_proto_map` automatically.
 
     fn set_cancellation_token(&mut self, token: CancelToken) {
         self.token = Some(token);
