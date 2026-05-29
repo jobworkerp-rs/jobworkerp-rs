@@ -2668,6 +2668,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "jobworkerp-plugin-abi"
+version = "0.1.0"
+dependencies = [
+ "async-ffi",
+ "async-trait",
+ "futures",
+ "jobworkerp-plugin-abi-macros",
+ "libloading 0.9.0",
+ "prost",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "jobworkerp-plugin-abi-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote 1.0.45",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "jobworkerp-runner"
 version = "0.22.0"
 dependencies = [
@@ -2689,6 +2712,8 @@ dependencies = [
  "http",
  "itertools 0.14.0",
  "jobworkerp-base",
+ "jobworkerp-plugin-abi",
+ "jobworkerp-plugin-abi-macros",
  "jobworkerp-runner",
  "jsonschema",
  "libloading 0.9.0",
@@ -3948,11 +3973,11 @@ name = "plugin_runner_cancel_test"
 version = "0.22.0"
 dependencies = [
  "anyhow",
- "async-ffi",
- "jobworkerp-runner",
+ "async-trait",
+ "jobworkerp-plugin-abi",
+ "prost",
  "proto",
  "tokio",
- "tokio-util",
  "tracing",
 ]
 
@@ -3977,6 +4002,14 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "plugin_runner_panic_ctor_test"
+version = "0.22.0"
+dependencies = [
+ "async-trait",
+ "jobworkerp-plugin-abi",
 ]
 
 [[package]]

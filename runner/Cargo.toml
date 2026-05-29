@@ -8,6 +8,10 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 license.workspace = true
+# `benches/sink_throughput.rs` is built as an explicit `[[bin]]` rather
+# than the default criterion-style bench harness, so disable cargo's
+# automatic bench discovery to avoid a duplicate-target warning.
+autobenches = false
 
 [dependencies]
 
@@ -16,6 +20,8 @@ command-utils = { path = "../modules/command-utils" }
 memory-utils = { path = "../modules/memory-utils" }
 net-utils = { path = "../modules/net-utils" }
 jobworkerp-base = { path = "../base" }
+jobworkerp-plugin-abi = { path = "../modules/jobworkerp-plugin-abi" }
+jobworkerp-plugin-abi-macros = { path = "../modules/jobworkerp-plugin-abi-macros" }
 # runner = { path = "../runner" }
 
 anyhow = { workspace = true }
@@ -85,3 +91,11 @@ jobworkerp-runner = { path = ".", features = ["test-utils"] }
 [features]
 default = []
 test-utils = []
+
+[[bin]]
+name = "sink_throughput"
+path = "benches/sink_throughput.rs"
+test = false
+bench = false
+required-features = []
+

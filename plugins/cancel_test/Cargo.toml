@@ -9,15 +9,14 @@ description = "V2 plugin sample: cooperative cancellation via CancellationToken"
 crate-type = ["dylib"]
 
 [dependencies]
+# Proto crate is only needed because this sample uses the host's
+# `MethodSchema` to populate `method_proto_map`. A standalone plugin
+# author would depend on a proto crate of their choice.
 proto = { path = "../../proto" }
-jobworkerp-runner = { path = "../../runner" }
+jobworkerp-plugin-abi = { path = "../../modules/jobworkerp-plugin-abi" }
 
 anyhow = { workspace = true }
-# Must match the host's async-ffi pin so the FfiFuture layout agrees across the
-# FFI boundary.
-async-ffi = { workspace = true }
+async-trait = { workspace = true }
+prost = { workspace = true }
 tokio = { workspace = true }
-# Must match the host's tokio-util pin so the CancellationToken layout agrees
-# across the FFI boundary.
-tokio-util = { workspace = true }
 tracing = { workspace = true }
