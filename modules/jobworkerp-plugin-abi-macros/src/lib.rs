@@ -366,6 +366,9 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
             // host detects the panic via `state.is_null()` and never
             // dispatches through this vtable, but defining them safely
             // keeps the layout valid in case validation order ever shifts.
+            const __INVALID_PANIC_MSG: &[u8] =
+                b"plugin constructor panicked during load_multi_method_plugin_v2";
+
             unsafe extern "C" fn __invalid_bytes(_state: *mut ()) -> FfiBytes {
                 FfiBytes::empty()
             }
@@ -400,10 +403,7 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 _settings: FfiBytes,
             ) -> FfiFuture<FfiResult<(), FfiBytes>> {
                 async move {
-                    FfiResult::Err(FfiBytes::from_vec(
-                        b"plugin constructor panicked during load_multi_method_plugin_v2"
-                            .to_vec(),
-                    ))
+                    FfiResult::Err(FfiBytes::from_vec(__INVALID_PANIC_MSG.to_vec()))
                 }
                 .into_ffi()
             }
@@ -415,10 +415,7 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
             ) -> FfiFuture<V2RunOutcome> {
                 async move {
                     V2RunOutcome {
-                        result: FfiResult::Err(FfiBytes::from_vec(
-                            b"plugin constructor panicked during load_multi_method_plugin_v2"
-                                .to_vec(),
-                        )),
+                        result: FfiResult::Err(FfiBytes::from_vec(__INVALID_PANIC_MSG.to_vec())),
                         metadata: FfiVec::empty(),
                     }
                 }
@@ -432,17 +429,11 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 _output: OutputSink,
             ) -> FfiFuture<FfiResult<FfiKvPairList, FfiBytes>> {
                 async move {
-                    FfiResult::Err(FfiBytes::from_vec(
-                        b"plugin constructor panicked during load_multi_method_plugin_v2"
-                            .to_vec(),
-                    ))
+                    FfiResult::Err(FfiBytes::from_vec(__INVALID_PANIC_MSG.to_vec()))
                 }
                 .into_ffi()
             }
-            unsafe extern "C" fn __invalid_drop_state(_state: *mut ()) {
-                // Nothing to drop: the host detects state.is_null() and skips
-                // drop_state. This is here only so the slot is non-null.
-            }
+            unsafe extern "C" fn __invalid_drop_state(_state: *mut ()) {}
 
             // ------------------------------------------------------------------
             // Static vtable
@@ -524,14 +515,8 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
             #[unsafe(no_mangle)]
             #[allow(improper_ctypes_definitions)]
             pub unsafe extern "C" fn free_multi_method_plugin_v2(inst: PluginInstanceRaw) {
-                // Skip the sentinel instance produced when the constructor
-                // panicked (state = null + __PLUGIN_V2_INVALID_VTABLE):
-                // calling its drop_state would `Box::from_raw(null)` and
-                // segfault. Dispatch through inst.vtable.drop_state (not
-                // __PLUGIN_V2_VTABLE.drop_state) so the free path matches
-                // whichever vtable load_* returned — the sentinel installs
-                // its own no-op drop_state in case future callers stop
-                // checking for null themselves.
+                // Null state is the sentinel from a panicked constructor;
+                // forwarding to drop_state would `Box::from_raw(null)`.
                 if inst.state.is_null() {
                     return;
                 }
