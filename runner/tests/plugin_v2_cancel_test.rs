@@ -212,6 +212,102 @@ async fn v2_plugin_run_stream_emits_chunks_and_end_trailer() -> Result<()> {
     Ok(())
 }
 
+/// run_stream cancellation: once chunks start flowing, firing the
+/// CancellationToken (the same path the JobService.Delete pubsub listener
+/// uses) must:
+///   1. stop the host-side streaming loop promptly,
+///   2. abort the spawned plugin-driving task so the plugin's FfiFuture is
+///      dropped (`plugin_fut.abort()` in `run_stream_v2`),
+///   3. still emit an `End` trailer so downstream gRPC consumers see a
+///      well-formed termination instead of a closed stream — and the
+///      trailer must carry the fallback (input) metadata because the
+///      cancelled plugin never produced its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_plugin_run_stream_is_cancelled_by_token_and_emits_end_trailer() -> Result<()> {
+    use futures::StreamExt;
+    use proto::jobworkerp::data::result_output_item;
+
+    let plugins = Plugins::new();
+    plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+    let loader = plugins.runner_plugins();
+    let guard = loader.read().await;
+    let mut wrapper = guard
+        .find_plugin_runner_by_name("CancelTest")
+        .await
+        .expect("CancelTest must be findable");
+    wrapper.load(vec![]).await?;
+
+    let token = CancellationToken::new();
+    wrapper.set_cancel_helper(make_helper(token.clone()));
+    let setup = wrapper
+        .setup_cancellation_monitoring(JobId { value: 1 }, &JobData::default())
+        .await?;
+    assert!(setup.is_none(), "setup must not short-circuit");
+
+    // sleep:5000 → 50 chunks at 100 ms each — far longer than the test
+    // window so cancellation must be what terminates the stream.
+    let args = b"sleep:5000".to_vec();
+    let meta = HashMap::from([("trace-id".to_string(), "stream-cancel".to_string())]);
+    let mut stream = wrapper
+        .run_stream(&args, meta.clone(), None)
+        .await
+        .expect("run_stream must start");
+
+    // Let the stream emit a few chunks so we exercise the in-flight
+    // cancellation path (not the pre-stream finalize fast path).
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
+    while chunks.len() < 2 {
+        match stream.next().await {
+            Some(item) => match item.item {
+                Some(result_output_item::Item::Data(d)) => chunks.push(d),
+                Some(result_output_item::Item::End(_)) => {
+                    panic!("stream ended before cancellation could be observed");
+                }
+                _ => {}
+            },
+            None => panic!("stream closed before any chunk arrived"),
+        }
+    }
+
+    let start = Instant::now();
+    token.cancel();
+
+    // Drain the rest of the stream. The plugin may have one or two more
+    // chunks queued before the cancel is observed; we only require the
+    // stream to finish promptly with an End trailer.
+    let mut end_metadata: Option<HashMap<String, String>> = None;
+    while let Some(item) = stream.next().await {
+        match item.item {
+            Some(result_output_item::Item::Data(d)) => chunks.push(d),
+            Some(result_output_item::Item::End(t)) => {
+                end_metadata = Some(t.metadata);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "run_stream cancel must terminate promptly, got {:?}",
+        elapsed
+    );
+    assert!(
+        chunks.len() < 50,
+        "stream should be cut short by cancel, got {} chunks (full run = 50)",
+        chunks.len()
+    );
+    // run_stream_v2 substitutes the input metadata on the cancel path
+    // (the plugin task was aborted before it could return its own).
+    assert_eq!(
+        end_metadata.as_ref(),
+        Some(&meta),
+        "cancelled run_stream must still emit an End trailer with the fallback (input) metadata"
+    );
+    Ok(())
+}
+
 /// Drop-on-timeout MUST release the variant write lock. Without that
 /// behaviour, a second `run()` on the same wrapper would block until the
 /// first (5s) call completed; with it, the second call only waits for the
