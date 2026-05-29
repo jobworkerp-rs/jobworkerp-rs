@@ -52,6 +52,16 @@ static PLUGIN_LIBRARY_CACHE: OnceLock<TokioRwLock<HashMap<PathBuf, &'static Libr
 ///   * Plugin's `vtable_size` larger than the host's struct size — host
 ///     would interpret out-of-bounds memory as method pointers.
 fn validate_v2_vtable(raw: &PluginInstanceRaw) -> Result<()> {
+    // The V2 macro returns a sentinel instance (state = null, vtable_size = 0)
+    // when the plugin's constructor panics. Detect that case first so the
+    // error message points at the real cause instead of complaining about
+    // an out-of-range vtable size.
+    if raw.state.is_null() {
+        return Err(anyhow::anyhow!(
+            "V2 plugin constructor panicked (load_multi_method_plugin_v2 returned a null state); \
+             check the plugin's initialization expression for failures"
+        ));
+    }
     let vtable_ptr = raw.vtable as *const PluginVtable;
     if vtable_ptr.is_null() || (vtable_ptr as usize) < MIN_VALID_VTABLE_PTR {
         return Err(anyhow::anyhow!(

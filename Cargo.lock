@@ -4005,6 +4005,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin_runner_panic_ctor_test"
+version = "0.22.0"
+dependencies = [
+ "async-trait",
+ "jobworkerp-plugin-abi",
+]
+
+[[package]]
 name = "plugin_runner_test"
 version = "0.22.0"
 dependencies = [

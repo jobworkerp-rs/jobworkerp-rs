@@ -1,0 +1,14 @@
+[package]
+name = "plugin_runner_panic_ctor_test"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "V2 plugin sample: constructor panics so the host should reject the load instead of aborting"
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+jobworkerp-plugin-abi = { path = "../../modules/jobworkerp-plugin-abi" }
+
+async-trait = { workspace = true }

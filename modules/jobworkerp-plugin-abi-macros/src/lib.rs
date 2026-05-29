@@ -361,6 +361,89 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 ))
             }
 
+            // -- Sentinel thunks for the "constructor panicked" instance.
+            // Each one returns the cheapest valid value for its slot. The
+            // host detects the panic via `state.is_null()` and never
+            // dispatches through this vtable, but defining them safely
+            // keeps the layout valid in case validation order ever shifts.
+            unsafe extern "C" fn __invalid_bytes(_state: *mut ()) -> FfiBytes {
+                FfiBytes::empty()
+            }
+            unsafe extern "C" fn __invalid_kv(_state: *mut ()) -> FfiKvPairList {
+                FfiVec::empty()
+            }
+            unsafe extern "C" fn __invalid_supports_stream(
+                _state: *mut (),
+                _using: FfiOption<FfiBytes>,
+            ) -> bool {
+                false
+            }
+            unsafe extern "C" fn __invalid_client_stream_data(
+                _state: *mut (),
+                _using: FfiOption<FfiBytes>,
+            ) -> FfiBytes {
+                FfiBytes::empty()
+            }
+            unsafe extern "C" fn __invalid_setup_client_stream_channel(
+                _state: *mut (),
+                _using: FfiOption<FfiBytes>,
+            ) -> FfiOption<OutputSink> {
+                FfiOption::None
+            }
+            unsafe extern "C" fn __invalid_set_cancellation_token(
+                _state: *mut (),
+                _token: FfiCancellationToken,
+            ) {
+            }
+            unsafe extern "C" fn __invalid_load(
+                _state: *mut (),
+                _settings: FfiBytes,
+            ) -> FfiFuture<FfiResult<(), FfiBytes>> {
+                async move {
+                    FfiResult::Err(FfiBytes::from_vec(
+                        b"plugin constructor panicked during load_multi_method_plugin_v2"
+                            .to_vec(),
+                    ))
+                }
+                .into_ffi()
+            }
+            unsafe extern "C" fn __invalid_run(
+                _state: *mut (),
+                _args: FfiBytes,
+                _metadata: FfiKvPairList,
+                _using: FfiOption<FfiBytes>,
+            ) -> FfiFuture<V2RunOutcome> {
+                async move {
+                    V2RunOutcome {
+                        result: FfiResult::Err(FfiBytes::from_vec(
+                            b"plugin constructor panicked during load_multi_method_plugin_v2"
+                                .to_vec(),
+                        )),
+                        metadata: FfiVec::empty(),
+                    }
+                }
+                .into_ffi()
+            }
+            unsafe extern "C" fn __invalid_run_stream(
+                _state: *mut (),
+                _args: FfiBytes,
+                _metadata: FfiKvPairList,
+                _using: FfiOption<FfiBytes>,
+                _output: OutputSink,
+            ) -> FfiFuture<FfiResult<FfiKvPairList, FfiBytes>> {
+                async move {
+                    FfiResult::Err(FfiBytes::from_vec(
+                        b"plugin constructor panicked during load_multi_method_plugin_v2"
+                            .to_vec(),
+                    ))
+                }
+                .into_ffi()
+            }
+            unsafe extern "C" fn __invalid_drop_state(_state: *mut ()) {
+                // Nothing to drop: the host detects state.is_null() and skips
+                // drop_state. This is here only so the slot is non-null.
+            }
+
             // ------------------------------------------------------------------
             // Static vtable
             // ------------------------------------------------------------------
@@ -386,6 +469,30 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 reserved_method_0: __thunk_reserved_method_0,
             };
 
+            // Returned alongside a null state when the plugin constructor
+            // panics. Identifiable via `vtable_size == 0`, which the host
+            // rejects by range check anyway; the host's first-pass
+            // `state.is_null()` check produces a clearer error message.
+            static __PLUGIN_V2_INVALID_VTABLE: PluginVtable = PluginVtable {
+                abi_version: PLUGIN_V2_ABI_VERSION,
+                vtable_size: 0,
+                name: __invalid_bytes,
+                description: __invalid_bytes,
+                runner_settings_proto: __invalid_bytes,
+                settings_schema: __invalid_bytes,
+                method_proto_map: __invalid_kv,
+                method_json_schema_map: __invalid_kv,
+                supports_client_stream: __invalid_supports_stream,
+                client_stream_data_proto: __invalid_client_stream_data,
+                setup_client_stream_channel: __invalid_setup_client_stream_channel,
+                set_cancellation_token: __invalid_set_cancellation_token,
+                load: __invalid_load,
+                run: __invalid_run,
+                run_stream: __invalid_run_stream,
+                drop_state: __invalid_drop_state,
+                reserved_method_0: __thunk_reserved_method_0,
+            };
+
             // ------------------------------------------------------------------
             // FFI entry point
             // ------------------------------------------------------------------
@@ -393,11 +500,24 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
             #[unsafe(no_mangle)]
             #[allow(improper_ctypes_definitions)]
             pub unsafe extern "C" fn load_multi_method_plugin_v2() -> PluginInstanceRaw {
-                let plugin: PluginTy = #init_expr;
-                let boxed = Box::new(plugin);
-                PluginInstanceRaw {
-                    state: Box::into_raw(boxed) as *mut (),
-                    vtable: &__PLUGIN_V2_VTABLE,
+                // Construct the plugin under catch_unwind so a panicking
+                // constructor (e.g. `Runtime::build().expect(...)` failing
+                // due to an environment issue) returns an invalid sentinel
+                // instance instead of unwinding across the extern "C"
+                // boundary, which would abort the host process.
+                let built = catch_unwind(AssertUnwindSafe(|| -> PluginTy { #init_expr }));
+                match built {
+                    Ok(plugin) => {
+                        let boxed = Box::new(plugin);
+                        PluginInstanceRaw {
+                            state: Box::into_raw(boxed) as *mut (),
+                            vtable: &__PLUGIN_V2_VTABLE,
+                        }
+                    }
+                    Err(_) => PluginInstanceRaw {
+                        state: ::std::ptr::null_mut(),
+                        vtable: &__PLUGIN_V2_INVALID_VTABLE,
+                    },
                 }
             }
 

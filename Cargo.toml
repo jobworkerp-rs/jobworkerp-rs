@@ -12,6 +12,7 @@ members = [
     "plugins/hello_runner",
     "plugins/legacy_compat_test",
     "plugins/cancel_test",
+    "plugins/panic_ctor_test",
     "infra",
     "app",
     "app-wrapper",
