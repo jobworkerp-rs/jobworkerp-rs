@@ -2674,11 +2674,11 @@ dependencies = [
  "async-ffi",
  "async-trait",
  "futures",
+ "jobworkerp-plugin-abi-macros",
  "libloading 0.9.0",
  "prost",
  "tokio",
  "tokio-util",
- "tracing",
 ]
 
 [[package]]
@@ -3975,7 +3975,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "jobworkerp-plugin-abi",
- "jobworkerp-plugin-abi-macros",
  "prost",
  "proto",
  "tokio",

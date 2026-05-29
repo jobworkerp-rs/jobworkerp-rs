@@ -14,7 +14,6 @@ crate-type = ["dylib"]
 # author would depend on a proto crate of their choice.
 proto = { path = "../../proto" }
 jobworkerp-plugin-abi = { path = "../../modules/jobworkerp-plugin-abi" }
-jobworkerp-plugin-abi-macros = { path = "../../modules/jobworkerp-plugin-abi-macros" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

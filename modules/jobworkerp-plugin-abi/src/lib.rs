@@ -31,13 +31,20 @@ pub mod ffi {
     pub use crate::vtable::*;
 }
 
-// Crates re-exported for the proc-macro `register_plugin_v2!` so plugin
-// authors only need a single dependency on `jobworkerp-plugin-abi` (the
-// macro lives in `jobworkerp-plugin-abi-macros`).
+// Crates re-exported so the `register_plugin_v2!` proc macro
+// expansion can reach them through `::jobworkerp_plugin_abi::*`
+// without forcing plugin authors to add separate dependencies.
 pub use async_ffi;
 pub use async_trait;
 pub use futures;
 pub use prost;
+
+/// Procedural macro that turns a `PluginV2` implementation into the FFI
+/// thunks expected by the host loader. Re-exported from
+/// `jobworkerp-plugin-abi-macros` so plugin authors only need a single
+/// dependency on `jobworkerp-plugin-abi` to get both the trait and the
+/// macro.
+pub use jobworkerp_plugin_abi_macros::register_plugin_v2;
 
 // Top-level convenience re-exports.
 pub use cancel::{FfiCancellationToken, OwnedCancelHandle, from_tokio_util};

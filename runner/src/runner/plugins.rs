@@ -1,7 +1,6 @@
 pub mod ffi;
 pub mod impls;
 pub mod loader;
-pub mod v2;
 
 use self::ffi::PluginInstance;
 use self::loader::RunnerPluginLoader;
@@ -413,6 +412,9 @@ pub trait MultiMethodPluginRunner: Send + Sync {
 // goes through `FfiBytes::into_string_lossy` so plugin-supplied byte
 // strings cannot panic the host.
 
+const METHOD_PROTO_MAP_LABEL: &str = "method_proto_map";
+const METHOD_JSON_SCHEMA_MAP_LABEL: &str = "method_json_schema_map";
+
 fn v2_decode_schema_map<M: prost::Message + Default>(
     list: ffi::FfiKvPairList,
     label: &'static str,
@@ -548,7 +550,7 @@ impl PluginRunnerVariant {
             PluginRunnerVariant::MultiMethod(p) => p.method_proto_map(),
             PluginRunnerVariant::MultiMethodV2(p) => {
                 let list = unsafe { (p.vtable.method_proto_map)(p.state) };
-                v2_decode_schema_map(list, "method_proto_map")
+                v2_decode_schema_map(list, METHOD_PROTO_MAP_LABEL)
             }
         }
     }
@@ -580,7 +582,7 @@ impl PluginRunnerVariant {
                 let list = unsafe { (p.vtable.method_json_schema_map)(p.state) };
                 let decoded = v2_decode_schema_map::<proto::jobworkerp::data::MethodJsonSchema>(
                     list,
-                    "method_json_schema_map",
+                    METHOD_JSON_SCHEMA_MAP_LABEL,
                 );
                 if !decoded.is_empty() {
                     return decoded;
@@ -591,7 +593,7 @@ impl PluginRunnerVariant {
                 let proto_list = unsafe { (p.vtable.method_proto_map)(p.state) };
                 let proto_map = v2_decode_schema_map::<proto::jobworkerp::data::MethodSchema>(
                     proto_list,
-                    "method_proto_map",
+                    METHOD_PROTO_MAP_LABEL,
                 );
                 proto::jobworkerp::data::MethodJsonSchema::from_proto_map(proto_map)
             }

@@ -157,10 +157,12 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-# V2 plugin ABI: shared between jobworkerp-rs host and jobworkerp-client.
+# V2 plugin ABI — shared between jobworkerp-rs host and jobworkerp-client.
 # Resolve via the jobworkerp-rs git repository so layout stays in sync.
+# This one crate exposes everything plugin authors need: FFI types, the
+# `PluginV2` trait, and the `register_plugin_v2!` proc macro (re-exported
+# from `jobworkerp-plugin-abi-macros`).
 jobworkerp-plugin-abi = { git = "https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs.git", branch = "main", package = "jobworkerp-plugin-abi" }
-jobworkerp-plugin-abi-macros = { git = "https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs.git", branch = "main", package = "jobworkerp-plugin-abi-macros" }
 
 # A proto crate of your choice (host runtime proto, jobworkerp-client
 # proto, or your own) to produce protobuf-encoded `MethodSchema` bytes.
@@ -172,11 +174,10 @@ async-trait = "0.1"
 tokio       = { version = "1", features = ["full"] }
 ```
 
-`jobworkerp-plugin-abi` re-exports `async-ffi`, `async-trait`, `futures`
-and `prost`, so the proc-macro generated thunks resolve them through
-`::jobworkerp_plugin_abi::*` without the plugin author needing extra
-dependencies. The `register_plugin_v2!` macro itself lives in
-`jobworkerp-plugin-abi-macros`.
+`jobworkerp-plugin-abi` re-exports `async-ffi`, `async-trait`, `futures`,
+`prost` and the `register_plugin_v2!` proc macro itself, so the macro
+expansion resolves them through `::jobworkerp_plugin_abi::*` without
+the plugin author needing extra dependencies.
 
 ### 2. Protobuf definition and build.rs
 
@@ -187,8 +188,8 @@ produce the same payloads. See the
 ### 3. Plugin implementation
 
 ```rust
+use jobworkerp_plugin_abi::register_plugin_v2;
 use jobworkerp_plugin_abi::v2::{CancelToken, HighLevelSink, PluginV2};
-use jobworkerp_plugin_abi_macros::register_plugin_v2;
 use prost::Message;
 use proto::DEFAULT_METHOD_NAME;
 use proto::jobworkerp::data::MethodSchema;

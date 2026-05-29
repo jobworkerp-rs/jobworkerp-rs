@@ -8,8 +8,8 @@
 //!
 //! See `manual/{en,ja}/src/plugin-development-v2.md` for the author guide.
 
+use jobworkerp_plugin_abi::register_plugin_v2;
 use jobworkerp_plugin_abi::v2::{CancelToken, HighLevelSink, PluginV2};
-use jobworkerp_plugin_abi_macros::register_plugin_v2;
 use prost::Message;
 use proto::DEFAULT_METHOD_NAME;
 use proto::jobworkerp::data::MethodSchema;

@@ -155,9 +155,10 @@ crate-type = ["cdylib"]
 [dependencies]
 # V2 プラグイン ABI 定義は jobworkerp-rs ホストと jobworkerp-client SDK
 # で共有される `jobworkerp-plugin-abi` crate に集約されています。
-# jobworkerp-rs リポジトリから git 経由で取得してください。
+# jobworkerp-rs リポジトリから git 経由で取得してください。この 1
+# crate に FFI 型、`PluginV2` トレイト、`register_plugin_v2!` マクロ
+# (`jobworkerp-plugin-abi-macros` から re-export) すべてが含まれます。
 jobworkerp-plugin-abi = { git = "https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs.git", branch = "main", package = "jobworkerp-plugin-abi" }
-jobworkerp-plugin-abi-macros = { git = "https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs.git", branch = "main", package = "jobworkerp-plugin-abi-macros" }
 
 # `MethodSchema` を encode するための proto crate (host runtime proto、
 # jobworkerp-client proto、自前 proto のいずれでも可)。
@@ -170,10 +171,9 @@ tokio       = { version = "1", features = ["full"] }
 ```
 
 `jobworkerp-plugin-abi` は `async-ffi` / `async-trait` / `futures` /
-`prost` を re-export しているため、proc マクロは
-`::jobworkerp_plugin_abi::*` 経由でこれらを参照します。プラグイン作者は
-上記以外を直接依存に追加する必要はありません。`register_plugin_v2!`
-マクロは `jobworkerp-plugin-abi-macros` に含まれます。
+`prost` と `register_plugin_v2!` マクロ自体を re-export しているため、
+proc マクロは `::jobworkerp_plugin_abi::*` 経由でこれらを参照します。
+プラグイン作者は上記以外を直接依存に追加する必要はありません。
 
 ### 2. Protobuf 定義と build.rs
 
@@ -184,8 +184,8 @@ V1 と同じです (`runner_settings_proto` / `method_proto_map` の payload
 ### 3. プラグイン実装
 
 ```rust
+use jobworkerp_plugin_abi::register_plugin_v2;
 use jobworkerp_plugin_abi::v2::{CancelToken, HighLevelSink, PluginV2};
-use jobworkerp_plugin_abi_macros::register_plugin_v2;
 use prost::Message;
 use proto::DEFAULT_METHOD_NAME;
 use proto::jobworkerp::data::MethodSchema;
