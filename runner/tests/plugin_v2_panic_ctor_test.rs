@@ -6,6 +6,8 @@
 //! that `load_plugin_file` returns a normal error and the host stays up.
 
 use jobworkerp_runner::runner::plugins::Plugins;
+use jobworkerp_runner::runner::plugins::ffi::PluginInstanceRaw;
+use libloading::{Library, Symbol};
 use std::path::PathBuf;
 
 fn locate_panic_ctor_plugin() -> Option<PathBuf> {
@@ -38,6 +40,48 @@ fn locate_panic_ctor_plugin() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Exercise the plugin's `free_multi_method_plugin_v2` directly with the
+/// sentinel that `load_multi_method_plugin_v2` returns after a constructor
+/// panic. Without the null-guard in `free_*`, this would deref a null
+/// `state` via `Box::from_raw` and segfault — surviving the call (and the
+/// subsequent normal-flow assertion) is the regression check.
+#[test]
+fn v2_plugin_free_handles_sentinel_instance_after_constructor_panic() {
+    let Some(path) = locate_panic_ctor_plugin() else {
+        eprintln!(
+            "skipping: plugin_runner_panic_ctor_test dylib not found under ./target or ../target"
+        );
+        return;
+    };
+
+    unsafe {
+        let lib = Library::new(&path).expect("dylib loads");
+        let load: Symbol<extern "C" fn() -> PluginInstanceRaw> = lib
+            .get(b"load_multi_method_plugin_v2\0")
+            .expect("V2 load symbol present");
+        let free: Symbol<unsafe extern "C" fn(PluginInstanceRaw)> = lib
+            .get(b"free_multi_method_plugin_v2\0")
+            .expect("V2 free symbol present");
+
+        let inst = load();
+        // Sanity: the constructor panicked, so the loader returned the
+        // sentinel (state = null, vtable_size = 0).
+        assert!(
+            inst.state.is_null(),
+            "expected sentinel state, got non-null"
+        );
+        assert_eq!(
+            inst.vtable.vtable_size, 0,
+            "expected sentinel vtable_size = 0"
+        );
+
+        // The free function must accept the sentinel without dereferencing
+        // the null state. If it forwarded to the normal vtable's drop_state
+        // (the pre-fix behaviour), Box::from_raw(null) would segfault here.
+        free(inst);
+    }
 }
 
 #[tokio::test]

@@ -524,7 +524,20 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
             #[unsafe(no_mangle)]
             #[allow(improper_ctypes_definitions)]
             pub unsafe extern "C" fn free_multi_method_plugin_v2(inst: PluginInstanceRaw) {
-                unsafe { (__PLUGIN_V2_VTABLE.drop_state)(inst.state) };
+                // Skip the sentinel instance produced when the constructor
+                // panicked (state = null + __PLUGIN_V2_INVALID_VTABLE):
+                // calling its drop_state would `Box::from_raw(null)` and
+                // segfault. Dispatch through inst.vtable.drop_state (not
+                // __PLUGIN_V2_VTABLE.drop_state) so the free path matches
+                // whichever vtable load_* returned — the sentinel installs
+                // its own no-op drop_state in case future callers stop
+                // checking for null themselves.
+                if inst.state.is_null() {
+                    return;
+                }
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    unsafe { (inst.vtable.drop_state)(inst.state) };
+                }));
             }
         };
     };
