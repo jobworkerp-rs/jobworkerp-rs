@@ -142,13 +142,14 @@ impl ToolConverter {
 
     /// Convert MCP Tool to GenAI Tool
     fn mcp_tool_to_genai(tool: &Tool) -> genai::chat::Tool {
-        use genai::chat::Tool as GenAITool;
-        GenAITool {
-            name: tool.name.to_string(),
-            description: tool.description.as_ref().map(|d| d.to_string()),
-            schema: Some(serde_json::Value::Object((*tool.input_schema).clone())),
-            config: None,
+        // genai 0.6 introduced ToolName enum and a builder API. ToolName::from(&str)
+        // (Custom variant) preserves the bare-string JSON shape used by 0.5.
+        let mut t = genai::chat::Tool::new(tool.name.as_ref())
+            .with_schema(serde_json::Value::Object((*tool.input_schema).clone()));
+        if let Some(desc) = tool.description.as_deref() {
+            t = t.with_description(desc);
         }
+        t
     }
 
     /// Convert a list of FunctionSpecs to Vec<ToolInfo> for Ollama FunctionCalling
@@ -1252,8 +1253,11 @@ mod tests {
         let result = ToolConverter::convert_functions_to_genai_tools(specs);
 
         // SingleSchema
-        let tool = result.iter().find(|t| t.name == "test_single").unwrap();
-        assert_eq!(tool.name, "test_single");
+        let tool = result
+            .iter()
+            .find(|t| t.name.as_str() == "test_single")
+            .unwrap();
+        assert_eq!(tool.name.as_str(), "test_single");
         assert_eq!(tool.description.as_ref().unwrap(), "desc_single");
 
         let schema = tool.schema.as_ref().unwrap();
@@ -1316,8 +1320,11 @@ mod tests {
         );
 
         // ReusableWorkflow
-        let tool = result.iter().find(|t| t.name == "test_workflow").unwrap();
-        assert_eq!(tool.name, "test_workflow");
+        let tool = result
+            .iter()
+            .find(|t| t.name.as_str() == "test_workflow")
+            .unwrap();
+        assert_eq!(tool.name.as_str(), "test_workflow");
         assert_eq!(tool.description.as_ref().unwrap(), "desc_workflow");
 
         let schema = tool.schema.as_ref().unwrap();
@@ -1381,9 +1388,9 @@ mod tests {
         // McpTools
         let tool = result
             .iter()
-            .find(|t| t.name == "test_mcp___inner")
+            .find(|t| t.name.as_str() == "test_mcp___inner")
             .unwrap();
-        assert_eq!(tool.name, "test_mcp___inner");
+        assert_eq!(tool.name.as_str(), "test_mcp___inner");
         assert_eq!(tool.description.as_ref().unwrap(), "desc_inner");
 
         let schema = tool.schema.as_ref().unwrap();
@@ -1423,7 +1430,7 @@ mod tests {
         // Multi-method Plugin - should generate 2 tools
         let plugin_tools: Vec<_> = result
             .iter()
-            .filter(|t| t.name.starts_with("test_plugin"))
+            .filter(|t| t.name.as_str().starts_with("test_plugin"))
             .collect();
         assert_eq!(
             plugin_tools.len(),
@@ -1433,9 +1440,9 @@ mod tests {
 
         let tool_a = result
             .iter()
-            .find(|t| t.name == "test_plugin___method_a")
+            .find(|t| t.name.as_str() == "test_plugin___method_a")
             .expect("Should have test_plugin___method_a tool");
-        assert_eq!(tool_a.name, "test_plugin___method_a");
+        assert_eq!(tool_a.name.as_str(), "test_plugin___method_a");
         assert_eq!(tool_a.description.as_ref().unwrap(), "First method");
 
         let schema_a = tool_a.schema.as_ref().unwrap();
@@ -1488,9 +1495,9 @@ mod tests {
 
         let tool_b = result
             .iter()
-            .find(|t| t.name == "test_plugin___method_b")
+            .find(|t| t.name.as_str() == "test_plugin___method_b")
             .expect("Should have test_plugin___method_b tool");
-        assert_eq!(tool_b.name, "test_plugin___method_b");
+        assert_eq!(tool_b.name.as_str(), "test_plugin___method_b");
         assert_eq!(tool_b.description.as_ref().unwrap(), "Second method");
 
         let schema_b = tool_b.schema.as_ref().unwrap();
@@ -1521,6 +1528,31 @@ mod tests {
             Some("integer"),
             "param_b should have type integer"
         );
+    }
+
+    #[test]
+    fn test_mcp_tool_to_genai_preserves_name() {
+        // Regression guard: ensure mcp_tool_to_genai keeps the bare tool name even
+        // after ToolName became an enum in genai 0.6 (Custom variant must serialise
+        // as a plain string for OTel / API compatibility).
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"x": {"type": "string"}}
+        });
+        let input_schema = schema.as_object().unwrap().clone();
+        let mcp_tool = Tool::new(
+            "my_tool".to_string(),
+            "tool description".to_string(),
+            input_schema,
+        );
+        let genai_tool = ToolConverter::mcp_tool_to_genai(&mcp_tool);
+        assert_eq!(genai_tool.name.as_str(), "my_tool");
+        assert_eq!(genai_tool.description.as_deref(), Some("tool description"));
+
+        // OTel/API compatibility: name must serialize as a bare JSON string, not
+        // a tagged enum (e.g. not {"Custom": "my_tool"}).
+        let serialised = serde_json::to_value(&genai_tool).unwrap();
+        assert_eq!(serialised["name"], serde_json::json!("my_tool"));
     }
 
     #[test]
@@ -1601,7 +1633,7 @@ mod tests {
 
         let genai_tools = ToolConverter::convert_function_set_selector_tools_to_genai(&tools);
         assert_eq!(genai_tools.len(), 1);
-        assert_eq!(genai_tools[0].name, "select_toolset_set-a");
+        assert_eq!(genai_tools[0].name.as_str(), "select_toolset_set-a");
     }
 
     #[test]

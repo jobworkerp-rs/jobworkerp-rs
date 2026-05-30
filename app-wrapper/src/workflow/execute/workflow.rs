@@ -11,6 +11,7 @@ use crate::workflow::execute::context::{
 };
 use crate::workflow::execute::task::ExecutionId;
 use anyhow::Result;
+use app::app::job::UseJobApp;
 use app::app::job::execute::JobExecutorWrapper;
 use app::module::AppModule;
 use async_stream::stream;
@@ -744,17 +745,38 @@ impl WorkflowExecutor {
     ///
     /// This function sets the workflow status to `Cancelled` and logs the cancellation.
     pub async fn cancel(&self) {
-        let mut lock = self.workflow_context.write().await;
+        // Flip the workflow status to Cancelled and snapshot the in-flight
+        // child jobs in a single write-lock scope. Take the id for logging from
+        // the same guard so we never acquire a second (read) lock on
+        // `workflow_context` while the write guard is held — doing so would
+        // deadlock the task on tokio's RwLock.
+        let (workflow_id, running_jobs) = {
+            let mut lock = self.workflow_context.write().await;
+            if lock.status == WorkflowStatus::Running
+                || lock.status == WorkflowStatus::Pending
+                || lock.status == WorkflowStatus::Waiting
+            {
+                lock.status = WorkflowStatus::Cancelled;
+            }
+            (lock.id, lock.snapshot_running_jobs().await)
+        };
         tracing::info!(
-            "Cancel workflow: {}, id={}",
+            "Cancel workflow: {}, id={}, in-flight child jobs={}",
             self.workflow.document.name.to_string(),
-            self.workflow_context.read().await.id.to_string()
+            workflow_id,
+            running_jobs.len()
         );
-        if lock.status == WorkflowStatus::Running
-            || lock.status == WorkflowStatus::Pending
-            || lock.status == WorkflowStatus::Waiting
-        {
-            lock.status = WorkflowStatus::Cancelled;
+
+        // Actively cancel every in-flight child job so heavy child runners
+        // (e.g. VLM/LLM) stop promptly instead of running to completion as
+        // orphans. `delete_job` routes to `cancel_job` -> broadcast, which for
+        // a nested WORKFLOW child triggers that child's own cancellation and
+        // recurses down the tree. Best-effort: a child that already finished
+        // (no longer Running) is a no-op.
+        for jid in running_jobs {
+            if let Err(e) = self.job_executors.job_app().delete_job(&jid).await {
+                tracing::warn!("Failed to cancel child job {}: {:?}", jid.value, e);
+            }
         }
     }
 
@@ -1241,6 +1263,101 @@ mod tests {
 
             let status = executor.workflow_context.read().await.status.clone();
             assert_eq!(status, WorkflowStatus::Cancelled);
+        })
+    }
+
+    #[test]
+    fn test_cancel_deletes_running_child_jobs() {
+        use infra::infra::job::status::JobProcessingStatusRepository;
+        use proto::jobworkerp::data::{JobId, JobProcessingStatus};
+
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // rdb_chan (memory chan + SQLite) so the test runs without Redis,
+            // matching the Memory environment the cancellation issue targets.
+            let app_module = Arc::new(
+                app::module::test::create_rdb_chan_test_app(false, false)
+                    .await
+                    .unwrap(),
+            );
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+            let workflow = create_test_workflow();
+            let input = Arc::new(serde_json::json!({"test": "input"}));
+            let context = Arc::new(serde_json::json!({}));
+
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module,
+                app_module.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                None,
+                context.clone(),
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            // Simulate a running child job: mark it Running in the status
+            // repository and register it as in-flight on the workflow context.
+            // Use the SAME shared memory status repository that RdbChanJobAppImpl
+            // reads through — `AppModule::job_processing_status_repository()`
+            // constructs a fresh empty MemoryJobProcessingStatusRepository on
+            // each call (module.rs), so it would not observe the job app's writes.
+            let child = JobId { value: 4242 };
+            let status_repo = app_module
+                .repositories
+                .rdb_module
+                .as_ref()
+                .unwrap()
+                .memory_job_processing_status_repository
+                .clone();
+            status_repo
+                .upsert_status(&child, &JobProcessingStatus::Running)
+                .await
+                .unwrap();
+            executor
+                .workflow_context
+                .write()
+                .await
+                .register_running_job(&child)
+                .await;
+            executor.workflow_context.write().await.status = WorkflowStatus::Running;
+
+            // Sanity: the child is registered and Running before cancel().
+            assert_eq!(
+                executor
+                    .workflow_context
+                    .read()
+                    .await
+                    .snapshot_running_jobs()
+                    .await,
+                vec![child],
+                "child must be registered before cancel"
+            );
+            assert_eq!(
+                status_repo.find_status(&child).await.unwrap(),
+                Some(JobProcessingStatus::Running),
+                "child must be Running before cancel"
+            );
+
+            executor.cancel().await;
+
+            // Workflow status flips and the child job was actively cancelled.
+            // For a Running job, cancel_job broadcasts cancellation and then
+            // cleanup_job deletes its processing status. So after the fan-out
+            // the child's status is gone (None). Had delete_job NOT been called,
+            // it would still read Running — which is exactly what distinguishes
+            // "fan-out reached the child" from "fan-out skipped it".
+            assert_eq!(
+                executor.workflow_context.read().await.status,
+                WorkflowStatus::Cancelled
+            );
+            let child_status = status_repo.find_status(&child).await.unwrap();
+            assert_eq!(
+                child_status, None,
+                "registered child job must be cancelled+cleaned-up by cancel() fan-out \
+                 (still Running means delete_job was never invoked)"
+            );
         })
     }
 

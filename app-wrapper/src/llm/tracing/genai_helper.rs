@@ -163,7 +163,8 @@ impl crate::llm::tracing::LLMRequestData for genai::chat::ChatRequest {
             tools
                 .iter()
                 .map(|tool| crate::llm::tracing::LLMTool {
-                    name: tool.name.clone(),
+                    // OTel payload parity with 0.5: bare tool name string.
+                    name: tool.name.as_str().to_string(),
                     description: tool.description.clone().unwrap_or_default(),
                     parameters: serde_json::json!(tool),
                 })

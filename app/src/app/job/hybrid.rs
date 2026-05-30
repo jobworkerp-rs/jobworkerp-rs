@@ -7,6 +7,7 @@ use super::{JobApp, JobCacheKeys, RedisJobAppHelper, resolve_job_params};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
+use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::queue::redis::RedisJobQueueRepository;
@@ -763,6 +764,130 @@ impl JobApp for HybridJobAppImpl {
         } else {
             Err(JobWorkerError::WorkerNotFound(format!("name: {:?}", &worker_name)).into())
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_job_with_channel<'a>(
+        &'a self,
+        meta: Arc<HashMap<String, String>>,
+        worker_id: Option<&'a WorkerId>,
+        worker_name: Option<&'a String>,
+        args: Vec<u8>,
+        uniq_key: Option<String>,
+        run_after_time: i64,
+        priority: i32,
+        timeout: u64,
+        reserved_job_id: Option<JobId>,
+        streaming_type: StreamingType,
+        using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
+    ) -> Result<(JobId, super::ChannelJobResultFuture)> {
+        let worker_res = if let Some(id) = worker_id {
+            self.worker_app().find(id).await?
+        } else if let Some(name) = worker_name {
+            self.worker_app().find_by_name(name).await?
+        } else {
+            return Err(JobWorkerError::WorkerNotFound(
+                "worker_id or worker_name is required".to_string(),
+            )
+            .into());
+        };
+        let Some(Worker {
+            id: Some(wid),
+            data: Some(w),
+        }) = worker_res
+        else {
+            return Err(JobWorkerError::WorkerNotFound(format!("name: {:?}", &worker_name)).into());
+        };
+
+        let request_streaming = streaming_type != StreamingType::None;
+        self.worker_app()
+            .check_worker_streaming(&wid, request_streaming, None, using.as_deref())
+            .await?;
+        let resolved = resolve_job_params(&w, overrides.as_ref());
+
+        // Channel separation only applies to an instant Direct-response job on
+        // the Redis queue that actually blocks waiting for its result. Internal
+        // streaming returns immediately anyway, and run_after / periodic / DB
+        // workers never block on a Direct result — fall back to the regular
+        // enqueue and wrap its already-resolved outcome in a ready future.
+        let is_instant_direct_redis = resolved.response_type == ResponseType::Direct as i32
+            && streaming_type != StreamingType::Internal
+            && run_after_time == 0
+            && w.periodic_interval == 0
+            && w.queue_type == QueueType::Normal as i32;
+
+        if !is_instant_direct_redis {
+            let (job_id, result, stream) = self
+                .enqueue_job(
+                    meta,
+                    Some(&wid),
+                    None,
+                    args,
+                    uniq_key,
+                    run_after_time,
+                    priority,
+                    timeout,
+                    reserved_job_id,
+                    streaming_type,
+                    using,
+                    overrides,
+                )
+                .await?;
+            return Ok((job_id, Box::pin(async move { Ok((result, stream)) })));
+        }
+
+        let job_data = JobData {
+            worker_id: Some(wid),
+            args,
+            uniq_key,
+            enqueue_time: datetime::now_millis(),
+            grabbed_until_time: None,
+            run_after_time,
+            retried: 0u32,
+            priority,
+            timeout,
+            streaming_type: streaming_type as i32,
+            using,
+            overrides,
+        };
+        let jid = reserved_job_id.unwrap_or(JobId {
+            value: self.id_generator().generate_id()?,
+        });
+        let job = Job {
+            id: Some(jid),
+            data: Some(job_data.clone()),
+            metadata: (*meta).clone(),
+        };
+
+        // Enqueue phase: push to the Redis queue, mark Pending, run the hook,
+        // and create the TTL record for running-job visibility — everything
+        // `enqueue_job_to_redis_with_wait_if_needed` does before it blocks.
+        self.redis_job_repository()
+            .enqueue_job(w.channel.as_ref(), &job)
+            .await?;
+        self.job_processing_status_repository()
+            .upsert_status(&jid, &JobProcessingStatus::Pending)
+            .await?;
+        self.after_enqueue_to_redis_hook(jid, &job, &w, streaming_type);
+        if w.queue_type == QueueType::Normal as i32 {
+            let ttl = self.calculate_job_ttl(job_data.timeout);
+            self.redis_job_repository()
+                .create_with_expire(&jid, &job_data, ttl)
+                .await?;
+        }
+
+        // Build the result-wait future owning a clone of the redis repository so
+        // it does not borrow `self` and can be returned to the caller.
+        let repo = self.redis_job_repository().clone();
+        let total_timeout =
+            proto::calculate_direct_response_timeout_ms(timeout, resolved.retry_policy.as_ref());
+        let fut: BoxFuture<'static, _> = Box::pin(async move {
+            repo.wait_for_result_queue_for_response(&jid, total_timeout, request_streaming)
+                .await
+                .map(|(r, stream)| (Some(r), stream))
+        });
+        Ok((jid, fut))
     }
 
     // update (re-enqueue) job with id (redis: upsert, rdb: update)

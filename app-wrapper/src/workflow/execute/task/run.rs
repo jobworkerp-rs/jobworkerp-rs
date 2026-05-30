@@ -175,17 +175,64 @@ impl RunTaskExecutor {
         // inject metadata from opentelemetry context for remote job
         let mut metadata = (*self.metadata).clone();
         Self::inject_metadata_from_context(&mut metadata, &cx);
-        self.job_executor_wrapper
-            .setup_worker_and_enqueue_with_json(
+
+        // Enqueue via the channel API so we learn the child JobId before the
+        // result is ready. Register it on the workflow context so that, if the
+        // workflow is cancelled while this child is running, WorkflowExecutor
+        // can actively cancel it (delete_job) instead of waiting for it to
+        // finish. Deregister on completion (success or error).
+        let (rid, rdata) = match (runner.id, runner.data) {
+            (Some(rid), Some(rdata)) => (rid, rdata),
+            _ => return Err(anyhow::anyhow!("Runner '{}' missing id/data", runner_name)),
+        };
+        let job_args = self
+            .job_executor_wrapper
+            .transform_job_args(&rid, &rdata, &job_args, using.as_deref())
+            .await?;
+        let wid = if worker_data.use_static {
+            self.job_executor_wrapper
+                .find_or_create_worker(&worker_data)
+                .await?
+                .id
+        } else {
+            None
+        };
+
+        let (job_id, result_fut) = self
+            .job_executor_wrapper
+            .enqueue_with_worker_or_temp_channel(
                 Arc::new(metadata),
-                runner_name,
+                wid,
                 worker_data,
                 job_args,
                 None, // XXX no uniq_key,
                 timeout_sec,
                 StreamingType::None,
-                using,
+                using.clone(),
             )
+            .await?;
+
+        self.workflow_context
+            .read()
+            .await
+            .register_running_job(&job_id)
+            .await;
+        let wait_result = result_fut.await;
+        self.workflow_context
+            .read()
+            .await
+            .unregister_running_job(&job_id)
+            .await;
+
+        let (res, _stream) = wait_result?;
+        let output = res
+            .map(|r| self.job_executor_wrapper.extract_job_result_output(r))
+            .ok_or(anyhow::anyhow!(
+                "Failed to enqueue job or job result not found"
+            ))
+            .and_then(|output| output)?;
+        self.job_executor_wrapper
+            .transform_raw_output(&rid, &rdata, &output, using.as_deref())
             .await
     }
 }

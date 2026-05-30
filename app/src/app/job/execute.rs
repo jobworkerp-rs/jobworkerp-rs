@@ -294,6 +294,54 @@ pub trait UseJobExecutor:
             }
         }
     }
+    /// Channel variant of [`enqueue_with_worker_or_temp`]: returns the `JobId`
+    /// eagerly and the result as a `'static` future, so a caller can record the
+    /// id (e.g. a workflow tracking in-flight child jobs for cancellation)
+    /// before awaiting the result. Temp workers are created up-front so the
+    /// `JobId` is available before the wait.
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_with_worker_or_temp_channel(
+        &self,
+        metadata: Arc<HashMap<String, String>>,
+        worker_id: Option<WorkerId>,
+        worker_data: WorkerData,
+        job_args: Vec<u8>,
+        uniq_key: Option<String>,
+        job_timeout_sec: u32,
+        streaming_type: StreamingType,
+        using: Option<String>,
+    ) -> impl std::future::Future<Output = Result<(JobId, crate::app::job::ChannelJobResultFuture)>> + Send
+    {
+        async move {
+            // Resolve to a concrete worker id (creating a temp worker if needed)
+            // so enqueue_job_with_channel returns the JobId before the wait.
+            // If the subsequent enqueue fails, the temp worker is left behind —
+            // the same best-effort trade-off as `enqueue_job_with_temp_worker`
+            // (temp workers carry a TTL and are reaped, so this is not a leak in
+            // the lasting sense).
+            let wid = match worker_id {
+                Some(wid) => wid,
+                None => self.worker_app().create_temp(worker_data, true).await?,
+            };
+            self.job_app()
+                .enqueue_job_with_channel(
+                    metadata,
+                    Some(&wid),
+                    None,
+                    job_args,
+                    uniq_key,
+                    0,
+                    Priority::Medium as i32,
+                    job_timeout_sec as u64 * 1000,
+                    None,
+                    streaming_type,
+                    using,
+                    None,
+                )
+                .await
+        }
+    }
+
     fn setup_runner_and_settings(
         &self,
         runner: &RunnerWithSchema,                  // runner(runner) name

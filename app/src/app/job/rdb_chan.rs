@@ -659,6 +659,126 @@ impl JobApp for RdbChanJobAppImpl {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_job_with_channel<'a>(
+        &'a self,
+        metadata: Arc<HashMap<String, String>>,
+        worker_id: Option<&'a WorkerId>,
+        worker_name: Option<&'a String>,
+        args: Vec<u8>,
+        uniq_key: Option<String>,
+        run_after_time: i64,
+        priority: i32,
+        timeout: u64,
+        reserved_job_id: Option<JobId>,
+        streaming_type: StreamingType,
+        using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
+    ) -> Result<(JobId, super::ChannelJobResultFuture)> {
+        let worker_res = if let Some(id) = worker_id {
+            self.worker_app().find(id).await?
+        } else if let Some(name) = worker_name {
+            self.worker_app().find_by_name(name).await?
+        } else {
+            return Err(JobWorkerError::WorkerNotFound(
+                "worker_id or worker_name is required".to_string(),
+            )
+            .into());
+        };
+        let Some(Worker {
+            id: Some(wid),
+            data: Some(w),
+        }) = worker_res
+        else {
+            return Err(JobWorkerError::WorkerNotFound(format!("name: {:?}", &worker_name)).into());
+        };
+
+        let request_streaming = streaming_type != StreamingType::None;
+        self.worker_app()
+            .check_worker_streaming(&wid, request_streaming, None, using.as_deref())
+            .await?;
+        let resolved = resolve_job_params(&w, overrides.as_ref());
+
+        // Channel separation is only meaningful for an instant Direct-response
+        // job on the chan queue: that path enqueues, then blocks waiting for the
+        // result, so we can hand the JobId back before the wait. Every other
+        // worker shape (non-Direct, run_after, periodic, DbOnly/WithBackup) does
+        // not block on a Direct result, so fall back to the regular enqueue and
+        // wrap its already-resolved outcome in a ready future.
+        //
+        // Unlike the hybrid (Redis) path, there is no `StreamingType::Internal`
+        // carve-out here: rdb_chan's `enqueue_job_sync` treats Internal the same
+        // as any Direct job (it blocks on the result), so Internal also benefits
+        // from channel separation and needs no special case.
+        let is_instant_direct_chan = resolved.response_type == ResponseType::Direct as i32
+            && run_after_time == 0
+            && w.periodic_interval == 0
+            && w.queue_type == QueueType::Normal as i32;
+
+        if !is_instant_direct_chan {
+            let (job_id, result, stream) = self
+                .enqueue_job_with_worker(
+                    metadata,
+                    &Worker {
+                        id: Some(wid),
+                        data: Some(w),
+                    },
+                    args,
+                    uniq_key,
+                    run_after_time,
+                    priority,
+                    timeout,
+                    reserved_job_id,
+                    streaming_type,
+                    using,
+                    overrides,
+                )
+                .await?;
+            return Ok((job_id, Box::pin(async move { Ok((result, stream)) })));
+        }
+
+        let job_data = JobData {
+            worker_id: Some(wid),
+            args,
+            uniq_key,
+            enqueue_time: datetime::now_millis(),
+            grabbed_until_time: None,
+            run_after_time,
+            retried: 0u32,
+            priority,
+            timeout,
+            streaming_type: streaming_type as i32,
+            using,
+            overrides,
+        };
+        let jid = reserved_job_id.unwrap_or(JobId {
+            value: self.id_generator().generate_id()?,
+        });
+        let job = Job {
+            id: Some(jid),
+            data: Some(job_data.clone()),
+            metadata: (*metadata).clone(),
+        };
+
+        // Enqueue phase only — the JobId is now live and the job is Pending.
+        let job_id = self.enqueue_job_sync_enqueue_only(&job, &w).await?;
+        self.index_job_status_async(
+            jid,
+            JobProcessingStatus::Pending,
+            wid,
+            w.channel.clone().unwrap_or_default(),
+            priority,
+            job_data.enqueue_time,
+            request_streaming,
+            resolved.broadcast_results,
+        );
+
+        let total_timeout =
+            proto::calculate_direct_response_timeout_ms(timeout, resolved.retry_policy.as_ref());
+        let fut = self.wait_for_direct_response_future(job_id, total_timeout, request_streaming);
+        Ok((job_id, fut))
+    }
+
     // update (re-enqueue) job with id (chan: retry, rdb: update)
     async fn update_job(&self, job: &Job) -> Result<()> {
         if let Job {
@@ -1282,6 +1402,36 @@ where
         Option<JobResult>,
         Option<BoxStream<'static, ResultOutputItem>>,
     )> {
+        // Enqueue (queue write + cache admission + Pending status), then, for a
+        // Direct-response worker, block on the result. Splitting the enqueue and
+        // wait phases keeps this method's behavior identical while letting
+        // `enqueue_job_with_channel` reuse the enqueue phase and defer the wait.
+        let job_id = self.enqueue_job_sync_enqueue_only(job, worker).await?;
+        let resolved =
+            resolve_job_params(worker, job.data.as_ref().and_then(|d| d.overrides.as_ref()));
+        if resolved.response_type == ResponseType::Direct as i32 {
+            let job_timeout = job.data.as_ref().map(|d| d.timeout).unwrap_or(0);
+            let total_timeout = proto::calculate_direct_response_timeout_ms(
+                job_timeout,
+                resolved.retry_policy.as_ref(),
+            );
+            self._wait_job_for_direct_response(
+                &job_id,
+                total_timeout,
+                job.data.as_ref().is_some_and(|j| j.streaming_type != 0),
+            )
+            .await
+            .map(|(r, st)| (job_id, Some(r), st))
+        } else {
+            Ok((job_id, None, None))
+        }
+    }
+
+    /// Enqueue phase shared by `enqueue_job_sync` and `enqueue_job_with_channel`:
+    /// push the job onto the channel queue, admit it into the cache (so a Direct
+    /// job is visible while running), and mark it Pending. Returns the `JobId`
+    /// without waiting for the result.
+    async fn enqueue_job_sync_enqueue_only(&self, job: &Job, worker: &WorkerData) -> Result<JobId> {
         let job_id = job.id.unwrap();
         if self.is_run_after_job(job) {
             return Err(JobWorkerError::InvalidParameter(
@@ -1289,64 +1439,52 @@ where
             )
             .into());
         }
-        // use channel to enqueue job immediately
-        let res = match self
-            .chan_job_queue_repository()
+        self.chan_job_queue_repository()
             .enqueue_job(worker.channel.as_ref(), job)
-            .await
+            .await?;
+        if let Job {
+            id: Some(id),
+            data: Some(job_data),
+            ..
+        } = &job
         {
-            Ok(_) => {
-                if let Job {
-                    id: Some(id),
-                    data: Some(job_data),
-                    ..
-                } = &job
-                {
-                    let cache_key = Arc::new(Self::find_cache_key(id));
-                    // For timeout=0 (unlimited), uses expire_job_result_seconds from config
-                    let job_ttl = self.calculate_job_ttl(job_data.timeout);
+            let cache_key = Arc::new(Self::find_cache_key(id));
+            // For timeout=0 (unlimited), uses expire_job_result_seconds from config
+            let job_ttl = self.calculate_job_ttl(job_data.timeout);
 
-                    // Direct jobs exist only in cache (not in RDB), so wait for
-                    // stretto admission to complete before returning.
-                    self.set_and_wait_cache(cache_key, job.clone(), job_ttl.as_ref())
-                        .await;
-                    tracing::debug!(
-                        "Cached Direct Response job {} with TTL {:?} for running job visibility",
-                        id.value,
-                        job_ttl
-                    );
-                }
-                // update status (not use direct response)
-                self.job_processing_status_repository()
-                    .upsert_status(&job_id, &JobProcessingStatus::Pending)
-                    .await?;
-                // wait for result if direct response type
-                let resolved = resolve_job_params(
-                    worker,
-                    job.data.as_ref().and_then(|d| d.overrides.as_ref()),
-                );
-                if resolved.response_type == ResponseType::Direct as i32 {
-                    // XXX keep chan connection until response
-                    // Calculate total timeout including retries (None means unlimited)
-                    let job_timeout = job.data.as_ref().map(|d| d.timeout).unwrap_or(0);
-                    let total_timeout = proto::calculate_direct_response_timeout_ms(
-                        job_timeout,
-                        resolved.retry_policy.as_ref(),
-                    );
-                    self._wait_job_for_direct_response(
-                        &job_id,
-                        total_timeout,
-                        job.data.as_ref().is_some_and(|j| j.streaming_type != 0),
-                    )
-                    .await
-                    .map(|(r, st)| (job_id, Some(r), st))
-                } else {
-                    Ok((job_id, None, None))
-                }
-            }
-            Err(e) => Err(e),
-        }?;
-        Ok(res)
+            // Direct jobs exist only in cache (not in RDB), so wait for
+            // stretto admission to complete before returning.
+            self.set_and_wait_cache(cache_key, job.clone(), job_ttl.as_ref())
+                .await;
+            tracing::debug!(
+                "Cached Direct Response job {} with TTL {:?} for running job visibility",
+                id.value,
+                job_ttl
+            );
+        }
+        // update status (not use direct response)
+        self.job_processing_status_repository()
+            .upsert_status(&job_id, &JobProcessingStatus::Pending)
+            .await?;
+        Ok(job_id)
+    }
+
+    /// Build a `'static` future that waits for a Direct-response job's result.
+    /// Owns a clone of the pubsub repository so the future does not borrow
+    /// `self`, letting callers return it past the borrow (used by
+    /// `enqueue_job_with_channel`).
+    fn wait_for_direct_response_future(
+        &self,
+        job_id: JobId,
+        timeout: Option<u64>,
+        request_streaming: bool,
+    ) -> super::ChannelJobResultFuture {
+        let pubsub = self.job_result_pubsub_repository().clone();
+        Box::pin(async move {
+            subscribe_direct_response(&pubsub, &job_id, timeout, request_streaming)
+                .await
+                .map(|(r, st)| (Some(r), st))
+        })
     }
 
     #[inline]
@@ -1356,45 +1494,42 @@ where
         timeout: Option<u64>,
         request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
-        // wait for and return result (with channel)
-        // self.chan_job_queue_repository()
-        //     .wait_for_result_queue_for_response(job_id, timeout, output_as_stream) // no timeout
-        //     .await
-        let fut = self
-            .job_result_pubsub_repository()
-            .subscribe_result(job_id, timeout);
-        if request_streaming {
-            let fut2 = self
-                .job_result_pubsub_repository()
-                .subscribe_result_stream(job_id, timeout);
-            let (res, stream) = futures::join!(fut, fut2);
-            tracing::debug!("wait_job_for_direct_response: job={:?}", job_id);
-            match (res, stream) {
-                (Ok(r), Ok(st)) => {
-                    // When status is not Success, stream was not created (error before stream generation).
-                    // Stream data will never arrive, so discard to prevent hang.
-                    // When status IS Success, stream contains intermediate results + error data + End marker.
-                    let should_disable_stream = r
-                        .data
-                        .as_ref()
-                        .is_some_and(|d| d.status != ResultStatus::Success as i32);
-                    if should_disable_stream {
-                        tracing::debug!(
-                            "wait_job_for_direct_response: disabling stream for error result, job_id={:?}",
-                            job_id,
-                        );
-                        Ok((r, None))
-                    } else {
-                        Ok((r, Some(st)))
-                    }
-                }
-                (Err(e), _) => Err(e),
-                (_, Err(e)) => Err(e),
-            }
-        } else {
-            fut.await.map(|r| (r, None))
-        }
+        subscribe_direct_response(
+            self.job_result_pubsub_repository(),
+            job_id,
+            timeout,
+            request_streaming,
+        )
+        .await
     }
+}
+
+/// Wait for a Direct-response job's result via the chan pubsub repository.
+/// Shared by the blocking (`_wait_job_for_direct_response`) and deferred
+/// (`wait_for_direct_response_future`) wait paths so the streaming
+/// subscribe + "discard stream on non-Success" logic lives in one place.
+async fn subscribe_direct_response(
+    pubsub: &ChanJobResultPubSubRepositoryImpl,
+    job_id: &JobId,
+    timeout: Option<u64>,
+    request_streaming: bool,
+) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
+    let fut = pubsub.subscribe_result(job_id, timeout);
+    if !request_streaming {
+        return fut.await.map(|r| (r, None));
+    }
+    let fut2 = pubsub.subscribe_result_stream(job_id, timeout);
+    let (res, stream) = futures::join!(fut, fut2);
+    tracing::debug!("wait_job_for_direct_response: job={:?}", job_id);
+    let (r, st) = (res?, stream?);
+    // When the status is not Success the stream was never produced, so discard
+    // it to avoid hanging on data that will never arrive. On Success the stream
+    // carries intermediate results + error data + the End marker.
+    let should_disable_stream = r
+        .data
+        .as_ref()
+        .is_some_and(|d| d.status != ResultStatus::Success as i32);
+    Ok((r, (!should_disable_stream).then_some(st)))
 }
 
 //TODO
