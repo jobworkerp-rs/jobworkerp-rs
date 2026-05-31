@@ -42,17 +42,15 @@ pub struct IdleTimeoutStream<T> {
     /// Sleep timer reset on every successful chunk poll. Boxed so we can
     /// safely `Pin::new` against `&mut self` without requiring `T: Unpin`.
     sleep: Pin<Box<tokio::time::Sleep>>,
-    /// Drives the post-timeout sequence: `Running` while the inner stream
-    /// is being polled, `EmitTimeoutItem` after `on_timeout` fired and
-    /// the synthetic item is queued, `Done` once `None` was returned to
-    /// the consumer.
+    /// `Running` while the inner stream is being polled; flipped to
+    /// `Done` once a terminal item (`None` or the synthetic timeout
+    /// sentinel) has been returned to the consumer.
     state: IdleState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdleState {
     Running,
-    EmitTimeoutItem,
     Done,
 }
 
@@ -95,18 +93,8 @@ impl<T: Unpin> Stream for IdleTimeoutStream<T> {
     type Item = T;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // After timeout fired, hand back the synthetic item (if any)
-        // before terminating. Splitting this off keeps the inner-stream
-        // poll branch below from racing against a still-pending plugin
-        // task once cancellation is already in flight.
-        match self.state {
-            IdleState::Done => return Poll::Ready(None),
-            IdleState::EmitTimeoutItem => {
-                let item = self.on_timeout_item.take();
-                self.state = IdleState::Done;
-                return Poll::Ready(item);
-            }
-            IdleState::Running => {}
+        if self.state == IdleState::Done {
+            return Poll::Ready(None);
         }
         match Pin::new(&mut self.stream).poll_next(cx) {
             Poll::Ready(Some(item)) => {
@@ -131,15 +119,8 @@ impl<T: Unpin> Stream for IdleTimeoutStream<T> {
                     // If the caller seeded an `on_timeout_item`, surface
                     // it now so the consumer can tell a stall apart from
                     // an EOF; otherwise terminate immediately.
-                    if self.on_timeout_item.is_some() {
-                        self.state = IdleState::EmitTimeoutItem;
-                        let item = self.on_timeout_item.take();
-                        self.state = IdleState::Done;
-                        Poll::Ready(item)
-                    } else {
-                        self.state = IdleState::Done;
-                        Poll::Ready(None)
-                    }
+                    self.state = IdleState::Done;
+                    Poll::Ready(self.on_timeout_item.take())
                 }
                 Poll::Pending => Poll::Pending,
             },

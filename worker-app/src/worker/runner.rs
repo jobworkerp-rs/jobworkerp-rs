@@ -89,15 +89,6 @@ async fn cancellation_token_from_runner(
     Some(helper.get_cancellation_token().await)
 }
 
-/// `use_static=false` variant of `cancellation_token_from_runner`: the
-/// caller has already cloned the helper out of the runner, so we just
-/// resolve the token off it.
-async fn token_from_helper(
-    helper: Option<&jobworkerp_runner::runner::cancellation_helper::CancelMonitoringHelper>,
-) -> Option<CancellationToken> {
-    Some(helper?.get_cancellation_token().await)
-}
-
 /// Idle-timeout window for stream drain.
 ///
 /// V2 plugins hand the BoxStream back before producing a chunk
@@ -382,8 +373,10 @@ pub trait JobRunner:
                         // callback must run synchronously (no spawn, no
                         // re-lock) so the cancel happens before any
                         // downstream cleanup observes the stream end.
-                        let cancel_token_for_idle =
-                            token_from_helper(cancel_helper_for_idle.as_ref()).await;
+                        let cancel_token_for_idle = match cancel_helper_for_idle.as_ref() {
+                            Some(h) => Some(h.get_cancellation_token().await),
+                            None => None,
+                        };
 
                         let final_stream = if let Some(stream) = stream {
                             let stream =

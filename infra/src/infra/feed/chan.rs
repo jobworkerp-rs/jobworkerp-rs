@@ -150,8 +150,11 @@ impl ChanFeedSenderStore {
                     "drain_loop: sender removed for job {}; aborting drain",
                     job_id
                 );
-                let mut entry = states.entry(job_id).or_default();
-                entry.value_mut().draining = false;
+                // If `remove()` already deleted the entry there is nothing
+                // to clear; otherwise just clear the draining flag.
+                if let Some(mut entry) = states.get_mut(&job_id) {
+                    entry.value_mut().draining = false;
+                }
                 return;
             };
 
@@ -165,15 +168,18 @@ impl ChanFeedSenderStore {
             if is_final {
                 // End-of-stream: mark closed and drop the entry. Any later
                 // publish will be rejected by `publish_feed` instead of
-                // resurrecting the stream.
-                let mut entry = states.entry(job_id).or_default();
-                let state = entry.value_mut();
-                state.closed = true;
-                state.sender = None;
-                state.draining = false;
-                // Discard any residual buffer (would be a protocol violation).
-                state.buffer.clear();
-                drop(entry);
+                // resurrecting the stream. If a concurrent `remove()` has
+                // already deleted the entry, skip straight to the no-op
+                // `remove`.
+                if let Some(mut entry) = states.get_mut(&job_id) {
+                    let state = entry.value_mut();
+                    state.closed = true;
+                    state.sender = None;
+                    state.draining = false;
+                    // Discard any residual buffer (would be a protocol violation).
+                    state.buffer.clear();
+                    drop(entry);
+                }
                 states.remove(&job_id);
                 return;
             }
@@ -315,12 +321,11 @@ impl FeedPublisher for ChanFeedSenderStore {
                 }
                 state.buffer.push_back(feed);
                 // If a sender is registered but no drain is in flight, kick
-                // one off so the appended feed is forwarded promptly.
-                let need_kick = state.sender.is_some() && !state.draining;
-                if need_kick {
+                // one off so the appended feed is forwarded promptly. Flip
+                // `draining` before releasing the entry guard so a
+                // concurrent publisher cannot also start a drain task.
+                if state.sender.is_some() && !state.draining {
                     state.draining = true;
-                }
-                if need_kick {
                     let states = self.states.clone();
                     let jid = job_id.value;
                     drop(entry);

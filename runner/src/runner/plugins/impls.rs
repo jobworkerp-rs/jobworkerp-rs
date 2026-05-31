@@ -166,12 +166,13 @@ impl PluginRunnerWrapperImpl {
         let variant_clone = self.variant.clone();
         let arg_owned = arg.to_vec();
         let using_owned = using.map(|s| s.to_string());
-        let metadata_for_fallback = metadata.clone();
-
-        // `metadata_for_eager_err` lets the eager-Err peek below clone the
-        // original metadata into the outer `Err` message before
-        // `metadata_for_fallback` is moved into the stream closure.
-        let metadata_for_eager_err = metadata_for_fallback.clone();
+        // One clone of the caller's metadata: the FFI thunk consumes the
+        // original via `meta_to_ffi(metadata)` below, while the eager-Err
+        // / fallback paths need to surface the metadata back to the
+        // consumer. The two paths are mutually exclusive (eager-Err
+        // returns before the stream is built), so a single owned copy
+        // covers both.
+        let metadata_fallback = metadata.clone();
         let mut plugin_fut = tokio::spawn(async move {
             // Hold the write guard for the lifetime of the FfiFuture: the
             // proc-macro-generated thunk captures `&mut PluginTy` across
@@ -264,7 +265,6 @@ impl PluginRunnerWrapperImpl {
                     // so `run_and_stream`'s status handling marks the job
                     // failed instead of returning Success with the error
                     // hidden in metadata.
-                    let _ = metadata_for_eager_err; // touch to silence unused warn under cfg
                     return Err(anyhow!("v2 plugin run_stream error: {e}"));
                 }
                 Err(join_err) if join_err.is_cancelled() && pending_chunks.is_empty() => {
@@ -282,14 +282,14 @@ impl PluginRunnerWrapperImpl {
                         Ok(Ok(meta)) => meta,
                         Ok(Err(e)) => {
                             tracing::error!("v2 plugin run_stream error after partial output: {e}");
-                            let mut m = metadata_for_eager_err;
+                            let mut m = metadata_fallback;
                             m.insert(V2_STREAM_ERROR_META_KEY.to_string(), e);
                             m
                         }
-                        Err(join_err) if join_err.is_cancelled() => metadata_for_eager_err,
+                        Err(join_err) if join_err.is_cancelled() => metadata_fallback,
                         Err(join_err) => {
                             tracing::error!("v2 plugin task join error: {join_err:?}");
-                            let mut m = metadata_for_eager_err;
+                            let mut m = metadata_fallback;
                             m.insert(
                                 V2_STREAM_ERROR_META_KEY.to_string(),
                                 format!("plugin task join error: {join_err:?}"),
@@ -395,14 +395,14 @@ impl PluginRunnerWrapperImpl {
                     // pre-stream and mid-stream errors — they look the
                     // same from the consumer's point of view.
                     tracing::error!("v2 plugin run_stream error: {}", e);
-                    let mut meta = metadata_for_fallback;
+                    let mut meta = metadata_fallback;
                     meta.insert(V2_STREAM_ERROR_META_KEY.to_string(), e);
                     meta
                 }
-                Err(join_err) if join_err.is_cancelled() => metadata_for_fallback,
+                Err(join_err) if join_err.is_cancelled() => metadata_fallback,
                 Err(join_err) => {
                     tracing::error!("v2 plugin task join error: {:?}", join_err);
-                    let mut meta = metadata_for_fallback;
+                    let mut meta = metadata_fallback;
                     meta.insert(
                         V2_STREAM_ERROR_META_KEY.to_string(),
                         format!("plugin task join error: {join_err:?}"),

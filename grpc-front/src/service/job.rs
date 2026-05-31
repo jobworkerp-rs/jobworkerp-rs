@@ -535,6 +535,15 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         let feed_publisher = app_module.feed_publisher.clone();
         let cleanup_feed_publisher = app_module.feed_publisher.clone();
         let cleanup_feed_sender_store = app_module.feed_sender_store.clone();
+        // Discard any feeds buffered before the runner registered its feed
+        // sender. Safe to call on any path: it is a no-op once a sender is
+        // registered (the runner owns the buffer in that case) and a no-op
+        // in Scalable mode (the store is `None`).
+        let cleanup_pending = || {
+            if let Some(s) = cleanup_feed_sender_store.as_ref() {
+                s.cleanup_pending(job_id_value);
+            }
+        };
 
         // The feed forwarder starts reading the client stream immediately —
         // it does NOT wait for the runner to register its feed sender.
@@ -618,9 +627,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Ok(r) => r,
             Err(join_err) => {
                 feed_handle.abort();
-                if let Some(store) = cleanup_feed_sender_store.as_ref() {
-                    store.cleanup_pending(job_id_value);
-                }
+                cleanup_pending();
                 return Err(tonic::Status::internal(format!(
                     "enqueue task panicked: {join_err}"
                 )));
@@ -632,9 +639,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             // Job never started — discard any feeds buffered before runner
             // registration (Standalone mode) so the orphan buffer is reclaimed
             // immediately instead of waiting for wait_for_feed_ready timeout.
-            if let Some(store) = cleanup_feed_sender_store.as_ref() {
-                store.cleanup_pending(job_id_value);
-            }
+            cleanup_pending();
         } else {
             // Spawn background monitor for feed_handle cleanup.
             // NOTE: We intentionally do NOT delete the job on feed failure because:
