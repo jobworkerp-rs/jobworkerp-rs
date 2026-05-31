@@ -8,7 +8,7 @@
 //! [`crate::vtable::PluginVtable`].
 
 use crate::cancel::FfiCancellationToken;
-use crate::sink::OutputSink;
+use crate::sink::{OutputSink, OutputSinkWithFinal};
 use crate::types::FfiResult;
 use std::collections::HashMap;
 use std::future::Future;
@@ -89,6 +89,41 @@ impl HighLevelSink {
     }
 }
 
+/// High-level streaming output sink that carries the originating
+/// `is_final` flag.
+///
+/// Companion of [`HighLevelSink`]; the only difference is
+/// `send(bytes, is_final)` — plugins that opt into the minor-1 ABI by
+/// implementing `PluginV2::setup_client_stream_channel_v2` receive one
+/// of these and can finish their `run_stream` deterministically when
+/// they observe `is_final=true` (instead of having to wait for the
+/// receiver's `None` from sink drop).
+pub struct HighLevelSinkWithFinal {
+    inner: OutputSinkWithFinal,
+}
+
+impl HighLevelSinkWithFinal {
+    pub fn from_ffi(inner: OutputSinkWithFinal) -> Self {
+        Self { inner }
+    }
+
+    /// Send a chunk together with the originating `is_final` flag and
+    /// await delivery. Same error semantics as `HighLevelSink::send`.
+    pub async fn send(&self, bytes: Vec<u8>, is_final: bool) -> Result<(), String> {
+        let fut = self.inner.send_raw_with_final(bytes, is_final);
+        match fut.await {
+            FfiResult::Ok(()) => Ok(()),
+            FfiResult::Err(unsent) => {
+                let payload = unsent.copy_to_vec();
+                Err(format!(
+                    "output sink closed; {} bytes undelivered",
+                    payload.len()
+                ))
+            }
+        }
+    }
+}
+
 /// Plugin author trait. Implementations use ordinary Rust types; the
 /// `register_plugin_v2!` proc-macro (in `jobworkerp-plugin-abi-macros`)
 /// generates the FFI thunks bridging to [`crate::vtable::PluginVtable`].
@@ -130,6 +165,31 @@ pub trait PluginV2: Send + Sync + 'static {
     /// The host writes chunks into the returned sink; the plugin's
     /// internal receiver consumes them.
     async fn setup_client_stream_channel(&mut self, _using: Option<&str>) -> Option<OutputSink> {
+        None
+    }
+
+    /// Minor-1 (ABI version `1.1`) opt-in variant of
+    /// `setup_client_stream_channel`. Plugins that override this method
+    /// receive an [`OutputSinkWithFinal`] whose paired receiver yields
+    /// `(Vec<u8>, bool)` so the originating `is_final` flag arrives
+    /// in-band — allowing `run_stream` to return deterministically when
+    /// the final feed has been observed, instead of having to wait for
+    /// `Receiver::recv == None` (which only fires when the host drops
+    /// the sink).
+    ///
+    /// Default returns `None`, in which case the host falls back to
+    /// `setup_client_stream_channel` and uses sink-drop as the sole EOF
+    /// signal — exactly the pre-minor-1 behaviour.
+    ///
+    /// Plugins SHOULD implement only one of the two streaming setup
+    /// methods. If both return `Some`, the host prefers the v2 sink and
+    /// the v1 sink's receiver will never see data; the v1 sink is then
+    /// dropped immediately, which still produces `None` on its paired
+    /// receiver.
+    async fn setup_client_stream_channel_v2(
+        &mut self,
+        _using: Option<&str>,
+    ) -> Option<OutputSinkWithFinal> {
         None
     }
 

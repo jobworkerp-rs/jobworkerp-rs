@@ -72,6 +72,7 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 FfiVec,
                 FfiCancellationToken,
                 OutputSink,
+                OutputSinkWithFinal,
                 PluginInstanceRaw,
                 PluginVtable,
                 V2RunOutcome,
@@ -219,6 +220,28 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                     _ => FfiOption::None,
                 }
             }
+            // Minor 1: opt-in variant that delivers `is_final` to the plugin
+            // in-band. The trait method has a `None` default, so plugins that
+            // were authored against minor 0 transparently return `None` here
+            // — the host detects that and falls back to the original
+            // `setup_client_stream_channel` slot.
+            unsafe extern "C" fn __thunk_setup_client_stream_channel_v2(
+                state: *mut (),
+                using: FfiOption<FfiBytes>,
+            ) -> FfiOption<OutputSinkWithFinal> {
+                let using_str: Option<String> =
+                    using.into_option().map(ffi_string_to_string);
+                let plugin = unsafe { plugin_mut(state) };
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    ::jobworkerp_plugin_abi::futures::executor::block_on(
+                        plugin.setup_client_stream_channel_v2(using_str.as_deref()),
+                    )
+                }));
+                match outcome {
+                    Ok(Some(sink)) => FfiOption::Some(sink),
+                    _ => FfiOption::None,
+                }
+            }
             unsafe extern "C" fn __thunk_set_cancellation_token(
                 state: *mut (),
                 token: FfiCancellationToken,
@@ -349,15 +372,28 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 }));
             }
 
-            // Plugins that predate the tail-appended slot return a smaller
-            // vtable_size. The current cancel_test plugin opts to keep the
-            // reserved slot populated by reusing this default thunk so the
-            // host can exercise the slot end-to-end.
+            // Reserved tail slot kept from minor 0. Must stay populated so
+            // a minor-0 host that probes this offset never sees an
+            // uninitialised function pointer. Returns the same Err the
+            // initial release shipped with.
             unsafe extern "C" fn __thunk_reserved_method_0(
                 _state: *mut (),
             ) -> FfiResult<FfiBytes, FfiBytes> {
                 FfiResult::Err(FfiBytes::from_vec(
                     b"reserved_method_0 not implemented".to_vec(),
+                ))
+            }
+
+            // Reserved tail slot for the next minor bump. Plugins that
+            // predate this slot report a smaller vtable_size; the host
+            // detects that and skips dispatching. The default thunk
+            // returns an Err so any accidental dispatch surfaces an
+            // obvious message rather than UB.
+            unsafe extern "C" fn __thunk_reserved_method_1(
+                _state: *mut (),
+            ) -> FfiResult<FfiBytes, FfiBytes> {
+                FfiResult::Err(FfiBytes::from_vec(
+                    b"reserved_method_1 not implemented".to_vec(),
                 ))
             }
 
@@ -391,6 +427,12 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 _state: *mut (),
                 _using: FfiOption<FfiBytes>,
             ) -> FfiOption<OutputSink> {
+                FfiOption::None
+            }
+            unsafe extern "C" fn __invalid_setup_client_stream_channel_v2(
+                _state: *mut (),
+                _using: FfiOption<FfiBytes>,
+            ) -> FfiOption<OutputSinkWithFinal> {
                 FfiOption::None
             }
             unsafe extern "C" fn __invalid_set_cancellation_token(
@@ -458,6 +500,8 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 run_stream: __thunk_run_stream,
                 drop_state: __thunk_drop_state,
                 reserved_method_0: __thunk_reserved_method_0,
+                setup_client_stream_channel_v2: __thunk_setup_client_stream_channel_v2,
+                reserved_method_1: __thunk_reserved_method_1,
             };
 
             // Returned alongside a null state when the plugin constructor
@@ -482,6 +526,8 @@ pub fn register_plugin_v2(input: TokenStream) -> TokenStream {
                 run_stream: __invalid_run_stream,
                 drop_state: __invalid_drop_state,
                 reserved_method_0: __thunk_reserved_method_0,
+                setup_client_stream_channel_v2: __invalid_setup_client_stream_channel_v2,
+                reserved_method_1: __thunk_reserved_method_1,
             };
 
             // ------------------------------------------------------------------

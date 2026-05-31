@@ -335,6 +335,134 @@ init expression runs once per `load_multi_method_plugin_v2` call (one
 per logical plugin instance), so plugin authors can perform environment
 reads or other fallible setup before returning the constructed plugin.
 
+## In-band `is_final` on feed chunks (minor 1 ABI)
+
+The `PluginV2` trait shipped at minor 1 added an optional companion to
+`setup_client_stream_channel`:
+
+```rust
+async fn setup_client_stream_channel_v2(
+    &mut self,
+    using: Option<&str>,
+) -> Option<OutputSinkWithFinal>;
+```
+
+Plugins that opt in receive `(Vec<u8>, bool)` chunks on their internal
+receiver — the second element is the originating `is_final` flag from
+the client's `EnqueueWithClientStream` feed. The plugin can therefore
+finish its `run_stream` as soon as it sees `is_final == true` rather
+than waiting for the receiver to close (which only happens when the
+host drops the sink).
+
+### When to override
+
+Only plugins whose `run_stream` needs to flush state on the **final**
+feed chunk benefit (streaming ASR runners, audio-aware transcribers,
+anything with a "session ends" hook). Plugins that just stream output
+based on the initial `args` do **not** need the v2 setup at all — the
+trait default returns `None` and the host transparently uses the legacy
+`setup_client_stream_channel` slot with EOF-on-drop semantics.
+
+### Author skeleton
+
+```rust
+use jobworkerp_plugin_abi::v2::{HighLevelSinkWithFinal, PluginV2};
+use jobworkerp_plugin_abi::OutputSinkWithFinal;
+use tokio::sync::{mpsc, Mutex};
+
+struct MyAsrPlugin {
+    // ... existing fields ...
+    feed_rx: std::sync::Arc<Mutex<Option<mpsc::Receiver<(Vec<u8>, bool)>>>>,
+}
+
+#[async_trait::async_trait]
+impl PluginV2 for MyAsrPlugin {
+    // ... existing methods ...
+
+    fn supports_client_stream(&self, using: Option<&str>) -> bool {
+        // Pin the v2 alias to a specific `using` value (or `None`) so
+        // callers can pick the streaming flavour deterministically.
+        using == Some("asr_v2")
+    }
+
+    async fn setup_client_stream_channel_v2(
+        &mut self,
+        using: Option<&str>,
+    ) -> Option<OutputSinkWithFinal> {
+        if using != Some("asr_v2") {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel::<(Vec<u8>, bool)>(32);
+        *self.feed_rx.lock().await = Some(rx);
+        Some(OutputSinkWithFinal::from_sender(tx))
+    }
+
+    async fn run_stream(
+        &mut self,
+        _args: Vec<u8>,
+        metadata: HashMap<String, String>,
+        _using: Option<String>,
+        output: HighLevelSink,
+    ) -> Result<HashMap<String, String>, String> {
+        // Take the v2 feed receiver registered above.
+        let mut rx = self.feed_rx.lock().await.take()
+            .ok_or_else(|| "feed receiver not initialised".to_string())?;
+        while let Some((data, is_final)) = rx.recv().await {
+            // ... process `data` ...
+            if is_final {
+                // Emit the final result and return cleanly.
+                output.send(b"done".to_vec()).await
+                    .map_err(|e| format!("sink closed: {e}"))?;
+                return Ok(metadata);
+            }
+        }
+        // Receiver closed without is_final (e.g. client disconnect).
+        Err("feed receiver closed before is_final".to_string())
+    }
+}
+```
+
+`HighLevelSinkWithFinal` (the matching wrapper for the host's
+`OutputSinkWithFinal`) is only relevant if you also want to forward
+the flag downstream to your own consumers — the more common case is
+the snippet above, which only needs `OutputSinkWithFinal` to build the
+sink that the host writes into.
+
+### Why opt in is purely additive
+
+- Plugins built against minor 0 (or those that leave the trait
+  default in place) advertise a smaller `vtable_size`. The host
+  detects the size shortfall and routes feed chunks through the
+  legacy `setup_client_stream_channel` slot. Existing `.so` files
+  keep working unchanged after a host upgrade.
+- Even when a plugin implements the v2 setup, the host still drops
+  the sink after sending the final chunk. Plugins that observe the
+  `is_final` flag *and* the receiver-`None` cue will see both,
+  in that order.
+- The trait's default `setup_client_stream_channel_v2` returns
+  `None`, so opting back out (per-`using`) is just a matter of
+  returning `None` from your override.
+
+## ABI version policy quick reference
+
+`PluginVtable` carries `(abi_major, abi_minor, vtable_size)`. The host
+accepts a plugin when `plugin_major == host_major` AND
+`plugin_minor <= host_minor` AND `plugin_size <= host_size`
+(`runner/src/runner/plugins/loader.rs`).
+
+| Minor | Tail-appended slot(s) | Behaviour for older plugins |
+|-------|-----------------------|-----------------------------|
+| 0 | — | Initial release. |
+| 1 | `setup_client_stream_channel_v2` | Host detects the shortfall via `vtable_size` and falls back to `setup_client_stream_channel`. No plugin recompile required unless you want to opt into the new slot. |
+
+Plugins that want to use a slot added at minor `N` must depend on a
+`jobworkerp-plugin-abi` version whose `PLUGIN_V2_ABI_MINOR` is at least
+`N` and override the corresponding trait method. Otherwise no source
+or rebuild change is required when the host minor moves forward.
+
+Major bumps **break** ABI; existing plugins must rebuild against the
+new crate version. No major bump is planned at the time of writing.
+
 ## Migration from earlier V2 builds
 
 Plugins built against the previous V2 trait-object surface
@@ -371,9 +499,17 @@ tokio baseline. If a future change pushes the ratio outside the budget,
 swap the per-call `FfiFuture` allocation for a `try_send` + readiness
 notification scheme.
 
+The minor-1 `OutputSinkWithFinal::send_raw_with_final` adds a single
+`bool` to the FFI call; the per-call allocation pattern and the
+underlying `tokio::mpsc::Sender::send` are identical, so it sits inside
+the same budget. No separate benchmark is tracked yet — re-run the
+binary above with a `(Vec<u8>, bool)` receiver if you suspect a
+regression.
+
 ## Reference implementation
 
 See `plugins/cancel_test/src/lib.rs` for a complete working example
 that exercises every path: sync metadata, cooperative cancellation,
-streaming with the Drop contract honoured, and `register_plugin_v2!`
-usage.
+streaming with the Drop contract honoured, `register_plugin_v2!`
+usage, and the minor-1 `setup_client_stream_channel_v2` slot (the
+`feed_v2` `using` branch).

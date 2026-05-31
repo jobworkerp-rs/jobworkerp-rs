@@ -262,8 +262,19 @@ Runners that need client streaming input must set `require_client_stream=true` i
 
 ### Data Transport
 
-- **Standalone mode**: Feed data is delivered via in-process `mpsc` channel (`ChanFeedSenderStore`). The gRPC handler waits for the Dispatcher to register the feed channel using `tokio::sync::Notify`.
+- **Standalone mode**: Feed data is delivered via in-process `mpsc` channel (`ChanFeedSenderStore`). The gRPC handler does **not** wait for the Dispatcher to register the feed channel — it starts reading the client stream immediately and calls `publish_feed`, which buffers chunks in the per-job `JobFeedState.buffer` when the runner has not yet registered. On registration the host drains the buffer in arrival order via `drain_loop`, so feeds sent before the runner pool slot was free are never lost.
 - **Scalable mode**: Feed data is pushed to a Redis List (`job_feed_buf:{job_id}`) via RPUSH. The worker's feed bridge reads via BLPOP. No message loss since the List buffers data.
+
+In both modes the gRPC frontend returns its response stream as soon as the V2 host has handed back its `BoxStream` (which now happens before the plugin emits its first chunk); the feed forwarder runs concurrently. This means a client that only starts sending feed data after observing the response cannot deadlock against a busy `use_static=true, concurrency=1` worker pool.
+
+### In-band `is_final` delivery to plugins (ABI minor 1+)
+
+V2 plugin ABI minor 1 adds `OutputSinkWithFinal` so the host can carry the originating `is_final` flag all the way to the plugin's feed receiver. Plugins that opt in implement `PluginV2::setup_client_stream_channel_v2` and receive `(Vec<u8>, bool)` chunks; they can finish `run_stream` deterministically the moment `is_final == true` arrives.
+
+- **Plugin built against minor 0** (or returning `None` from the v2 setup): host falls back to the original `setup_client_stream_channel`. EOF reaches the plugin only when its mpsc `Receiver` yields `None`, which happens once the host drops the sink (after observing `is_final=true` on the wire).
+- **Plugin built against minor 1+ that returns `Some` from the v2 setup**: host forwards each feed chunk as `OutputSinkWithFinal::send_raw_with_final(bytes, is_final)`; the plugin sees the flag on its `mpsc::Receiver<(Vec<u8>, bool)>` and can return from `run_stream` without waiting for the receiver to close.
+
+The host also drops the sink after the final chunk in the minor-1 path, so plugins that ignore the flag still observe the legacy EOF cue — opting in is purely additive. The minor bump is forward-compatible: existing `.so` files keep working unchanged. See [Plugin development (V2)](./plugin-development-v2.md#in-band-is_final-on-feed-chunks-minor-1-abi) for the plugin author's perspective.
 
 ### Error Cases
 
@@ -273,8 +284,9 @@ Runners that need client streaming input must set `require_client_stream=true` i
 | Worker not found | `NOT_FOUND` | Stream start |
 | Runner does not support client streaming | `INVALID_ARGUMENT` | Stream start |
 | Runner does not support streaming output | `INVALID_ARGUMENT` | Stream start |
-| Feed channel dispatch timeout | `DEADLINE_EXCEEDED` | Before feed starts |
 | `job_request` sent after first message | `INVALID_ARGUMENT` | During feed |
+| Pending feed buffer exceeds `PENDING_BUFFER_MAX` (1024) before runner registers | Oldest non-final chunk dropped, warning logged | During feed |
+| No chunk emitted for `JobData.timeout` ms while the runner stream is being drained | Runner cancellation token fired, stream terminated with End trailer | During execution |
 | Runner execution error | Status code per `ResultStatus` | During execution |
 | Client disconnect (no half-close) | Cancel notification to runner | Any time |
 
@@ -282,7 +294,7 @@ Runners that need client streaming input must set `require_client_stream=true` i
 
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
-| `JOB_QUEUE_FEED_DISPATCH_TIMEOUT` | `5000` | Maximum wait time for feed channel readiness (Standalone mode). In Scalable mode, used as Redis List TTL base. |
+| `JOB_QUEUE_FEED_DISPATCH_TIMEOUT` | `5000` | In **Scalable** mode this seeds the Redis List TTL (`ttl_secs = feed_dispatch_timeout * 2`). In **Standalone** mode it is no longer used for feed delivery — the pre-registration buffer (`PENDING_BUFFER_MAX = 1024`) bounds memory instead, and stream-drain stalls are handled by the per-job `JobData.timeout` idle window. |
 
 ## Implementation Notes
 

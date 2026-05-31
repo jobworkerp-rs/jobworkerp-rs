@@ -10,7 +10,7 @@ mod integration_tests;
 use self::map::UseRunnerPoolMap;
 use self::pool::RunnerPoolManagerImpl;
 use self::result::RunnerResultHandler;
-use self::stream_guard::{StreamWithCancelGuard, StreamWithPoolGuard};
+use self::stream_guard::{IdleTimeoutStream, StreamWithCancelGuard, StreamWithPoolGuard};
 use anyhow::Result;
 use anyhow::anyhow;
 use app_wrapper::runner::UseRunnerFactory;
@@ -34,6 +34,7 @@ use result::ResultOutputEnum;
 use std::collections::HashMap;
 use std::{panic::AssertUnwindSafe, time::Duration};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing;
 
 /// Whether a job finished normally or was dropped by its timeout. Used by run_job
@@ -71,6 +72,110 @@ fn detach_runner_if(detach: bool, runner: Object<RunnerPoolManagerImpl>) {
         tracing::warn!("runner detached from pool after timeout; pool will recreate it");
     }
     // else: `runner` drops here and returns to the pool normally.
+}
+
+/// Clone the runner's cancellation token while the runner mutex is
+/// still held, so the idle-timeout callback below can fire `cancel()`
+/// without re-locking. Returns `None` for runners without a cancel
+/// helper (e.g. test stubs) — those simply skip idle-timeout wrapping.
+///
+/// `CancellableRunner::clone_cancel_helper_for_stream` is the only
+/// trait-object-safe way to reach the helper from a `&Box<dyn ...>`
+/// today; clone the helper, then resolve the token off it.
+async fn cancellation_token_from_runner(
+    runner: &(dyn CancellableRunner + Send + Sync),
+) -> Option<CancellationToken> {
+    let helper = runner.clone_cancel_helper_for_stream()?;
+    Some(helper.get_cancellation_token().await)
+}
+
+/// `use_static=false` variant of `cancellation_token_from_runner`: the
+/// caller has already cloned the helper out of the runner, so we just
+/// resolve the token off it.
+async fn token_from_helper(
+    helper: Option<&jobworkerp_runner::runner::cancellation_helper::CancelMonitoringHelper>,
+) -> Option<CancellationToken> {
+    Some(helper?.get_cancellation_token().await)
+}
+
+/// Idle-timeout window for stream drain.
+///
+/// V2 plugins hand the BoxStream back before producing a chunk
+/// (`run_stream_v2`), so the legacy `run_and_stream` `tokio::select!` only
+/// guards the initial handoff. To keep `JobData::timeout` meaningful for
+/// streaming jobs we re-use it as the maximum gap between consecutive
+/// chunks — long enough to cover normal pauses (e.g. silence in audio),
+/// but bounded so a hung plugin frees its static pool slot instead of
+/// blocking subsequent jobs forever.
+fn idle_window_from(job_data: Option<&proto::jobworkerp::data::JobData>) -> Option<Duration> {
+    job_data
+        .map(|d| d.timeout)
+        .filter(|t| *t > 0)
+        .map(Duration::from_millis)
+}
+
+/// Wrap a stream with an inter-chunk idle timeout that fires
+/// `token.cancel()` synchronously when the window elapses.
+///
+/// `token` must be acquired before the stream starts being drained
+/// (typically while the runner mutex is still held by `run_job`), so the
+/// timeout callback never has to re-enter the runner's lock. That
+/// matters for `use_static=true`: `StreamWithPoolGuard` releases the
+/// pool slot synchronously when `IdleTimeoutStream` yields `None`, and
+/// if cancellation were running on a separate task it could lose the
+/// race against the next job that grabs the same runner — leaving the
+/// previous plugin's `variant.write()` lock un-cancelled. Firing
+/// `token.cancel()` (a lock-free atomic + waker) from the poll thread
+/// guarantees the cancellation observation point precedes the pool
+/// return.
+fn maybe_idle_timeout_wrap(
+    stream: BoxStream<'static, ResultOutputItem>,
+    idle_window: Option<Duration>,
+    cancel_token: Option<CancellationToken>,
+) -> BoxStream<'static, ResultOutputItem> {
+    let Some(window) = idle_window else {
+        return stream;
+    };
+    let Some(token) = cancel_token else {
+        // No cancellation channel available — wrapping would only delay
+        // the stalled stream without being able to wake the plugin.
+        return stream;
+    };
+    // Plant a synthetic End trailer carrying `V2_STREAM_ERROR_META_KEY`
+    // so downstream consumers (notably `collect_stream` in the V2 plugin
+    // wrapper) can distinguish "plugin stalled past idle window" from a
+    // clean EOF. Without this, a `Poll::Ready(None)` after timeout would
+    // be indistinguishable from a successful end-of-stream, and the
+    // Internal-streaming path would persist whatever data accumulated
+    // so far as a Success result.
+    let mut timeout_metadata = HashMap::new();
+    timeout_metadata.insert(
+        jobworkerp_runner::runner::plugins::impls::V2_STREAM_ERROR_META_KEY.to_string(),
+        format!(
+            "stream idle timeout: no chunk emitted within {}ms",
+            window.as_millis()
+        ),
+    );
+    let timeout_item = ResultOutputItem {
+        item: Some(proto::jobworkerp::data::result_output_item::Item::End(
+            proto::jobworkerp::data::Trailer {
+                metadata: timeout_metadata,
+            },
+        )),
+    };
+    Box::pin(IdleTimeoutStream::with_timeout_item(
+        stream,
+        window,
+        move || {
+            if !token.is_cancelled() {
+                token.cancel();
+                tracing::info!(
+                    "IdleTimeoutStream: no chunk within window; cancellation token fired"
+                );
+            }
+        },
+        Some(timeout_item),
+    ))
 }
 
 // execute runner
@@ -158,13 +263,41 @@ pub trait JobRunner:
                             _ => None,
                         };
 
+                        // Capture the data needed for the idle-timeout
+                        // window before `job` is moved into run_job_inner.
+                        let idle_window = idle_window_from(job.data.as_ref());
                         let (job_result, stream, outcome) =
                             self.run_job_inner(worker_data, job, &mut r).await;
                         let detach =
                             outcome == RunnerOutcome::TimedOut && r.should_detach_on_timeout();
+                        // Acquire the cancellation token AFTER run_job_inner:
+                        // `setup_cancellation_monitoring_if_supported` runs
+                        // inside run_job_inner and is the call that
+                        // populates `RunnerCancellationManager.cancellation_token`.
+                        // Grabbing the token earlier would return
+                        // `unwrap_or_default()` — a fresh, never-published
+                        // token nobody listens to — so the idle-timeout
+                        // would fire but the plugin would not observe
+                        // cancellation. The runner mutex is still held by
+                        // `r` here, so the helper read is race-free with
+                        // the next job's setup. Cloning the token is cheap
+                        // (Arc), and the BoxStream we just received is
+                        // still draining the plugin task — exactly when
+                        // we need an effective cancel channel.
+                        let cancel_token_for_idle = cancellation_token_from_runner(&**r).await;
                         drop(r); // unlock
 
                         let final_stream = if let Some(s) = stream {
+                            // Wrap with an inter-chunk idle timeout when the
+                            // job specifies one. V2 plugins now hand the
+                            // BoxStream back before producing any chunk
+                            // (see run_stream_v2), so the original
+                            // tokio::select! in `run_and_stream` only guards
+                            // the initial handoff. Without this idle guard,
+                            // a plugin that stalls mid-drain (e.g. whisper
+                            // after its final feed) would hold the static
+                            // runner pool slot forever.
+                            let s = maybe_idle_timeout_wrap(s, idle_window, cancel_token_for_idle);
                             if let Some(id) = registered_feed_job_id {
                                 Some(Box::pin(StreamWithPoolGuard::with_on_complete(
                                     s,
@@ -224,15 +357,37 @@ pub trait JobRunner:
                         .is_some_and(|data| data.streaming_type != 0);
 
                     if is_streaming {
-                        // Streaming: Clone CancelHelper using type-safe access
+                        // Streaming: Clone CancelHelper using type-safe access.
+                        // The helper clone shares the same underlying
+                        // `Arc<Mutex<RunnerCancellationManager>>`, so a
+                        // token published later via `setup_cancellation_monitoring`
+                        // is visible to every clone — we only need to
+                        // defer the *token value* read until setup has
+                        // run (see the run_job_inner-completed read below).
                         let cancel_helper = runner.clone_cancel_helper_for_stream();
+                        let cancel_helper_for_idle = cancel_helper.clone();
 
                         let mut runner = runner;
+                        // Capture idle-window before `job` is moved.
+                        let idle_window = idle_window_from(job.data.as_ref());
                         // Non-static runners are not pooled, so timeout detach does not apply.
                         let (job_result, stream, _outcome) =
                             self.run_job_inner(worker_data, job, &mut runner).await;
 
+                        // Resolve the token AFTER run_job_inner so we get
+                        // the real cancellation channel published by
+                        // `setup_cancellation_monitoring_if_supported` and
+                        // not the throw-away `unwrap_or_default()` token
+                        // an earlier read would return. The idle-timeout
+                        // callback must run synchronously (no spawn, no
+                        // re-lock) so the cancel happens before any
+                        // downstream cleanup observes the stream end.
+                        let cancel_token_for_idle =
+                            token_from_helper(cancel_helper_for_idle.as_ref()).await;
+
                         let final_stream = if let Some(stream) = stream {
+                            let stream =
+                                maybe_idle_timeout_wrap(stream, idle_window, cancel_token_for_idle);
                             if let Some(cancel_helper) = cancel_helper {
                                 Some(Box::pin(StreamWithCancelGuard::new(stream, cancel_helper))
                                     as BoxStream<'static, _>)

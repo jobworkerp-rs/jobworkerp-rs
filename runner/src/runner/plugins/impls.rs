@@ -58,28 +58,35 @@ type V2RunStreamOutcome = std::result::Result<
     tokio::task::JoinError,
 >;
 
-/// Convert the outcome of a V2 plugin's `run_stream` future, observed
-/// **before any chunk has been yielded downstream**, into either:
-/// - `Ok(empty_stream)` — the plugin completed successfully without
-///   producing any data; emit only the End trailer with its metadata.
-/// - `Err(...)` — the plugin returned Err (e.g. the default "not
-///   implemented" impl), was cancelled, or its task panicked. Surface as
-///   an outer `run_stream` Err so the job is marked failed.
-fn finalize_pre_stream(res: V2RunStreamOutcome) -> Result<BoxStream<'static, ResultOutputItem>> {
-    match res {
-        Ok(Ok(metadata)) => {
-            let end = ResultOutputItem {
-                item: Some(result_output_item::Item::End(Trailer { metadata })),
-            };
-            Ok(futures::stream::iter(std::iter::once(end)).boxed())
-        }
-        Ok(Err(e)) => Err(anyhow!("v2 plugin run_stream error: {}", e)),
-        Err(join_err) if join_err.is_cancelled() => {
-            Err(anyhow!("v2 plugin run_stream was cancelled"))
-        }
-        Err(join_err) => Err(anyhow!("v2 plugin task join error: {:?}", join_err)),
+/// Try to extract a `JoinHandle`'s output without awaiting. Returns `Some`
+/// only if the handle is already finished, so `run_stream_v2` can peek at
+/// a synchronously-returned plugin outcome (e.g. an immediate `Err`) and
+/// turn it into an outer `Err(...)` before handing the stream back.
+fn pending_now<T>(
+    handle: &mut tokio::task::JoinHandle<T>,
+) -> Option<Result<T, tokio::task::JoinError>> {
+    use std::future::Future as _;
+    use std::pin::Pin;
+    use std::task::Context;
+    let waker = futures::task::noop_waker_ref();
+    let mut cx = Context::from_waker(waker);
+    match Pin::new(handle).poll(&mut cx) {
+        std::task::Poll::Ready(r) => Some(r),
+        std::task::Poll::Pending => None,
     }
 }
+
+/// Metadata key used to surface a V2 plugin `run_stream` error to callers
+/// when the host has already returned its `BoxStream` and can no longer
+/// fail the outer call. Downstream consumers (e.g. `run_and_stream` /
+/// `collect_stream`) inspect the End trailer for this key to decide whether
+/// the job succeeded or failed.
+///
+/// Exposed crate-publicly so out-of-crate callers (notably
+/// `worker_app::worker::runner` building synthetic End trailers for
+/// idle-timeout terminations) can plant the same key — `collect_stream`
+/// here treats any matching value as a failure regardless of source.
+pub const V2_STREAM_ERROR_META_KEY: &str = "jobworkerp.plugin.run_stream_error";
 
 /**
  * PluginRunner wrapper
@@ -131,20 +138,23 @@ impl PluginRunnerWrapperImpl {
         self.cancel_helper = Some(helper);
     }
     /// V2 stream path: spawn the plugin's `run_stream` future on the host
-    /// runtime, then yield chunks directly from the raw mpsc receiver inside
-    /// the output stream. The plugin's final metadata becomes the End trailer.
+    /// runtime and return a `BoxStream` **immediately**, before the plugin
+    /// produces any chunk. The first-chunk wait happens inside the returned
+    /// stream so client-streaming callers (`EnqueueWithClientStream`) can
+    /// receive their gRPC response and start forwarding feed data even when
+    /// the plugin only emits output after consuming feed.
     ///
-    /// Errors surfaced before any chunk has been sent (e.g. the default
-    /// `Err("not implemented")` impl, parameter validation, internal
-    /// `variant_type` drift) are returned as `Err(...)` from this function
-    /// so callers like `run_and_stream` mark the job as failed instead of
-    /// emitting an empty success stream.
-    ///
-    /// Mid-stream errors (the plugin sent some chunks, then returned Err)
-    /// still terminate the stream with an End trailer — there is no
-    /// in-band error item on `ResultOutputItem`, so consumers must consult
-    /// metadata / logs to detect partial failures. This matches V1's
-    /// `receive_stream` behaviour.
+    /// Errors that prevent the stream from starting (e.g. an internal
+    /// `variant_type` drift) are still returned as `Err(...)` from this
+    /// function — they happen before `plugin_fut` is spawned. Errors that
+    /// surface from the plugin itself (the default `Err("not implemented")`
+    /// impl, mid-stream Err) are recorded in the End trailer metadata under
+    /// `V2_STREAM_ERROR_META_KEY` so the job can be marked failed by
+    /// `run_and_stream` / `collect_stream` after the stream is drained.
+    /// This is a semantic change vs. earlier revisions that returned
+    /// pre-stream Err as an outer `Err(...)`: returning Err once the stream
+    /// has been handed back to gRPC is no longer possible without
+    /// dropping the consumer's prefix.
     async fn run_stream_v2(
         &self,
         arg: &[u8],
@@ -158,6 +168,10 @@ impl PluginRunnerWrapperImpl {
         let using_owned = using.map(|s| s.to_string());
         let metadata_for_fallback = metadata.clone();
 
+        // `metadata_for_eager_err` lets the eager-Err peek below clone the
+        // original metadata into the outer `Err` message before
+        // `metadata_for_fallback` is moved into the stream closure.
+        let metadata_for_eager_err = metadata_for_fallback.clone();
         let mut plugin_fut = tokio::spawn(async move {
             // Hold the write guard for the lifetime of the FfiFuture: the
             // proc-macro-generated thunk captures `&mut PluginTy` across
@@ -202,57 +216,150 @@ impl PluginRunnerWrapperImpl {
             outcome
         });
 
-        // Race the first chunk against `plugin_fut`:
+        // Eager pre-stream Err detection: yield to the runtime several
+        // times so the spawned `plugin_fut` has a chance to advance through
+        // the FFI thunk (which itself awaits an `FfiFuture`). If the plugin
+        // returned `Err(...)` synchronously (e.g. the default
+        // `Err("not implemented")` impl, or a parameter-validation Err that
+        // touches no real I/O) it will be Ready by then, and we can surface
+        // the outer `Err(...)` exactly like the pre-rewrite path did —
+        // letting `worker-app::run_and_stream` turn it into a failed
+        // JobResult instead of a Success with the error hidden in End
+        // trailer metadata. Plugins that genuinely wait for I/O before
+        // returning will not be Ready yet; they fall through to the stream
+        // body where their error lands in the End trailer (and the
+        // collect_stream path picks it up via `V2_STREAM_ERROR_META_KEY`).
         //
-        // - `plugin_fut` completes first: the plugin may have buffered
-        //   chunks into the channel before exiting (e.g. a short synchronous
-        //   `send(chunk).await; Ok(meta)`). Drain those chunks; only if
-        //   none arrived treat this as a pre-stream outcome
-        //   (empty-success Ok or hard Err via `finalize_pre_stream`).
-        //   Without the drain biased select! would silently lose data.
-        // - `raw_rx.recv()` yields the first chunk: enter the streaming
-        //   loop with that chunk; `plugin_fut` is resolved later for the
-        //   End trailer.
-        // - `raw_rx.recv()` yields `None`: the sender was dropped before
-        //   any chunk; await `plugin_fut` for the outcome.
-        let mut plugin_outcome: Option<V2RunStreamOutcome> = None;
-        // Pending chunks buffered into the channel before `plugin_fut`
-        // returned, in the order they were sent. Yielded ahead of the
-        // streaming loop so consumers see every chunk the plugin emitted.
-        let mut pending_chunks: Vec<Vec<u8>> = Vec::new();
-        let first_chunk: Vec<u8> = tokio::select! {
-            biased;
-            res = &mut plugin_fut => {
-                raw_rx.close();
-                while let Ok(c) = raw_rx.try_recv() {
-                    pending_chunks.push(c);
-                }
-                if pending_chunks.is_empty() {
-                    return finalize_pre_stream(res);
-                }
-                plugin_outcome = Some(res);
-                pending_chunks.remove(0)
+        // The eager peek is best-effort. A few yields cover the FFI thunk
+        // plus the `variant.write().await` lock acquisition on an
+        // uncontended wrapper; deeper waits are by design not detected
+        // here so we never block the caller on plugin work.
+        const EAGER_ERR_YIELD_ROUNDS: usize = 8;
+        let mut eager_outcome: Option<V2RunStreamOutcome> = None;
+        for _ in 0..EAGER_ERR_YIELD_ROUNDS {
+            tokio::task::yield_now().await;
+            if let Some(res) = pending_now(&mut plugin_fut) {
+                eager_outcome = Some(res);
+                break;
             }
-            v = raw_rx.recv() => match v {
-                Some(chunk) => chunk,
-                None => return finalize_pre_stream(plugin_fut.await),
-            },
-        };
+        }
+        if let Some(res) = eager_outcome {
+            // The plugin already finished. Drain any chunks it managed to
+            // queue synchronously so we do not silently drop output.
+            raw_rx.close();
+            let mut pending_chunks: Vec<Vec<u8>> = Vec::new();
+            while let Ok(c) = raw_rx.try_recv() {
+                pending_chunks.push(c);
+            }
+            match res {
+                Ok(Ok(meta)) if pending_chunks.is_empty() => {
+                    // Pre-stream Ok with no chunks: empty success stream.
+                    let end = ResultOutputItem {
+                        item: Some(result_output_item::Item::End(Trailer { metadata: meta })),
+                    };
+                    return Ok(futures::stream::iter(std::iter::once(end)).boxed());
+                }
+                Ok(Err(e)) if pending_chunks.is_empty() => {
+                    // Pre-stream Err with no chunks: surface as outer Err
+                    // so `run_and_stream`'s status handling marks the job
+                    // failed instead of returning Success with the error
+                    // hidden in metadata.
+                    let _ = metadata_for_eager_err; // touch to silence unused warn under cfg
+                    return Err(anyhow!("v2 plugin run_stream error: {e}"));
+                }
+                Err(join_err) if join_err.is_cancelled() && pending_chunks.is_empty() => {
+                    return Err(anyhow!("v2 plugin run_stream was cancelled"));
+                }
+                Err(join_err) if pending_chunks.is_empty() => {
+                    return Err(anyhow!("v2 plugin task join error: {join_err:?}"));
+                }
+                other => {
+                    // Plugin emitted at least one chunk before finishing.
+                    // Hand back a stream that yields the buffered chunks
+                    // followed by the End trailer (error, if any, lands in
+                    // metadata) — the consumer has already started reading.
+                    let final_meta = match other {
+                        Ok(Ok(meta)) => meta,
+                        Ok(Err(e)) => {
+                            tracing::error!("v2 plugin run_stream error after partial output: {e}");
+                            let mut m = metadata_for_eager_err;
+                            m.insert(V2_STREAM_ERROR_META_KEY.to_string(), e);
+                            m
+                        }
+                        Err(join_err) if join_err.is_cancelled() => metadata_for_eager_err,
+                        Err(join_err) => {
+                            tracing::error!("v2 plugin task join error: {join_err:?}");
+                            let mut m = metadata_for_eager_err;
+                            m.insert(
+                                V2_STREAM_ERROR_META_KEY.to_string(),
+                                format!("plugin task join error: {join_err:?}"),
+                            );
+                            m
+                        }
+                    };
+                    let items = pending_chunks
+                        .into_iter()
+                        .map(|c| ResultOutputItem {
+                            item: Some(result_output_item::Item::Data(c)),
+                        })
+                        .chain(std::iter::once(ResultOutputItem {
+                            item: Some(result_output_item::Item::End(Trailer {
+                                metadata: final_meta,
+                            })),
+                        }));
+                    return Ok(futures::stream::iter(items).boxed());
+                }
+            }
+        }
 
         let st = async_stream::stream! {
-            yield ResultOutputItem {
-                item: Some(result_output_item::Item::Data(first_chunk)),
-            };
-            for chunk in pending_chunks {
-                yield ResultOutputItem {
-                    item: Some(result_output_item::Item::Data(chunk)),
-                };
+            // Race the first chunk against `plugin_fut`:
+            //
+            // - `plugin_fut` completes first: the plugin may have buffered
+            //   chunks into the channel before exiting (e.g. a short
+            //   synchronous `send(chunk).await; Ok(meta)`). Close the
+            //   receiver to stop accepting new sends, drain everything
+            //   already queued, then yield those chunks before the End
+            //   trailer. Without the drain a biased select! would silently
+            //   lose data.
+            // - `raw_rx.recv()` yields a chunk: yield it and fall through
+            //   to the streaming loop. `plugin_fut` resolves later for the
+            //   End trailer.
+            // - `raw_rx.recv()` yields `None`: the sender was dropped
+            //   before any chunk; await `plugin_fut` for the outcome.
+            let mut plugin_outcome: Option<V2RunStreamOutcome> = None;
+            let mut entered_streaming_loop = false;
+            tokio::select! {
+                biased;
+                res = &mut plugin_fut => {
+                    raw_rx.close();
+                    while let Ok(c) = raw_rx.try_recv() {
+                        yield ResultOutputItem {
+                            item: Some(result_output_item::Item::Data(c)),
+                        };
+                    }
+                    plugin_outcome = Some(res);
+                }
+                v = raw_rx.recv() => match v {
+                    Some(chunk) => {
+                        yield ResultOutputItem {
+                            item: Some(result_output_item::Item::Data(chunk)),
+                        };
+                        entered_streaming_loop = true;
+                    }
+                    None => {
+                        // Awaiting `&mut plugin_fut` keeps ownership in the
+                        // outer binding, leaving the streaming loop's
+                        // `plugin_fut.abort()` reachable in other branches.
+                        plugin_outcome = Some((&mut plugin_fut).await);
+                    }
+                }
             }
 
-            // Skip the streaming loop entirely when the plugin already
-            // finished before we entered the stream — `raw_rx` is closed
-            // and `pending_chunks` is already exhausted.
-            if plugin_outcome.is_none() {
+            // Streaming loop: only entered if a real chunk arrived first.
+            // When `plugin_fut` won the race we already drained `raw_rx`
+            // and closed it, so re-entering here would block forever.
+            if entered_streaming_loop {
                 loop {
                     let chunk_opt = match cancel_token.as_ref() {
                         Some(token) => tokio::select! {
@@ -281,16 +388,26 @@ impl PluginRunnerWrapperImpl {
             let final_meta = match outcome {
                 Ok(Ok(meta)) => meta,
                 Ok(Err(e)) => {
-                    // Mid-stream error: the consumer already received some
-                    // data, so we cannot promote this to a hard Err on
-                    // `run_stream` — log loudly and terminate with End.
-                    tracing::error!("v2 plugin run_stream error after partial output: {}", e);
-                    metadata_for_fallback
+                    // Plugin returned Err. We can no longer fail the outer
+                    // `run_stream` call (the BoxStream was already handed
+                    // back), so record the error in the End trailer
+                    // metadata and let callers decide. Covers both
+                    // pre-stream and mid-stream errors — they look the
+                    // same from the consumer's point of view.
+                    tracing::error!("v2 plugin run_stream error: {}", e);
+                    let mut meta = metadata_for_fallback;
+                    meta.insert(V2_STREAM_ERROR_META_KEY.to_string(), e);
+                    meta
                 }
                 Err(join_err) if join_err.is_cancelled() => metadata_for_fallback,
                 Err(join_err) => {
                     tracing::error!("v2 plugin task join error: {:?}", join_err);
-                    metadata_for_fallback
+                    let mut meta = metadata_for_fallback;
+                    meta.insert(
+                        V2_STREAM_ERROR_META_KEY.to_string(),
+                        format!("plugin task join error: {join_err:?}"),
+                    );
+                    meta
                 }
             };
             yield ResultOutputItem {
@@ -442,6 +559,17 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                             }
                             None => {}
                         }
+                    }
+
+                    // V2 plugins can no longer surface a pre-stream error
+                    // through `run_stream`'s outer `Err` (the BoxStream is
+                    // handed back before the plugin runs). Instead, the
+                    // host injects the error message into the End trailer
+                    // metadata; failing the collect here keeps the job's
+                    // failure semantics consistent with the pre-rewrite
+                    // behaviour.
+                    if let Some(err) = metadata.remove(V2_STREAM_ERROR_META_KEY) {
+                        return Err(anyhow!("v2 plugin run_stream error: {err}"));
                     }
 
                     if let Some(data) = final_collected {
@@ -841,6 +969,50 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                 Some(feed_tx)
             }
             super::PluginRunnerVariant::MultiMethodV2(plugin) => {
+                // Prefer the minor-1 `setup_client_stream_channel_v2` slot
+                // when the plugin advertises it via `vtable_size`. That
+                // sink carries `is_final` in-band so the plugin can return
+                // from `run_stream` deterministically once it sees the
+                // final feed, instead of having to infer EOF from sink
+                // drop alone. Older plugins (or plugins that opt out by
+                // returning None from the v2 setup) fall through to the
+                // original sink + sink-drop EOF behaviour.
+                let using_ffi = using_to_ffi(using);
+                if plugin.supports_setup_client_stream_channel_v2() {
+                    // SAFETY: vtable validated at load time; the v2 slot
+                    // is populated when supports_setup_client_stream_channel_v2()
+                    // is true. The fn pointer signature is enforced by
+                    // PluginVtable so the call site matches the thunk.
+                    let sink_opt = unsafe {
+                        (plugin.vtable.setup_client_stream_channel_v2)(plugin.state, using_ffi)
+                    };
+                    if let Some(sink) = sink_opt.into_option() {
+                        let (feed_tx, mut feed_rx) = mpsc::channel::<FeedData>(32);
+                        tokio::spawn(async move {
+                            while let Some(feed) = feed_rx.recv().await {
+                                let is_final = feed.is_final;
+                                let send_result =
+                                    sink.send_raw_with_final(feed.data, is_final).await;
+                                if matches!(send_result, super::ffi::FfiResult::Err(_)) {
+                                    break;
+                                }
+                                if is_final {
+                                    break;
+                                }
+                            }
+                            // `sink` drop still closes the plugin's
+                            // mpsc Receiver; sending `is_final=true`
+                            // beforehand lets the plugin choose its own
+                            // termination order without depending on
+                            // the drop signal.
+                        });
+                        return Some(feed_tx);
+                    }
+                    // v2 slot returned None — the plugin opted out of the
+                    // is_final-aware variant for this `using` value.
+                    // Re-encode `using` because `using_ffi` was consumed.
+                }
+
                 let using_ffi = using_to_ffi(using);
                 // SAFETY: state and vtable validated at load time. The vtable
                 // returns FfiOption<OutputSink>; None means the plugin doesn't

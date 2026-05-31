@@ -22,14 +22,19 @@
 //! documented to plugin authors.
 
 use crate::cancel::FfiCancellationToken;
-use crate::sink::OutputSink;
+use crate::sink::{OutputSink, OutputSinkWithFinal};
 use crate::types::{FfiBytes, FfiKvPairList, FfiOption, FfiResult};
 use async_ffi::FfiFuture;
 
 /// ABI major version. Bump on breaking layout / signature changes.
 pub const PLUGIN_V2_ABI_MAJOR: u16 = 1;
 /// ABI minor version. Bump on tail-appended methods (forward-compatible).
-pub const PLUGIN_V2_ABI_MINOR: u16 = 0;
+///
+/// Minor history:
+/// - 0: initial release (`setup_client_stream_channel` + EOF via sink drop).
+/// - 1: adds `setup_client_stream_channel_v2` so plugins can receive the
+///   feed `is_final` flag in-band via `OutputSinkWithFinal::send_raw_with_final`.
+pub const PLUGIN_V2_ABI_MINOR: u16 = 1;
 /// Packed major/minor for transport over the vtable header.
 pub const PLUGIN_V2_ABI_VERSION: u32 =
     ((PLUGIN_V2_ABI_MAJOR as u32) << 16) | (PLUGIN_V2_ABI_MINOR as u32);
@@ -97,13 +102,33 @@ pub struct PluginVtable {
     // === Lifecycle ===
     pub drop_state: unsafe extern "C" fn(*mut ()),
 
-    // === Reserved tail slot (ABI tail-append exercise) ===
-    /// Reserved slot kept for forward compatibility. Plugins built before
-    /// the slot existed report a smaller `vtable_size`; the host falls back
-    /// to a no-op default in that case. Replace with a real method when a
-    /// genuine need arises, and add a new `reserved_method_1` in the same
-    /// commit so the policy keeps a runway.
+    // === Reserved tail slot from minor 0 (DO NOT replace) ===
+    /// Reserved slot present in every minor-0 vtable. Its signature must
+    /// stay exactly as published, because the host's per-slot offset
+    /// check identifies *new* slots by the bytes that follow this one.
+    /// Replacing it with a different-signature method would alias an
+    /// existing offset and corrupt all minor-0 plugins still in the
+    /// field. New methods MUST be appended below.
     pub reserved_method_0: unsafe extern "C" fn(*mut ()) -> FfiResult<FfiBytes, FfiBytes>,
+
+    // === Minor 1 additions (added 2026-06): is_final-aware client stream ===
+    /// Variant of `setup_client_stream_channel` that returns an
+    /// `OutputSinkWithFinal` so the host can forward feed chunks together
+    /// with the originating `is_final` flag. Plugins that opt in receive
+    /// the flag in-band on their internal `Receiver<(Vec<u8>, bool)>`,
+    /// removing the need to infer EOF solely from `Receiver::recv == None`.
+    /// Plugins built against minor 0 do not populate this slot — the
+    /// host detects the size shortfall via `vtable_size` AND verifies
+    /// `abi_minor >= 1` before dispatching, so a minor-0 vtable (which
+    /// has `reserved_method_0` ending exactly at this slot's start
+    /// offset) can never be misdispatched here.
+    pub setup_client_stream_channel_v2:
+        unsafe extern "C" fn(*mut (), FfiOption<FfiBytes>) -> FfiOption<OutputSinkWithFinal>,
+
+    // === Reserved tail slot (ABI tail-append runway) ===
+    /// Reserved slot kept for the next minor bump. Same rule as
+    /// `reserved_method_0`: never replace, only append after it.
+    pub reserved_method_1: unsafe extern "C" fn(*mut ()) -> FfiResult<FfiBytes, FfiBytes>,
 }
 
 impl PluginVtable {
@@ -162,15 +187,34 @@ impl Drop for PluginInstance {
 }
 
 impl PluginInstance {
-    /// Returns true when the plugin's vtable advertises the reserved
-    /// tail slot. False indicates the plugin was built before the slot
-    /// existed; the host must fall back to a default for that method.
-    pub fn supports_reserved_method_0(&self) -> bool {
-        // Offset of the reserved slot relative to the vtable start.
-        // The plugin's `vtable_size` must reach past this offset for the
-        // slot to be considered initialised.
-        let needed = std::mem::size_of::<PluginVtable>() as u32;
-        self.vtable.vtable_size >= needed
+    /// Returns true when the plugin's vtable advertises the
+    /// `setup_client_stream_channel_v2` slot (ABI minor 1+). Plugins built
+    /// against minor 0 report a smaller `vtable_size`; the host must fall
+    /// back to `setup_client_stream_channel` and signal EOF via sink-drop
+    /// when this returns false.
+    ///
+    /// Defense in depth: we check **both** `abi_minor >= 1` *and* the
+    /// `vtable_size` offset. The minor check is the authoritative source
+    /// of truth — without it, a minor-0 plugin whose vtable happens to
+    /// reach the same offset (because its `reserved_method_0` tail slot
+    /// is the same width as a function pointer) would mis-dispatch
+    /// through the v2 slot's incompatible signature. The size check
+    /// stays for symmetry and to catch malformed vtables that advertise
+    /// minor 1 without actually populating the slot.
+    pub fn supports_setup_client_stream_channel_v2(&self) -> bool {
+        if self.vtable.abi_minor() < 1 {
+            return false;
+        }
+        let base = self.vtable as *const PluginVtable as usize;
+        let slot = std::ptr::addr_of!(self.vtable.setup_client_stream_channel_v2) as usize;
+        let needed = (slot - base)
+            + std::mem::size_of::<
+                unsafe extern "C" fn(
+                    *mut (),
+                    FfiOption<FfiBytes>,
+                ) -> FfiOption<OutputSinkWithFinal>,
+            >();
+        (self.vtable.vtable_size as usize) >= needed
     }
 }
 
