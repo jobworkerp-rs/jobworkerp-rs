@@ -155,6 +155,61 @@ impl WorkflowUnifiedRunnerImpl {
         }
     }
 
+    /// How long the cancel-drain loop waits for in-flight tasks to unwind
+    /// after `executor.cancel()` before giving up and synthesising a
+    /// `Cancelled` result. The drain is best-effort: it lets tasks whose
+    /// child jobs are already `Running` (and therefore got a broadcast
+    /// cancel) finish observing the cancellation, but it must NOT depend
+    /// on tasks that are blocked on `subscribe_result` for child jobs
+    /// still in `Pending` — `cancel_job` only flips Pending → Cancelling
+    /// and the result is not published until the dispatcher eventually
+    /// pops the job. That can take up to the per-job direct-response
+    /// timeout, which in workflow setups is routinely 30 minutes+, so
+    /// blanket-draining the stream would defeat user-visible cancel.
+    ///
+    /// 2 seconds covers the common case of letting an already-running
+    /// child task observe its broadcast cancel and yield a Cancelled
+    /// task context, while staying within "feels immediate" for a
+    /// user-initiated cancel.
+    const CANCEL_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// Take a snapshot of the workflow context for cases where the
+    /// stream did not yield a final context before the cancel-drain
+    /// deadline. We must synthesise a `Cancelled` `WorkflowResult` from
+    /// whatever is on `workflow_context` so the caller's job result is
+    /// not silently empty.
+    async fn synthesize_cancelled_result_from_executor(
+        executor: &WorkflowExecutor,
+    ) -> Result<WorkflowResult> {
+        let ctx = executor.workflow_context.read().await;
+        Self::synthesize_cancelled_result_from_context(&ctx)
+    }
+
+    /// Pure-function variant kept separate from `_from_executor` so the
+    /// `Arc<RwLock<WorkflowContext>>` lock acquisition can stay in one
+    /// place. Used by the synth path above and exercised directly by
+    /// unit tests that build a `WorkflowContext` without spinning up a
+    /// full executor.
+    fn synthesize_cancelled_result_from_context(
+        ctx: &crate::workflow::execute::context::WorkflowContext,
+    ) -> Result<WorkflowResult> {
+        let output = ctx
+            .output
+            .as_ref()
+            .map(|o| serde_json::to_string(o.as_ref()))
+            .unwrap_or_else(|| Ok(String::new()))?;
+        Ok(WorkflowResult {
+            id: ctx.id.to_string(),
+            output,
+            position: ctx.position.as_json_pointer(),
+            status: WorkflowStatus::Cancelled as i32,
+            error_message: Some(
+                "Workflow was cancelled; in-flight tasks did not finish within the drain window"
+                    .to_string(),
+            ),
+        })
+    }
+
     /// Resolve workflow: args workflow_source takes precedence over settings
     /// Uses WorkflowLoader for proper URL/file loading
     async fn resolve_workflow(
@@ -251,14 +306,27 @@ impl WorkflowUnifiedRunnerImpl {
         pin_mut!(workflow_stream);
 
         let mut final_context = None;
+        let mut cancelled = false;
         loop {
             let next = tokio::select! {
                 biased;
                 _ = Self::await_cancel(&cancel_token) => {
                     executor.cancel().await;
-                    // Drain remaining items so in-flight tasks unwind and the
-                    // final (Cancelled) context is captured, then stop.
-                    while let Some(result) = workflow_stream.next().await {
+                    cancelled = true;
+                    // Bounded drain: give in-flight tasks a short window to
+                    // unwind so already-running children that observe the
+                    // broadcast cancel can publish a Cancelled task result.
+                    // Tasks still blocked on a Pending child's
+                    // subscribe_result do NOT block this loop — the per-job
+                    // direct-response timeout (workflow defaults are
+                    // routinely tens of minutes) would otherwise stall the
+                    // user-visible cancel. See `synthesize_cancelled_result_from_executor`
+                    // for the fallback path when the drain window elapses.
+                    let drain_deadline = tokio::time::Instant::now() + Self::CANCEL_DRAIN_TIMEOUT;
+                    while let Ok(Some(result)) = tokio::time::timeout_at(
+                        drain_deadline,
+                        workflow_stream.next(),
+                    ).await {
                         if let Ok(context) = result {
                             final_context = Some(context);
                         }
@@ -281,20 +349,33 @@ impl WorkflowUnifiedRunnerImpl {
             }
         }
 
-        let res = final_context.ok_or_else(|| anyhow!("No workflow context was returned"))?;
-        tracing::info!("Workflow result: {}", res.output_string());
-
-        let r = WorkflowResult {
-            id: res.id.to_string(),
-            output: serde_json::to_string(&res.output)?,
-            position: res.position.as_json_pointer(),
-            status: WorkflowStatus::from_str_name(res.status.to_string().as_str())
-                .unwrap_or(WorkflowStatus::Faulted) as i32,
-            error_message: if res.status == WorkflowStatus::Completed.into() {
-                None
-            } else {
-                res.output.as_ref().map(|o| o.to_string())
-            },
+        let r = if let Some(res) = final_context {
+            tracing::info!("Workflow result: {}", res.output_string());
+            WorkflowResult {
+                id: res.id.to_string(),
+                output: serde_json::to_string(&res.output)?,
+                position: res.position.as_json_pointer(),
+                status: WorkflowStatus::from_str_name(res.status.to_string().as_str())
+                    .unwrap_or(WorkflowStatus::Faulted) as i32,
+                error_message: if res.status == WorkflowStatus::Completed.into() {
+                    None
+                } else {
+                    res.output.as_ref().map(|o| o.to_string())
+                },
+            }
+        } else if cancelled {
+            // Drain window elapsed without any context being yielded.
+            // Honour the cancellation by returning a synthetic Cancelled
+            // result built off the executor's current workflow_context —
+            // never let cancellation hang the outer job on a missing
+            // result.
+            tracing::warn!(
+                "Workflow cancel drain window elapsed without a final context; \
+                 synthesising Cancelled result from executor state"
+            );
+            Self::synthesize_cancelled_result_from_executor(&executor).await?
+        } else {
+            return Err(anyhow!("No workflow context was returned"));
         };
         // Stamp final output onto the root span before its Context is dropped.
         use opentelemetry::trace::TraceContextExt;
@@ -363,14 +444,24 @@ impl WorkflowUnifiedRunnerImpl {
             .await?,
         );
 
-        // Wrap the source stream so cancellation is observed between items: on
-        // cancel, fan out delete_job to in-flight child jobs and stop the
-        // workflow (status -> Cancelled), then drain and terminate. Without this
-        // the returned BoxStream would only end when the workflow finished
-        // naturally, defeating prompt cancellation.
+        // Wrap the source stream so cancellation is observed between items:
+        // on cancel, fan out delete_job to in-flight child jobs and stop the
+        // workflow (status -> Cancelled), then drain (bounded) and
+        // terminate. Without this the returned BoxStream would only end when
+        // the workflow finished naturally, defeating prompt cancellation;
+        // without the bound the drain itself would block on tasks awaiting
+        // Pending child results (see CANCEL_DRAIN_TIMEOUT for why).
+        //
+        // `cancel_drained_without_final` is set when the drain window
+        // elapsed without the inner stream yielding any further `Ok`
+        // context. The closing `.chain` below uses it to emit a synthetic
+        // `Cancelled` `WorkflowResult` so subscribers never see an empty
+        // stream after a cancel.
         let cancel_token = self.optional_cancel_token().await;
         let executor_for_stream = executor.clone();
         let inner_cx = Arc::new(cx.clone());
+        let cancel_drained_without_final = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel_drained_flag = cancel_drained_without_final.clone();
         let workflow_stream = async_stream::stream! {
             let inner = executor_for_stream.execute_workflow(inner_cx);
             futures::pin_mut!(inner);
@@ -379,8 +470,21 @@ impl WorkflowUnifiedRunnerImpl {
                     biased;
                     _ = Self::await_cancel(&cancel_token) => {
                         executor_for_stream.cancel().await;
-                        while let Some(item) = inner.next().await {
+                        let drain_deadline = tokio::time::Instant::now()
+                            + Self::CANCEL_DRAIN_TIMEOUT;
+                        let mut saw_ok_item = false;
+                        while let Ok(Some(item)) = tokio::time::timeout_at(
+                            drain_deadline,
+                            inner.next(),
+                        ).await {
+                            if item.is_ok() {
+                                saw_ok_item = true;
+                            }
                             yield item;
+                        }
+                        if !saw_ok_item {
+                            cancel_drained_flag
+                                .store(true, std::sync::atomic::Ordering::SeqCst);
                         }
                         break;
                     }
@@ -401,6 +505,7 @@ impl WorkflowUnifiedRunnerImpl {
         let last_output: Arc<std::sync::Mutex<Option<String>>> =
             Arc::new(std::sync::Mutex::new(None));
         let last_output_for_then = last_output.clone();
+        let executor_for_tail = executor.clone();
         let output_stream = workflow_stream
             .then(move |result| {
                 let last_output = last_output_for_then.clone();
@@ -444,6 +549,38 @@ impl WorkflowUnifiedRunnerImpl {
                     }
                 }
             })
+            // Drain elapsed without any `Ok` context: emit a synthetic
+            // Cancelled result so subscribers see the cancel outcome
+            // rather than an empty data stream followed by End. Skipped
+            // when the workflow produced at least one context during
+            // drain (the normal path).
+            .chain(
+                futures::stream::once(async move {
+                    if cancel_drained_without_final.load(std::sync::atomic::Ordering::SeqCst) {
+                        match Self::synthesize_cancelled_result_from_executor(&executor_for_tail)
+                            .await
+                        {
+                            Ok(synth) => Some(ResultOutputItem {
+                                item: Some(
+                                    proto::jobworkerp::data::result_output_item::Item::Data(
+                                        synth.encode_to_vec(),
+                                    ),
+                                ),
+                            }),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to synthesise Cancelled result on drain timeout: {:?}",
+                                    e
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .filter_map(|opt| async move { opt }),
+            )
             .chain(futures::stream::once(async move {
                 if let Some(output) = last_output.lock().ok().and_then(|s| s.clone()) {
                     use opentelemetry::trace::TraceContextExt;
@@ -745,5 +882,46 @@ mod tests {
                 method_name
             );
         }
+    }
+
+    /// Drain-window fallback must produce a `Cancelled` `WorkflowResult`
+    /// that carries the executor's current position and any partial
+    /// output, so the caller never sees an empty / Faulted result after
+    /// cancellation. Regression for the issue where a Pending child job
+    /// kept `result_fut` parked until the per-job direct-response
+    /// timeout (~tens of minutes for workflows).
+    #[test]
+    fn synthesize_cancelled_result_captures_partial_progress() {
+        use crate::workflow::execute::context::WorkflowContext;
+        let mut ctx = WorkflowContext::new_empty();
+        ctx.output = Some(Arc::new(json!({"partial": true, "step": 3})));
+
+        let r = WorkflowUnifiedRunnerImpl::synthesize_cancelled_result_from_context(&ctx)
+            .expect("synth must succeed");
+
+        assert_eq!(r.status, WorkflowStatus::Cancelled as i32);
+        assert!(r.error_message.is_some());
+        assert!(r.error_message.as_ref().unwrap().contains("cancel"));
+        // Output is preserved (serialised JSON) so callers can inspect
+        // how far the workflow progressed before the cancel.
+        let parsed: serde_json::Value = serde_json::from_str(&r.output).unwrap();
+        assert_eq!(parsed["partial"], json!(true));
+        assert_eq!(parsed["step"], json!(3));
+    }
+
+    /// When the workflow had not produced any output yet, the synth path
+    /// must still return a well-formed `Cancelled` result — output is
+    /// empty rather than failing.
+    #[test]
+    fn synthesize_cancelled_result_handles_empty_output() {
+        use crate::workflow::execute::context::WorkflowContext;
+        let ctx = WorkflowContext::new_empty();
+
+        let r = WorkflowUnifiedRunnerImpl::synthesize_cancelled_result_from_context(&ctx)
+            .expect("synth must succeed");
+
+        assert_eq!(r.status, WorkflowStatus::Cancelled as i32);
+        assert_eq!(r.output, "");
+        assert!(r.error_message.is_some());
     }
 }

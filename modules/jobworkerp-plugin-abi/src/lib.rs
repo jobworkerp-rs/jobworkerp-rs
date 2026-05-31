@@ -48,12 +48,12 @@ pub use jobworkerp_plugin_abi_macros::register_plugin_v2;
 
 // Top-level convenience re-exports.
 pub use cancel::{FfiCancellationToken, OwnedCancelHandle, from_tokio_util};
-pub use sink::OutputSink;
+pub use sink::{OutputSink, OutputSinkWithFinal};
 pub use types::{
     FfiBytes, FfiKvPair, FfiKvPairList, FfiOption, FfiResult, FfiVec, kv_to_string_map,
     option_str_to_ffi, string_map_to_kv,
 };
-pub use v2::{CancelToken, HighLevelSink, PluginV2};
+pub use v2::{CancelToken, HighLevelSink, HighLevelSinkWithFinal, PluginV2};
 pub use vtable::{
     MIN_VALID_VTABLE_PTR, PLUGIN_V2_ABI_MAJOR, PLUGIN_V2_ABI_MINOR, PLUGIN_V2_ABI_VERSION,
     PluginInstance, PluginInstanceRaw, PluginVtable, V2RunOutcome, VTABLE_SIZE_MAX,

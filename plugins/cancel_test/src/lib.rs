@@ -15,12 +15,25 @@ use proto::DEFAULT_METHOD_NAME;
 use proto::jobworkerp::data::MethodSchema;
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+
+/// Shared slot the plugin uses to hand the v2 feed receiver from
+/// `setup_client_stream_channel_v2` over to `run_stream`. Aliased to
+/// keep the struct field below readable (and to keep clippy's
+/// `type_complexity` lint quiet).
+type FeedV2RxSlot = std::sync::Arc<Mutex<Option<mpsc::Receiver<(Vec<u8>, bool)>>>>;
 
 pub struct CancelTestPlugin {
     /// Per-plugin tokio runtime — required because the dylib's tokio
     /// thread-local context is independent of the host runtime.
     rt: tokio::runtime::Runtime,
     token: Option<CancelToken>,
+    /// Receiver paired with the `OutputSinkWithFinal` returned from
+    /// `setup_client_stream_channel_v2`. `run_stream` consumes it when
+    /// `using == Some("feed_v2")` so the test can observe in-band
+    /// `is_final` delivery via the new ABI slot.
+    feed_v2_rx: FeedV2RxSlot,
 }
 
 impl Default for CancelTestPlugin {
@@ -36,7 +49,11 @@ impl CancelTestPlugin {
             .enable_all()
             .build()
             .expect("failed to build plugin tokio runtime");
-        Self { rt, token: None }
+        Self {
+            rt,
+            token: None,
+            feed_v2_rx: std::sync::Arc::new(Mutex::new(None)),
+        }
     }
 }
 
@@ -76,6 +93,31 @@ impl PluginV2 for CancelTestPlugin {
 
     fn set_cancellation_token(&mut self, token: CancelToken) {
         self.token = Some(token);
+    }
+
+    fn supports_client_stream(&self, using: Option<&str>) -> bool {
+        // Only the "feed_v2" alias exercises the minor-1 ABI slot. Tests
+        // pin to this value so existing run_stream callers (which pass
+        // None) stay on the original non-feed path.
+        using == Some("feed_v2")
+    }
+
+    /// Provide a `(Vec<u8>, bool)` receiver paired with the
+    /// `OutputSinkWithFinal` the host writes feed chunks into. Stashing
+    /// the receiver on `self` lets `run_stream` drain it when invoked
+    /// with `using = Some("feed_v2")`.
+    async fn setup_client_stream_channel_v2(
+        &mut self,
+        using: Option<&str>,
+    ) -> Option<jobworkerp_plugin_abi::OutputSinkWithFinal> {
+        if using != Some("feed_v2") {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel::<(Vec<u8>, bool)>(16);
+        // Replace any leftover receiver from a previous session so
+        // back-to-back invocations start from a clean state.
+        *self.feed_v2_rx.lock().await = Some(rx);
+        Some(jobworkerp_plugin_abi::OutputSinkWithFinal::from_sender(tx))
     }
 
     async fn load(&mut self, _settings: Vec<u8>) -> Result<(), String> {
@@ -126,9 +168,59 @@ impl PluginV2 for CancelTestPlugin {
         &mut self,
         args: Vec<u8>,
         metadata: HashMap<String, String>,
-        _using: Option<String>,
+        using: Option<String>,
         output: HighLevelSink,
     ) -> Result<HashMap<String, String>, String> {
+        // `err:<msg>` sentinel: return the message immediately, before any
+        // chunk is sent. Exercises the host's pre-stream Err path so it can
+        // be verified without resorting to a synthetic plugin.
+        if let Some(msg) = std::str::from_utf8(&args)
+            .ok()
+            .and_then(|s| s.strip_prefix("err:"))
+        {
+            drop(output);
+            return Err(msg.to_string());
+        }
+
+        // `using == "feed_v2"`: drain the `(Vec<u8>, bool)` receiver paired
+        // with the `OutputSinkWithFinal` registered earlier. Each chunk is
+        // echoed back through the `HighLevelSink` so the test can assert
+        // the host forwarder routed feed data here, and the loop exits as
+        // soon as `is_final == true` arrives — exercising the in-band EOF
+        // signalling the minor-1 ABI was added for.
+        if using.as_deref() == Some("feed_v2") {
+            let feed_slot = self.feed_v2_rx.clone();
+            let handle = self.rt.handle().clone();
+            let join = handle.spawn(async move {
+                let mut maybe_rx = feed_slot.lock().await;
+                let Some(mut rx) = maybe_rx.take() else {
+                    return Err("feed_v2 receiver not initialised".to_string());
+                };
+                drop(maybe_rx);
+                while let Some((data, is_final)) = rx.recv().await {
+                    // Echo back so the test can see the chunk; the
+                    // `is_final` boolean is encoded as a trailing byte
+                    // (`1` / `0`) so the consumer's assertions can stay
+                    // simple.
+                    let mut framed = data;
+                    framed.push(if is_final { 1 } else { 0 });
+                    if let Err(e) = output.send(framed).await {
+                        return Err(format!("output closed: {e}"));
+                    }
+                    if is_final {
+                        return Ok(metadata);
+                    }
+                }
+                // Receiver yielded None before is_final was observed —
+                // surface as Err so the test can distinguish this from
+                // the clean is_final path.
+                Err("feed_v2 receiver closed before is_final".to_string())
+            });
+            return join
+                .await
+                .unwrap_or_else(|e| Err(format!("plugin task join error: {e}")));
+        }
+
         let total_ms = parse_sleep_ms(&args);
         let token = self.token.clone();
         let handle = self.rt.handle().clone();

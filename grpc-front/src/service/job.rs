@@ -534,25 +534,32 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
 
         let feed_publisher = app_module.feed_publisher.clone();
         let cleanup_feed_publisher = app_module.feed_publisher.clone();
-        let feed_sender_store = app_module.feed_sender_store.clone();
-        let feed_dispatch_timeout = app_module
-            .config_module
-            .job_queue_config
-            .feed_dispatch_timeout_duration();
-
-        let feed_handle = tokio::spawn(async move {
-            // For Standalone mode, wait until the feed channel is ready
-            if let Some(store) = feed_sender_store.as_ref() {
-                let timeout = feed_dispatch_timeout;
-                store
-                    .wait_for_feed_ready(job_id_value, timeout)
-                    .await
-                    .map_err(|e| {
-                        tonic::Status::deadline_exceeded(format!(
-                            "feed channel not ready within timeout: {e}"
-                        ))
-                    })?;
+        let cleanup_feed_sender_store = app_module.feed_sender_store.clone();
+        // Discard any feeds buffered before the runner registered its feed
+        // sender. Safe to call on any path: it is a no-op once a sender is
+        // registered (the runner owns the buffer in that case) and a no-op
+        // in Scalable mode (the store is `None`).
+        let cleanup_pending = || {
+            if let Some(s) = cleanup_feed_sender_store.as_ref() {
+                s.cleanup_pending(job_id_value);
             }
+        };
+
+        // The feed forwarder starts reading the client stream immediately —
+        // it does NOT wait for the runner to register its feed sender.
+        //   - Standalone: `ChanFeedSenderStore.publish_feed` buffers feeds
+        //     before registration and the runner drains them on register
+        //     (`infra/src/infra/feed/chan.rs`).
+        //   - Scalable: `RedisFeedPublisher.publish_feed` RPUSHes to a
+        //     Redis List; the runner's `feed_bridge` BLPOPs whenever it
+        //     starts (`worker-app/src/worker/runner/feed_bridge.rs`).
+        // Together with the V2 host returning its `BoxStream` before the
+        // first chunk is emitted (`runner/src/runner/plugins/impls.rs`),
+        // this lets clients that send their first feed only after receiving
+        // the gRPC response make progress against a busy `use_static=true,
+        // concurrency=1` worker pool without deadlocking on the second
+        // back-to-back `EnqueueWithClientStream` call.
+        let feed_handle = tokio::spawn(async move {
             // Forward feed data from client stream
             let mut sent_final = false;
             while let Some(msg_result) = client_stream.next().await {
@@ -610,12 +617,29 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         // result via enqueue_result_direct (BLPOP unblock). The subscribed result stream
         // is already receiving data at this point, so we can return the gRPC response
         // immediately and let the client start reading while feed forwarding continues.
-        let enqueue_result = enqueue_handle
-            .await
-            .map_err(|e| tonic::Status::internal(format!("enqueue task panicked: {e}")))?;
+        let enqueue_join_result = enqueue_handle.await;
+
+        // Whether enqueue panicked or returned an Err, the runner will never
+        // register a feed sender — abort the forwarder and clear any buffered
+        // feeds so resources are reclaimed immediately rather than after the
+        // wait_for_feed_ready timeout.
+        let enqueue_result = match enqueue_join_result {
+            Ok(r) => r,
+            Err(join_err) => {
+                feed_handle.abort();
+                cleanup_pending();
+                return Err(tonic::Status::internal(format!(
+                    "enqueue task panicked: {join_err}"
+                )));
+            }
+        };
 
         if enqueue_result.is_err() {
             feed_handle.abort();
+            // Job never started — discard any feeds buffered before runner
+            // registration (Standalone mode) so the orphan buffer is reclaimed
+            // immediately instead of waiting for wait_for_feed_ready timeout.
+            cleanup_pending();
         } else {
             // Spawn background monitor for feed_handle cleanup.
             // NOTE: We intentionally do NOT delete the job on feed failure because:
@@ -651,6 +675,22 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         true
                     }
                 };
+                // Always discard any feeds that the runner never registered to
+                // consume, regardless of whether the forwarder succeeded.
+                //
+                // `publish_feed` now buffers pre-registration feeds rather
+                // than erroring out, so a runner whose method does not
+                // advertise client streaming (or that never calls
+                // `setup_client_stream_channel`) leaves the forwarder
+                // returning Ok(()) while up to `PENDING_BUFFER_MAX` chunks
+                // sit in `ChanFeedSenderStore` forever. `cleanup_pending`
+                // is a no-op when a sender is registered (the runner owns
+                // the buffer in that case), so it is safe to call on every
+                // path — the only effect is reclaiming buffers that would
+                // otherwise leak per orphaned job.
+                if let Some(store) = cleanup_feed_sender_store.as_ref() {
+                    store.cleanup_pending(job_id_value);
+                }
                 if feed_failed {
                     // Force-close the runner's feed channel so it does not hang.
                     // The runner will detect the closed channel and propagate the

@@ -359,3 +359,196 @@ async fn v2_plugin_releases_lock_on_timeout() -> Result<()> {
     );
     Ok(())
 }
+
+/// Pre-stream Err surfaces either as an outer `Err(...)` (when the host's
+/// eager peek catches it) or in the End trailer metadata under
+/// `V2_STREAM_ERROR_META_KEY` — never silently as a Success without any
+/// error indicator. Whichever path fires, the original message must reach
+/// the consumer so the job can be marked failed downstream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_plugin_pre_stream_error_is_observable_either_way() -> Result<()> {
+    use futures::StreamExt;
+    use jobworkerp_runner::runner::RunnerTrait;
+    use proto::jobworkerp::data::result_output_item;
+
+    let plugins = Plugins::new();
+    plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+    let loader = plugins.runner_plugins();
+    let guard = loader.read().await;
+    let mut wrapper = guard
+        .find_plugin_runner_by_name("CancelTest")
+        .await
+        .expect("CancelTest must be findable");
+    wrapper.load(vec![]).await?;
+
+    let args = b"err:eager-or-metadata".to_vec();
+    match wrapper.run_stream(&args, HashMap::new(), None).await {
+        Err(e) => {
+            // Eager-Err path: outer Err must mention the plugin's message.
+            assert!(
+                e.to_string().contains("eager-or-metadata"),
+                "outer Err must include the plugin error, got {e}",
+            );
+        }
+        Ok(mut stream) => {
+            // Metadata path: drain to the End trailer and verify the key.
+            let mut end_metadata: Option<HashMap<String, String>> = None;
+            while let Some(item) = stream.next().await {
+                if let Some(result_output_item::Item::End(t)) = item.item {
+                    end_metadata = Some(t.metadata);
+                    break;
+                }
+            }
+            let meta = end_metadata.expect("End trailer must be present");
+            let err_msg = meta
+                .get("jobworkerp.plugin.run_stream_error")
+                .expect("error must be recorded under V2_STREAM_ERROR_META_KEY");
+            assert!(
+                err_msg.contains("eager-or-metadata"),
+                "End trailer metadata must include the plugin error, got {err_msg}",
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Minor-1 ABI smoke test: when the plugin implements
+/// `setup_client_stream_channel_v2`, the host forwarder uses the new sink
+/// so the plugin receives `(Vec<u8>, bool)` chunks and can return from
+/// `run_stream` as soon as it observes `is_final == true`. The cancel_test
+/// plugin's `feed_v2` branch echoes every chunk back appended with a
+/// `1` / `0` byte; the assertions below cover both the in-band flag
+/// delivery and the clean termination semantics.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_plugin_setup_client_stream_channel_v2_delivers_is_final() -> Result<()> {
+    use futures::StreamExt;
+    use jobworkerp_runner::runner::{FeedData, RunnerTrait};
+    use proto::jobworkerp::data::result_output_item;
+
+    let plugins = Plugins::new();
+    plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+    let loader = plugins.runner_plugins();
+    let guard = loader.read().await;
+    let mut wrapper = guard
+        .find_plugin_runner_by_name("CancelTest")
+        .await
+        .expect("CancelTest must be findable");
+    wrapper.load(vec![]).await?;
+
+    // Acquire the feed sender first so the run_stream task below can
+    // receive chunks. `setup_client_stream_channel` returns the host-side
+    // tx that bridges into the plugin's `OutputSinkWithFinal`.
+    let feed_tx = wrapper
+        .setup_client_stream_channel(Some("feed_v2"))
+        .expect("feed_v2 sink must be available");
+
+    // Spawn run_stream and start draining the output. The plugin echoes
+    // each (data, is_final) chunk with a trailing 0/1 byte so we can
+    // verify the in-band flag travelled all the way through.
+    let mut wrapper_run = wrapper.clone();
+    let run_handle = tokio::spawn(async move {
+        wrapper_run
+            .run_stream(b"", HashMap::new(), Some("feed_v2"))
+            .await
+    });
+
+    // Feed two non-final chunks then a final one. The plugin's run_stream
+    // must return as soon as the final chunk arrives, without depending
+    // on us dropping the feed_tx.
+    feed_tx
+        .send(FeedData {
+            data: b"a".to_vec(),
+            is_final: false,
+        })
+        .await
+        .expect("send first chunk");
+    feed_tx
+        .send(FeedData {
+            data: b"b".to_vec(),
+            is_final: false,
+        })
+        .await
+        .expect("send second chunk");
+    feed_tx
+        .send(FeedData {
+            data: b"c".to_vec(),
+            is_final: true,
+        })
+        .await
+        .expect("send final chunk");
+
+    let mut stream = run_handle
+        .await
+        .expect("run task did not panic")
+        .expect("run_stream must succeed");
+
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
+    while let Some(item) = stream.next().await {
+        match item.item {
+            Some(result_output_item::Item::Data(d)) => chunks.push(d),
+            Some(result_output_item::Item::End(_)) => break,
+            _ => {}
+        }
+    }
+
+    assert_eq!(
+        chunks,
+        vec![
+            // (b"a", false) → "a" + 0x00
+            b"a\x00".to_vec(),
+            // (b"b", false) → "b" + 0x00
+            b"b\x00".to_vec(),
+            // (b"c", true)  → "c" + 0x01 — plugin returns immediately after.
+            b"c\x01".to_vec(),
+        ],
+        "plugin must observe each (data, is_final) chunk in order and \
+         echo them back, and terminate on is_final=true without us \
+         dropping feed_tx",
+    );
+
+    // We still hold `feed_tx`. If we drop it now the channel closes
+    // cleanly, but the plugin already returned without needing that.
+    drop(feed_tx);
+    Ok(())
+}
+
+/// `run_stream()` must return its `BoxStream` to the caller **without waiting
+/// for the first output chunk**. Client-streaming callers (e.g.
+/// `EnqueueWithClientStream`) only start sending feed data once they have
+/// received the gRPC response containing the result stream — if the host
+/// blocked here until the plugin produced its first chunk, plugins that
+/// consume feed before emitting anything (whisper-runner with empty `args`,
+/// feed-driven ASR) would deadlock against the client.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_plugin_run_stream_returns_before_first_chunk() -> Result<()> {
+    use jobworkerp_runner::runner::RunnerTrait;
+
+    let plugins = Plugins::new();
+    plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+    let loader = plugins.runner_plugins();
+    let guard = loader.read().await;
+    let mut wrapper = guard
+        .find_plugin_runner_by_name("CancelTest")
+        .await
+        .expect("CancelTest must be findable");
+    wrapper.load(vec![]).await?;
+
+    // sleep:1000 → first chunk emitted ~100 ms after the plugin starts.
+    // The stream returned by `run_stream` must arrive promptly regardless;
+    // the host's job is to hand the stream back so the caller can begin
+    // forwarding feed data.
+    let args = b"sleep:1000".to_vec();
+    let start = Instant::now();
+    let _stream = wrapper
+        .run_stream(&args, HashMap::new(), None)
+        .await
+        .expect("run_stream must succeed");
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(50),
+        "run_stream must return its BoxStream before the first chunk is emitted, got {:?}",
+        elapsed
+    );
+    Ok(())
+}

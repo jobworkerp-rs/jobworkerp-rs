@@ -138,6 +138,114 @@ impl Drop for OutputSink {
     }
 }
 
+/// FFI-safe output sink that carries an explicit `is_final` flag with
+/// every chunk.
+///
+/// Companion of [`OutputSink`]; differs only in that the host can signal
+/// "this is the last feed" to the plugin in-band instead of relying on
+/// receiver-drop (`None` from `mpsc::recv`) as the sole EOF cue. Plugins
+/// that consume feed data and need to flush state before returning (e.g.
+/// streaming ASR runners with a final-utterance hook) implement
+/// `PluginV2::setup_client_stream_channel_v2` to receive an
+/// `OutputSinkWithFinal`. Existing plugins keep using the original
+/// `OutputSink`; the host falls back when the new vtable slot is not
+/// populated.
+///
+/// The drop contract is identical to `OutputSink`: every in-flight
+/// `send_with_final` future MUST complete before the sink is dropped.
+#[repr(C)]
+pub struct OutputSinkWithFinal {
+    state: *mut (),
+    send_with_final:
+        unsafe extern "C" fn(*mut (), FfiBytes, bool) -> FfiFuture<FfiResult<(), FfiBytes>>,
+    drop_state: unsafe extern "C" fn(*mut ()),
+}
+
+// SAFETY: same reasoning as `OutputSink` — the Mutex inside the state
+// box serialises concurrent access, plugin authors are expected to drive
+// `send_with_final` sequentially.
+unsafe impl Send for OutputSinkWithFinal {}
+unsafe impl Sync for OutputSinkWithFinal {}
+
+/// `(chunk, is_final)` pair shipped over the `OutputSinkWithFinal`
+/// channel. Aliased so the surrounding code stays readable and clippy's
+/// `type_complexity` lint stays happy.
+pub type FinalFeedChunk = (Vec<u8>, bool);
+
+/// Host-side state for `OutputSinkWithFinal::from_sender`.
+struct SenderWithFinalState {
+    tx: Mutex<Option<mpsc::Sender<FinalFeedChunk>>>,
+}
+
+unsafe extern "C" fn host_send_with_final(
+    state: *mut (),
+    bytes: FfiBytes,
+    is_final: bool,
+) -> FfiFuture<FfiResult<(), FfiBytes>> {
+    // SAFETY: mirrors `host_send` — `state` was produced by
+    // `Box::into_raw(Box::new(SenderWithFinalState))` and remains valid
+    // until `host_drop_sender_with_final` runs.
+    let state_ptr = state as *mut SenderWithFinalState;
+    let state_ref: &SenderWithFinalState = unsafe { &*state_ptr };
+
+    let maybe_tx = state_ref
+        .tx
+        .lock()
+        .expect("OutputSinkWithFinal sender mutex poisoned")
+        .clone();
+
+    async move {
+        let Some(tx) = maybe_tx else {
+            return FfiResult::Err(FfiBytes::from_vec(b"sink already closed".to_vec()));
+        };
+        let payload = bytes.copy_to_vec();
+        match tx.send((payload, is_final)).await {
+            Ok(()) => FfiResult::Ok(()),
+            Err(mpsc::error::SendError((unsent, _))) => FfiResult::Err(FfiBytes::from_vec(unsent)),
+        }
+    }
+    .into_ffi()
+}
+
+unsafe extern "C" fn host_drop_sender_with_final(state: *mut ()) {
+    // SAFETY: see `host_drop_sender`.
+    drop(unsafe { Box::from_raw(state as *mut SenderWithFinalState) });
+}
+
+impl OutputSinkWithFinal {
+    /// Wrap a `tokio::sync::mpsc::Sender<FinalFeedChunk>` for use across
+    /// the FFI boundary. The caller retains the matching `Receiver`.
+    pub fn from_sender(tx: mpsc::Sender<FinalFeedChunk>) -> Self {
+        let state = Box::new(SenderWithFinalState {
+            tx: Mutex::new(Some(tx)),
+        });
+        Self {
+            state: Box::into_raw(state) as *mut (),
+            send_with_final: host_send_with_final,
+            drop_state: host_drop_sender_with_final,
+        }
+    }
+
+    /// Send a chunk together with the `is_final` flag and await delivery.
+    /// Same drop contract as `OutputSink::send_raw`.
+    pub fn send_raw_with_final(
+        &self,
+        bytes: Vec<u8>,
+        is_final: bool,
+    ) -> FfiFuture<FfiResult<(), FfiBytes>> {
+        let ffi = FfiBytes::from_vec(bytes);
+        // SAFETY: vtable thunk; state is valid for `&self`.
+        unsafe { (self.send_with_final)(self.state, ffi, is_final) }
+    }
+}
+
+impl Drop for OutputSinkWithFinal {
+    fn drop(&mut self) {
+        // SAFETY: same as `OutputSink::drop`.
+        unsafe { (self.drop_state)(self.state) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +307,34 @@ mod tests {
             got.push(chunk[0]);
         }
         assert_eq!(got, vec![0u8, 1, 2, 3, 4]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sink_with_final_carries_flag_through_receiver() {
+        let (tx, mut rx) = mpsc::channel::<(Vec<u8>, bool)>(8);
+        let sink = OutputSinkWithFinal::from_sender(tx);
+        let res = sink.send_raw_with_final(b"hello".to_vec(), false).await;
+        assert!(matches!(res, FfiResult::Ok(())));
+        let res = sink.send_raw_with_final(b"world".to_vec(), true).await;
+        assert!(matches!(res, FfiResult::Ok(())));
+        let first = rx.recv().await.expect("first chunk");
+        assert_eq!(first, (b"hello".to_vec(), false));
+        let second = rx.recv().await.expect("second chunk");
+        assert_eq!(second, (b"world".to_vec(), true));
+        // Sink still alive, but receiver observes channel close on drop.
+        drop(sink);
+        assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sink_with_final_receiver_dropped_returns_err_with_payload() {
+        let (tx, rx) = mpsc::channel::<(Vec<u8>, bool)>(1);
+        let sink = OutputSinkWithFinal::from_sender(tx);
+        drop(rx);
+        let result = sink.send_raw_with_final(b"x".to_vec(), true).await;
+        match result {
+            FfiResult::Err(bytes) => assert_eq!(bytes.as_slice(), b"x"),
+            FfiResult::Ok(()) => panic!("expected Err with unsent payload"),
+        }
     }
 }

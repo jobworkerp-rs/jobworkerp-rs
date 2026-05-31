@@ -262,8 +262,19 @@ Listener Client                            Server
 
 ### データ転送メカニズム
 
-- **Standaloneモード**: feedデータはプロセス内`mpsc`チャネル（`ChanFeedSenderStore`）で直接配信。gRPCハンドラは`tokio::sync::Notify`を使用してDispatcherのfeedチャネル登録を待機します。
+- **Standaloneモード**: feedデータはプロセス内`mpsc`チャネル（`ChanFeedSenderStore`）で直接配信。gRPCハンドラは Dispatcher による feed チャネル登録を**待ちません**。クライアントストリームを即座に読み始めて `publish_feed` を呼び、Runner 未登録時はジョブごとの `JobFeedState.buffer` にチャンクをバッファします。登録時にホストは `drain_loop` で到着順に buffer を流すため、Runner プールが空くより前に送られた feed もロスしません。
 - **Scalableモード**: feedデータはRedis List（`job_feed_buf:{job_id}`）にRPUSHで送信。Worker側のfeedブリッジがBLPOPで読み取ります。Listがバッファとして機能するため、メッセージロスは発生しません。
+
+いずれのモードでも gRPC フロントエンドは、V2 ホストが `BoxStream` を返した時点(現在は plugin が最初の chunk を出す前)でレスポンスストリームを返します。feed forwarder は並行で動作するため、`use_static=true, concurrency=1` の Worker pool が前のジョブで占有されていても、レスポンス受信後に feed を送り始めるクライアントとデッドロックすることはありません。
+
+### Plugin への in-band `is_final` 伝達 (ABI minor 1 以降)
+
+V2 plugin ABI minor 1 で `OutputSinkWithFinal` が追加され、ホストは feed 由来の `is_final` フラグを plugin の feed receiver までそのまま運べるようになりました。新方式に乗りたい plugin は `PluginV2::setup_client_stream_channel_v2` を実装し、`(Vec<u8>, bool)` のチャンクを受け取ります。これにより `is_final == true` の到着を観測した時点で `run_stream` を決定論的に終了できます。
+
+- **minor 0 で構築した plugin**(または v2 setup から `None` を返した場合): ホストは従来の `setup_client_stream_channel` 経路にフォールバック。plugin が EOF を認識するのは mpsc `Receiver` が `None` を返したときだけで、これは `is_final=true` を観測したホストが sink を drop したタイミングです。
+- **minor 1 以降で構築した plugin で v2 setup が `Some` を返す**: ホストは各 feed チャンクを `OutputSinkWithFinal::send_raw_with_final(bytes, is_final)` で送信。plugin は `mpsc::Receiver<(Vec<u8>, bool)>` でフラグを観測し、receiver の close を待たずに `run_stream` から return できます。
+
+minor 1 経路でも最後のチャンク送信後にホストは sink を drop するため、フラグを無視する plugin にも従来の EOF シグナルが届きます — 採用は完全にオプトインです。minor bump は前方互換なので、既存の `.so` ファイルはそのまま動きます。plugin 作者向けの詳細は [Plugin 開発 (V2) — feed チャンクへの in-band `is_final` 伝達](./plugin-development-v2.md) を参照してください。
 
 ### エラーケース
 
@@ -273,8 +284,9 @@ Listener Client                            Server
 | Workerが見つからない | `NOT_FOUND` | ストリーム開始時 |
 | Runnerがクライアントストリーミング非対応 | `INVALID_ARGUMENT` | ストリーム開始時 |
 | Runnerがストリーミング出力非対応 | `INVALID_ARGUMENT` | ストリーム開始時 |
-| feedチャネルディスパッチタイムアウト | `DEADLINE_EXCEEDED` | feed開始前 |
 | 最初のメッセージ後に`job_request`送信 | `INVALID_ARGUMENT` | feed中 |
+| Runner 登録前に保留 feed が `PENDING_BUFFER_MAX` (1024) を超過 | 最古の非 final チャンクを破棄し warn ログ | feed中 |
+| Runner ストリームの drain 中、`JobData.timeout` ms 間チャンクが流れない | Runner のキャンセルトークンが発火し、End trailer でストリーム終了 | 実行中 |
 | Runner実行エラー | `ResultStatus`に応じたコード | 実行中 |
 | クライアント切断（half-closeなし） | Runnerにキャンセル通知 | 任意 |
 
@@ -282,7 +294,7 @@ Listener Client                            Server
 
 | 環境変数 | デフォルト | 説明 |
 |---------|----------|------|
-| `JOB_QUEUE_FEED_DISPATCH_TIMEOUT` | `5000` | feedチャネル準備完了の最大待機時間（Standaloneモード）。Scalableモードでは Redis List の TTL ベースとして使用。 |
+| `JOB_QUEUE_FEED_DISPATCH_TIMEOUT` | `5000` | **Scalable** モードでは Redis List の TTL ベース (`ttl_secs = feed_dispatch_timeout * 2`)。**Standalone** モードでは feed 配信に使用しません — 事前登録バッファ (`PENDING_BUFFER_MAX = 1024`) でメモリを抑え、ストリーム drain の停止検出はジョブごとの `JobData.timeout` を idle window として扱います。 |
 
 ## 実装上の注意
 
