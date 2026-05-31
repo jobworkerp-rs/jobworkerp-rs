@@ -136,6 +136,25 @@ impl WorkflowUnifiedRunnerImpl {
         }
     }
 
+    /// The cancellation token this runner watches, if a cancel monitor is wired.
+    /// Both `execute_run` and `execute_run_stream` use this to observe aborts.
+    async fn optional_cancel_token(&self) -> Option<tokio_util::sync::CancellationToken> {
+        match &self.cancel_helper {
+            Some(helper) => Some(helper.get_cancellation_token().await),
+            None => None,
+        }
+    }
+
+    /// Resolve once the token is cancelled, or never if there is no token. Lets
+    /// the execution loops `select!` on cancellation uniformly whether or not a
+    /// monitor is present.
+    async fn await_cancel(token: &Option<tokio_util::sync::CancellationToken>) {
+        match token {
+            Some(t) => t.cancelled().await,
+            None => std::future::pending::<()>().await,
+        }
+    }
+
     /// Resolve workflow: args workflow_source takes precedence over settings
     /// Uses WorkflowLoader for proper URL/file loading
     async fn resolve_workflow(
@@ -207,33 +226,58 @@ impl WorkflowUnifiedRunnerImpl {
             None
         };
 
-        let executor = WorkflowExecutor::init(
-            self.app_wrapper_module.clone(),
-            self.app_module.clone(),
-            workflow,
-            Arc::new(input_json),
-            execution_id,
-            context_json,
-            Arc::new(metadata),
-            chpoint,
-        )
-        .await?;
+        let executor = Arc::new(
+            WorkflowExecutor::init(
+                self.app_wrapper_module.clone(),
+                self.app_module.clone(),
+                workflow,
+                Arc::new(input_json),
+                execution_id,
+                context_json,
+                Arc::new(metadata),
+                chpoint,
+            )
+            .await?,
+        );
+
+        // Watch the cancellation token alongside the workflow stream so an abort
+        // takes effect at the next task boundary instead of waiting for the
+        // whole workflow to finish. On cancel, `executor.cancel()` flips the
+        // workflow status to Cancelled (which stops the task loop) and fans out
+        // delete_job to every in-flight child job.
+        let cancel_token = self.optional_cancel_token().await;
 
         let workflow_stream = executor.execute_workflow(Arc::new(cx.clone()));
         pin_mut!(workflow_stream);
 
         let mut final_context = None;
-        while let Some(result) = workflow_stream.next().await {
-            match result {
-                Ok(context) => {
+        loop {
+            let next = tokio::select! {
+                biased;
+                _ = Self::await_cancel(&cancel_token) => {
+                    executor.cancel().await;
+                    // Drain remaining items so in-flight tasks unwind and the
+                    // final (Cancelled) context is captured, then stop.
+                    while let Some(result) = workflow_stream.next().await {
+                        if let Ok(context) = result {
+                            final_context = Some(context);
+                        }
+                    }
+                    break;
+                }
+                item = workflow_stream.next() => item,
+            };
+            match next {
+                Some(Ok(context)) => {
                     final_context = Some(context);
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     return Err(JobWorkerError::RuntimeError(format!(
                         "Failed to execute workflow: {e:?}"
                     ))
                     .into());
                 }
+                None => break,
             }
         }
 
@@ -319,7 +363,35 @@ impl WorkflowUnifiedRunnerImpl {
             .await?,
         );
 
-        let workflow_stream = executor.execute_workflow(Arc::new(cx.clone()));
+        // Wrap the source stream so cancellation is observed between items: on
+        // cancel, fan out delete_job to in-flight child jobs and stop the
+        // workflow (status -> Cancelled), then drain and terminate. Without this
+        // the returned BoxStream would only end when the workflow finished
+        // naturally, defeating prompt cancellation.
+        let cancel_token = self.optional_cancel_token().await;
+        let executor_for_stream = executor.clone();
+        let inner_cx = Arc::new(cx.clone());
+        let workflow_stream = async_stream::stream! {
+            let inner = executor_for_stream.execute_workflow(inner_cx);
+            futures::pin_mut!(inner);
+            loop {
+                let next = tokio::select! {
+                    biased;
+                    _ = Self::await_cancel(&cancel_token) => {
+                        executor_for_stream.cancel().await;
+                        while let Some(item) = inner.next().await {
+                            yield item;
+                        }
+                        break;
+                    }
+                    item = inner.next() => item,
+                };
+                match next {
+                    Some(item) => yield item,
+                    None => break,
+                }
+            }
+        };
         // root_cx is moved into the trailing `once` future so the BoxedSpan stays
         // alive until the stream emits End — at that point the Context drops and the
         // span ends. last_output captures the most recent successful output so we can

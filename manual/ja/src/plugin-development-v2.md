@@ -78,6 +78,45 @@ V2 プラグインは以下を行ってください:
 3. spawned `JoinHandle` を await することで結果を高レベル trait の戻り値
    経由でホストへ橋渡しする (`cancel_test` プラグインが手本)
 
+> **この制約は `run`/`run_stream` だけでなく `load` を含む `PluginV2`
+> のすべての `async fn` 本体に適用されます。** これらの future を
+> `.poll()` するのは **ホスト側 runtime** であり、プラグインが
+> runtime を保持しているだけでは自動的にアクティブにはなりません。
+> dylib 側の tokio reactor を必要とする処理は必ず
+> `handle.spawn(...)` に投入してください。
+>
+> **間接的な panic に注意。** 自分で `tokio::*` を呼ばなくても、
+> 多くのクレートが初期化処理の内部で `Handle::current()` /
+> `TokioTimer::default()` を呼び出します。dylib 側 reactor が現在の
+> スレッドに無いと `there is no reactor running` で panic します。
+> よくある原因:
+>
+> - `hyper` / `hyper-util` 系の HTTP クライアント (`reqwest`, `tonic`)
+> - OpenTelemetry OTLP exporter
+>   (`SpanExporter::builder().with_tonic().build()` など)
+> - hyper / tokio 依存の DB ドライバ初期化 (`sqlx` pool など)
+>
+> 典型的なエラー:
+>
+> ```text
+> there is no reactor running, must be called from the context of a Tokio 1.x runtime
+> thread '<unnamed>' panicked at hyper-util-…/src/rt/tokio.rs:NNN
+> ```
+>
+> 推奨パターン — 初期化処理を plugin runtime 上で実行する:
+>
+> ```rust
+> async fn load(&mut self, settings: Vec<u8>) -> Result<(), String> {
+>     let handle = self.rt.as_ref().unwrap().handle().clone();
+>     handle
+>         .spawn(async move { init_tracing_or_http_client().await })
+>         .await
+>         .map_err(|e| format!("init join error: {e}"))?;
+>     // ... 以降の load 本体 ...
+>     Ok(())
+> }
+> ```
+
 ### 2. `async fn run/run_stream` の戻り値 future は `Send + 'static`
 
 マクロが内部で `async fn` ボディを `FfiFuture<T>` (`Send + 'static`) に

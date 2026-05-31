@@ -80,6 +80,44 @@ Therefore a V2 plugin must:
    through the high-level trait return value (see `cancel_test` for the
    canonical pattern).
 
+> **The same rule applies to `load`, not just `run`/`run_stream`.**
+> Every `async fn` body in the `PluginV2` impl is polled on the
+> **host** runtime — the plugin's own runtime is *not* automatically
+> active just because the plugin owns one. Anything that needs the
+> dylib-side tokio reactor must be spawned onto `handle.spawn(...)`
+> and awaited.
+>
+> **Indirect panics are common.** You don't have to call `tokio::*`
+> yourself to trip this. Many crates call `Handle::current()` /
+> `TokioTimer::default()` *internally* during initialization and
+> panic with `there is no reactor running` when no dylib-side
+> reactor is on the current thread. Frequent offenders:
+>
+> - HTTP clients on `hyper` / `hyper-util` (`reqwest`, `tonic`)
+> - OTel OTLP exporters (`SpanExporter::builder().with_tonic().build()`)
+> - Database drivers built on hyper/tokio (`sqlx` pool init, etc.)
+>
+> Typical symptom:
+>
+> ```text
+> there is no reactor running, must be called from the context of a Tokio 1.x runtime
+> thread '<unnamed>' panicked at hyper-util-…/src/rt/tokio.rs:NNN
+> ```
+>
+> Canonical fix — route initialization through the plugin runtime:
+>
+> ```rust
+> async fn load(&mut self, settings: Vec<u8>) -> Result<(), String> {
+>     let handle = self.rt.as_ref().unwrap().handle().clone();
+>     handle
+>         .spawn(async move { init_tracing_or_http_client().await })
+>         .await
+>         .map_err(|e| format!("init join error: {e}"))?;
+>     // ... rest of load ...
+>     Ok(())
+> }
+> ```
+
 ### 2. The future returned by `async fn run/run_stream` is `Send + 'static`
 
 Internally the proc macro converts your `async fn` body into an

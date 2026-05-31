@@ -22,6 +22,7 @@ use super::JobBuilder;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use infra::infra::job_result::pubsub::JobResultPublisher;
 use infra::infra::{
@@ -43,6 +44,18 @@ use std::{collections::HashMap, fmt, sync::Arc};
 /// Receiver that the dispatcher awaits to know when a spawned stream-publishing
 /// task has finished. `None` means there is no background task to wait for.
 pub type StreamCompletionReceiver = Option<tokio::sync::oneshot::Receiver<()>>;
+
+/// Deferred result of an `enqueue_job_with_channel` call: the job's optional
+/// `JobResult` plus an optional output stream, resolved once the (Direct
+/// response) job completes. `'static` so it can be returned past the borrow of
+/// `self` and awaited by the caller after recording the `JobId`.
+pub type ChannelJobResultFuture = BoxFuture<
+    'static,
+    Result<(
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )>,
+>;
 
 /// Guard that sends `()` on the oneshot when dropped.
 /// Prevents the dispatcher from hanging if the spawned task panics or returns early.
@@ -145,6 +158,36 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         Option<JobResult>,
         Option<BoxStream<'static, ResultOutputItem>>,
     )>;
+
+    /// Enqueue a job and return its `JobId` eagerly, deferring the result wait
+    /// to the returned future.
+    ///
+    /// `enqueue_job` blocks until the (Direct-response) job completes before it
+    /// returns the `JobId`, so a caller cannot learn the id while the job is
+    /// still running. This variant performs only the enqueue side-effects (queue
+    /// write, cache admission, Pending status) before returning, then hands back
+    /// a `'static` future that resolves with the result. Callers that must act
+    /// on the in-flight job — e.g. a workflow registering child jobs so it can
+    /// cancel them on abort — register the id, then await the future.
+    ///
+    /// For non-Direct workers the future resolves immediately to `(None, None)`,
+    /// mirroring `enqueue_job`'s behavior.
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_job_with_channel<'a>(
+        &'a self,
+        meta: Arc<HashMap<String, String>>,
+        worker_id: Option<&'a WorkerId>,
+        worker_name: Option<&'a String>,
+        arg: Vec<u8>,
+        uniq_key: Option<String>,
+        run_after_time: i64,
+        priority: i32,
+        timeout: u64,
+        reserved_job_id: Option<JobId>,
+        streaming_type: StreamingType,
+        using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
+    ) -> Result<(JobId, ChannelJobResultFuture)>;
 
     // NOTE: Both rdb_chan.rs and hybrid.rs impl accept `worker: &Worker` (by reference).
     // Keep signatures consistent when modifying.

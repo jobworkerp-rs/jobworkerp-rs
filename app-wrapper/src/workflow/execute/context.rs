@@ -14,7 +14,13 @@ pub use proto::jobworkerp::data::{
     ForItemFailedEvent, JobCompletedEvent, JobStartedEvent, StreamingDataEvent, TaskCompletedEvent,
     TaskStartedEvent, WorkflowEvent, workflow_event,
 };
-use std::{collections::BTreeMap, fmt, ops::Deref, str::FromStr, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+    ops::Deref,
+    str::FromStr,
+    sync::Arc,
+};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
@@ -33,6 +39,19 @@ pub struct WorkflowContext {
     pub checkpoint_position: Option<WorkflowPosition>,
     #[serde(skip)]
     pub context_variables: Arc<Mutex<serde_json::Map<String, serde_json::Value>>>,
+    /// Job IDs of child jobs currently being executed by this workflow's tasks.
+    /// Populated when a task enqueues a child job and cleared on completion so
+    /// that, on cancellation, the workflow can actively cancel every in-flight
+    /// child job. Stored as `JobId.value` (i64) for trivial Hash/Eq. Shared
+    /// across all task clones of the context (Arc), so fork/for parallel tasks
+    /// register their own jobs into the same set. Transient runtime state, so
+    /// `serde(skip)` (never persisted into checkpoints) like `context_variables`.
+    ///
+    /// A `std::sync::Mutex` (not tokio's) because the critical sections are tiny
+    /// set operations with no await inside — register/unregister run on the
+    /// per-task hot path, so we avoid the async lock's scheduling overhead.
+    #[serde(skip)]
+    pub running_job_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
 }
 impl WorkflowContext {
     pub fn new(
@@ -60,6 +79,7 @@ impl WorkflowContext {
                 .as_object()
                 .map(|o| Arc::new(Mutex::new(o.clone())))
                 .unwrap_or_else(|| Arc::new(Mutex::new(serde_json::Map::new()))),
+            running_job_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
     }
     // for test
@@ -80,8 +100,46 @@ impl WorkflowContext {
             position: WorkflowPosition::new(vec![]),
             checkpoint_position: None,
             context_variables: Arc::new(Mutex::new(serde_json::Map::new())),
+            running_job_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
     }
+
+    /// Register a child job as in-flight so cancellation can reach it later.
+    ///
+    /// `async` only for call-site symmetry with the rest of the context API; the
+    /// lock is a synchronous `std::sync::Mutex` held just for the `insert`, so no
+    /// guard is ever held across an await. On poison we recover the inner set
+    /// (a panicked task can't have corrupted a plain `HashSet`).
+    pub async fn register_running_job(&self, job_id: &JobId) {
+        self.running_job_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(job_id.value);
+    }
+
+    /// Remove a child job from the in-flight set once it completes (whether it
+    /// succeeded or errored), so a later cancellation does not target a job
+    /// that already finished.
+    pub async fn unregister_running_job(&self, job_id: &JobId) {
+        self.running_job_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&job_id.value);
+    }
+
+    /// Snapshot the currently in-flight child job IDs. Used on cancellation to
+    /// fan out `delete_job` to every running child without holding the lock
+    /// across the await points of those calls.
+    pub async fn snapshot_running_jobs(&self) -> Vec<JobId> {
+        self.running_job_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .copied()
+            .map(|value| JobId { value })
+            .collect()
+    }
+
     pub fn to_descriptor(&self) -> WorkflowDescriptor {
         WorkflowDescriptor {
             id: serde_json::Value::String(self.id.to_string()),
@@ -861,6 +919,33 @@ impl WorkflowStreamEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_workflow_context_register_unregister_job_ids() {
+        let context = WorkflowContext::new_empty();
+        let job1 = JobId { value: 101 };
+        let job2 = JobId { value: 202 };
+
+        context.register_running_job(&job1).await;
+        context.register_running_job(&job2).await;
+
+        let mut snapshot = context.snapshot_running_jobs().await;
+        snapshot.sort_by_key(|j| j.value);
+        assert_eq!(snapshot, vec![job1, job2]);
+
+        // A clone of the context shares the same underlying set (Arc), so an
+        // unregister via the clone must be visible from the original. This
+        // mirrors how fork/for spawn clones of the context.
+        let cloned = context.clone();
+        cloned.unregister_running_job(&job1).await;
+
+        let snapshot = context.snapshot_running_jobs().await;
+        assert_eq!(snapshot, vec![job2]);
+
+        // Unregistering an unknown id is a no-op (idempotent cleanup).
+        context.unregister_running_job(&JobId { value: 999 }).await;
+        assert_eq!(context.snapshot_running_jobs().await, vec![job2]);
+    }
 
     #[tokio::test]
     async fn test_match_checkpoint_by_relative_path_no_checkpoint() {

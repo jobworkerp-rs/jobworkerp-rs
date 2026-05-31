@@ -119,15 +119,23 @@ impl GenaiCompletionService {
         })
     }
     pub(super) fn build_options(args: &LlmCompletionArgs) -> Option<ChatOptions> {
-        let mut chat_opts = ChatOptions::default();
-        let mut has_value = false;
+        // Explicit opt-in to StreamEnd captures (genai 0.6+). request_chat_stream()
+        // reads end.captured_content / captured_reasoning_content / captured_usage;
+        // without these flags the values are no longer guaranteed to be populated.
+        // capture_tool_calls is intentionally omitted: the completion path never
+        // negotiates tool calls (see chat::genai for the tool-calling counterpart).
+        let mut chat_opts = ChatOptions {
+            capture_content: Some(true),
+            capture_reasoning_content: Some(true),
+            capture_usage: Some(true),
+            ..ChatOptions::default()
+        };
 
         if let Some(opt) = args.options {
             chat_opts.temperature = opt.temperature.map(|v| v as f64);
             chat_opts.max_tokens = opt.max_tokens.map(|v| v as u32);
             chat_opts.top_p = opt.top_p.map(|v| v as f64);
             chat_opts.normalize_reasoning_content = opt.extract_reasoning_content;
-            has_value = true;
         }
 
         if let Some(schema_str) = args.json_schema.as_deref() {
@@ -137,7 +145,6 @@ impl GenaiCompletionService {
                         crate::llm::GENAI_JSON_SPEC_NAME,
                         schema,
                     )));
-                    has_value = true;
                     tracing::debug!("Applied JSON schema to GenAI completion: {}", schema_str);
                 }
                 Err(e) => {
@@ -147,7 +154,7 @@ impl GenaiCompletionService {
             }
         }
 
-        if has_value { Some(chat_opts) } else { None }
+        Some(chat_opts)
     }
     fn messages(&self, args: LlmCompletionArgs) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
@@ -591,7 +598,23 @@ mod tests {
             json_schema: Some("not a json".to_string()),
             ..Default::default()
         };
-        assert!(GenaiCompletionService::build_options(&args).is_none());
+        // Invalid JSON schema is silently ignored, but capture flags are still set
+        // for streaming, so options must still be Some.
+        let opts = GenaiCompletionService::build_options(&args).expect("options must be Some");
+        assert!(opts.response_format.is_none());
+    }
+
+    #[test]
+    fn build_options_enables_stream_captures() {
+        // genai 0.6+ gates StreamEnd.captured_* values behind ChatOptions flags.
+        // request_chat_stream consumes captured_content / captured_reasoning_content /
+        // captured_usage, so the three flags must be Some(true). capture_tool_calls is
+        // not needed on the completion path because completions never call tools.
+        let args = LlmCompletionArgs::default();
+        let opts = GenaiCompletionService::build_options(&args).expect("options must be Some");
+        assert_eq!(opts.capture_content, Some(true));
+        assert_eq!(opts.capture_reasoning_content, Some(true));
+        assert_eq!(opts.capture_usage, Some(true));
     }
 
     #[test]
