@@ -46,6 +46,13 @@ pub struct IdleTimeoutStream<T> {
     /// `Done` once a terminal item (`None` or the synthetic timeout
     /// sentinel) has been returned to the consumer.
     state: IdleState,
+    /// Count of `Poll::Ready(Some(_))` observed from the inner stream.
+    /// Reported alongside the timeout warning so that operators can tell
+    /// "plugin never produced a chunk" (`chunks_observed=0`) apart from
+    /// "plugin stalled after producing N chunks" — the two cases have
+    /// very different root causes (registration / backpressure vs. a
+    /// genuine plugin-side stall).
+    chunks_observed: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +68,14 @@ impl<T> IdleTimeoutStream<T> {
         on_timeout: impl FnOnce() + Send + 'static,
     ) -> Self {
         Self::with_timeout_item(stream, idle_window, on_timeout, None)
+    }
+
+    /// Number of inner-stream chunks observed via `Poll::Ready(Some(_))`.
+    /// Exposed for diagnostic tests; production code reads it indirectly
+    /// through the warning log emitted on idle timeout.
+    #[cfg(test)]
+    pub(crate) fn chunks_observed(&self) -> u64 {
+        self.chunks_observed
     }
 
     /// Variant that emits `on_timeout_item` as the final item before
@@ -81,6 +96,7 @@ impl<T> IdleTimeoutStream<T> {
             idle_window,
             sleep: Box::pin(tokio::time::sleep(idle_window)),
             state: IdleState::Running,
+            chunks_observed: 0,
         }
     }
 }
@@ -101,6 +117,7 @@ impl<T: Unpin> Stream for IdleTimeoutStream<T> {
                 // Got progress: reset the idle timer to the full window.
                 let new_deadline = tokio::time::Instant::now() + self.idle_window;
                 self.sleep.as_mut().reset(new_deadline);
+                self.chunks_observed = self.chunks_observed.saturating_add(1);
                 Poll::Ready(Some(item))
             }
             Poll::Ready(None) => {
@@ -110,8 +127,9 @@ impl<T: Unpin> Stream for IdleTimeoutStream<T> {
             Poll::Pending => match self.sleep.as_mut().poll(cx) {
                 Poll::Ready(()) => {
                     tracing::warn!(
-                        "IdleTimeoutStream: no chunk within {:?}; cancelling and ending stream",
-                        self.idle_window
+                        "IdleTimeoutStream: no chunk within {:?}, chunks_observed={}; cancelling and ending stream",
+                        self.idle_window,
+                        self.chunks_observed
                     );
                     if let Some(cb) = self.on_timeout.take() {
                         cb();
@@ -570,6 +588,47 @@ mod tests {
                 None::<u8>,
             );
             assert!(wrapped.next().await.is_none());
+            Ok(())
+        })
+    }
+
+    /// `chunks_observed` counts only successful chunks, so a stall that
+    /// fires the timeout immediately reports `0`, distinguishing
+    /// "plugin produced nothing" from "plugin stalled after N chunks".
+    #[test]
+    fn idle_timeout_chunks_observed_starts_at_zero_on_immediate_stall() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use futures::StreamExt;
+            let inner = Box::pin(DelayedStream::new(vec![(Duration::from_millis(500), 1)]));
+            let mut wrapped = IdleTimeoutStream::new(inner, Duration::from_millis(50), || {});
+            assert!(wrapped.next().await.is_none());
+            assert_eq!(wrapped.chunks_observed(), 0);
+            Ok(())
+        })
+    }
+
+    /// After several successful chunks the counter must reflect the
+    /// observed total when the eventual stall fires.
+    #[test]
+    fn idle_timeout_chunks_observed_reflects_successful_chunks() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use futures::StreamExt;
+            // Three chunks arrive comfortably within the 200ms window,
+            // then the stream stalls (next item is queued at 500ms but
+            // the window is 200ms — timeout fires).
+            let inner = Box::pin(DelayedStream::new(vec![
+                (Duration::from_millis(30), 1),
+                (Duration::from_millis(30), 2),
+                (Duration::from_millis(30), 3),
+                (Duration::from_millis(500), 4),
+            ]));
+            let mut wrapped = IdleTimeoutStream::new(inner, Duration::from_millis(200), || {});
+            assert_eq!(wrapped.next().await, Some(1));
+            assert_eq!(wrapped.next().await, Some(2));
+            assert_eq!(wrapped.next().await, Some(3));
+            // Stall: the 500ms gap exceeds the 200ms window.
+            assert!(wrapped.next().await.is_none());
+            assert_eq!(wrapped.chunks_observed(), 3);
             Ok(())
         })
     }

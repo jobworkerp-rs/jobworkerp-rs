@@ -241,7 +241,7 @@ pub trait ChanJobDispatcher:
     where
         Self: Sync + Send + 'static,
     {
-        tracing::debug!("process pop-ed job: {:?}", job);
+        tracing::debug!("process pop-ed job: {}", proto::log_ext::JobSummary(&job));
         let (jid, jdat,metadata) = if let Job {
             id: Some(jid),
             data: Some(jdat),

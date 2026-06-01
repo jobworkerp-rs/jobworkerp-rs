@@ -597,8 +597,16 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                     }
                 }
             }
-            // Ensure runner's feed channel is closed on client disconnect
+            // Ensure runner's feed channel is closed on client disconnect.
+            // Log so an investigator can tell client-side EOF apart from
+            // explicit `is_final=true` — the former means "client gave up
+            // before sending a final marker" and points at upstream
+            // disconnects (e.g. WebRTC failed) as the trigger.
             if !sent_final {
+                tracing::debug!(
+                    "enqueue_with_client_stream: client_stream ended without is_final; injecting synthetic final for job {}",
+                    job_id_value,
+                );
                 let _ = feed_publisher
                     .publish_feed(
                         &JobId {

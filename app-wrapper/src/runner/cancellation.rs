@@ -225,11 +225,6 @@ impl RunnerCancellationManager {
             if let Err(e) = result {
                 tracing::error!("Error in cancellation subscription: {:?}", e);
             }
-
-            tracing::debug!(
-                "Pubsub listener task terminated for job {}",
-                target_job_id.value
-            );
         })
     }
 

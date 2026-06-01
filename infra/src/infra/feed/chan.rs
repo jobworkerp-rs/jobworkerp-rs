@@ -286,6 +286,17 @@ impl Default for ChanFeedSenderStore {
 #[async_trait]
 impl FeedPublisher for ChanFeedSenderStore {
     async fn publish_feed(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
+        // Trace per-feed timing so an observer can tell whether a streaming
+        // job's stall is upstream (client stopped sending) or downstream
+        // (plugin failed to consume). Cheap (DEBUG, gated by RUST_LOG) and
+        // only on the Standalone path — Scalable mode logs at the redis
+        // bridge instead.
+        tracing::debug!(
+            "ChanFeedSenderStore::publish_feed: job={}, bytes={}, is_final={}",
+            job_id.value,
+            data.len(),
+            is_final,
+        );
         let feed = FeedData { data, is_final };
 
         // Decide under the entry guard whether to append to the buffer or to

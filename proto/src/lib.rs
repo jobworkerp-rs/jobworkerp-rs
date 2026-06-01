@@ -16,6 +16,8 @@ pub mod jobworkerp {
     }
 }
 
+pub mod log_ext;
+
 // for test runner
 tonic::include_proto!("_");
 

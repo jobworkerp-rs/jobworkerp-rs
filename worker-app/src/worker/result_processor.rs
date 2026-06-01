@@ -118,7 +118,11 @@ impl ResultProcessorImpl {
         // need to retry
         if let Some(j) = jopt {
             // update or insert job for retry or periodic
-            tracing::debug!("need to retry worker: {:?}, job: {:?}", &worker.name, &j);
+            tracing::debug!(
+                "need to retry worker: {:?}, job: {}",
+                &worker.name,
+                proto::log_ext::JobSummary(&j)
+            );
             self.job_app().update_job(&j).await?;
             Ok(None)
         } else {

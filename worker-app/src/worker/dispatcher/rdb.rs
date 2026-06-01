@@ -185,10 +185,13 @@ pub trait RdbJobDispatcher:
                 &rid
             )))
         } else {
-            tracing::error!("failed to get runner data for job: {:?}", &job);
+            tracing::error!(
+                "failed to get runner data for job: {}",
+                proto::log_ext::JobSummary(&job)
+            );
             Err(JobWorkerError::NotFound(format!(
-                "failed to get runner data for job: {:?}",
-                &job
+                "failed to get runner data for job: {}",
+                proto::log_ext::JobSummary(&job)
             )))
         }?;
 
@@ -228,7 +231,7 @@ pub trait RdbJobDispatcher:
                     }
                     Ok(Some(result))
                 } else {
-                    tracing::debug!("failed to grab job: {:?}", job.data);
+                    tracing::debug!("failed to grab job: {}", proto::log_ext::JobSummary(&job));
                     Ok(None)
                 }
             }

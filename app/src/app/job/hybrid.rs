@@ -176,7 +176,10 @@ impl HybridJobAppImpl {
             {
                 // not restore use rdb jobs (periodic worker or run after jobs)(should not exists in 'restores')
                 if w.periodic_interval > 0 {
-                    tracing::debug!("not restore use rdb job to redis: {:?}", &job);
+                    tracing::debug!(
+                        "not restore use rdb job to redis: {}",
+                        proto::log_ext::JobSummary(job)
+                    );
                 } else {
                     // Resolve effective response_type considering per-job overrides
                     let overrides = job.data.as_ref().and_then(|d| d.overrides.as_ref());
@@ -944,7 +947,11 @@ impl JobApp for HybridJobAppImpl {
                     && (w.queue_type == QueueType::Normal as i32
                         || w.queue_type == QueueType::WithBackup as i32)
                 {
-                    tracing::debug!("re-enqueue job to redis: {:?}, worker: {:?}", &job, &w.name);
+                    tracing::debug!(
+                        "re-enqueue job to redis: {}, worker: {:?}",
+                        proto::log_ext::JobSummary(job),
+                        &w.name
+                    );
                     // enqueue to redis for instant job
                     let streaming_type =
                         StreamingType::try_from(data.streaming_type).unwrap_or(StreamingType::None);
