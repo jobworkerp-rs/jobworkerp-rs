@@ -90,6 +90,11 @@ regex = { workspace = true }
 app = { path = "../app", features = ["test-utils"] }
 infra = { path = "../infra", features = ["test-utils"] }
 jobworkerp-runner = { path = "../runner", features = ["test-utils"] }
+# Generated tonic clients for `jobworkerp.service.*` live in `grpc-front`
+# (the binary that hosts the gRPC server). The integration test in
+# `tests/workflow_nested_cancellation_test.rs` drives a live deployment over
+# those clients, so reuse the generated code instead of regenerating it here.
+grpc-front = { path = "../grpc-front" }
 opentelemetry_sdk = { version = "0.31", features = ["testing"] }
 
 [features]

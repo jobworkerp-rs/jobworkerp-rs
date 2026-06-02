@@ -879,10 +879,11 @@ impl JobApp for RdbChanJobAppImpl {
             stream.is_some()
         );
         if let Some(jid) = data.job_id.as_ref() {
-            // For streaming jobs, don't delete status immediately as the process may still be running
-            // data.response_type is already resolved via resolve_job_params() in runner.rs,
-            // reflecting any per-job overrides applied at enqueue time.
-            let mut completion_rx: super::StreamCompletionReceiver = None;
+            // Streaming jobs must defer cleanup_job until the spawned publish
+            // task drains the stream — otherwise a concurrent cancel_job()
+            // sees find_status=None and skips broadcast_job_cancellation,
+            // leaving descendants without a cancel signal.
+            let mut completion_rx = None;
             let res = match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     let res = self
@@ -890,12 +891,11 @@ impl JobApp for RdbChanJobAppImpl {
                         // Direct: always publish because the client blocks waiting for the result
                         .publish_result(id, data, true)
                         .await;
-                    // Start stream publishing as background task (non-blocking)
-                    // This enables realtime streaming instead of batch delivery
                     if let Some(stream) = stream {
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         let pubsub_repo = self.job_result_pubsub_repository().clone();
                         let job_id_for_stream = *jid;
+                        let cleanup_self = self.clone();
                         tracing::debug!(
                             "complete_job(direct): starting stream publish task: {}",
                             &jid.value
@@ -917,6 +917,13 @@ impl JobApp for RdbChanJobAppImpl {
                                     job_id_for_stream.value
                                 );
                             }
+                            if let Err(e) = cleanup_self.cleanup_job(&job_id_for_stream).await {
+                                tracing::warn!(
+                                    "complete_job(direct): cleanup_job failed for {}: {:?}",
+                                    job_id_for_stream.value,
+                                    e
+                                );
+                            }
                         });
                         completion_rx = Some(rx);
                     } else {
@@ -925,6 +932,7 @@ impl JobApp for RdbChanJobAppImpl {
                             jid,
                             self.job_result_pubsub_repository(),
                         );
+                        self.cleanup_job(jid).await?;
                     }
                     tracing::debug!(
                         "Deleted memory cache for Direct Response job: {}",
@@ -945,12 +953,11 @@ impl JobApp for RdbChanJobAppImpl {
                         "complete_job(other): result published, starting stream: {}",
                         &jid.value
                     );
-                    // Start stream publishing as background task (non-blocking)
-                    // This enables realtime streaming instead of batch delivery
                     if let Some(stream) = stream {
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         let pubsub_repo = self.job_result_pubsub_repository().clone();
                         let job_id_for_stream = *jid;
+                        let cleanup_self = self.clone();
                         tracing::debug!(
                             "complete_job(other): starting stream publish task: {}",
                             &jid.value
@@ -972,6 +979,13 @@ impl JobApp for RdbChanJobAppImpl {
                                     job_id_for_stream.value
                                 );
                             }
+                            if let Err(e) = cleanup_self.cleanup_job(&job_id_for_stream).await {
+                                tracing::warn!(
+                                    "complete_job(other): cleanup_job failed for {}: {:?}",
+                                    job_id_for_stream.value,
+                                    e
+                                );
+                            }
                         });
                         completion_rx = Some(rx);
                     } else {
@@ -980,17 +994,16 @@ impl JobApp for RdbChanJobAppImpl {
                             jid,
                             self.job_result_pubsub_repository(),
                         );
+                        self.cleanup_job(jid).await?;
                     }
                     r
                 }
                 _ => {
                     tracing::warn!("complete_job: invalid response_type: {:?}", &data);
-                    // abnormal response type, no publish
+                    self.cleanup_job(jid).await?;
                     Ok(false)
                 }
             };
-            // Unconditional cleanup (no state checks needed)
-            self.cleanup_job(jid).await?;
             res.map(|b| (b, completion_rx))
         } else {
             // something wrong
