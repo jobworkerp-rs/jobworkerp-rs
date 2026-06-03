@@ -97,6 +97,7 @@ fn create_manual_mode_args(message: &str) -> LlmChatArgs {
             function_set_name: Some("manual_tool_test".to_string()),
             is_auto_calling: Some(false), // Manual mode
             auto_select_function_set: None,
+            ..Default::default()
         }),
         json_schema: None,
     }
@@ -404,6 +405,7 @@ async fn test_auto_vs_manual_mode_comparison() -> Result<()> {
             function_set_name: Some("manual_tool_test".to_string()),
             is_auto_calling: Some(true), // Auto mode
             auto_select_function_set: None,
+            ..Default::default()
         }),
         json_schema: None,
     };
@@ -521,6 +523,7 @@ async fn test_manual_mode_invalid_function_name() -> Result<()> {
             function_set_name: Some("manual_tool_test".to_string()),
             is_auto_calling: Some(false),
             auto_select_function_set: None,
+            ..Default::default()
         }),
         json_schema: None,
     };

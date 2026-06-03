@@ -134,6 +134,7 @@ fn create_auto_select_chat_args(message: &str) -> LlmChatArgs {
             function_set_name: None, // No pre-selected set
             is_auto_calling: Some(true),
             auto_select_function_set: Some(true), // Enable auto-select
+            ..Default::default()
         }),
         json_schema: None,
     }
@@ -325,6 +326,7 @@ async fn test_auto_select_without_function_sets_falls_back() -> Result<()> {
             function_set_name: None,
             is_auto_calling: Some(true),
             auto_select_function_set: Some(true),
+            ..Default::default()
         }),
         json_schema: None,
     };

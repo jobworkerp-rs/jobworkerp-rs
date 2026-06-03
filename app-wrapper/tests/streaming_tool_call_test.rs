@@ -105,6 +105,7 @@ fn create_manual_mode_args(message: &str) -> LlmChatArgs {
             function_set_name: Some("streaming_tool_test".to_string()),
             is_auto_calling: Some(false), // Manual mode - return pending_tool_calls
             auto_select_function_set: None,
+            ..Default::default()
         }),
         json_schema: None,
     }

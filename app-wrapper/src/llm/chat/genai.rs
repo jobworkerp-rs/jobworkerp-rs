@@ -2,7 +2,7 @@ use super::super::generic_tracing_helper::{
     self, ChatResponse, GenericLLMTracingHelper, LLMMessage, ModelOptions as GenericModelOptions,
     StreamingTraceUpdate, ToolInfo as GenericToolInfo, UsageData,
 };
-use super::conversion::{ToolCallName, ToolConverter};
+use super::conversion::{ResolvedToolResult, ToolCallName, ToolConverter};
 use crate::llm::ThinkTagHelper;
 use crate::llm::tracing::genai_helper::GenaiTracingHelper;
 use anyhow::Result;
@@ -172,6 +172,29 @@ impl GenaiChatService {
             }
         }
 
+        if let Some(fo) = args.function_options.as_ref() {
+            if let Some(choice_str) = fo.tool_choice.as_deref().filter(|s| !s.is_empty()) {
+                match ToolConverter::parse_tool_choice(choice_str) {
+                    Some(tc) => chat_opts.tool_choice = Some(tc),
+                    None => {
+                        tracing::warn!(
+                            "unsupported tool_choice value {:?}; falling back to auto",
+                            choice_str
+                        );
+                        chat_opts.tool_choice = Some(genai::chat::ToolChoice::Auto);
+                    }
+                }
+            }
+            if matches!(fo.parallel_tool_calls, Some(true)) {
+                // genai 0.6.3 has no typed setter for parallel_tool_calls;
+                // surface intent in logs so future SDK plumbing knows where
+                // to land.
+                tracing::warn!(
+                    "parallel_tool_calls=true requested but not supported by this genai version; ignoring"
+                );
+            }
+        }
+
         Some(chat_opts)
     }
     fn trans_role(
@@ -193,79 +216,145 @@ impl GenaiChatService {
             }
         }
     }
+    /// Build genai `ToolResponse`s from already-resolved tool results.
+    ///
+    /// fn_name must be forwarded so Gemini's `functionResponse.name` is
+    /// populated; otherwise the genai adapter falls back to parsing it
+    /// out of `call_id` (only the synthetic `call#NAME#N` shape decodes)
+    /// or, failing that, copies the raw `call_id` into `name` — which
+    /// the provider then rejects as an unknown function.
+    ///
+    /// genai 0.6.3 has no native `is_error` slot on `ToolResponse`, so
+    /// error state is folded into `content` via the cross-provider
+    /// `[ERROR] ` marker (see `ResolvedToolResult::display_content`).
+    /// The Anthropic-native mapping will move here once the upstream
+    /// SDK surfaces an `is_error` field.
+    fn resolved_tool_results_to_genai_content(
+        resolved: &[ResolvedToolResult],
+    ) -> GenaiMessageContent {
+        let responses: Vec<ToolResponse> = resolved
+            .iter()
+            .map(|r| {
+                ToolResponse::new(r.call_id.clone(), r.display_content().into_owned())
+                    .with_fn_name(r.fn_name.clone())
+            })
+            .collect();
+        GenaiMessageContent::from_tool_responses(responses)
+    }
+
     fn trans_messages(&self, args: LlmChatArgs) -> Vec<ChatMessage> {
         use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
-        args.messages
-            .into_iter()
-            .filter_map(|msg| {
-                let role = self.trans_role(msg.role());
-                let content = match msg.content {
-                    Some(content) => match content.content {
-                        Some(ProtoContent::Text(text)) => GenaiMessageContent::from_text(text),
-                        // TODO pdf
-                        Some(ProtoContent::Image(image)) => {
-                            let source = match image.source {
-                                Some(src) => {
-                                    if !src.url.is_empty() {
-                                        genai::chat::BinarySource::Url(src.url)
-                                    } else if !src.base64.is_empty() {
-                                        genai::chat::BinarySource::Base64(Arc::from(src.base64))
-                                    } else {
-                                        return None;
-                                    }
-                                }
-                                None => return None,
-                            };
-                            GenaiMessageContent::from_parts(vec![genai::chat::ContentPart::Binary(
-                                genai::chat::Binary {
-                                    name: None,
-                                    content_type: image.content_type,
-                                    source,
-                                },
-                            )])
+
+        // We need backwards access to earlier messages to resolve fn_name
+        // for any `ToolResults` we encounter, so iterate by index instead
+        // of consuming the Vec up front.
+        let messages = args.messages;
+        let mut out = Vec::with_capacity(messages.len());
+        for idx in 0..messages.len() {
+            let msg = &messages[idx];
+            let role = self.trans_role(msg.role());
+            let Some(content) = msg.content.as_ref() else {
+                continue;
+            };
+            let genai_content = match content.content.as_ref() {
+                Some(ProtoContent::Text(text)) => GenaiMessageContent::from_text(text.clone()),
+                // TODO pdf
+                Some(ProtoContent::Image(image)) => {
+                    let source = match image.source.as_ref() {
+                        Some(src) => {
+                            if !src.url.is_empty() {
+                                genai::chat::BinarySource::Url(src.url.clone())
+                            } else if !src.base64.is_empty() {
+                                genai::chat::BinarySource::Base64(Arc::from(src.base64.clone()))
+                            } else {
+                                continue;
+                            }
                         }
-                        Some(ProtoContent::ToolCalls(tool_calls)) => {
-                            let calls = tool_calls
-                                .calls
-                                .into_iter()
-                                .map(|call| {
-                                    let fn_arguments_value =
-                                        serde_json::from_str(&call.fn_arguments)
-                                            .unwrap_or_else(|_| serde_json::json!({}));
-                                    genai::chat::ToolCall {
-                                        call_id: call.call_id,
-                                        fn_name: call.fn_name,
-                                        fn_arguments: fn_arguments_value,
-                                        thought_signatures: None,
-                                    }
-                                })
-                                .collect();
-                            GenaiMessageContent::from_tool_calls(calls)
+                        None => continue,
+                    };
+                    GenaiMessageContent::from_parts(vec![genai::chat::ContentPart::Binary(
+                        genai::chat::Binary {
+                            name: None,
+                            content_type: image.content_type.clone(),
+                            source,
+                        },
+                    )])
+                }
+                Some(ProtoContent::ToolCalls(tool_calls)) => {
+                    let calls = tool_calls
+                        .calls
+                        .iter()
+                        .map(|call| {
+                            let fn_arguments_value = serde_json::from_str(&call.fn_arguments)
+                                .unwrap_or_else(|_| serde_json::json!({}));
+                            genai::chat::ToolCall {
+                                call_id: call.call_id.clone(),
+                                fn_name: call.fn_name.clone(),
+                                fn_arguments: fn_arguments_value,
+                                thought_signatures: None,
+                            }
+                        })
+                        .collect();
+                    GenaiMessageContent::from_tool_calls(calls)
+                }
+                Some(ProtoContent::ToolExecutionRequests(_)) => {
+                    // Tool execution requests are handled separately in request_chat
+                    // They should not be converted to chat messages directly
+                    continue;
+                }
+                Some(ProtoContent::ToolResults(tr)) => {
+                    // Re-run resolve_tool_results so fn_name is forwarded
+                    // to genai. validate_all_tool_results already guarded
+                    // this at request_chat entry, so an Err here means a
+                    // programming error rather than client input.
+                    match ToolConverter::resolve_tool_results(&messages[..idx], tr) {
+                        Ok(resolved) => Self::resolved_tool_results_to_genai_content(&resolved),
+                        Err(e) => {
+                            tracing::error!(
+                                "internal: tool_results resolution failed after validation: {e}"
+                            );
+                            continue;
                         }
-                        Some(ProtoContent::ToolExecutionRequests(_)) => {
-                            // Tool execution requests are handled separately in request_chat
-                            // They should not be converted to chat messages directly
-                            return None;
-                        }
-                        None => return None,
-                    },
-                    None => return None,
-                };
-                Some(ChatMessage {
-                    role,
-                    content,
-                    options: None,
-                })
-            })
-            .collect()
+                    }
+                }
+                None => continue,
+            };
+            out.push(ChatMessage {
+                role,
+                content: genai_content,
+                options: None,
+            });
+        }
+        out
     }
     async fn function_list(
         &self,
         args: &LlmChatArgs,
     ) -> Result<(Vec<Tool>, std::collections::HashSet<String>)> {
+        use anyhow::bail;
+
         let mut auto_select_names = std::collections::HashSet::new();
 
         if let Some(function_options) = &args.function_options {
+            // Client-driven path takes priority over every server-driven
+            // selection knob. Schema is forwarded verbatim (FR-EXT-3) so the
+            // client retains full control of the tool surface — required
+            // for WORKFLOW workers whose internal arguments_schema must not
+            // leak to the model.
+            if let Some(json) = function_options
+                .client_tools_json
+                .as_deref()
+                .filter(|s| !s.is_empty())
+            {
+                if ToolConverter::server_driven_tool_selection_set(function_options) {
+                    bail!(
+                        "client_tools_json is mutually exclusive with {}",
+                        ToolConverter::SERVER_DRIVEN_TOOL_KNOBS.join(" / ")
+                    );
+                }
+                let tools = ToolConverter::parse_client_tools_json(json)?;
+                return Ok((tools, auto_select_names));
+            }
             if function_options.use_function_calling {
                 if let Some(set_name) = function_options.function_set_name.as_ref() {
                     // Specific FunctionSet selected
@@ -358,6 +447,11 @@ impl GenaiChatService {
     ) -> Result<LlmChatResult> {
         let metadata = Arc::new(metadata);
 
+        // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
+        // This runs before any provider call, surfacing client-side payload
+        // errors as direct Err instead of confusing provider-side rejections.
+        ToolConverter::validate_all_tool_results(&args)?;
+
         // Check for tool execution requests in messages (manual mode)
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
             return self
@@ -365,12 +459,11 @@ impl GenaiChatService {
                 .await;
         }
 
-        // Determine if auto-calling is enabled (default: false = manual mode)
-        let is_auto_calling = args
-            .function_options
-            .as_ref()
-            .and_then(|fo| fo.is_auto_calling)
-            .unwrap_or(false);
+        // Determine if auto-calling is enabled (default: false = manual mode).
+        // Client-driven mode (client_tools_json set) forces this to false:
+        // the runner must never execute client-owned tools server-side
+        // because the schema may not match any registered runner / worker.
+        let is_auto_calling = ToolConverter::effective_is_auto_calling(&args);
 
         let options = Self::build_options(&args);
         let (tools_vec, auto_select_names) = self.function_list(&args).await?;
@@ -890,6 +983,9 @@ impl GenaiChatService {
         metadata: HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
+        ToolConverter::validate_all_tool_results(&args)?;
+
         // Check for tool execution requests first (highest priority, manual mode continuation)
         let metadata_arc = Arc::new(metadata.clone());
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
@@ -1617,6 +1713,53 @@ mod tests {
     use super::*;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::LlmOptions;
 
+    fn resolved(call_id: &str, fn_name: &str, content: &str, is_error: bool) -> ResolvedToolResult {
+        ResolvedToolResult {
+            call_id: call_id.to_string(),
+            fn_name: fn_name.to_string(),
+            content: content.to_string(),
+            is_error,
+        }
+    }
+
+    #[test]
+    fn resolved_tool_results_carry_fn_name_and_error_marker() {
+        let resolved = [
+            resolved("c1", "tool_a", "ok", false),
+            resolved("c2", "tool_b", "boom", true),
+        ];
+        let content = GenaiChatService::resolved_tool_results_to_genai_content(&resolved);
+        let responses = content.tool_responses();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0].call_id, "c1");
+        // fn_name MUST be forwarded so Gemini's functionResponse.name is correct.
+        assert_eq!(responses[0].fn_name.as_deref(), Some("tool_a"));
+        assert_eq!(responses[0].content, "ok");
+        assert_eq!(responses[1].call_id, "c2");
+        assert_eq!(responses[1].fn_name.as_deref(), Some("tool_b"));
+        // is_error=true → [ERROR] prefix
+        assert_eq!(responses[1].content, "[ERROR] boom");
+    }
+
+    #[test]
+    fn resolved_tool_results_preserve_order() {
+        let resolved: Vec<_> = (0..5)
+            .map(|i| ResolvedToolResult {
+                call_id: format!("c{i}"),
+                fn_name: format!("t{i}"),
+                content: format!("r{i}"),
+                is_error: false,
+            })
+            .collect();
+        let content = GenaiChatService::resolved_tool_results_to_genai_content(&resolved);
+        let responses = content.tool_responses();
+        for (i, r) in responses.iter().enumerate() {
+            assert_eq!(r.call_id, format!("c{i}"));
+            assert_eq!(r.fn_name.as_deref(), Some(format!("t{i}").as_str()));
+            assert_eq!(r.content, format!("r{i}"));
+        }
+    }
+
     #[test]
     fn build_options_sets_json_spec_response_format() {
         let schema = r#"{"type":"object","properties":{"x":{"type":"integer"}}}"#;
@@ -1695,5 +1838,102 @@ mod tests {
             opts.response_format,
             Some(ChatResponseFormat::JsonSpec(_))
         ));
+    }
+
+    fn fo_with_tool_choice(
+        choice: &str,
+    ) -> jobworkerp::runner::llm::llm_chat_args::FunctionOptions {
+        jobworkerp::runner::llm::llm_chat_args::FunctionOptions {
+            tool_choice: Some(choice.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn build_options_translates_tool_choice_required() {
+        let args = LlmChatArgs {
+            function_options: Some(fo_with_tool_choice("required")),
+            ..Default::default()
+        };
+        let opts = GenaiChatService::build_options(&args).unwrap();
+        assert!(matches!(
+            opts.tool_choice,
+            Some(genai::chat::ToolChoice::Required)
+        ));
+    }
+
+    #[test]
+    fn build_options_translates_tool_choice_object_form() {
+        let args = LlmChatArgs {
+            function_options: Some(fo_with_tool_choice(
+                r#"{"type":"function","function":{"name":"lookback_recall"}}"#,
+            )),
+            ..Default::default()
+        };
+        let opts = GenaiChatService::build_options(&args).unwrap();
+        match opts.tool_choice {
+            Some(genai::chat::ToolChoice::Tool { name }) => assert_eq!(name, "lookback_recall"),
+            other => panic!("expected Tool variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_options_falls_back_on_unsupported_tool_choice() {
+        let args = LlmChatArgs {
+            function_options: Some(fo_with_tool_choice("never_heard_of_it")),
+            ..Default::default()
+        };
+        let opts = GenaiChatService::build_options(&args).unwrap();
+        // Unsupported values must not silently disappear — they should land
+        // on Auto so the model can still pick tools when appropriate.
+        assert!(matches!(
+            opts.tool_choice,
+            Some(genai::chat::ToolChoice::Auto)
+        ));
+    }
+
+    #[test]
+    fn build_options_skips_tool_choice_when_unset() {
+        let args = LlmChatArgs {
+            function_options: Some(
+                jobworkerp::runner::llm::llm_chat_args::FunctionOptions::default(),
+            ),
+            ..Default::default()
+        };
+        let opts = GenaiChatService::build_options(&args).unwrap();
+        assert!(opts.tool_choice.is_none());
+    }
+
+    #[test]
+    fn effective_is_auto_calling_respects_explicit_value() {
+        let args = LlmChatArgs {
+            function_options: Some(jobworkerp::runner::llm::llm_chat_args::FunctionOptions {
+                is_auto_calling: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(ToolConverter::effective_is_auto_calling(&args));
+    }
+
+    #[test]
+    fn effective_is_auto_calling_forced_false_when_client_tools_json_set() {
+        // FR-EXT-2: client_tools_json mode must never run tools server-side
+        // even if the caller asked for auto-calling.
+        let args = LlmChatArgs {
+            function_options: Some(jobworkerp::runner::llm::llm_chat_args::FunctionOptions {
+                is_auto_calling: Some(true),
+                client_tools_json: Some(r#"[]"#.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!ToolConverter::effective_is_auto_calling(&args));
+    }
+
+    #[test]
+    fn effective_is_auto_calling_defaults_to_false() {
+        let args = LlmChatArgs::default();
+        assert!(!ToolConverter::effective_is_auto_calling(&args));
     }
 }

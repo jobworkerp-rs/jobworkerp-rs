@@ -46,6 +46,36 @@ message LLMChatArgs {
     // When function_set_name is not specified, LLM discovers and selects
     // appropriate FunctionSets dynamically via pseudo-tool calls.
     optional bool auto_select_function_set = 6;
+
+    // OpenAI Chat Completions `tools` array as a JSON string, supplied
+    // verbatim by the client. When set, the runner bypasses
+    // function_set_name / use_runners_as_function / use_workers_as_function
+    // / auto_select_function_set and forwards these tools straight to the
+    // provider. The parameter schema is not rewritten. is_auto_calling is
+    // forced to false (client-driven mode): tool calls return to the caller
+    // as pending_tool_calls and the client feeds results back via
+    // MessageContent.tool_results. Mutually exclusive with the four
+    // server-driven knobs above.
+    optional string client_tools_json = 7;
+
+    // OpenAI Chat Completions `tool_choice`. Accepts "auto" / "none" /
+    // "required" or the object form
+    // `{"type":"function","function":{"name":"..."}}`. The runner
+    // translates this to the underlying provider's native representation;
+    // unsupported values fall back to "auto" with a warning.
+    optional string tool_choice = 8;
+
+    // Whether the model may emit multiple tool calls in one response. The
+    // wire layer accepts this hint, but the current runner may only log it
+    // until typed support lands in the downstream client.
+    optional bool parallel_tool_calls = 9;
+
+    // Reserved for llama-cpp-specific knobs (reasoning_format,
+    // chat_template_kwargs) that downstream overlays already use; holding
+    // the slots prevents future renumbering conflicts if those fields ever
+    // land upstream.
+    reserved 10, 11;
+    reserved "reasoning_format", "chat_template_kwargs";
   }
 
   enum ChatRole {
@@ -90,6 +120,29 @@ message LLMChatArgs {
     // Multiple tool execution requests
     message ToolExecutionRequests { repeated ToolExecutionRequest requests = 1; }
 
+    // One client-executed tool result. Carried on a ChatRole::TOOL message
+    // that follows an ASSISTANT message whose ToolCalls included a matching
+    // call_id. The runner translates this into the underlying provider's
+    // tool-result convention.
+    message ToolResult {
+      string call_id = 1;
+      // MAY be empty. The runner resolves it from the preceding ASSISTANT
+      // ToolCalls by call_id (reverse scan, newest → oldest). Required at
+      // the wire layer because some providers refuse to accept a tool
+      // response without a function name.
+      string fn_name = 2;
+      // Tool output text (typically JSON). Empty is allowed (a tool may
+      // legitimately return nothing).
+      string content = 3;
+      // True if the tool failed. The runner maps this to the underlying
+      // provider's error representation.
+      bool is_error = 4;
+    }
+
+    // Multiple client-executed tool results bundled into one TOOL message.
+    // Array order is preserved when expanded into provider messages.
+    message ToolResults { repeated ToolResult results = 1; }
+
     oneof content {
       // The role of the message.
       string text = 1;
@@ -102,6 +155,11 @@ message LLMChatArgs {
 
       // Tool execution requests from client (TOOL role, requesting server to execute)
       ToolExecutionRequests tool_execution_requests = 4;
+
+      // Client-executed tool results (TOOL role, reporting outcomes back to LLM).
+      // Distinct from tool_execution_requests: this carries already-executed
+      // results, not a request for the server to execute anything.
+      ToolResults tool_results = 5;
     }
   }
 
