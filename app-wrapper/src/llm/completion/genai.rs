@@ -83,7 +83,7 @@ impl GenaiCompletionService {
                             ))
                         })?;
                     if let Some(url) = endpoint_url
-                         && !url.is_empty()
+                        && !url.is_empty()
                     {
                         let mut u = url.parse::<url::Url>().map_err(|e| {
                             genai::resolver::Error::Custom(format!(
