@@ -46,6 +46,36 @@ message LLMChatArgs {
     // When function_set_name is not specified, LLM discovers and selects
     // appropriate FunctionSets dynamically via pseudo-tool calls.
     optional bool auto_select_function_set = 6;
+
+    // OpenAI Chat Completions `tools` array as a JSON string, supplied
+    // verbatim by the client. When set, the runner bypasses
+    // function_set_name / use_runners_as_function / use_workers_as_function
+    // / auto_select_function_set and forwards these tools straight to the
+    // provider. The parameter schema is not rewritten. is_auto_calling is
+    // forced to false (client-driven mode): tool calls return to the caller
+    // as pending_tool_calls and the client feeds results back via
+    // MessageContent.tool_results. Mutually exclusive with the four
+    // server-driven knobs above.
+    optional string client_tools_json = 7;
+
+    // OpenAI Chat Completions `tool_choice`. Accepts "auto" / "none" /
+    // "required" or the object form
+    // `{"type":"function","function":{"name":"..."}}`. The runner
+    // translates this to the underlying provider's native representation;
+    // unsupported values fall back to "auto" with a warning.
+    optional string tool_choice = 8;
+
+    // Whether the model may emit multiple tool calls in one response. The
+    // wire layer accepts this hint, but the current runner may only log it
+    // until typed support lands in the downstream client.
+    optional bool parallel_tool_calls = 9;
+
+    // Reserved for llama-cpp-specific knobs (reasoning_format,
+    // chat_template_kwargs) that downstream overlays already use; holding
+    // the slots prevents future renumbering conflicts if those fields ever
+    // land upstream.
+    reserved 10, 11;
+    reserved "reasoning_format", "chat_template_kwargs";
   }
 
   enum ChatRole {

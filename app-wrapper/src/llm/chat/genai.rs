@@ -172,6 +172,29 @@ impl GenaiChatService {
             }
         }
 
+        if let Some(fo) = args.function_options.as_ref() {
+            if let Some(choice_str) = fo.tool_choice.as_deref().filter(|s| !s.is_empty()) {
+                match ToolConverter::parse_tool_choice(choice_str) {
+                    Some(tc) => chat_opts.tool_choice = Some(tc),
+                    None => {
+                        tracing::warn!(
+                            "unsupported tool_choice value {:?}; falling back to auto",
+                            choice_str
+                        );
+                        chat_opts.tool_choice = Some(genai::chat::ToolChoice::Auto);
+                    }
+                }
+            }
+            if matches!(fo.parallel_tool_calls, Some(true)) {
+                // genai 0.6.3 has no typed setter for parallel_tool_calls;
+                // surface intent in logs so future SDK plumbing knows where
+                // to land.
+                tracing::warn!(
+                    "parallel_tool_calls=true requested but not supported by this genai version; ignoring"
+                );
+            }
+        }
+
         Some(chat_opts)
     }
     fn trans_role(
@@ -308,9 +331,30 @@ impl GenaiChatService {
         &self,
         args: &LlmChatArgs,
     ) -> Result<(Vec<Tool>, std::collections::HashSet<String>)> {
+        use anyhow::bail;
+
         let mut auto_select_names = std::collections::HashSet::new();
 
         if let Some(function_options) = &args.function_options {
+            // Client-driven path takes priority over every server-driven
+            // selection knob. Schema is forwarded verbatim (FR-EXT-3) so the
+            // client retains full control of the tool surface — required
+            // for WORKFLOW workers whose internal arguments_schema must not
+            // leak to the model.
+            if let Some(json) = function_options
+                .client_tools_json
+                .as_deref()
+                .filter(|s| !s.is_empty())
+            {
+                if ToolConverter::server_driven_tool_selection_set(function_options) {
+                    bail!(
+                        "client_tools_json is mutually exclusive with {}",
+                        ToolConverter::SERVER_DRIVEN_TOOL_KNOBS.join(" / ")
+                    );
+                }
+                let tools = ToolConverter::parse_client_tools_json(json)?;
+                return Ok((tools, auto_select_names));
+            }
             if function_options.use_function_calling {
                 if let Some(set_name) = function_options.function_set_name.as_ref() {
                     // Specific FunctionSet selected
@@ -415,12 +459,11 @@ impl GenaiChatService {
                 .await;
         }
 
-        // Determine if auto-calling is enabled (default: false = manual mode)
-        let is_auto_calling = args
-            .function_options
-            .as_ref()
-            .and_then(|fo| fo.is_auto_calling)
-            .unwrap_or(false);
+        // Determine if auto-calling is enabled (default: false = manual mode).
+        // Client-driven mode (client_tools_json set) forces this to false:
+        // the runner must never execute client-owned tools server-side
+        // because the schema may not match any registered runner / worker.
+        let is_auto_calling = ToolConverter::effective_is_auto_calling(&args);
 
         let options = Self::build_options(&args);
         let (tools_vec, auto_select_names) = self.function_list(&args).await?;
@@ -1795,5 +1838,102 @@ mod tests {
             opts.response_format,
             Some(ChatResponseFormat::JsonSpec(_))
         ));
+    }
+
+    fn fo_with_tool_choice(
+        choice: &str,
+    ) -> jobworkerp::runner::llm::llm_chat_args::FunctionOptions {
+        jobworkerp::runner::llm::llm_chat_args::FunctionOptions {
+            tool_choice: Some(choice.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn build_options_translates_tool_choice_required() {
+        let args = LlmChatArgs {
+            function_options: Some(fo_with_tool_choice("required")),
+            ..Default::default()
+        };
+        let opts = GenaiChatService::build_options(&args).unwrap();
+        assert!(matches!(
+            opts.tool_choice,
+            Some(genai::chat::ToolChoice::Required)
+        ));
+    }
+
+    #[test]
+    fn build_options_translates_tool_choice_object_form() {
+        let args = LlmChatArgs {
+            function_options: Some(fo_with_tool_choice(
+                r#"{"type":"function","function":{"name":"lookback_recall"}}"#,
+            )),
+            ..Default::default()
+        };
+        let opts = GenaiChatService::build_options(&args).unwrap();
+        match opts.tool_choice {
+            Some(genai::chat::ToolChoice::Tool { name }) => assert_eq!(name, "lookback_recall"),
+            other => panic!("expected Tool variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_options_falls_back_on_unsupported_tool_choice() {
+        let args = LlmChatArgs {
+            function_options: Some(fo_with_tool_choice("never_heard_of_it")),
+            ..Default::default()
+        };
+        let opts = GenaiChatService::build_options(&args).unwrap();
+        // Unsupported values must not silently disappear — they should land
+        // on Auto so the model can still pick tools when appropriate.
+        assert!(matches!(
+            opts.tool_choice,
+            Some(genai::chat::ToolChoice::Auto)
+        ));
+    }
+
+    #[test]
+    fn build_options_skips_tool_choice_when_unset() {
+        let args = LlmChatArgs {
+            function_options: Some(
+                jobworkerp::runner::llm::llm_chat_args::FunctionOptions::default(),
+            ),
+            ..Default::default()
+        };
+        let opts = GenaiChatService::build_options(&args).unwrap();
+        assert!(opts.tool_choice.is_none());
+    }
+
+    #[test]
+    fn effective_is_auto_calling_respects_explicit_value() {
+        let args = LlmChatArgs {
+            function_options: Some(jobworkerp::runner::llm::llm_chat_args::FunctionOptions {
+                is_auto_calling: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(ToolConverter::effective_is_auto_calling(&args));
+    }
+
+    #[test]
+    fn effective_is_auto_calling_forced_false_when_client_tools_json_set() {
+        // FR-EXT-2: client_tools_json mode must never run tools server-side
+        // even if the caller asked for auto-calling.
+        let args = LlmChatArgs {
+            function_options: Some(jobworkerp::runner::llm::llm_chat_args::FunctionOptions {
+                is_auto_calling: Some(true),
+                client_tools_json: Some(r#"[]"#.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!ToolConverter::effective_is_auto_calling(&args));
+    }
+
+    #[test]
+    fn effective_is_auto_calling_defaults_to_false() {
+        let args = LlmChatArgs::default();
+        assert!(!ToolConverter::effective_is_auto_calling(&args));
     }
 }

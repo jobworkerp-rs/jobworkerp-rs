@@ -169,16 +169,28 @@ impl ToolConverter {
         })
     }
 
-    /// Convert MCP Tool to GenAI Tool
-    fn mcp_tool_to_genai(tool: &Tool) -> genai::chat::Tool {
-        // genai 0.6 introduced ToolName enum and a builder API. ToolName::from(&str)
-        // (Custom variant) preserves the bare-string JSON shape used by 0.5.
-        let mut t = genai::chat::Tool::new(tool.name.as_ref())
-            .with_schema(serde_json::Value::Object((*tool.input_schema).clone()));
-        if let Some(desc) = tool.description.as_deref() {
+    /// Build a `genai::chat::Tool` with the canonical name/schema/optional
+    /// description shape. Centralised so any future genai builder change
+    /// (renamed setters, ToolName variant tweaks, etc.) lands in one place.
+    fn build_genai_tool(
+        name: &str,
+        schema: serde_json::Value,
+        description: Option<&str>,
+    ) -> genai::chat::Tool {
+        let mut t = genai::chat::Tool::new(name).with_schema(schema);
+        if let Some(desc) = description {
             t = t.with_description(desc);
         }
         t
+    }
+
+    /// Convert MCP Tool to GenAI Tool
+    fn mcp_tool_to_genai(tool: &Tool) -> genai::chat::Tool {
+        Self::build_genai_tool(
+            tool.name.as_ref(),
+            serde_json::Value::Object((*tool.input_schema).clone()),
+            tool.description.as_deref(),
+        )
     }
 
     /// Convert a list of FunctionSpecs to Vec<ToolInfo> for Ollama FunctionCalling
@@ -207,6 +219,149 @@ impl ToolConverter {
                     .map(|mcp_tool| Self::mcp_tool_to_genai(&mcp_tool))
             })
             .collect()
+    }
+
+    /// Parse the client-supplied OpenAI Chat Completions `tools` JSON
+    /// string into genai `Tool`s.
+    ///
+    /// Schema is forwarded **verbatim** — no envelope, no
+    /// additionalProperties, no key filtering. The client owns the tool
+    /// surface, which lets it expose a narrowed schema even when the
+    /// runner-side worker would otherwise demand a wider one. Anything
+    /// the runner re-wraps here would silently change the contract the
+    /// model is told about.
+    ///
+    /// Validation is intentionally narrow: parseable as JSON, top-level
+    /// array, each element shaped like
+    /// `{"type":"function","function":{"name":<string>,"parameters":<object>}}`.
+    /// `description` is optional.
+    pub fn parse_client_tools_json(json: &str) -> anyhow::Result<Vec<genai::chat::Tool>> {
+        use anyhow::{Context, bail};
+
+        let value: serde_json::Value = serde_json::from_str(json)
+            .with_context(|| format!("invalid client_tools_json: not valid JSON ({json:?})"))?;
+        let arr = match value {
+            serde_json::Value::Array(a) => a,
+            _ => bail!("invalid client_tools_json: top-level value must be an array"),
+        };
+
+        let mut tools = Vec::with_capacity(arr.len());
+        for (i, entry) in arr.into_iter().enumerate() {
+            let ctx = |msg: &str| anyhow::anyhow!("invalid client_tools_json[{i}]: {msg}");
+            let obj = entry
+                .as_object()
+                .ok_or_else(|| ctx("element must be an object"))?;
+
+            let ty = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if ty != "function" {
+                bail!(
+                    "invalid client_tools_json[{i}]: only type=\"function\" is supported, got {ty:?}"
+                );
+            }
+            let function = obj
+                .get("function")
+                .and_then(|v| v.as_object())
+                .ok_or_else(|| ctx("missing or non-object `function`"))?;
+            let name = function
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| ctx("function.name is required and must be a non-empty string"))?;
+            let parameters = function
+                .get("parameters")
+                .ok_or_else(|| ctx("function.parameters is required"))?;
+            if !parameters.is_object() {
+                bail!("invalid client_tools_json[{i}]: function.parameters must be an object");
+            }
+
+            let description = function.get("description").and_then(|v| v.as_str());
+            tools.push(Self::build_genai_tool(
+                name,
+                parameters.clone(),
+                description,
+            ));
+        }
+        Ok(tools)
+    }
+
+    /// Translate the client-supplied OpenAI `tool_choice` field into the
+    /// genai `ToolChoice` enum. Returns `None` for values the runner does
+    /// not recognise (object form for non-function types, malformed JSON,
+    /// unknown keywords); the caller is expected to log and fall back to
+    /// `Auto`. genai converts the enum to each provider's native form
+    /// downstream, so we only have to surface intent here.
+    pub fn parse_tool_choice(raw: &str) -> Option<genai::chat::ToolChoice> {
+        let trimmed = raw.trim();
+        match trimmed {
+            "auto" => return Some(genai::chat::ToolChoice::Auto),
+            "none" => return Some(genai::chat::ToolChoice::None),
+            "required" => return Some(genai::chat::ToolChoice::Required),
+            _ => {}
+        }
+        // Object form: {"type":"function","function":{"name":"X"}}
+        let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+        let obj = value.as_object()?;
+        if obj.get("type").and_then(|v| v.as_str()) != Some("function") {
+            return None;
+        }
+        let name = obj
+            .get("function")
+            .and_then(|f| f.as_object())
+            .and_then(|f| f.get("name"))
+            .and_then(|n| n.as_str())
+            .filter(|s| !s.is_empty())?;
+        Some(genai::chat::ToolChoice::tool(name))
+    }
+
+    /// Human-readable names of the server-driven tool selection knobs on
+    /// `FunctionOptions`. The list is the single source of truth for both
+    /// the mutual-exclusion check below and the error message that
+    /// surfaces it; if a new knob is added to FunctionOptions, append it
+    /// here once and every caller stays consistent.
+    pub const SERVER_DRIVEN_TOOL_KNOBS: &'static [&'static str] = &[
+        "function_set_name",
+        "use_runners_as_function",
+        "use_workers_as_function",
+        "auto_select_function_set",
+    ];
+
+    /// Returns true if any of the server-driven tool-selection knobs are
+    /// engaged. Used to enforce mutual exclusion with `client_tools_json`
+    /// at the request boundary.
+    pub fn server_driven_tool_selection_set(
+        fo: &jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::FunctionOptions,
+    ) -> bool {
+        fo.function_set_name.is_some()
+            || fo.use_runners_as_function.is_some()
+            || fo.use_workers_as_function.is_some()
+            || fo.auto_select_function_set.unwrap_or(false)
+    }
+
+    /// Effective `is_auto_calling` flag after applying the client-driven
+    /// override: when `client_tools_json` is set the runner must not
+    /// execute tools server-side (the schemas belong to the client), so
+    /// auto-calling is forced off and a warning is logged when the caller
+    /// asked for it explicitly. Lives here because the invariant is a
+    /// property of `FunctionOptions`, not of any particular LLM backend.
+    pub fn effective_is_auto_calling(args: &LlmChatArgs) -> bool {
+        let Some(fo) = args.function_options.as_ref() else {
+            return false;
+        };
+        let requested = fo.is_auto_calling.unwrap_or(false);
+        let client_driven = fo
+            .client_tools_json
+            .as_deref()
+            .is_some_and(|s| !s.is_empty());
+        if client_driven {
+            if requested {
+                tracing::warn!(
+                    "client_tools_json is set; ignoring is_auto_calling=true and forcing manual (client-driven) mode"
+                );
+            }
+            false
+        } else {
+            requested
+        }
     }
 
     /// Regex for validating FunctionSet names used as tool names in auto-select mode.
@@ -2421,5 +2576,125 @@ mod tests {
             "unexpected error: {}",
             err
         );
+    }
+
+    // ====== parse_client_tools_json / parse_tool_choice ======
+
+    #[test]
+    fn parse_client_tools_json_single_tool() {
+        let json = r#"[
+            {"type":"function","function":{
+                "name":"lookback_recall",
+                "description":"Search past conversations",
+                "parameters":{"type":"object","properties":{"query":{"type":"string"}}}
+            }}
+        ]"#;
+        let tools = ToolConverter::parse_client_tools_json(json).unwrap();
+        assert_eq!(tools.len(), 1);
+        // genai 0.6 stores `name` as ToolName; comparing via debug projection
+        // would couple to upstream layout. Round-tripping through the public
+        // API surface is enough — name is what we assert on through tool_choice.
+        let json_value = serde_json::to_value(&tools[0]).unwrap();
+        assert_eq!(json_value["name"], "lookback_recall");
+        assert_eq!(json_value["description"], "Search past conversations");
+        // Parameters must be forwarded byte-equivalent (FR-EXT-3 / AC-EXT-4).
+        assert_eq!(
+            json_value["schema"]["properties"]["query"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn parse_client_tools_json_multiple_tools_preserve_order() {
+        let json = r#"[
+            {"type":"function","function":{"name":"a","parameters":{"type":"object"}}},
+            {"type":"function","function":{"name":"b","parameters":{"type":"object"}}}
+        ]"#;
+        let tools = ToolConverter::parse_client_tools_json(json).unwrap();
+        assert_eq!(tools.len(), 2);
+        let a = serde_json::to_value(&tools[0]).unwrap();
+        let b = serde_json::to_value(&tools[1]).unwrap();
+        assert_eq!(a["name"], "a");
+        assert_eq!(b["name"], "b");
+    }
+
+    #[test]
+    fn parse_client_tools_json_invalid_json_bails() {
+        let err = ToolConverter::parse_client_tools_json("not json").unwrap_err();
+        assert!(err.to_string().contains("invalid client_tools_json"));
+    }
+
+    #[test]
+    fn parse_client_tools_json_top_level_not_array_bails() {
+        let err = ToolConverter::parse_client_tools_json("{}").unwrap_err();
+        assert!(err.to_string().contains("top-level value must be an array"));
+    }
+
+    #[test]
+    fn parse_client_tools_json_non_function_type_bails() {
+        let json = r#"[{"type":"web_search","function":{"name":"x","parameters":{}}}]"#;
+        let err = ToolConverter::parse_client_tools_json(json).unwrap_err();
+        assert!(err.to_string().contains("type=\"function\""));
+    }
+
+    #[test]
+    fn parse_client_tools_json_missing_name_bails() {
+        let json = r#"[{"type":"function","function":{"parameters":{}}}]"#;
+        let err = ToolConverter::parse_client_tools_json(json).unwrap_err();
+        assert!(err.to_string().contains("function.name is required"));
+    }
+
+    #[test]
+    fn parse_client_tools_json_missing_parameters_bails() {
+        let json = r#"[{"type":"function","function":{"name":"x"}}]"#;
+        let err = ToolConverter::parse_client_tools_json(json).unwrap_err();
+        assert!(err.to_string().contains("function.parameters is required"));
+    }
+
+    #[test]
+    fn parse_client_tools_json_non_object_parameters_bails() {
+        let json = r#"[{"type":"function","function":{"name":"x","parameters":42}}]"#;
+        let err = ToolConverter::parse_client_tools_json(json).unwrap_err();
+        assert!(err.to_string().contains("must be an object"));
+    }
+
+    #[test]
+    fn parse_tool_choice_keywords() {
+        assert!(matches!(
+            ToolConverter::parse_tool_choice("auto"),
+            Some(genai::chat::ToolChoice::Auto)
+        ));
+        assert!(matches!(
+            ToolConverter::parse_tool_choice("none"),
+            Some(genai::chat::ToolChoice::None)
+        ));
+        assert!(matches!(
+            ToolConverter::parse_tool_choice("required"),
+            Some(genai::chat::ToolChoice::Required)
+        ));
+    }
+
+    #[test]
+    fn parse_tool_choice_object_form() {
+        let json = r#"{"type":"function","function":{"name":"lookback_recall"}}"#;
+        match ToolConverter::parse_tool_choice(json) {
+            Some(genai::chat::ToolChoice::Tool { name }) => assert_eq!(name, "lookback_recall"),
+            other => panic!("expected Tool variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_tool_choice_unknown_keyword_returns_none() {
+        assert!(ToolConverter::parse_tool_choice("never_heard_of_it").is_none());
+    }
+
+    #[test]
+    fn parse_tool_choice_invalid_json_returns_none() {
+        assert!(ToolConverter::parse_tool_choice("{not json").is_none());
+    }
+
+    #[test]
+    fn parse_tool_choice_object_without_function_name_returns_none() {
+        assert!(ToolConverter::parse_tool_choice(r#"{"type":"function"}"#).is_none());
     }
 }
