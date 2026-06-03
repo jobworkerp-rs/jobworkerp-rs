@@ -57,6 +57,11 @@ pub struct GenaiCompletionService {
     pub model: String,
     pub system_prompt: Option<String>,
     pub otel_client: Option<Arc<GenericOtelClient>>,
+    // Cached at construction so per-request schema sanitisation does not
+    // re-classify the (immutable) model name. None means the model name did
+    // not match any known adapter; sanitize_schema_for_adapter treats that
+    // as "no fixups".
+    adapter_kind: Option<genai::adapter::AdapterKind>,
 }
 impl GenaiCompletionService {
     pub async fn new(settings: GenaiRunnerSettings) -> Result<Self> {
@@ -113,14 +118,31 @@ impl GenaiCompletionService {
         let client = Client::builder()
             .with_service_target_resolver(target_resolver)
             .build();
+        let adapter_kind = genai::adapter::AdapterKind::from_model(&settings.model)
+            .map_err(|e| {
+                tracing::warn!(
+                    "AdapterKind::from_model({}) failed; provider-specific schema fixups will be skipped: {e}",
+                    settings.model
+                );
+                e
+            })
+            .ok();
         Ok(Self {
             client,
             model: settings.model,
             system_prompt: settings.system_prompt,
             otel_client: Some(Arc::new(GenericOtelClient::new("genai.completion_service"))),
+            adapter_kind,
         })
     }
-    pub(super) fn build_options(args: &LlmCompletionArgs) -> Option<ChatOptions> {
+    pub(super) fn build_options(&self, args: &LlmCompletionArgs) -> Option<ChatOptions> {
+        Self::build_options_with_adapter(args, self.adapter_kind)
+    }
+
+    pub(super) fn build_options_with_adapter(
+        args: &LlmCompletionArgs,
+        adapter_kind: Option<genai::adapter::AdapterKind>,
+    ) -> Option<ChatOptions> {
         // Explicit opt-in to StreamEnd captures (genai 0.6+). request_chat_stream()
         // reads end.captured_content / captured_reasoning_content / captured_usage;
         // without these flags the values are no longer guaranteed to be populated.
@@ -142,7 +164,14 @@ impl GenaiCompletionService {
 
         if let Some(schema_str) = args.json_schema.as_deref() {
             match serde_json::from_str::<serde_json::Value>(schema_str) {
-                Ok(schema) => {
+                Ok(mut schema) => {
+                    // See schema_sanitize for the Gemini-specific stripping.
+                    // Ollama path lives in a separate file and accepts the full
+                    // draft-2020-12 keyword set, so it is intentionally not routed here.
+                    crate::llm::schema_sanitize::sanitize_schema_for_adapter(
+                        &mut schema,
+                        adapter_kind,
+                    );
                     chat_opts.response_format = Some(ChatResponseFormat::JsonSpec(JsonSpec::new(
                         crate::llm::GENAI_JSON_SPEC_NAME,
                         schema,
@@ -178,7 +207,7 @@ impl GenaiCompletionService {
         metadata: HashMap<String, String>,
     ) -> Result<LlmCompletionResult> {
         let metadata = Arc::new(metadata);
-        let options = Self::build_options(&args);
+        let options = self.build_options(&args);
         let messages = self.messages(args);
         let chat_req = ChatRequest::new(messages);
 
@@ -296,7 +325,7 @@ impl GenaiCompletionService {
         metadata: HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let options = Self::build_options(&args);
+        let options = self.build_options(&args);
         let span_attributes = if GenericLLMTracingHelper::get_otel_client(self).is_some() {
             Some(build_genai_completion_span(
                 &self.model,
@@ -563,6 +592,14 @@ mod tests {
     use super::*;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_args::LlmOptions;
 
+    const TEST_OPENAI_MODEL: &str = "gpt-4o-mini";
+    const TEST_GEMINI_MODEL: &str = "gemini-3.1-flash-lite";
+
+    fn build_test_options(model: &str, args: &LlmCompletionArgs) -> Option<ChatOptions> {
+        let kind = genai::adapter::AdapterKind::from_model(model).ok();
+        GenaiCompletionService::build_options_with_adapter(args, kind)
+    }
+
     #[test]
     fn build_options_sets_json_spec_response_format() {
         let schema = r#"{"type":"object","properties":{"x":{"type":"integer"}}}"#;
@@ -570,7 +607,7 @@ mod tests {
             json_schema: Some(schema.to_string()),
             ..Default::default()
         };
-        let opts = GenaiCompletionService::build_options(&args).expect("options must be Some");
+        let opts = build_test_options(TEST_OPENAI_MODEL, &args).expect("options must be Some");
         match opts.response_format {
             Some(ChatResponseFormat::JsonSpec(spec)) => {
                 assert_eq!(spec.name, "structured_output");
@@ -588,7 +625,7 @@ mod tests {
             json_schema: Some(r#"{"type":"object"}"#.to_string()),
             ..Default::default()
         };
-        let opts = GenaiCompletionService::build_options(&args);
+        let opts = build_test_options(TEST_OPENAI_MODEL, &args);
         assert!(opts.is_some());
         assert!(opts.unwrap().response_format.is_some());
     }
@@ -602,7 +639,7 @@ mod tests {
         };
         // Invalid JSON schema is silently ignored, but capture flags are still set
         // for streaming, so options must still be Some.
-        let opts = GenaiCompletionService::build_options(&args).expect("options must be Some");
+        let opts = build_test_options(TEST_OPENAI_MODEL, &args).expect("options must be Some");
         assert!(opts.response_format.is_none());
     }
 
@@ -613,7 +650,7 @@ mod tests {
         // captured_usage, so the three flags must be Some(true). capture_tool_calls is
         // not needed on the completion path because completions never call tools.
         let args = LlmCompletionArgs::default();
-        let opts = GenaiCompletionService::build_options(&args).expect("options must be Some");
+        let opts = build_test_options(TEST_OPENAI_MODEL, &args).expect("options must be Some");
         assert_eq!(opts.capture_content, Some(true));
         assert_eq!(opts.capture_reasoning_content, Some(true));
         assert_eq!(opts.capture_usage, Some(true));
@@ -632,7 +669,7 @@ mod tests {
             json_schema: Some(r#"{"type":"object"}"#.to_string()),
             ..Default::default()
         };
-        let opts = GenaiCompletionService::build_options(&args).expect("options must be Some");
+        let opts = build_test_options(TEST_OPENAI_MODEL, &args).expect("options must be Some");
         assert!((opts.temperature.unwrap() - 0.42_f64).abs() < 1e-6);
         assert_eq!(opts.max_tokens, Some(128));
         assert!((opts.top_p.unwrap() - 0.9_f64).abs() < 1e-6);
@@ -641,5 +678,41 @@ mod tests {
             opts.response_format,
             Some(ChatResponseFormat::JsonSpec(_))
         ));
+    }
+
+    #[test]
+    fn build_options_sanitizes_schema_for_gemini() {
+        // gemini-3.1-flash-lite rejects responseJsonSchema with maxItems; the
+        // sanitizer should strip it before genai serialises the request.
+        let schema = r#"{"type":"object","properties":{
+            "tags":{"type":"array","items":{"type":"string"},"maxItems":5}
+        }}"#;
+        let args = LlmCompletionArgs {
+            json_schema: Some(schema.to_string()),
+            ..Default::default()
+        };
+        let opts = build_test_options(TEST_GEMINI_MODEL, &args).expect("options must be Some");
+        match opts.response_format {
+            Some(ChatResponseFormat::JsonSpec(spec)) => {
+                assert!(spec.schema["properties"]["tags"].get("maxItems").is_none());
+            }
+            other => panic!("expected JsonSpec response_format, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_options_keeps_schema_for_openai_model() {
+        let schema = r#"{"type":"array","items":{"type":"string"},"maxItems":5}"#;
+        let args = LlmCompletionArgs {
+            json_schema: Some(schema.to_string()),
+            ..Default::default()
+        };
+        let opts = build_test_options(TEST_OPENAI_MODEL, &args).expect("options must be Some");
+        match opts.response_format {
+            Some(ChatResponseFormat::JsonSpec(spec)) => {
+                assert_eq!(spec.schema["maxItems"], 5);
+            }
+            other => panic!("expected JsonSpec response_format, got {other:?}"),
+        }
     }
 }
