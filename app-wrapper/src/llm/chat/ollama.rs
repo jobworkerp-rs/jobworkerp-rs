@@ -315,10 +315,52 @@ impl OllamaChatService {
         }
     }
 
+    /// Expand a proto `ToolResults` into ollama-rs `ChatMessage`s. Each
+    /// result becomes its own message because ollama-rs `ChatMessage` has no
+    /// per-message `tool_call_id` slot, mirroring the OpenAI/llama-cpp
+    /// unpack rule (FR-TRSP-8). Validation (empty results / empty call_id /
+    /// fn_name resolution) is done by
+    /// `ToolConverter::validate_all_tool_results` at request_chat entry;
+    /// this function trusts the payload.
+    fn expand_tool_results_into(
+        out: &mut Vec<ChatMessage>,
+        role: &MessageRole,
+        tr: &llm::llm_chat_args::message_content::ToolResults,
+    ) {
+        for r in &tr.results {
+            let body = if r.is_error {
+                format!("[ERROR] {}", r.content)
+            } else {
+                r.content.clone()
+            };
+            out.push(ChatMessage {
+                role: role.clone(),
+                content: body,
+                tool_calls: vec![],
+                images: None,
+                thinking: None,
+            });
+        }
+    }
+
     async fn convert_messages(args: &LlmChatArgs) -> Vec<ChatMessage> {
         let mut messages = Vec::with_capacity(args.messages.len());
         for m in &args.messages {
             let role = Self::role_to_enum(m.role());
+
+            // ToolResults must expand 1:N (one proto message → N tool-role
+            // ollama messages, one per result) because ollama-rs `ChatMessage`
+            // does not carry a per-message tool_call_id field, matching the
+            // OpenAI/llama-cpp unpack rule in FR-TRSP-8. All other content
+            // variants are 1:1.
+            if let Some(content) = &m.content
+                && let Some(llm::llm_chat_args::message_content::Content::ToolResults(tr)) =
+                    &content.content
+            {
+                Self::expand_tool_results_into(&mut messages, &role, tr);
+                continue;
+            }
+
             let (content, images, tool_calls) = match &m.content {
                 Some(content) => match &content.content {
                     Some(llm::llm_chat_args::message_content::Content::Text(t)) => {
@@ -411,6 +453,9 @@ impl OllamaChatService {
         metadata: HashMap<String, String>,
     ) -> Result<LlmChatResult> {
         let metadata = Arc::new(metadata);
+
+        // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
+        ToolConverter::validate_all_tool_results(&args)?;
 
         // Check for tool execution requests in messages (manual mode)
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
@@ -995,6 +1040,9 @@ impl OllamaChatService {
         metadata: HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
+        // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
+        ToolConverter::validate_all_tool_results(&args)?;
+
         // Check for tool execution requests first (highest priority, manual mode continuation)
         let metadata_arc = Arc::new(metadata);
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
@@ -1538,5 +1586,68 @@ impl OllamaChatService {
         };
 
         Ok(traced_stream)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::{
+        ToolResult as ProtoToolResult, ToolResults as ProtoToolResults,
+    };
+
+    #[test]
+    fn expand_tool_results_into_fans_out_per_result() {
+        let tr = ProtoToolResults {
+            results: vec![
+                ProtoToolResult {
+                    call_id: "c1".to_string(),
+                    fn_name: "tool_a".to_string(),
+                    content: "first".to_string(),
+                    is_error: false,
+                },
+                ProtoToolResult {
+                    call_id: "c2".to_string(),
+                    fn_name: "tool_b".to_string(),
+                    content: "second-failed".to_string(),
+                    is_error: true,
+                },
+            ],
+        };
+        let mut out = Vec::new();
+        OllamaChatService::expand_tool_results_into(&mut out, &MessageRole::Tool, &tr);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].role, MessageRole::Tool);
+        assert_eq!(out[0].content, "first");
+        assert_eq!(out[1].role, MessageRole::Tool);
+        // is_error=true → [ERROR] prefix
+        assert_eq!(out[1].content, "[ERROR] second-failed");
+    }
+
+    #[test]
+    fn expand_tool_results_into_preserves_order() {
+        let tr = ProtoToolResults {
+            results: (0..4)
+                .map(|i| ProtoToolResult {
+                    call_id: format!("c{i}"),
+                    fn_name: format!("t{i}"),
+                    content: format!("r{i}"),
+                    is_error: false,
+                })
+                .collect(),
+        };
+        let mut out = Vec::new();
+        OllamaChatService::expand_tool_results_into(&mut out, &MessageRole::Tool, &tr);
+        for (i, msg) in out.iter().enumerate() {
+            assert_eq!(msg.content, format!("r{i}"));
+        }
+    }
+
+    #[test]
+    fn expand_tool_results_into_empty_results_is_noop() {
+        let tr = ProtoToolResults { results: vec![] };
+        let mut out = Vec::new();
+        OllamaChatService::expand_tool_results_into(&mut out, &MessageRole::Tool, &tr);
+        assert!(out.is_empty());
     }
 }

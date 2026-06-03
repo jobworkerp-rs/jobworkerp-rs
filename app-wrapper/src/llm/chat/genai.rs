@@ -2,7 +2,7 @@ use super::super::generic_tracing_helper::{
     self, ChatResponse, GenericLLMTracingHelper, LLMMessage, ModelOptions as GenericModelOptions,
     StreamingTraceUpdate, ToolInfo as GenericToolInfo, UsageData,
 };
-use super::conversion::{ToolCallName, ToolConverter};
+use super::conversion::{ResolvedToolResult, ToolCallName, ToolConverter};
 use crate::llm::ThinkTagHelper;
 use crate::llm::tracing::genai_helper::GenaiTracingHelper;
 use anyhow::Result;
@@ -193,71 +193,116 @@ impl GenaiChatService {
             }
         }
     }
+    /// Build genai `ToolResponse`s from already-resolved tool results.
+    ///
+    /// fn_name must be forwarded so Gemini's `functionResponse.name` is
+    /// populated; otherwise the genai adapter falls back to parsing it
+    /// out of `call_id` (only the synthetic `call#NAME#N` shape decodes)
+    /// or, failing that, copies the raw `call_id` into `name` — which
+    /// the provider then rejects as an unknown function.
+    ///
+    /// genai 0.6.3 has no native `is_error` slot on `ToolResponse`, so
+    /// error state is folded into `content` via the cross-provider
+    /// `[ERROR] ` marker (see `ResolvedToolResult::display_content`).
+    /// The Anthropic-native mapping will move here once the upstream
+    /// SDK surfaces an `is_error` field.
+    fn resolved_tool_results_to_genai_content(
+        resolved: &[ResolvedToolResult],
+    ) -> GenaiMessageContent {
+        let responses: Vec<ToolResponse> = resolved
+            .iter()
+            .map(|r| {
+                ToolResponse::new(r.call_id.clone(), r.display_content().into_owned())
+                    .with_fn_name(r.fn_name.clone())
+            })
+            .collect();
+        GenaiMessageContent::from_tool_responses(responses)
+    }
+
     fn trans_messages(&self, args: LlmChatArgs) -> Vec<ChatMessage> {
         use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
-        args.messages
-            .into_iter()
-            .filter_map(|msg| {
-                let role = self.trans_role(msg.role());
-                let content = match msg.content {
-                    Some(content) => match content.content {
-                        Some(ProtoContent::Text(text)) => GenaiMessageContent::from_text(text),
-                        // TODO pdf
-                        Some(ProtoContent::Image(image)) => {
-                            let source = match image.source {
-                                Some(src) => {
-                                    if !src.url.is_empty() {
-                                        genai::chat::BinarySource::Url(src.url)
-                                    } else if !src.base64.is_empty() {
-                                        genai::chat::BinarySource::Base64(Arc::from(src.base64))
-                                    } else {
-                                        return None;
-                                    }
-                                }
-                                None => return None,
-                            };
-                            GenaiMessageContent::from_parts(vec![genai::chat::ContentPart::Binary(
-                                genai::chat::Binary {
-                                    name: None,
-                                    content_type: image.content_type,
-                                    source,
-                                },
-                            )])
+
+        // We need backwards access to earlier messages to resolve fn_name
+        // for any `ToolResults` we encounter, so iterate by index instead
+        // of consuming the Vec up front.
+        let messages = args.messages;
+        let mut out = Vec::with_capacity(messages.len());
+        for idx in 0..messages.len() {
+            let msg = &messages[idx];
+            let role = self.trans_role(msg.role());
+            let Some(content) = msg.content.as_ref() else {
+                continue;
+            };
+            let genai_content = match content.content.as_ref() {
+                Some(ProtoContent::Text(text)) => GenaiMessageContent::from_text(text.clone()),
+                // TODO pdf
+                Some(ProtoContent::Image(image)) => {
+                    let source = match image.source.as_ref() {
+                        Some(src) => {
+                            if !src.url.is_empty() {
+                                genai::chat::BinarySource::Url(src.url.clone())
+                            } else if !src.base64.is_empty() {
+                                genai::chat::BinarySource::Base64(Arc::from(src.base64.clone()))
+                            } else {
+                                continue;
+                            }
                         }
-                        Some(ProtoContent::ToolCalls(tool_calls)) => {
-                            let calls = tool_calls
-                                .calls
-                                .into_iter()
-                                .map(|call| {
-                                    let fn_arguments_value =
-                                        serde_json::from_str(&call.fn_arguments)
-                                            .unwrap_or_else(|_| serde_json::json!({}));
-                                    genai::chat::ToolCall {
-                                        call_id: call.call_id,
-                                        fn_name: call.fn_name,
-                                        fn_arguments: fn_arguments_value,
-                                        thought_signatures: None,
-                                    }
-                                })
-                                .collect();
-                            GenaiMessageContent::from_tool_calls(calls)
+                        None => continue,
+                    };
+                    GenaiMessageContent::from_parts(vec![genai::chat::ContentPart::Binary(
+                        genai::chat::Binary {
+                            name: None,
+                            content_type: image.content_type.clone(),
+                            source,
+                        },
+                    )])
+                }
+                Some(ProtoContent::ToolCalls(tool_calls)) => {
+                    let calls = tool_calls
+                        .calls
+                        .iter()
+                        .map(|call| {
+                            let fn_arguments_value = serde_json::from_str(&call.fn_arguments)
+                                .unwrap_or_else(|_| serde_json::json!({}));
+                            genai::chat::ToolCall {
+                                call_id: call.call_id.clone(),
+                                fn_name: call.fn_name.clone(),
+                                fn_arguments: fn_arguments_value,
+                                thought_signatures: None,
+                            }
+                        })
+                        .collect();
+                    GenaiMessageContent::from_tool_calls(calls)
+                }
+                Some(ProtoContent::ToolExecutionRequests(_)) => {
+                    // Tool execution requests are handled separately in request_chat
+                    // They should not be converted to chat messages directly
+                    continue;
+                }
+                Some(ProtoContent::ToolResults(tr)) => {
+                    // Re-run resolve_tool_results so fn_name is forwarded
+                    // to genai. validate_all_tool_results already guarded
+                    // this at request_chat entry, so an Err here means a
+                    // programming error rather than client input.
+                    match ToolConverter::resolve_tool_results(&messages[..idx], tr) {
+                        Ok(resolved) => Self::resolved_tool_results_to_genai_content(&resolved),
+                        Err(e) => {
+                            tracing::error!(
+                                "internal: tool_results resolution failed after validation: {e}"
+                            );
+                            continue;
                         }
-                        Some(ProtoContent::ToolExecutionRequests(_)) => {
-                            // Tool execution requests are handled separately in request_chat
-                            // They should not be converted to chat messages directly
-                            return None;
-                        }
-                        None => return None,
-                    },
-                    None => return None,
-                };
-                Some(ChatMessage {
-                    role,
-                    content,
-                    options: None,
-                })
-            })
-            .collect()
+                    }
+                }
+                None => continue,
+            };
+            out.push(ChatMessage {
+                role,
+                content: genai_content,
+                options: None,
+            });
+        }
+        out
     }
     async fn function_list(
         &self,
@@ -357,6 +402,11 @@ impl GenaiChatService {
         metadata: HashMap<String, String>,
     ) -> Result<LlmChatResult> {
         let metadata = Arc::new(metadata);
+
+        // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
+        // This runs before any provider call, surfacing client-side payload
+        // errors as direct Err instead of confusing provider-side rejections.
+        ToolConverter::validate_all_tool_results(&args)?;
 
         // Check for tool execution requests in messages (manual mode)
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
@@ -890,6 +940,9 @@ impl GenaiChatService {
         metadata: HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
+        ToolConverter::validate_all_tool_results(&args)?;
+
         // Check for tool execution requests first (highest priority, manual mode continuation)
         let metadata_arc = Arc::new(metadata.clone());
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
@@ -1616,6 +1669,53 @@ impl crate::llm::tracing::LLMTracingHelper for GenaiChatService {
 mod tests {
     use super::*;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::LlmOptions;
+
+    fn resolved(call_id: &str, fn_name: &str, content: &str, is_error: bool) -> ResolvedToolResult {
+        ResolvedToolResult {
+            call_id: call_id.to_string(),
+            fn_name: fn_name.to_string(),
+            content: content.to_string(),
+            is_error,
+        }
+    }
+
+    #[test]
+    fn resolved_tool_results_carry_fn_name_and_error_marker() {
+        let resolved = [
+            resolved("c1", "tool_a", "ok", false),
+            resolved("c2", "tool_b", "boom", true),
+        ];
+        let content = GenaiChatService::resolved_tool_results_to_genai_content(&resolved);
+        let responses = content.tool_responses();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0].call_id, "c1");
+        // fn_name MUST be forwarded so Gemini's functionResponse.name is correct.
+        assert_eq!(responses[0].fn_name.as_deref(), Some("tool_a"));
+        assert_eq!(responses[0].content, "ok");
+        assert_eq!(responses[1].call_id, "c2");
+        assert_eq!(responses[1].fn_name.as_deref(), Some("tool_b"));
+        // is_error=true → [ERROR] prefix
+        assert_eq!(responses[1].content, "[ERROR] boom");
+    }
+
+    #[test]
+    fn resolved_tool_results_preserve_order() {
+        let resolved: Vec<_> = (0..5)
+            .map(|i| ResolvedToolResult {
+                call_id: format!("c{i}"),
+                fn_name: format!("t{i}"),
+                content: format!("r{i}"),
+                is_error: false,
+            })
+            .collect();
+        let content = GenaiChatService::resolved_tool_results_to_genai_content(&resolved);
+        let responses = content.tool_responses();
+        for (i, r) in responses.iter().enumerate() {
+            assert_eq!(r.call_id, format!("c{i}"));
+            assert_eq!(r.fn_name.as_deref(), Some(format!("t{i}").as_str()));
+            assert_eq!(r.content, format!("r{i}"));
+        }
+    }
 
     #[test]
     fn build_options_sets_json_spec_response_format() {

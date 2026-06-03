@@ -90,6 +90,29 @@ message LLMChatArgs {
     // Multiple tool execution requests
     message ToolExecutionRequests { repeated ToolExecutionRequest requests = 1; }
 
+    // One client-executed tool result. Carried on a ChatRole::TOOL message
+    // that follows an ASSISTANT message whose ToolCalls included a matching
+    // call_id. The runner translates this into the underlying provider's
+    // tool-result convention.
+    message ToolResult {
+      string call_id = 1;
+      // MAY be empty. The runner resolves it from the preceding ASSISTANT
+      // ToolCalls by call_id (reverse scan, newest → oldest). Required at
+      // the wire layer because some providers refuse to accept a tool
+      // response without a function name.
+      string fn_name = 2;
+      // Tool output text (typically JSON). Empty is allowed (a tool may
+      // legitimately return nothing).
+      string content = 3;
+      // True if the tool failed. The runner maps this to the underlying
+      // provider's error representation.
+      bool is_error = 4;
+    }
+
+    // Multiple client-executed tool results bundled into one TOOL message.
+    // Array order is preserved when expanded into provider messages.
+    message ToolResults { repeated ToolResult results = 1; }
+
     oneof content {
       // The role of the message.
       string text = 1;
@@ -102,6 +125,11 @@ message LLMChatArgs {
 
       // Tool execution requests from client (TOOL role, requesting server to execute)
       ToolExecutionRequests tool_execution_requests = 4;
+
+      // Client-executed tool results (TOOL role, reporting outcomes back to LLM).
+      // Distinct from tool_execution_requests: this carries already-executed
+      // results, not a request for the server to execute anything.
+      ToolResults tool_results = 5;
     }
   }
 

@@ -32,6 +32,35 @@ pub struct AutoSelectResult {
     pub second_args: LlmChatArgs,
 }
 
+/// A `ToolResult` after fn_name resolution and call_id validation. Provider
+/// adapters receive this instead of the raw proto type so they can trust that
+/// every field is populated and references a real ASSISTANT ToolCall.
+#[derive(Debug, Clone)]
+pub struct ResolvedToolResult {
+    pub call_id: String,
+    pub fn_name: String,
+    pub content: String,
+    pub is_error: bool,
+}
+
+impl ResolvedToolResult {
+    /// Render `content` with the cross-provider error marker policy applied.
+    ///
+    /// Providers that lack a native `is_error` field (OpenAI / Gemini /
+    /// llama-cpp via the OAI-shaped jinja templates) must encode failure into
+    /// the content text itself. We prepend `[ERROR] ` so the model still sees
+    /// the textual outcome and can route around it. Providers with a native
+    /// field (e.g. Anthropic) should bypass this helper and pass `is_error`
+    /// through their own SDK path once that surfaces in `genai`.
+    pub fn display_content(&self) -> std::borrow::Cow<'_, str> {
+        if self.is_error {
+            std::borrow::Cow::Owned(format!("[ERROR] {}", self.content))
+        } else {
+            std::borrow::Cow::Borrowed(&self.content)
+        }
+    }
+}
+
 pub struct ToolConverter;
 impl McpNameConverter for ToolConverter {}
 
@@ -316,6 +345,131 @@ impl ToolConverter {
                 return;
             }
         }
+    }
+
+    /// Resolve and validate a `ToolResults` payload attached to a TOOL-role
+    /// message. See `ai-docs/tool-result-message-content-spec.md` for the
+    /// full contract. Returns owned `ResolvedToolResult`s ready for the
+    /// provider adapter.
+    ///
+    /// `prefix` MUST be the message slice **strictly before** the TOOL
+    /// message that carries `results`. Every `call_id` must originate
+    /// from the **immediately preceding** ASSISTANT `ToolCalls` block —
+    /// i.e. the closest non-TOOL message in `prefix` walking backwards.
+    /// Consecutive TOOL messages in `prefix` are skipped (this happens
+    /// when parallel results are split across multiple TOOL messages),
+    /// but anything else (USER, ASSISTANT/Text) terminates the search.
+    /// This matches what OpenAI and Gemini require: a tool result block
+    /// must answer the most-recent assistant tool call turn, not an
+    /// arbitrary older one.
+    ///
+    /// Rules:
+    /// 1. Empty `results` → bail.
+    /// 2. Empty `call_id` on any entry → bail.
+    /// 3. Each `call_id` must appear in the immediately-preceding
+    ///    ASSISTANT `ToolCalls`. Otherwise the provider would reject the
+    ///    conversation, so we fail fast here.
+    /// 4. Empty `fn_name` is filled from the matching `ToolCall.fn_name`
+    ///    (Gemini's `functionResponse.name` and similar fields require it).
+    pub fn resolve_tool_results(
+        prefix: &[jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage],
+        results: &jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolResults,
+    ) -> anyhow::Result<Vec<ResolvedToolResult>> {
+        use anyhow::bail;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+
+        if results.results.is_empty() {
+            bail!("ToolResults.results must not be empty");
+        }
+
+        // Locate the immediately-preceding non-TOOL message. Consecutive
+        // TOOL messages (sibling tool_results split across messages) are
+        // transparent. The next message back MUST be ASSISTANT with
+        // ToolCalls content; otherwise the conversation is malformed.
+        let last_tool_calls = prefix
+            .iter()
+            .rev()
+            .find(|m| m.role() != ChatRole::Tool)
+            .and_then(|m| m.content.as_ref())
+            .and_then(|c| c.content.as_ref())
+            .and_then(|c| match c {
+                ProtoContent::ToolCalls(tc) => Some(tc),
+                _ => None,
+            });
+
+        let Some(last_tool_calls) = last_tool_calls else {
+            bail!(
+                "tool_results must follow an ASSISTANT message with ToolCalls, but the preceding non-TOOL message is missing or has different content"
+            );
+        };
+
+        let mut resolved = Vec::with_capacity(results.results.len());
+        for tr in &results.results {
+            if tr.call_id.is_empty() {
+                bail!("ToolResult.call_id must not be empty");
+            }
+
+            let Some(matched) = last_tool_calls
+                .calls
+                .iter()
+                .find(|c| c.call_id == tr.call_id)
+            else {
+                bail!(
+                    "tool_result call_id not found in immediately-preceding ASSISTANT ToolCalls: {}",
+                    tr.call_id
+                );
+            };
+
+            // Explicit fn_name from the client wins; otherwise reuse the
+            // matched ASSISTANT ToolCall's name.
+            let fn_name = if tr.fn_name.is_empty() {
+                matched.fn_name.clone()
+            } else {
+                tr.fn_name.clone()
+            };
+
+            resolved.push(ResolvedToolResult {
+                call_id: tr.call_id.clone(),
+                fn_name,
+                content: tr.content.clone(),
+                is_error: tr.is_error,
+            });
+        }
+
+        Ok(resolved)
+    }
+
+    /// Validate every `ToolResults` payload in `args.messages`. Provider
+    /// adapters call this at the entry of request_chat / request_chat_stream
+    /// to fail fast on malformed payloads before any provider call is made.
+    ///
+    /// Role check is keyed off the content variant, not the role: any
+    /// `ToolResults` payload riding on a non-TOOL message is rejected
+    /// here. Otherwise the genai / ollama adapters would happily expand
+    /// it under the message's actual role (USER / ASSISTANT) and the
+    /// provider would either drop the response or surface a confusing
+    /// API-level error.
+    pub fn validate_all_tool_results(args: &LlmChatArgs) -> anyhow::Result<()> {
+        use anyhow::bail;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+
+        for (idx, msg) in args.messages.iter().enumerate() {
+            let Some(content) = msg.content.as_ref() else {
+                continue;
+            };
+            let Some(ProtoContent::ToolResults(tr)) = content.content.as_ref() else {
+                continue;
+            };
+            if msg.role() != ChatRole::Tool {
+                bail!(
+                    "tool_results must ride on a TOOL-role message, got role={:?} at message index {}",
+                    msg.role(),
+                    idx
+                );
+            }
+            Self::resolve_tool_results(&args.messages[..idx], tr)?;
+        }
+        Ok(())
     }
 
     /// Check if a tool execution request is a selector pseudo-tool, and if so,
@@ -1928,5 +2082,344 @@ mod tests {
         assert_eq!(fo.function_set_name, Some("api-tools".to_string()));
         assert_eq!(fo.auto_select_function_set, Some(false));
         assert!(fo.use_function_calling);
+    }
+
+    // ====== resolve_tool_results tests ======
+
+    fn assistant_with_tool_calls(
+        calls: Vec<(&str, &str)>,
+    ) -> jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage as ProtoChatMessage, MessageContent,
+            message_content::{Content as ProtoContent, ToolCall, ToolCalls},
+        };
+        ProtoChatMessage {
+            role: ChatRole::Assistant.into(),
+            content: Some(MessageContent {
+                content: Some(ProtoContent::ToolCalls(ToolCalls {
+                    calls: calls
+                        .into_iter()
+                        .map(|(call_id, fn_name)| ToolCall {
+                            call_id: call_id.to_string(),
+                            fn_name: fn_name.to_string(),
+                            fn_arguments: "{}".to_string(),
+                        })
+                        .collect(),
+                })),
+            }),
+        }
+    }
+
+    fn tool_msg_with_results(
+        results: Vec<(&str, &str, &str, bool)>,
+    ) -> jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage as ProtoChatMessage, MessageContent,
+            message_content::{Content as ProtoContent, ToolResult, ToolResults},
+        };
+        ProtoChatMessage {
+            role: ChatRole::Tool.into(),
+            content: Some(MessageContent {
+                content: Some(ProtoContent::ToolResults(ToolResults {
+                    results: results
+                        .into_iter()
+                        .map(|(call_id, fn_name, content, is_error)| ToolResult {
+                            call_id: call_id.to_string(),
+                            fn_name: fn_name.to_string(),
+                            content: content.to_string(),
+                            is_error,
+                        })
+                        .collect(),
+                })),
+            }),
+        }
+    }
+
+    /// Pull the embedded `ToolResults` payload out of a TOOL-role test
+    /// message. Panics if the variant is wrong — fine for tests.
+    fn extract_tool_results(
+        msg: &jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage,
+    ) -> jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolResults
+    {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+        match msg.content.as_ref().unwrap().content.as_ref().unwrap() {
+            ProtoContent::ToolResults(r) => r.clone(),
+            other => panic!("expected ToolResults, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_tool_results_explicit_fn_name() {
+        let messages = [
+            assistant_with_tool_calls(vec![("c1", "tool_a")]),
+            tool_msg_with_results(vec![("c1", "tool_a", "ok", false)]),
+        ];
+        let results = extract_tool_results(&messages[1]);
+        let resolved = ToolConverter::resolve_tool_results(&messages[..1], &results).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].call_id, "c1");
+        assert_eq!(resolved[0].fn_name, "tool_a");
+        assert_eq!(resolved[0].content, "ok");
+        assert!(!resolved[0].is_error);
+    }
+
+    #[test]
+    fn test_resolve_tool_results_fn_name_reverse_resolved() {
+        // fn_name is empty in the ToolResult — should be filled from
+        // the matching ASSISTANT ToolCall via reverse scan.
+        let messages = [
+            assistant_with_tool_calls(vec![("c1", "tool_a"), ("c2", "tool_b")]),
+            tool_msg_with_results(vec![("c2", "", "result-b", false)]),
+        ];
+        let results = extract_tool_results(&messages[1]);
+        let resolved = ToolConverter::resolve_tool_results(&messages[..1], &results).unwrap();
+        assert_eq!(resolved[0].fn_name, "tool_b");
+    }
+
+    #[test]
+    fn test_resolve_tool_results_reverse_scan_picks_latest_assistant() {
+        // When the same call_id appears in multiple ASSISTANT messages,
+        // the most-recent declaration must win.
+        let messages = [
+            assistant_with_tool_calls(vec![("c1", "old_name")]),
+            assistant_with_tool_calls(vec![("c1", "new_name")]),
+            tool_msg_with_results(vec![("c1", "", "ok", false)]),
+        ];
+        let results = extract_tool_results(&messages[2]);
+        let resolved = ToolConverter::resolve_tool_results(&messages[..2], &results).unwrap();
+        assert_eq!(resolved[0].fn_name, "new_name");
+    }
+
+    #[test]
+    fn test_resolve_tool_results_empty_results_bails() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolResults;
+        let messages = [assistant_with_tool_calls(vec![("c1", "tool_a")])];
+        let empty = ToolResults { results: vec![] };
+        let err = ToolConverter::resolve_tool_results(&messages, &empty).unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn test_resolve_tool_results_empty_call_id_bails() {
+        let messages = [
+            assistant_with_tool_calls(vec![("c1", "tool_a")]),
+            tool_msg_with_results(vec![("", "tool_a", "ok", false)]),
+        ];
+        let results = extract_tool_results(&messages[1]);
+        let err = ToolConverter::resolve_tool_results(&messages[..1], &results).unwrap_err();
+        assert!(err.to_string().contains("call_id must not be empty"));
+    }
+
+    #[test]
+    fn test_resolve_tool_results_unmatched_call_id_bails() {
+        // Explicit fn_name is irrelevant — the call_id-not-found check fires
+        // first now, so the error is deterministic.
+        let messages = [
+            assistant_with_tool_calls(vec![("c1", "tool_a")]),
+            tool_msg_with_results(vec![("c-nonexistent", "tool_a", "ok", false)]),
+        ];
+        let results = extract_tool_results(&messages[1]);
+        let err = ToolConverter::resolve_tool_results(&messages[..1], &results).unwrap_err();
+        assert!(err.to_string().contains("call_id not found"));
+    }
+
+    #[test]
+    fn test_resolve_tool_results_no_assistant_history_bails() {
+        // No prior ASSISTANT messages at all → must bail.
+        let messages = [tool_msg_with_results(vec![("c1", "", "ok", false)])];
+        let results = extract_tool_results(&messages[0]);
+        let err = ToolConverter::resolve_tool_results(&[], &results).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("tool_results must follow an ASSISTANT"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_results_user_in_between_bails() {
+        // ASSISTANT(ToolCalls) → USER → TOOL(ToolResults) is invalid:
+        // tool result must directly answer the most recent ASSISTANT
+        // tool call turn (OpenAI / Gemini contract).
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage as ProtoChatMessage, MessageContent,
+            message_content::Content as ProtoContent,
+        };
+        let messages = [
+            assistant_with_tool_calls(vec![("c1", "tool_a")]),
+            ProtoChatMessage {
+                role: ChatRole::User.into(),
+                content: Some(MessageContent {
+                    content: Some(ProtoContent::Text("interruption".to_string())),
+                }),
+            },
+            tool_msg_with_results(vec![("c1", "tool_a", "ok", false)]),
+        ];
+        let results = extract_tool_results(&messages[2]);
+        let err = ToolConverter::resolve_tool_results(&messages[..2], &results).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("tool_results must follow an ASSISTANT"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_results_assistant_without_tool_calls_bails() {
+        // Direct predecessor is ASSISTANT, but with Text content — still
+        // invalid because there is no tool_calls block to answer.
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage as ProtoChatMessage, MessageContent,
+            message_content::Content as ProtoContent,
+        };
+        let messages = [
+            assistant_with_tool_calls(vec![("c1", "tool_a")]),
+            ProtoChatMessage {
+                role: ChatRole::Assistant.into(),
+                content: Some(MessageContent {
+                    content: Some(ProtoContent::Text("plain reply".to_string())),
+                }),
+            },
+            tool_msg_with_results(vec![("c1", "tool_a", "ok", false)]),
+        ];
+        let results = extract_tool_results(&messages[2]);
+        let err = ToolConverter::resolve_tool_results(&messages[..2], &results).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("tool_results must follow an ASSISTANT"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_tool_results_allows_consecutive_tool_messages() {
+        // ASSISTANT(ToolCalls{c1, c2}) → TOOL(c1) → TOOL(c2) is valid:
+        // siblings carrying parallel results may be split across TOOL
+        // messages, and the scan transparently skips over them.
+        let messages = [
+            assistant_with_tool_calls(vec![("c1", "tool_a"), ("c2", "tool_b")]),
+            tool_msg_with_results(vec![("c1", "tool_a", "first", false)]),
+            tool_msg_with_results(vec![("c2", "tool_b", "second", false)]),
+        ];
+        let results = extract_tool_results(&messages[2]);
+        let resolved = ToolConverter::resolve_tool_results(&messages[..2], &results).unwrap();
+        assert_eq!(resolved[0].call_id, "c2");
+        assert_eq!(resolved[0].fn_name, "tool_b");
+    }
+
+    #[test]
+    fn test_resolve_tool_results_preserves_order_and_is_error() {
+        let messages = [
+            assistant_with_tool_calls(vec![("c1", "tool_a"), ("c2", "tool_b")]),
+            tool_msg_with_results(vec![
+                ("c1", "tool_a", "first", false),
+                ("c2", "tool_b", "second-failed", true),
+            ]),
+        ];
+        let results = extract_tool_results(&messages[1]);
+        let resolved = ToolConverter::resolve_tool_results(&messages[..1], &results).unwrap();
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].call_id, "c1");
+        assert!(!resolved[0].is_error);
+        assert_eq!(resolved[1].call_id, "c2");
+        assert!(resolved[1].is_error);
+        assert_eq!(resolved[1].content, "second-failed");
+    }
+
+    #[test]
+    fn test_validate_all_tool_results_passes_on_valid_input() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage as ProtoChatMessage, MessageContent,
+            message_content::Content as ProtoContent,
+        };
+        let messages = vec![
+            ProtoChatMessage {
+                role: ChatRole::User.into(),
+                content: Some(MessageContent {
+                    content: Some(ProtoContent::Text("hello".to_string())),
+                }),
+            },
+            assistant_with_tool_calls(vec![("c1", "tool_a")]),
+            tool_msg_with_results(vec![("c1", "tool_a", "ok", false)]),
+        ];
+        let args = LlmChatArgs {
+            messages,
+            ..Default::default()
+        };
+        ToolConverter::validate_all_tool_results(&args).unwrap();
+    }
+
+    #[test]
+    fn test_validate_all_tool_results_bails_on_invalid_input() {
+        // Same setup as above but with a bad call_id, to confirm the entry
+        // point propagates resolve_tool_results errors.
+        let messages = vec![
+            assistant_with_tool_calls(vec![("c1", "tool_a")]),
+            tool_msg_with_results(vec![("c-unknown", "tool_a", "ok", false)]),
+        ];
+        let args = LlmChatArgs {
+            messages,
+            ..Default::default()
+        };
+        let err = ToolConverter::validate_all_tool_results(&args).unwrap_err();
+        assert!(err.to_string().contains("call_id not found"));
+    }
+
+    #[test]
+    fn test_resolved_tool_result_display_content() {
+        let ok = ResolvedToolResult {
+            call_id: "c1".to_string(),
+            fn_name: "tool_a".to_string(),
+            content: "fine".to_string(),
+            is_error: false,
+        };
+        assert_eq!(ok.display_content(), "fine");
+
+        let err = ResolvedToolResult {
+            call_id: "c2".to_string(),
+            fn_name: "tool_b".to_string(),
+            content: "boom".to_string(),
+            is_error: true,
+        };
+        assert_eq!(err.display_content(), "[ERROR] boom");
+    }
+
+    #[test]
+    fn test_validate_all_tool_results_bails_on_non_tool_role() {
+        // A ToolResults payload riding on a USER (or any non-TOOL) role
+        // would otherwise be silently expanded by the genai/ollama
+        // adapters under that wrong role, producing an invalid provider
+        // message. Validation must reject it here.
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage as ProtoChatMessage, MessageContent,
+            message_content::{Content as ProtoContent, ToolResult, ToolResults},
+        };
+
+        let bad = ProtoChatMessage {
+            role: ChatRole::User.into(),
+            content: Some(MessageContent {
+                content: Some(ProtoContent::ToolResults(ToolResults {
+                    results: vec![ToolResult {
+                        call_id: "c1".to_string(),
+                        fn_name: "tool_a".to_string(),
+                        content: "ok".to_string(),
+                        is_error: false,
+                    }],
+                })),
+            }),
+        };
+        let args = LlmChatArgs {
+            messages: vec![assistant_with_tool_calls(vec![("c1", "tool_a")]), bad],
+            ..Default::default()
+        };
+        let err = ToolConverter::validate_all_tool_results(&args).unwrap_err();
+        assert!(
+            err.to_string().contains("must ride on a TOOL-role message"),
+            "unexpected error: {}",
+            err
+        );
     }
 }
