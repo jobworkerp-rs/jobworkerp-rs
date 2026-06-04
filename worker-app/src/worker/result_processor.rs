@@ -100,7 +100,10 @@ impl ResultProcessorImpl {
                 }
             }
         } else {
-            tracing::warn!("job result without id or data: {:?}", jr);
+            tracing::warn!(
+                "job result without id or data: {}",
+                proto::log_ext::JobResultSummary(&jr)
+            );
             Err(JobWorkerError::NotFound("job result without id or data".to_string()).into())
         }
     }

@@ -69,8 +69,8 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
             }
         } else {
             tracing::warn!(
-                "fill_worker_data error: no data in job_result: {:?}",
-                result
+                "fill_worker_data error: no data in job_result: {}",
+                proto::log_ext::JobResultSummary(&result)
             );
             Ok(result)
         }
@@ -142,7 +142,10 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
                     .map(|p| p.max_retry)
                     .unwrap_or(0);
             }
-            tracing::debug!("filled_worker_data: {:?}", &d);
+            tracing::debug!(
+                "filled_worker_data: {}",
+                proto::log_ext::JobResultDataSummary(&d)
+            );
             Ok(d)
         } else {
             tracing::warn!(
@@ -164,8 +167,8 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
             }
         } else {
             tracing::warn!(
-                "fill_worker_data error: no data in job_result: {:?}",
-                result
+                "fill_worker_data error: no data in job_result: {}",
+                proto::log_ext::JobResultSummary(&result)
             );
             Ok(result)
         }
@@ -174,7 +177,10 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
     where
         Self: Send + 'static,
     {
-        tracing::debug!("fill job result: {:?}", res_opt);
+        tracing::debug!(
+            "fill job result: {}",
+            proto::log_ext::OptionJobResultSummary(&res_opt)
+        );
         // fill found.worker_name and found.max_retry from worker
         if let Some(JobResult {
             id: Some(id),

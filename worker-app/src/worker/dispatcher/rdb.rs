@@ -211,7 +211,10 @@ pub trait RdbJobDispatcher:
             Ok(grabbed) => {
                 if grabbed {
                     let res = self.run_job(&runner_data, &wid, &w, job).await;
-                    tracing::debug!("job completed. result: {:?}", &res.0);
+                    tracing::debug!(
+                        "job completed. result: {}",
+                        proto::log_ext::JobResultSummary(&res.0)
+                    );
                     // store result
                     let (result, completion_rx) = self
                         .result_processor()

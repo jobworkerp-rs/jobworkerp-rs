@@ -1130,7 +1130,10 @@ impl JobApp for HybridJobAppImpl {
                     r
                 }
                 _ => {
-                    tracing::warn!("complete_job: invalid response_type: {:?}", &data);
+                    tracing::warn!(
+                        "complete_job: invalid response_type: {}",
+                        proto::log_ext::JobResultDataSummary(data)
+                    );
                     self.cleanup_job(jid).await?;
                     Ok(false)
                 }
@@ -1139,7 +1142,10 @@ impl JobApp for HybridJobAppImpl {
             res.map(|b| (b, completion_rx))
         } else {
             // something wrong
-            tracing::error!("no job found from result: {:?}", data);
+            tracing::error!(
+                "no job found from result: {}",
+                proto::log_ext::JobResultDataSummary(data)
+            );
             Ok((false, None))
         }
     }
