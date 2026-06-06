@@ -333,7 +333,10 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                         )
                         .await
                         .map(|res| {
-                            tracing::debug!("enqueue job result: {:#?}", &res.1);
+                            tracing::debug!(
+                                "enqueue job result: {}",
+                                proto::log_ext::OptionJobResultSummary(&res.1)
+                            );
                             res.1
                         })?;
                     if let Some(r) = res {

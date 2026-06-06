@@ -78,7 +78,10 @@ where
                 .await?;
             Ok(true)
         } else {
-            tracing::warn!("job_id is not set in job_result: {:?}", res);
+            tracing::warn!(
+                "job_id is not set in job_result: {}",
+                proto::log_ext::JobResultDataSummary(res)
+            );
             Ok(false)
         }
     }
