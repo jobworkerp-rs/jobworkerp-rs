@@ -192,8 +192,13 @@ impl HybridJobAppImpl {
                         );
                     } else {
                         // need to store to redis
-                        self.enqueue_job_to_redis_with_wait_if_needed(job, &w, StreamingType::None)
-                            .await?;
+                        self.enqueue_job_to_redis_with_wait_if_needed(
+                            job,
+                            &w,
+                            StreamingType::None,
+                            false,
+                        )
+                        .await?;
                     }
                 }
             } else {
@@ -281,7 +286,7 @@ impl HybridJobAppImpl {
                     data: Some(data.to_owned()),
                     metadata: (*metadata).clone(),
                 };
-                self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type)
+                self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type, false)
                     .await
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
@@ -324,8 +329,13 @@ impl HybridJobAppImpl {
                     // TODO store async to rdb (not necessary to wait)
                     match self.rdb_job_repository().create(&job).await {
                         Ok(_id) => {
-                            self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type)
-                                .await
+                            self.enqueue_job_to_redis_with_wait_if_needed(
+                                &job,
+                                w,
+                                streaming_type,
+                                false,
+                            )
+                            .await
                         }
                         Err(e) => Err(e),
                     }
@@ -358,7 +368,7 @@ impl HybridJobAppImpl {
                     }
                 } else {
                     // instant job (enqueue to redis only)
-                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type)
+                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type, false)
                         .await
                 }
             }
@@ -615,6 +625,29 @@ impl JobApp for HybridJobAppImpl {
         )
         .await
     }
+    async fn load_worker(&self, worker_id: &WorkerId, timeout_ms: Option<u64>) -> Result<bool> {
+        let Some(Worker {
+            id: Some(_),
+            data: Some(w),
+        }) = self.worker_app().find(worker_id).await?
+        else {
+            return Err(JobWorkerError::WorkerNotFound(format!(
+                "worker not found: {}",
+                worker_id.value
+            ))
+            .into());
+        };
+        let job_id = JobId {
+            value: self.id_generator().generate_id()?,
+        };
+        let job = super::build_load_job(job_id, worker_id, timeout_ms);
+        // Enqueue as load-only and wait for the worker's Direct response.
+        let (_jid, result, _stream) = self
+            .enqueue_job_to_redis_with_wait_if_needed(&job, &w, StreamingType::None, true)
+            .await?;
+        super::load_result_to_outcome(worker_id, result)
+    }
+
     async fn enqueue_job<'a>(
         &'a self,
         meta: Arc<HashMap<String, String>>,
@@ -705,7 +738,7 @@ impl JobApp for HybridJobAppImpl {
                     data: Some(data.to_owned()),
                     metadata: (*meta).clone(),
                 };
-                self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type)
+                self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type, false)
                     .await
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
@@ -737,8 +770,13 @@ impl JobApp for HybridJobAppImpl {
                     // TODO store async to rdb (not necessary to wait)
                     match self.rdb_job_repository().create(&job).await {
                         Ok(_id) => {
-                            self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type)
-                                .await
+                            self.enqueue_job_to_redis_with_wait_if_needed(
+                                &job,
+                                w,
+                                streaming_type,
+                                false,
+                            )
+                            .await
                         }
                         Err(e) => Err(e),
                     }
@@ -760,7 +798,7 @@ impl JobApp for HybridJobAppImpl {
                     }
                 } else {
                     // instant job (enqueue to redis only)
-                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type)
+                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type, false)
                         .await
                 }
             }
@@ -955,7 +993,7 @@ impl JobApp for HybridJobAppImpl {
                     // enqueue to redis for instant job
                     let streaming_type =
                         StreamingType::try_from(data.streaming_type).unwrap_or(StreamingType::None);
-                    self.enqueue_job_to_redis_with_wait_if_needed(job, &w, streaming_type)
+                    self.enqueue_job_to_redis_with_wait_if_needed(job, &w, streaming_type, false)
                         .await
                         .map(|_| true)
                 } else {

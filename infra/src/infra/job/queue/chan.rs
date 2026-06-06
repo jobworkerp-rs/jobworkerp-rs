@@ -10,7 +10,7 @@ use jobworkerp_base::error::JobWorkerError;
 use memory_utils::chan::broadcast::BroadcastChan;
 use memory_utils::chan::mpmc::{Chan, UseChanBuffer};
 use memory_utils::chan::{ChanBuffer, ChanBufferItem};
-use proto::jobworkerp::data::{Job, JobId, Priority};
+use proto::jobworkerp::data::{Job, JobId, JobInternal, Priority};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -31,6 +31,24 @@ pub trait ChanJobQueueRepository:
     where
         Self: Send + Sync,
     {
+        self.enqueue_job_with_load_only(channel_name, job, false)
+            .await
+    }
+
+    // Enqueue a job, optionally as a load-only request (config-check / pre-load).
+    // The on-queue payload is a JobInternal so the load_only flag travels with the
+    // job to the worker; the in-memory shared_buffer keeps plain Jobs since it only
+    // serves find/list queries and never carries load_only.
+    #[inline]
+    async fn enqueue_job_with_load_only(
+        &self,
+        channel_name: Option<&String>,
+        job: &Job,
+        load_only: bool,
+    ) -> Result<i64>
+    where
+        Self: Send + Sync,
+    {
         let cn = channel_name
             .unwrap_or(&Self::DEFAULT_CHANNEL_NAME.to_string())
             .to_owned();
@@ -45,11 +63,15 @@ pub trait ChanJobQueueRepository:
                 .push(job.clone());
         }
 
+        let internal = JobInternal {
+            job: Some(job.clone()),
+            load_only,
+        };
         match self
             .chan_buf()
             .send_to_chan(
                 &qn,
-                Self::serialize_message(job)?,
+                Self::serialize_message(&internal)?,
                 job.data.as_ref().and_then(|d| d.uniq_key.clone()),
                 None,
                 false,
@@ -80,8 +102,13 @@ pub trait ChanJobQueueRepository:
     }
 
     // channel names are ordered by priority (first is highest)
+    // Returns the dequeued job together with its load_only flag (true = pre-load
+    // request that runs the runner's load() and skips run()).
     #[inline]
-    async fn receive_job_from_channels(&self, queue_channel_names: Vec<String>) -> Result<Job>
+    async fn receive_job_from_channels(
+        &self,
+        queue_channel_names: Vec<String>,
+    ) -> Result<(Job, bool)>
     where
         Self: Send + Sync,
     {
@@ -91,12 +118,12 @@ pub trait ChanJobQueueRepository:
             tracing::debug!("receive_job_from_channels: channel: {:?}", qn);
             match self.chan_buf().try_receive_from_chan(qn, None).await {
                 Ok(v) => {
-                    let r = Self::deserialize_message::<Job>(&v)?;
+                    let (job, load_only) = Self::deserialize_job_internal(&v)?;
                     if let Some(v) = self.queue_list_buffer().lock().await.get_mut(qn) {
                         // remove job from shared buffer
-                        v.retain(|x| x.id != r.id)
+                        v.retain(|x| x.id != job.id)
                     }
-                    return Ok(r);
+                    return Ok((job, load_only));
                 }
                 Err(e) => {
                     // channel is empty (or other error)
@@ -113,16 +140,16 @@ pub trait ChanJobQueueRepository:
         .await;
         match res.map_err(|e| JobWorkerError::ChanError(e).into()) {
             Ok(v) => {
-                let r = Self::deserialize_message::<Job>(&v)?;
+                let (job, load_only) = Self::deserialize_job_internal(&v)?;
                 if let Some(j) = self
                     .queue_list_buffer()
                     .lock()
                     .await
                     .get_mut(&queue_channel_names[idx])
                 {
-                    j.retain(|x| x.id.as_ref() != r.id.as_ref())
+                    j.retain(|x| x.id.as_ref() != job.id.as_ref())
                 }
-                Ok(r)
+                Ok((job, load_only))
             }
             Err(e) => Err(e),
         }
@@ -825,13 +852,14 @@ mod test {
         );
         let qcn = vec![qn2, qn1];
         // receive job from multiple channels
-        let res = repo.receive_job_from_channels(qcn.clone()).await?;
+        let (res, load_only) = repo.receive_job_from_channels(qcn.clone()).await?;
+        assert!(!load_only);
         assert_eq!(res.id.unwrap(), job2.id.unwrap());
         assert_eq!(
             repo.find_multi_from_queue(None, None).await?,
             vec![job1.clone()]
         );
-        let res = repo.receive_job_from_channels(qcn).await?;
+        let (res, _load_only) = repo.receive_job_from_channels(qcn).await?;
         assert_eq!(res.id.unwrap(), job1.id.unwrap());
         assert_eq!(repo.find_multi_from_queue(None, None).await?, vec![]);
         Ok(())
