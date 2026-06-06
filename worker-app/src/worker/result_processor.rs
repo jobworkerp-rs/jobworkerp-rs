@@ -54,6 +54,22 @@ impl ResultProcessorImpl {
         st_data: Option<BoxStream<'static, ResultOutputItem>>,
         w: WorkerData,
     ) -> Result<(JobResult, StreamCompletionReceiver)> {
+        self.process_result_inner(jr, st_data, w, false).await
+    }
+
+    /// `load_only`: the result comes from a pre-load (config-check) request, not
+    /// a real job execution. Such a result must NOT go through the normal job
+    /// lifecycle — no retry, no periodic re-enqueue, no result persistence, no
+    /// temp-worker cleanup — otherwise pre-loading e.g. a periodic worker would
+    /// start enqueuing real run() jobs as a side effect. Only the Direct result
+    /// is published so the Load caller can observe the load outcome.
+    pub async fn process_result_inner(
+        &self,
+        jr: JobResult,
+        st_data: Option<BoxStream<'static, ResultOutputItem>>,
+        w: WorkerData,
+        load_only: bool,
+    ) -> Result<(JobResult, StreamCompletionReceiver)> {
         tracing::debug!("got job_result: {:?}, worker: {:?}", &jr.id, &w.name);
         if let JobResult {
             id: Some(id),
@@ -61,6 +77,20 @@ impl ResultProcessorImpl {
             metadata,
         } = jr
         {
+            // Load-only: skip retry/periodic/store/temp-cleanup entirely and only
+            // publish the Direct result so the Load caller unblocks.
+            if load_only {
+                let completion_rx = self.job_app().complete_job(&id, &data, st_data).await?.1;
+                return Ok((
+                    JobResult {
+                        id: Some(id),
+                        data: Some(data),
+                        metadata,
+                    },
+                    completion_rx,
+                ));
+            }
+
             // Retry/complete first: complete_job publishes result via pubsub.
             // IMPORTANT: This must happen BEFORE create_job_result_if_necessary.
             // For streaming jobs (StreamingType != None), JobResultData.output is None

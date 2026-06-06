@@ -14,7 +14,7 @@ use infra_utils::infra::redis::{RedisPool, UseRedisBlockingPool, UseRedisPool};
 use jobworkerp_base::codec::UseProstCodec;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobId, JobResult, JobResultData, JobResultId, Priority, ResultOutputItem,
+    Job, JobId, JobInternal, JobResult, JobResultData, JobResultId, Priority, ResultOutputItem,
 };
 use redis::AsyncCommands;
 use signal_hook::consts::SIGINT;
@@ -38,15 +38,32 @@ where
     // return: jobqueue size
     #[inline]
     async fn enqueue_job(&self, channel_name: Option<&String>, job: &Job) -> Result<i64> {
+        self.enqueue_job_with_load_only(channel_name, job, false)
+            .await
+    }
+
+    // Enqueue a job, optionally as a load-only request (config-check / pre-load).
+    // The on-queue payload is a JobInternal so the load_only flag reaches the worker.
+    #[inline]
+    async fn enqueue_job_with_load_only(
+        &self,
+        channel_name: Option<&String>,
+        job: &Job,
+        load_only: bool,
+    ) -> Result<i64> {
         let cn = channel_name
             .unwrap_or(&Self::DEFAULT_CHANNEL_NAME.to_string())
             .to_owned();
+        let internal = JobInternal {
+            job: Some(job.clone()),
+            load_only,
+        };
         self.redis_pool()
             .get()
             .await?
             .rpush(
                 Self::queue_channel_name(cn, job.data.as_ref().map(|d| &d.priority)),
-                Self::serialize_message(job)?,
+                Self::serialize_message(&internal)?,
             )
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into())
@@ -223,7 +240,7 @@ where
                 .map_err(JobWorkerError::RedisError)?;
             i += limit;
             while let Some(j) = r.pop() {
-                let j = Self::deserialize_message::<Job>(&j)?;
+                let (j, _) = Self::deserialize_job_internal(&j)?;
                 if j.id.as_ref().unwrap().value == id.value {
                     job = Some(j);
                     break;
@@ -259,7 +276,7 @@ where
                 .map_err(JobWorkerError::RedisError)?;
             i += limit;
             while let Some(j) = r.pop() {
-                let j = Self::deserialize_message::<Job>(&j)?;
+                let (j, _) = Self::deserialize_job_internal(&j)?;
                 if ids.is_none_or(|ids| ids.contains(&j.id.as_ref().unwrap().value)) {
                     jobs.push(j);
                 }
@@ -279,11 +296,18 @@ where
             Some(priority as i32).as_ref(),
         );
         let mut redis = self.redis_pool().get().await.unwrap();
+        // The on-queue payload is a JobInternal; normal jobs are enqueued with
+        // load_only=false, so wrap identically to match the stored bytes for LREM.
+        let internal = JobInternal {
+            job: Some(job.clone()),
+            load_only: false,
+        };
         redis
-            .lrem::<'_, String, Vec<u8>, i32>(c, 0, Self::serialize_message(job)?)
+            .lrem::<'_, String, Vec<u8>, i32>(c, 0, Self::serialize_message(&internal)?)
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into())
     }
+
     async fn count_queue(&self, channel: Option<&String>, priority: Priority) -> Result<i64> {
         let c = Self::queue_channel_name(
             channel.unwrap_or(&Self::DEFAULT_CHANNEL_NAME.to_string()),

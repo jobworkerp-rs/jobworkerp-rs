@@ -33,11 +33,12 @@ use infra::infra::{
         status::UseJobProcessingStatusRepository,
     },
 };
+use jobworkerp_base::error::JobWorkerError;
 use proto::calculate_direct_response_timeout_ms;
 use proto::jobworkerp::data::{
-    Job, JobExecutionOverrides, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId,
-    QueueType, ResponseType, ResultOutputItem, ResultStatus, RetryPolicy, StreamingType, Trailer,
-    WorkerData, WorkerId, result_output_item,
+    Job, JobData, JobExecutionOverrides, JobId, JobProcessingStatus, JobResult, JobResultData,
+    JobResultId, QueueType, ResponseType, ResultOutputItem, ResultStatus, RetryPolicy,
+    StreamingType, Trailer, WorkerData, WorkerId, result_output_item,
 };
 use std::{collections::HashMap, fmt, sync::Arc};
 
@@ -87,6 +88,72 @@ pub struct ResolvedJobParams {
     pub store_failure: bool,
     pub broadcast_results: bool,
     pub retry_policy: Option<RetryPolicy>,
+}
+
+/// Default wait for a load-only job when the caller does not specify one.
+/// Generous because an LLM model download can take minutes.
+pub(crate) const DEFAULT_LOAD_TIMEOUT_MS: u64 = 600_000;
+
+/// Build the minimal Job used to drive a load-only (config-check / pre-load)
+/// request for `worker_id`: no args, and Direct response forced so the caller
+/// can await the load outcome even when the worker's default is NoResult.
+pub(crate) fn build_load_job(job_id: JobId, worker_id: &WorkerId, timeout_ms: Option<u64>) -> Job {
+    #[allow(deprecated)]
+    Job {
+        id: Some(job_id),
+        data: Some(JobData {
+            worker_id: Some(*worker_id),
+            args: Vec::new(),
+            uniq_key: None,
+            enqueue_time: command_utils::util::datetime::now_millis(),
+            grabbed_until_time: None,
+            run_after_time: 0,
+            retried: 0,
+            priority: 0,
+            timeout: timeout_ms.unwrap_or(DEFAULT_LOAD_TIMEOUT_MS),
+            streaming_type: StreamingType::None as i32,
+            using: None,
+            overrides: Some(JobExecutionOverrides {
+                response_type: Some(ResponseType::Direct as i32),
+                store_success: Some(false),
+                store_failure: Some(false),
+                broadcast_results: Some(false),
+                retry_policy: None,
+            }),
+        }),
+        metadata: HashMap::new(),
+    }
+}
+
+/// Interpret a load-only job's Direct result: success returns Ok(true), any
+/// non-success status returns an error carrying the runner's load() failure
+/// message (e.g. a missing LLM model), and a missing result is treated as a
+/// timeout. Shared by the rdb_chan and hybrid JobApp::load_worker impls.
+pub(crate) fn load_result_to_outcome(
+    worker_id: &WorkerId,
+    result: Option<JobResult>,
+) -> Result<bool> {
+    let Some(data) = result.and_then(|r| r.data) else {
+        return Err(JobWorkerError::TimeoutError(format!(
+            "load timed out or returned no result for worker {}",
+            worker_id.value
+        ))
+        .into());
+    };
+    if data.status == ResultStatus::Success as i32 {
+        Ok(true)
+    } else {
+        let message = data
+            .output
+            .as_ref()
+            .map(|o| String::from_utf8_lossy(&o.items).to_string())
+            .unwrap_or_default();
+        Err(JobWorkerError::RuntimeError(format!(
+            "load failed for worker {}: {}",
+            worker_id.value, message
+        ))
+        .into())
+    }
 }
 
 /// Merge worker-level settings with optional per-job overrides.
@@ -211,6 +278,21 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         Option<JobResult>,
         Option<BoxStream<'static, ResultOutputItem>>,
     )>;
+
+    /// Run the worker's Runner load() for config validation / pre-loading.
+    ///
+    /// Enqueues a load-only job that the worker executes by running the runner's
+    /// `load()` (with the worker's `runner_settings`) exactly as a job would
+    /// before execution, then skipping `run()`. For `use_static=true` this warms
+    /// up the runner pool; for `use_static=false` it instantiates and loads a
+    /// runner to verify the settings, then drops it. The load runs on the worker
+    /// side and its outcome is awaited via a Direct response, so failures (e.g. a
+    /// missing LLM model) surface here as an error.
+    ///
+    /// Returns `Ok(true)` when the load succeeded.
+    async fn load_worker(&self, worker_id: &WorkerId, timeout_ms: Option<u64>) -> Result<bool>
+    where
+        Self: Send + 'static;
 
     async fn update_job(&self, job: &Job) -> Result<()>;
 
@@ -503,6 +585,7 @@ where
         job: &Job,
         worker: &WorkerData,
         streaming_type: StreamingType,
+        load_only: bool,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -521,31 +604,38 @@ where
                 .map(|_| 1i64) // dummy
         } else {
             self.redis_job_repository()
-                .enqueue_job(worker.channel.as_ref(), job)
+                .enqueue_job_with_load_only(worker.channel.as_ref(), job, load_only)
                 .await
         } {
             Ok(_) => {
-                self.job_processing_status_repository()
-                    .upsert_status(&job_id, &JobProcessingStatus::Pending)
-                    .await?;
-
-                // Call hook after PENDING status is set
-                self.after_enqueue_to_redis_hook(job_id, job, worker, streaming_type);
-
-                // TTL prevents job orphaning when worker fails unexpectedly
-                if worker.queue_type == QueueType::Normal as i32
-                    && let Some(job_data) = &job.data
-                {
-                    // For timeout=0 (unlimited), uses expire_job_result_seconds from config
-                    let ttl = self.calculate_job_ttl(job_data.timeout);
-                    self.redis_job_repository()
-                        .create_with_expire(&job_id, job_data, ttl)
+                // Load-only (config-check / pre-load) requests are not real jobs:
+                // no Pending status, no enqueue hook, and no running-job RDB
+                // record — they have no lifecycle to observe and the worker side
+                // likewise skips all status management for them. Only the Direct
+                // result is awaited below.
+                if !load_only {
+                    self.job_processing_status_repository()
+                        .upsert_status(&job_id, &JobProcessingStatus::Pending)
                         .await?;
-                    tracing::debug!(
-                        "Created job {} with TTL {:?} for running job visibility",
-                        job_id.value,
-                        ttl
-                    );
+
+                    // Call hook after PENDING status is set
+                    self.after_enqueue_to_redis_hook(job_id, job, worker, streaming_type);
+
+                    // TTL prevents job orphaning when worker fails unexpectedly
+                    if worker.queue_type == QueueType::Normal as i32
+                        && let Some(job_data) = &job.data
+                    {
+                        // For timeout=0 (unlimited), uses expire_job_result_seconds from config
+                        let ttl = self.calculate_job_ttl(job_data.timeout);
+                        self.redis_job_repository()
+                            .create_with_expire(&job_id, job_data, ttl)
+                            .await?;
+                        tracing::debug!(
+                            "Created job {} with TTL {:?} for running job visibility",
+                            job_id.value,
+                            ttl
+                        );
+                    }
                 }
                 // Direct response requires blocking until job completion
                 // EXCEPT for STREAMING_TYPE_INTERNAL - these jobs should return immediately
@@ -781,5 +871,60 @@ mod resolve_tests {
         let completion: StreamCompletionReceiver = Some(rx);
         assert!(completion.is_some());
         let _ = tx.send(());
+    }
+
+    #[test]
+    fn build_load_job_forces_direct_and_carries_worker() {
+        let wid = WorkerId { value: 7 };
+        let job = build_load_job(JobId { value: 99 }, &wid, Some(12345));
+        let data = job.data.unwrap();
+        assert_eq!(data.worker_id, Some(wid));
+        assert!(data.args.is_empty());
+        assert_eq!(data.run_after_time, 0);
+        assert_eq!(data.timeout, 12345);
+        let ov = data.overrides.unwrap();
+        assert_eq!(ov.response_type, Some(ResponseType::Direct as i32));
+        assert_eq!(ov.store_success, Some(false));
+        assert_eq!(ov.store_failure, Some(false));
+    }
+
+    #[test]
+    fn build_load_job_uses_default_timeout_when_unset() {
+        let wid = WorkerId { value: 7 };
+        let job = build_load_job(JobId { value: 99 }, &wid, None);
+        assert_eq!(job.data.unwrap().timeout, DEFAULT_LOAD_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn load_result_to_outcome_maps_status() {
+        use proto::jobworkerp::data::{ResultOutput, ResultStatus};
+        let wid = WorkerId { value: 1 };
+
+        // success
+        let ok = JobResult {
+            data: Some(JobResultData {
+                status: ResultStatus::Success as i32,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(load_result_to_outcome(&wid, Some(ok)).unwrap());
+
+        // failure carries the runner's error message
+        let fail = JobResult {
+            data: Some(JobResultData {
+                status: ResultStatus::FatalError as i32,
+                output: Some(ResultOutput {
+                    items: b"model not found".to_vec(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let err = load_result_to_outcome(&wid, Some(fail)).unwrap_err();
+        assert!(err.to_string().contains("model not found"));
+
+        // no result is treated as a timeout
+        assert!(load_result_to_outcome(&wid, None).is_err());
     }
 }

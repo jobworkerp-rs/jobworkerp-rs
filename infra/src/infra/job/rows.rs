@@ -1,5 +1,7 @@
+use anyhow::Result;
 use jobworkerp_base::codec::UseProstCodec;
-use proto::jobworkerp::data::{Job, JobData, JobExecutionOverrides, JobId, WorkerId};
+use jobworkerp_base::error::JobWorkerError;
+use proto::jobworkerp::data::{Job, JobData, JobExecutionOverrides, JobId, JobInternal, WorkerId};
 
 // db row definitions
 #[derive(sqlx::FromRow)]
@@ -85,6 +87,18 @@ pub trait UseJobqueueAndCodec: UseProstCodec {
     fn job_result_by_worker_pubsub_channel_name(worker_id: &WorkerId) -> String {
         format!("job_result_changed:worker:{}", worker_id.value)
     }
+
+    // Decode an on-queue JobInternal payload into its Job and load_only flag
+    // (load_only=true means a pre-load request that runs the runner's load() and
+    // skips run()). Single decode point for every queue dequeue path.
+    fn deserialize_job_internal(bytes: &[u8]) -> Result<(Job, bool)> {
+        let internal = Self::deserialize_message::<JobInternal>(bytes)?;
+        let load_only = internal.load_only;
+        let job = internal.job.ok_or_else(|| {
+            JobWorkerError::InvalidParameter("JobInternal.job is empty".to_string())
+        })?;
+        Ok((job, load_only))
+    }
 }
 
 // for reference
@@ -137,6 +151,48 @@ mod tests {
         let serialized = JobQueueImpl::serialize_message(&job).unwrap();
         let deserialized = JobQueueImpl::deserialize_message::<Job>(&serialized).unwrap();
         assert_eq!(job, deserialized);
+    }
+
+    // JobInternal is the on-queue payload; verify it round-trips and that the
+    // load_only flag survives serialization (it is the only signal distinguishing
+    // a pre-load request from a normal job once it reaches the worker).
+    #[test]
+    fn test_serialize_and_deserialize_job_internal() {
+        use proto::jobworkerp::data::JobInternal;
+        #[allow(deprecated)]
+        let job = Job {
+            id: Some(JobId { value: 1 }),
+            data: Some(JobData {
+                worker_id: Some(WorkerId { value: 1 }),
+                args: vec![],
+                uniq_key: None,
+                enqueue_time: Utc::now().timestamp_millis(),
+                grabbed_until_time: None,
+                run_after_time: 0,
+                retried: 0,
+                priority: 0,
+                timeout: 1000,
+                streaming_type: 0,
+                using: None,
+                overrides: None,
+            }),
+            metadata: HashMap::new(),
+        };
+        struct JobQueueImpl {}
+        impl UseProstCodec for JobQueueImpl {}
+        impl UseJobqueueAndCodec for JobQueueImpl {}
+
+        for load_only in [false, true] {
+            let internal = JobInternal {
+                job: Some(job.clone()),
+                load_only,
+            };
+            let serialized = JobQueueImpl::serialize_message(&internal).unwrap();
+            let deserialized =
+                JobQueueImpl::deserialize_message::<JobInternal>(&serialized).unwrap();
+            assert_eq!(internal, deserialized);
+            assert_eq!(deserialized.load_only, load_only);
+        }
     }
 
     #[test]

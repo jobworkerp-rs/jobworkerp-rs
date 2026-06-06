@@ -210,14 +210,14 @@ pub trait ChanJobDispatcher:
         })
     }
     #[inline]
-    async fn process_deque_job(&'static self, val: Result<Job>) -> Result<JobResult>
+    async fn process_deque_job(&'static self, val: Result<(Job, bool)>) -> Result<JobResult>
     where
         Self: Sync + Send + 'static,
     {
         match val {
-            Ok(job) => {
+            Ok((job, load_only)) => {
                 let job_id = job.id;
-                match self.process_job(job).await {
+                match self.process_job(job, load_only).await {
                     Ok(result) => Ok(result),
                     Err(e) => {
                         // Check if status should be deleted based on error type
@@ -237,7 +237,7 @@ pub trait ChanJobDispatcher:
     }
 
     #[inline]
-    async fn process_job(&'static self, job: Job) -> Result<JobResult>
+    async fn process_job(&'static self, job: Job, load_only: bool) -> Result<JobResult>
     where
         Self: Sync + Send + 'static,
     {
@@ -296,6 +296,36 @@ pub trait ChanJobDispatcher:
             tracing::error!("{}", &mes);
             Err(JobWorkerError::NotFound(mes))
         }?;
+
+        // Load-only (config-check / pre-load): run the runner's load() and return
+        // the Direct result without entering the normal job lifecycle — no
+        // cancellation monitoring, no grab, no status transitions/indexing, and
+        // no retry/periodic/store/temp cleanup. These would be meaningless (and
+        // for periodic workers, harmful) for a pre-load that never runs run().
+        if load_only {
+            let result = self
+                .preload_runner(
+                    &runner_data,
+                    &wid,
+                    &wdat,
+                    Job {
+                        id: Some(jid),
+                        data: Some(jdat),
+                        metadata,
+                    },
+                )
+                .await;
+            let (result, completion_rx) = self
+                .result_processor()
+                .process_result_inner(result, None, wdat, true)
+                .await?;
+            if let Some(rx) = completion_rx
+                && rx.await.is_err()
+            {
+                tracing::warn!("stream completion sender dropped for load job {:?}", &jid);
+            }
+            return Ok(result);
+        }
 
         if let Some(cancelled_result) = self
             .check_cancellation_status(&jid, &wid, &wdat, metadata.clone(), &jdat)
@@ -415,7 +445,7 @@ pub trait ChanJobDispatcher:
         let is_streamable_for_indexing = jdat.streaming_type != 0;
         let broadcast_results_for_indexing = resolved.broadcast_results;
 
-        // run job
+        // run job (load-only requests were handled and returned above)
         let r = self
                 .run_job(
                     &runner_data,
