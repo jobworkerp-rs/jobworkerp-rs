@@ -225,12 +225,12 @@ impl RunTaskExecutor {
             .await;
 
         let (res, _stream) = wait_result?;
-        let output = res
-            .map(|r| self.job_executor_wrapper.extract_job_result_output(r))
-            .ok_or(anyhow::anyhow!(
+        let Some(res) = res else {
+            return Err(anyhow::anyhow!(
                 "Failed to enqueue job or job result not found"
-            ))
-            .and_then(|output| output)?;
+            ));
+        };
+        let output = self.job_executor_wrapper.extract_job_result_output(res)?;
         self.job_executor_wrapper
             .transform_raw_output(&rid, &rdata, &output, using.as_deref())
             .await
@@ -270,12 +270,12 @@ impl RunTaskExecutor {
             .await;
 
         let (res, _stream) = wait_result?;
-        let output = res
-            .map(|r| self.job_executor_wrapper.extract_job_result_output(r))
-            .ok_or(anyhow::anyhow!(
+        let Some(res) = res else {
+            return Err(anyhow::anyhow!(
                 "Failed to enqueue job or job result not found"
-            ))
-            .and_then(|output| output)?;
+            ));
+        };
+        let output = self.job_executor_wrapper.extract_job_result_output(res)?;
         self.job_executor_wrapper
             .transform_raw_output(
                 &child.runner_id,
