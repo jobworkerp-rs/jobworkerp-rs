@@ -572,8 +572,9 @@ pub trait UseJobExecutor:
         worker_name: &str,
         job_args: &serde_json::Value,
         using: Option<&str>,
-    ) -> impl std::future::Future<Output = Result<(WorkerId, WorkerData, RunnerId, RunnerData, Vec<u8>)>>
-    + Send {
+    ) -> impl std::future::Future<
+        Output = Result<(WorkerId, WorkerData, RunnerId, RunnerData, Vec<u8>)>,
+    > + Send {
         async move {
             let worker = self
                 .worker_app()
