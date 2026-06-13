@@ -235,6 +235,56 @@ impl RunTaskExecutor {
             .transform_raw_output(&rid, &rdata, &output, using.as_deref())
             .await
     }
+
+    async fn execute_by_worker_name(
+        &self,
+        metadata: Arc<HashMap<String, String>>,
+        worker_name: &str,
+        job_args: &serde_json::Value,
+        using: Option<String>,
+        timeout_sec: u32,
+    ) -> Result<serde_json::Value> {
+        let child = self
+            .job_executor_wrapper
+            .enqueue_with_worker_name_channel(
+                metadata,
+                worker_name,
+                job_args,
+                None,
+                timeout_sec,
+                StreamingType::None,
+                using,
+            )
+            .await?;
+
+        self.workflow_context
+            .read()
+            .await
+            .register_running_job(&child.job_id)
+            .await;
+        let wait_result = child.result_fut.await;
+        self.workflow_context
+            .read()
+            .await
+            .unregister_running_job(&child.job_id)
+            .await;
+
+        let (res, _stream) = wait_result?;
+        let output = res
+            .map(|r| self.job_executor_wrapper.extract_job_result_output(r))
+            .ok_or(anyhow::anyhow!(
+                "Failed to enqueue job or job result not found"
+            ))
+            .and_then(|output| output)?;
+        self.job_executor_wrapper
+            .transform_raw_output(
+                &child.runner_id,
+                &child.runner_data,
+                output.as_slice(),
+                child.using.as_deref(),
+            )
+            .await
+    }
 }
 impl TaskExecutorTrait<'_> for RunTaskExecutor {
     async fn execute(
@@ -333,15 +383,12 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                 tracing::debug!("transformed arguments: {:#?}", args);
 
                 let output = match self
-                    .job_executor_wrapper
-                    .enqueue_with_worker_name_and_output_json(
+                    .execute_by_worker_name(
                         metadata,
                         worker_name,
                         &args,
-                        None,
-                        timeout_sec,
-                        StreamingType::None,
                         using.clone(),
+                        timeout_sec,
                     )
                     .await
                 {
@@ -547,15 +594,12 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                 tracing::debug!("transformed arguments: {:#?}", args);
 
                 let output = match self
-                    .job_executor_wrapper
-                    .enqueue_with_worker_name_and_output_json(
+                    .execute_by_worker_name(
                         metadata,
                         &transformed_worker_name,
                         &args,
-                        None,
-                        timeout_sec,
-                        StreamingType::None,
                         transformed_using,
+                        timeout_sec,
                     )
                     .await
                 {
