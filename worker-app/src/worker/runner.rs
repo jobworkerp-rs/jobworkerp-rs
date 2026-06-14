@@ -191,6 +191,62 @@ pub trait JobRunner:
     /// Test/mock impls are no-op.
     fn unregister_feed_sender(&self, job_id: i64);
 
+    /// Pre-load this worker's runner for config validation / pre-loading,
+    /// performing the worker's `load()` exactly as a job would before execution
+    /// but without running it. For `use_static=true` this warms up the runner
+    /// pool so an initialized runner stays resident; for `use_static=false` a
+    /// runner is instantiated and loaded to verify the settings, then dropped.
+    /// The runner's `load()` (e.g. an LLM model download) runs here, so failures
+    /// such as a missing model surface as a FatalError JobResult.
+    ///
+    /// Named distinctly from the app-layer `JobApp::load_worker` (which enqueues
+    /// and awaits): this is the worker-side execution that actually drives load().
+    ///
+    /// Note: this intentionally does not go through `run_job_inner`, so no
+    /// cancellation monitoring is set up — load-only requests have no run() to
+    /// cancel and must not leave job-specific monitoring state behind.
+    async fn preload_runner(
+        &'static self,
+        runner_data: &RunnerData,
+        worker_id: &WorkerId,
+        worker_data: &WorkerData,
+        job: Job,
+    ) -> JobResult {
+        tracing::debug!("preload_runner: worker: {:?}", &worker_id);
+        let start = datetime::now_millis();
+        let load_result = if worker_data.use_static {
+            // Warm up the static pool: creating the pool runs load() once and the
+            // initialized runner stays resident for subsequent jobs. Dropping the
+            // pool object just returns it to the pool.
+            self.runner_pool_map()
+                .get_or_create_static_runner(runner_data, worker_id, worker_data, None)
+                .await
+                .map(|_runner| ())
+        } else {
+            // Non-static: instantiate and load() to verify the settings, then drop.
+            self.runner_pool_map()
+                .get_non_static_runner(runner_data, worker_data)
+                .await
+                .map(|_runner| ())
+        };
+        match load_result {
+            Ok(()) => {
+                let end = datetime::now_millis();
+                let metadata = job.metadata.clone();
+                self.job_result_data(
+                    job,
+                    worker_data,
+                    ResultStatus::Success,
+                    ResultOutputEnum::Normal(Ok(Vec::new()), HashMap::default()).result_output(),
+                    start,
+                    end,
+                    Some(metadata),
+                )
+            }
+            Err(e) => self.handle_error_option(worker_data, job, Some(e)),
+        }
+    }
+
     //#[tracing::instrument(name = "JobRunner", skip(self))]
     #[inline]
     async fn run_job(
@@ -962,6 +1018,142 @@ pub(crate) mod tests {
 
         let ok: Result<()> = Ok(());
         assert_eq!(outcome_of(&ok), RunnerOutcome::Normal);
+    }
+
+    #[allow(dead_code)]
+    fn load_test_job(worker_id: i64) -> Job {
+        Job {
+            id: Some(JobId { value: 1 }),
+            data: Some(JobData {
+                worker_id: Some(WorkerId { value: worker_id }),
+                args: vec![],
+                uniq_key: None,
+                retried: 0,
+                priority: 0,
+                timeout: 0,
+                enqueue_time: 0,
+                run_after_time: 0,
+                grabbed_until_time: None,
+                streaming_type: 0,
+                using: None,
+                overrides: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    // preload_runner() on a non-static worker instantiates and loads a runner to
+    // verify the settings; for the COMMAND runner load() is a no-op so it
+    // succeeds and does not leave anything resident in the pool.
+    #[test]
+    fn test_preload_runner_non_static_success() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            static JOB_RUNNER: OnceCell<Box<MockJobRunner>> = OnceCell::const_new();
+            JOB_RUNNER
+                .get_or_init(|| async { Box::new(MockJobRunner::new().await) })
+                .await;
+            let jr = JOB_RUNNER.get().unwrap();
+
+            // Unique worker id: the MockJobRunner (and its pool) is shared across
+            // tests via a static OnceCell, so assert on this id specifically.
+            let worker_id = WorkerId { value: 9001 };
+            let worker = WorkerData {
+                name: "load-non-static".to_string(),
+                runner_settings: vec![],
+                channel: Some("test".to_string()),
+                use_static: false,
+                ..Default::default()
+            };
+            let runner_data = RunnerData {
+                name: RunnerType::Command.as_str_name().to_string(),
+                ..Default::default()
+            };
+            let res = jr
+                .preload_runner(&runner_data, &worker_id, &worker, load_test_job(9001))
+                .await;
+            assert_eq!(res.data.unwrap().status, ResultStatus::Success as i32);
+            // non-static load must not create a resident pool entry for this worker
+            assert!(
+                !jr.runner_pool_map()
+                    .pools
+                    .read()
+                    .await
+                    .contains_key(&worker_id.value)
+            );
+            Ok(())
+        })
+    }
+
+    // preload_runner() on a static worker warms up the pool: after a successful
+    // load the initialized runner stays resident (pool entry for the worker id).
+    #[test]
+    fn test_preload_runner_static_warms_up_pool() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            static JOB_RUNNER: OnceCell<Box<MockJobRunner>> = OnceCell::const_new();
+            JOB_RUNNER
+                .get_or_init(|| async { Box::new(MockJobRunner::new().await) })
+                .await;
+            let jr = JOB_RUNNER.get().unwrap();
+
+            let worker_id = WorkerId { value: 4242 };
+            // Default channel so the pool's concurrency lookup resolves against
+            // WorkerConfig::default() (which only configures the default channel).
+            let worker = WorkerData {
+                name: "load-static".to_string(),
+                runner_settings: vec![],
+                channel: None,
+                use_static: true,
+                ..Default::default()
+            };
+            let runner_data = RunnerData {
+                name: RunnerType::Command.as_str_name().to_string(),
+                ..Default::default()
+            };
+            let res = jr
+                .preload_runner(&runner_data, &worker_id, &worker, load_test_job(4242))
+                .await;
+            assert_eq!(res.data.unwrap().status, ResultStatus::Success as i32);
+            assert!(
+                jr.runner_pool_map()
+                    .pools
+                    .read()
+                    .await
+                    .contains_key(&worker_id.value),
+                "static preload_runner should warm up the pool"
+            );
+            Ok(())
+        })
+    }
+
+    // A worker whose runner name does not resolve fails the load (e.g. the
+    // moral equivalent of a missing LLM model), surfacing as a FatalError.
+    #[test]
+    fn test_preload_runner_unknown_runner_fails() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            static JOB_RUNNER: OnceCell<Box<MockJobRunner>> = OnceCell::const_new();
+            JOB_RUNNER
+                .get_or_init(|| async { Box::new(MockJobRunner::new().await) })
+                .await;
+            let jr = JOB_RUNNER.get().unwrap();
+
+            let worker_id = WorkerId { value: 2 };
+            let worker = WorkerData {
+                name: "load-bad".to_string(),
+                runner_settings: vec![],
+                channel: Some("test".to_string()),
+                use_static: false,
+                ..Default::default()
+            };
+            let runner_data = RunnerData {
+                name: "NoSuchRunner".to_string(),
+                ..Default::default()
+            };
+            let res = jr
+                .preload_runner(&runner_data, &worker_id, &worker, load_test_job(2))
+                .await;
+            assert_eq!(res.data.unwrap().status, ResultStatus::FatalError as i32);
+            Ok(())
+        })
     }
 
     // create test for run_job() using command runner (sleep)

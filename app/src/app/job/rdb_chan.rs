@@ -610,6 +610,31 @@ impl JobApp for RdbChanJobAppImpl {
         )
         .await
     }
+    async fn load_worker(&self, worker_id: &WorkerId, timeout_ms: Option<u64>) -> Result<bool> {
+        let Some(Worker {
+            id: Some(_),
+            data: Some(w),
+        }) = self.worker_app().find(worker_id).await?
+        else {
+            return Err(JobWorkerError::WorkerNotFound(format!(
+                "worker not found: {}",
+                worker_id.value
+            ))
+            .into());
+        };
+        let job_id = JobId {
+            value: self.id_generator().generate_id()?,
+        };
+        let job = super::build_load_job(job_id, worker_id, timeout_ms);
+        // Drive the load on the worker side and wait for its Direct response.
+        self.enqueue_job_sync_enqueue_only(&job, &w, true).await?;
+        let total_timeout = job.data.as_ref().map(|d| d.timeout).filter(|t| *t > 0);
+        let (result, _stream) = self
+            ._wait_job_for_direct_response(&job_id, total_timeout, false)
+            .await?;
+        super::load_result_to_outcome(worker_id, Some(result))
+    }
+
     async fn enqueue_job<'a>(
         &'a self,
         metadata: Arc<HashMap<String, String>>,
@@ -761,7 +786,7 @@ impl JobApp for RdbChanJobAppImpl {
         };
 
         // Enqueue phase only — the JobId is now live and the job is Pending.
-        let job_id = self.enqueue_job_sync_enqueue_only(&job, &w).await?;
+        let job_id = self.enqueue_job_sync_enqueue_only(&job, &w, false).await?;
         self.index_job_status_async(
             jid,
             JobProcessingStatus::Pending,
@@ -1425,7 +1450,9 @@ where
         // Direct-response worker, block on the result. Splitting the enqueue and
         // wait phases keeps this method's behavior identical while letting
         // `enqueue_job_with_channel` reuse the enqueue phase and defer the wait.
-        let job_id = self.enqueue_job_sync_enqueue_only(job, worker).await?;
+        let job_id = self
+            .enqueue_job_sync_enqueue_only(job, worker, false)
+            .await?;
         let resolved =
             resolve_job_params(worker, job.data.as_ref().and_then(|d| d.overrides.as_ref()));
         if resolved.response_type == ResponseType::Direct as i32 {
@@ -1450,7 +1477,12 @@ where
     /// push the job onto the channel queue, admit it into the cache (so a Direct
     /// job is visible while running), and mark it Pending. Returns the `JobId`
     /// without waiting for the result.
-    async fn enqueue_job_sync_enqueue_only(&self, job: &Job, worker: &WorkerData) -> Result<JobId> {
+    async fn enqueue_job_sync_enqueue_only(
+        &self,
+        job: &Job,
+        worker: &WorkerData,
+        load_only: bool,
+    ) -> Result<JobId> {
         let job_id = job.id.unwrap();
         if self.is_run_after_job(job) {
             return Err(JobWorkerError::InvalidParameter(
@@ -1459,32 +1491,38 @@ where
             .into());
         }
         self.chan_job_queue_repository()
-            .enqueue_job(worker.channel.as_ref(), job)
+            .enqueue_job_with_load_only(worker.channel.as_ref(), job, load_only)
             .await?;
-        if let Job {
-            id: Some(id),
-            data: Some(job_data),
-            ..
-        } = &job
-        {
-            let cache_key = Arc::new(Self::find_cache_key(id));
-            // For timeout=0 (unlimited), uses expire_job_result_seconds from config
-            let job_ttl = self.calculate_job_ttl(job_data.timeout);
+        // Load-only (config-check / pre-load) requests are not real jobs: they
+        // are not looked up via find_job and have no lifecycle to observe, so
+        // skip the running-job cache admission and Pending status entirely
+        // (the worker side likewise skips all status management for them).
+        if !load_only {
+            if let Job {
+                id: Some(id),
+                data: Some(job_data),
+                ..
+            } = &job
+            {
+                let cache_key = Arc::new(Self::find_cache_key(id));
+                // For timeout=0 (unlimited), uses expire_job_result_seconds from config
+                let job_ttl = self.calculate_job_ttl(job_data.timeout);
 
-            // Direct jobs exist only in cache (not in RDB), so wait for
-            // stretto admission to complete before returning.
-            self.set_and_wait_cache(cache_key, job.clone(), job_ttl.as_ref())
-                .await;
-            tracing::debug!(
-                "Cached Direct Response job {} with TTL {:?} for running job visibility",
-                id.value,
-                job_ttl
-            );
+                // Direct jobs exist only in cache (not in RDB), so wait for
+                // stretto admission to complete before returning.
+                self.set_and_wait_cache(cache_key, job.clone(), job_ttl.as_ref())
+                    .await;
+                tracing::debug!(
+                    "Cached Direct Response job {} with TTL {:?} for running job visibility",
+                    id.value,
+                    job_ttl
+                );
+            }
+            // update status (not use direct response)
+            self.job_processing_status_repository()
+                .upsert_status(&job_id, &JobProcessingStatus::Pending)
+                .await?;
         }
-        // update status (not use direct response)
-        self.job_processing_status_repository()
-            .upsert_status(&job_id, &JobProcessingStatus::Pending)
-            .await?;
         Ok(job_id)
     }
 

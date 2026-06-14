@@ -164,10 +164,10 @@ pub trait RedisJobDispatcher:
         Self: Sync + Send + 'static,
     {
         match val {
-            Ok(value) => match Self::deserialize_message::<Job>(&value[1]) {
-                Ok(job) => {
+            Ok(value) => match Self::deserialize_job_internal(&value[1]) {
+                Ok((job, load_only)) => {
                     let job_id = job.id;
-                    match self.process_job(job).await {
+                    match self.process_job(job, load_only).await {
                         Ok(result) => Ok(result),
                         Err(e) => {
                             // Check if status should be deleted based on error type
@@ -193,7 +193,7 @@ pub trait RedisJobDispatcher:
     }
 
     #[inline]
-    async fn process_job(&'static self, job: Job) -> Result<JobResult>
+    async fn process_job(&'static self, job: Job, load_only: bool) -> Result<JobResult>
     where
         Self: Sync + Send + 'static,
     {
@@ -249,6 +249,37 @@ pub trait RedisJobDispatcher:
                 &sid
             )))
         }?;
+
+        // Load-only (config-check / pre-load): run the runner's load() and return
+        // the Direct result without entering the normal job lifecycle — no
+        // cancellation monitoring, no status transitions/indexing, and no
+        // retry/periodic/store/temp cleanup. These would be meaningless (and for
+        // periodic workers, harmful) for a pre-load that never runs run().
+        if load_only {
+            let result = self
+                .preload_runner(
+                    &runner_data,
+                    &wid,
+                    &wdat,
+                    Job {
+                        id: Some(jid),
+                        data: Some(jdat),
+                        metadata: meta,
+                    },
+                )
+                .await;
+            let (result, completion_rx) = self
+                .result_processor()
+                .process_result_inner(result, None, wdat, true)
+                .await?;
+            if let Some(rx) = completion_rx
+                && rx.await.is_err()
+            {
+                tracing::warn!("stream completion sender dropped for load job {:?}", &jid);
+            }
+            return Ok(result);
+        }
+
         if let Some(cancelled_result) = self
             .check_cancellation_status(&jid, &wid, &wdat, meta.clone(), &jdat)
             .await?
@@ -378,7 +409,7 @@ pub trait RedisJobDispatcher:
         let jdat_enqueue_time = jdat.enqueue_time;
         let jdat_request_streaming = jdat.streaming_type != 0;
 
-        // run job
+        // run job (load-only requests were handled and returned above)
         let mut r = self
             .run_job(
                 &runner_data,

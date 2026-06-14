@@ -1,4 +1,4 @@
-use crate::app::job::{JobApp, UseJobApp};
+use crate::app::job::{ChannelJobResultFuture, JobApp, UseJobApp};
 use crate::app::job_result::{JobResultApp, UseJobResultApp};
 use crate::app::runner::{
     RunnerApp, RunnerDataWithDescriptor, UseRunnerApp, UseRunnerParserWithCache,
@@ -94,6 +94,14 @@ impl UseRunnerSpecFactory for JobExecutorWrapper {
 }
 impl ProtobufHelper for JobExecutorWrapper {}
 impl UseJobExecutor for JobExecutorWrapper {}
+
+pub struct NamedWorkerChannelJob {
+    pub job_id: JobId,
+    pub result_fut: ChannelJobResultFuture,
+    pub runner_id: RunnerId,
+    pub runner_data: RunnerData,
+    pub using: Option<String>,
+}
 
 /// Trait for accessing RunnerSpecFactory
 pub trait UseRunnerSpecFactory {
@@ -310,8 +318,7 @@ pub trait UseJobExecutor:
         job_timeout_sec: u32,
         streaming_type: StreamingType,
         using: Option<String>,
-    ) -> impl std::future::Future<Output = Result<(JobId, crate::app::job::ChannelJobResultFuture)>> + Send
-    {
+    ) -> impl std::future::Future<Output = Result<(JobId, ChannelJobResultFuture)>> + Send {
         async move {
             // Resolve to a concrete worker id (creating a temp worker if needed)
             // so enqueue_job_with_channel returns the JobId before the wait.
@@ -556,17 +563,18 @@ pub trait UseJobExecutor:
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn enqueue_with_worker_name_and_output_json(
+    /// Look up a worker by name, resolve its runner, and transform the JSON
+    /// `job_args` into the protobuf binary the runner expects. Shared front
+    /// stage of the `enqueue_with_worker_name_*` family so the worker/runner
+    /// resolution lives in one place.
+    fn resolve_worker_and_transform_args(
         &self,
-        metadata: Arc<HashMap<String, String>>, // metadata for job
-        worker_name: &str,                      // runner(runner) name
-        job_args: &serde_json::Value,           // enqueue job args
-        uniq_key: Option<String>, // unique key for job (if not exists, use default values)
-        job_timeout_sec: u32,     // job timeout in seconds
-        streaming_type: StreamingType, // streaming type for job
-        using: Option<String>,    // using parameter for MCP/Plugin runners
-    ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
+        worker_name: &str,
+        job_args: &serde_json::Value,
+        using: Option<&str>,
+    ) -> impl std::future::Future<
+        Output = Result<(WorkerId, WorkerData, RunnerId, RunnerData, Vec<u8>)>,
+    > + Send {
         async move {
             let worker = self
                 .worker_app()
@@ -575,60 +583,109 @@ pub trait UseJobExecutor:
                 .ok_or_else(|| {
                     JobWorkerError::WorkerNotFound(format!("Not found worker: {worker_name}"))
                 })?;
-            if let Worker {
+            let Worker {
                 id: Some(wid),
                 data: Some(worker_data),
             } = worker
-            {
-                // use memory cache?
-                if let Some(RunnerWithSchema {
-                    id: Some(rid),
-                    data: Some(rdata),
-                    ..
-                }) =
-                    self.runner_app()
-                        .find_runner(worker_data.runner_id.as_ref().ok_or(
-                            JobWorkerError::NotFound(format!(
-                                "Not found runner for worker {}: {:?}",
-                                worker_name,
-                                worker_data.runner_id.as_ref()
-                            )),
-                        )?)
-                        .await?
-                {
-                    let job_args = self
-                        .transform_job_args(&rid, &rdata, job_args, using.as_deref())
-                        .await?;
-                    let res = self
-                        .enqueue_with_worker_or_temp(
-                            metadata,
-                            Some(wid), // worker
-                            worker_data,
-                            job_args,
-                            uniq_key,
-                            job_timeout_sec,
-                            streaming_type,
-                            using.clone(), // Pass using parameter for MCP/Plugin workers
-                        )
-                        .await?;
-                    if let Some(res) = res.1 {
-                        let output = self.extract_job_result_output(res)?;
-                        self.transform_raw_output(&rid, &rdata, output.as_slice(), using.as_deref())
-                            .await
-                    } else {
-                        Err(anyhow::anyhow!(
-                            "Failed to enqueue job or job result not found"
-                        ))
-                    }
-                } else {
-                    Err(anyhow::anyhow!(
-                        "Not found runner: {:?}",
-                        worker_data.runner_id.as_ref()
-                    ))
-                }
-            } else {
-                Err(anyhow::anyhow!("Not found worker: {}", worker_name))
-            }
+            else {
+                return Err(anyhow::anyhow!("Not found worker: {}", worker_name));
+            };
+            let runner_id = worker_data.runner_id.as_ref().ok_or_else(|| {
+                JobWorkerError::NotFound(format!(
+                    "Not found runner for worker {}: {:?}",
+                    worker_name, worker_data.runner_id
+                ))
+            })?;
+            let Some(RunnerWithSchema {
+                id: Some(rid),
+                data: Some(rdata),
+                ..
+            }) = self.runner_app().find_runner(runner_id).await?
+            else {
+                return Err(anyhow::anyhow!(
+                    "Not found runner: {:?}",
+                    worker_data.runner_id
+                ));
+            };
+            let args = self
+                .transform_job_args(&rid, &rdata, job_args, using)
+                .await?;
+            Ok((wid, worker_data, rid, rdata, args))
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_with_worker_name_channel(
+        &self,
+        metadata: Arc<HashMap<String, String>>, // metadata for job
+        worker_name: &str,                      // worker name to look up
+        job_args: &serde_json::Value,           // enqueue job args
+        uniq_key: Option<String>, // unique key for job (if not exists, use default values)
+        job_timeout_sec: u32,     // job timeout in seconds
+        streaming_type: StreamingType, // streaming type for job
+        using: Option<String>,    // using parameter for MCP/Plugin runners
+    ) -> impl std::future::Future<Output = Result<NamedWorkerChannelJob>> + Send {
+        async move {
+            let (wid, worker_data, rid, rdata, job_args) = self
+                .resolve_worker_and_transform_args(worker_name, job_args, using.as_deref())
+                .await?;
+            let (job_id, result_fut) = self
+                .enqueue_with_worker_or_temp_channel(
+                    metadata,
+                    Some(wid),
+                    worker_data,
+                    job_args,
+                    uniq_key,
+                    job_timeout_sec,
+                    streaming_type,
+                    using.clone(), // Pass using parameter for MCP/Plugin workers
+                )
+                .await?;
+            Ok(NamedWorkerChannelJob {
+                job_id,
+                result_fut,
+                runner_id: rid,
+                runner_data: rdata,
+                using,
+            })
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_with_worker_name_and_output_json(
+        &self,
+        metadata: Arc<HashMap<String, String>>, // metadata for job
+        worker_name: &str,                      // worker name to look up
+        job_args: &serde_json::Value,           // enqueue job args
+        uniq_key: Option<String>, // unique key for job (if not exists, use default values)
+        job_timeout_sec: u32,     // job timeout in seconds
+        streaming_type: StreamingType, // streaming type for job
+        using: Option<String>,    // using parameter for MCP/Plugin runners
+    ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
+        async move {
+            let (wid, worker_data, rid, rdata, job_args) = self
+                .resolve_worker_and_transform_args(worker_name, job_args, using.as_deref())
+                .await?;
+            let res = self
+                .enqueue_with_worker_or_temp(
+                    metadata,
+                    Some(wid),
+                    worker_data,
+                    job_args,
+                    uniq_key,
+                    job_timeout_sec,
+                    streaming_type,
+                    using.clone(), // Pass using parameter for MCP/Plugin workers
+                )
+                .await?;
+            let Some(res) = res.1 else {
+                return Err(anyhow::anyhow!(
+                    "Failed to enqueue job or job result not found"
+                ));
+            };
+            let output = self.extract_job_result_output(res)?;
+            self.transform_raw_output(&rid, &rdata, output.as_slice(), using.as_deref())
+                .await
         }
     }
 
@@ -796,5 +853,72 @@ pub trait UseJobExecutor:
                 Err(anyhow::anyhow!("Not found runner for job result output"))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::module::test::create_rdb_chan_test_app;
+    use proto::jobworkerp::data::{JobProcessingStatus, QueueType, ResponseType};
+    use std::time::Duration;
+
+    const COMMAND_RUNNER_ID: i64 = 1;
+
+    #[tokio::test]
+    async fn test_enqueue_with_worker_name_channel_returns_job_id_before_result() -> Result<()> {
+        let app_module = Arc::new(create_rdb_chan_test_app(false, false).await?);
+        let worker_name = "named-worker-channel-test-command";
+        app_module
+            .worker_app
+            .create(&WorkerData {
+                name: worker_name.to_string(),
+                description: "named worker channel enqueue test".to_string(),
+                runner_id: Some(RunnerId {
+                    value: COMMAND_RUNNER_ID,
+                }),
+                runner_settings: Vec::new(),
+                periodic_interval: 0,
+                channel: None,
+                queue_type: QueueType::Normal as i32,
+                response_type: ResponseType::Direct as i32,
+                store_success: false,
+                store_failure: true,
+                use_static: false,
+                retry_policy: None,
+                broadcast_results: true,
+            })
+            .await?;
+
+        let wrapper = JobExecutorWrapper::new(app_module.clone());
+        let child = tokio::time::timeout(
+            Duration::from_secs(1),
+            wrapper.enqueue_with_worker_name_channel(
+                Arc::new(HashMap::new()),
+                worker_name,
+                &serde_json::json!({
+                    "command": "sleep",
+                    "args": ["30"]
+                }),
+                None,
+                30,
+                StreamingType::None,
+                None,
+            ),
+        )
+        .await
+        .expect("channel enqueue must return before the Direct result is ready")?;
+
+        assert!(
+            child.job_id.value > 0,
+            "channel enqueue should expose the child job id immediately"
+        );
+        assert_eq!(
+            app_module.job_app.find_job_status(&child.job_id).await?,
+            Some(JobProcessingStatus::Pending)
+        );
+
+        app_module.job_app.delete_job(&child.job_id).await?;
+        Ok(())
     }
 }

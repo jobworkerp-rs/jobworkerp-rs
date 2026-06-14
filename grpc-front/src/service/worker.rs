@@ -3,10 +3,11 @@ use crate::proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use crate::proto::jobworkerp::service::worker_service_server::WorkerService;
 use crate::proto::jobworkerp::service::{
     ChannelInfo, CountCondition, CountResponse, CountWorkerRequest, CreateWorkerResponse,
-    FindChannelListResponse, FindWorkerListRequest, OptionalWorkerResponse,
+    FindChannelListResponse, FindWorkerListRequest, LoadWorkerRequest, OptionalWorkerResponse,
     ReleaseStaticWorkerRequest, SuccessResponse, WorkerNameRequest,
 };
 use crate::service::error_handle::handle_error;
+use app::app::job::JobApp;
 use app::app::worker::WorkerApp;
 use app::app::{StorageConfig, UseStorageConfig, UseWorkerConfig, WorkerConfig};
 use app::module::AppModule;
@@ -25,6 +26,7 @@ use tonic::Response;
 
 pub trait WorkerGrpc {
     fn app(&self) -> &Arc<dyn WorkerApp + 'static>;
+    fn job_app(&self) -> &Arc<dyn JobApp + 'static>;
     fn worker_instance_repository(&self) -> Arc<dyn WorkerInstanceRepository>;
 }
 
@@ -474,6 +476,46 @@ impl<
             },
         }
     }
+
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "load"))]
+    async fn load(
+        &self,
+        request: tonic::Request<LoadWorkerRequest>,
+    ) -> Result<tonic::Response<SuccessResponse>, tonic::Status> {
+        let _s = Self::trace_request("worker", "load", &request);
+        let req = request.into_inner();
+        // Resolve the target to a WorkerId (looking up by name when needed),
+        // then run the worker's load() for config validation / pre-loading and
+        // wait for its outcome.
+        let worker_id = match req.target {
+            Some(crate::proto::jobworkerp::service::load_worker_request::Target::WorkerId(
+                worker_id,
+            )) => worker_id,
+            Some(crate::proto::jobworkerp::service::load_worker_request::Target::Name(name)) => {
+                if name.is_empty() {
+                    return Err(tonic::Status::invalid_argument("name should not be empty"));
+                }
+                match self.app().find_by_name(&name).await {
+                    Ok(Some(Worker { id: Some(id), .. })) => id,
+                    Ok(_) => {
+                        return Err(tonic::Status::not_found(format!(
+                            "worker not found: {name}"
+                        )));
+                    }
+                    Err(e) => return Err(handle_error(&e)),
+                }
+            }
+            None => {
+                return Err(tonic::Status::invalid_argument(
+                    "worker_id or name is required",
+                ));
+            }
+        };
+        match self.job_app().load_worker(&worker_id, req.timeout_ms).await {
+            Ok(res) => Ok(Response::new(SuccessResponse { is_success: res })),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
 }
 
 #[derive(DebugStub)]
@@ -490,6 +532,9 @@ impl WorkerGrpcImpl {
 impl WorkerGrpc for WorkerGrpcImpl {
     fn app(&self) -> &Arc<dyn WorkerApp + 'static> {
         &self.app_module.worker_app
+    }
+    fn job_app(&self) -> &Arc<dyn JobApp + 'static> {
+        &self.app_module.job_app
     }
     fn worker_instance_repository(&self) -> Arc<dyn WorkerInstanceRepository> {
         self.app_module.repositories.worker_instance_repository()

@@ -17,7 +17,7 @@
 use anyhow::Result;
 use app::app::function::FunctionApp;
 use app::app::function::function_set::FunctionSetApp;
-use proto::jobworkerp::data::RunnerId;
+use proto::jobworkerp::data::{ResponseType, RunnerId, WorkerData};
 use proto::jobworkerp::function::data::{FunctionId, FunctionSetData, FunctionUsing, function_id};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -392,6 +392,82 @@ async fn sub_test_short_tool_execution_skips_progress(
 }
 
 // ---------------------------------------------------------------------------
+// Sub-test: WorkerService/Load drives the worker's Runner load() end-to-end
+// (enqueue load-only job -> dispatcher -> load() -> Direct result). The COMMAND
+// runner's load() is a no-op, so this verifies the happy path for both a
+// non-static and a static (pool warm-up) worker.
+async fn sub_test_load_worker_command(app_module: &Arc<app::module::AppModule>) -> Result<()> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    // runner_id 1 is the built-in COMMAND runner; settings are empty for it.
+    for (suffix, use_static) in [("nonstatic", false), ("static", true)] {
+        let worker_data = WorkerData {
+            name: format!("load_worker_test_{suffix}_{ts}"),
+            runner_id: Some(RunnerId { value: 1 }),
+            runner_settings: Vec::new(),
+            use_static,
+            response_type: ResponseType::Direct as i32,
+            store_success: false,
+            store_failure: false,
+            ..Default::default()
+        };
+        let worker_id = app_module.worker_app.create(&worker_data).await?;
+
+        let loaded = timeout(
+            Duration::from_secs(30),
+            app_module.job_app.load_worker(&worker_id, Some(30_000)),
+        )
+        .await??;
+        assert!(loaded, "load_worker should succeed for COMMAND ({suffix})");
+    }
+    println!("sub_test_load_worker_command passed");
+    Ok(())
+}
+
+// Sub-test: loading a periodic worker must NOT enqueue a real run() job as a
+// side effect. A load-only result must bypass the normal job lifecycle
+// (retry / periodic re-enqueue / status), otherwise pre-loading a periodic
+// worker would start running it.
+async fn sub_test_load_periodic_worker_no_side_effect(
+    app_module: &Arc<app::module::AppModule>,
+) -> Result<()> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let worker_data = WorkerData {
+        name: format!("load_periodic_test_{ts}"),
+        runner_id: Some(RunnerId { value: 1 }), // COMMAND runner (load() is a no-op)
+        runner_settings: Vec::new(),
+        // Periodic worker: a normal completion here would schedule the next run.
+        periodic_interval: 60_000,
+        store_success: false,
+        store_failure: false,
+        ..Default::default()
+    };
+    let worker_id = app_module.worker_app.create(&worker_data).await?;
+
+    let before = app_module.job_app.count().await?;
+    let loaded = timeout(
+        Duration::from_secs(30),
+        app_module.job_app.load_worker(&worker_id, Some(30_000)),
+    )
+    .await??;
+    assert!(loaded, "load_worker should succeed for periodic worker");
+
+    // Give any (erroneous) periodic re-enqueue a chance to land.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let after = app_module.job_app.count().await?;
+    assert_eq!(
+        before, after,
+        "loading a periodic worker must not enqueue a follow-up job (before={before}, after={after})"
+    );
+    println!("sub_test_load_periodic_worker_no_side_effect passed");
+    Ok(())
+}
+
 // Single entry-point test
 // ---------------------------------------------------------------------------
 
@@ -420,6 +496,8 @@ async fn test_worker_backend_e2e() -> Result<()> {
         sub_test_enqueue_and_await_function_result_streaming(&app_module).await?;
         sub_test_enqueue_function_non_streaming_with_runner(&app_module).await?;
         sub_test_short_tool_execution_skips_progress(&app_module).await?;
+        sub_test_load_worker_command(&app_module).await?;
+        sub_test_load_periodic_worker_no_side_effect(&app_module).await?;
         sub_test_worker_executes_command_via_function(&app_module).await?;
         Ok::<(), anyhow::Error>(())
     }
