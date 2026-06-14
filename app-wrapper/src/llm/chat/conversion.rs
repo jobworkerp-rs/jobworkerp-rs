@@ -127,13 +127,31 @@ impl ToolConverter {
         match serde_json::from_str::<serde_json::Value>(&method_schema.arguments_schema) {
             Ok(serde_json::Value::Object(mut obj)) => {
                 // MCP requires every tool inputSchema to be an object schema with
-                // `"type": "object"`. A worker's arguments schema (e.g. a WORKFLOW
-                // worker with `input: {}`, or any schema that omits the top-level
-                // `type`) may not carry it, so default it here. We do not overwrite an
-                // existing `type` to avoid corrupting an intentionally-typed schema.
-                obj.entry("type")
-                    .or_insert_with(|| serde_json::Value::String("object".to_string()));
-                obj
+                // `"type": "object"`. A worker's arguments schema is user-defined
+                // (e.g. a WORKFLOW worker's `input.schema`), so it may either omit
+                // the top-level `type` or declare a non-object type.
+                match obj.get("type") {
+                    // No `type`: default it to "object" (an unconstrained object schema).
+                    None => {
+                        obj.insert(
+                            "type".to_string(),
+                            serde_json::Value::String("object".to_string()),
+                        );
+                        obj
+                    }
+                    // `"type": "object"` (or a type union that allows object): keep as-is.
+                    Some(t) if Self::schema_type_allows_object(t) => obj,
+                    // A non-object type (e.g. `"string"`, `"array"`) cannot be used as
+                    // an MCP input schema; fall back to an empty object schema rather
+                    // than exposing a schema MCP clients will reject.
+                    Some(other) => {
+                        tracing::warn!(
+                            "worker arguments schema declares non-object type, using empty object: {:?}",
+                            other
+                        );
+                        Self::empty_object_schema()
+                    }
+                }
             }
             Ok(other) => {
                 // A non-object JSON Schema (e.g. `true`/`false`) cannot be used as an
@@ -184,6 +202,18 @@ impl ToolConverter {
                 tracing::error!("Failed to generate combined schema: {}", e);
                 None
             }
+        }
+    }
+
+    /// Whether a JSON Schema `type` value permits an object instance. JSON Schema
+    /// allows `type` to be a single string or an array of type strings, so a worker
+    /// schema like `{"type": ["object", "null"]}` is still usable as an MCP input
+    /// schema and must not be discarded.
+    fn schema_type_allows_object(type_value: &serde_json::Value) -> bool {
+        match type_value {
+            serde_json::Value::String(s) => s == "object",
+            serde_json::Value::Array(types) => types.iter().any(|t| t.as_str() == Some("object")),
+            _ => false,
         }
     }
 
@@ -1469,6 +1499,113 @@ mod tests {
         assert_eq!(
             tool.input_schema.get("type").and_then(|v| v.as_str()),
             Some("object")
+        );
+        assert!(
+            tool.input_schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .is_some_and(|p| p.contains_key("a")),
+            "existing properties must be preserved"
+        );
+    }
+
+    /// A worker arguments schema that is a JSON object but declares a non-object
+    /// top-level `type` (e.g. `{"type":"string"}`) cannot serve as an MCP input
+    /// schema and must fall back to an empty object schema rather than being
+    /// exposed verbatim (which MCP clients would reject).
+    #[test]
+    fn test_worker_tool_schema_non_object_type_falls_back_to_empty_object() {
+        for non_object in [
+            json!({"type": "string"}).to_string(),
+            json!({"type": "array", "items": {"type": "string"}}).to_string(),
+        ] {
+            let mut method_schemas = std::collections::HashMap::new();
+            method_schemas.insert(
+                proto::DEFAULT_METHOD_NAME.to_string(),
+                proto::jobworkerp::function::data::MethodSchema {
+                    description: Some("non-object".to_string()),
+                    arguments_schema: non_object.clone(),
+                    result_schema: None,
+                    output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                    annotations: None,
+                },
+            );
+            let spec = FunctionSpecs {
+                name: "non_object_worker".to_string(),
+                description: "desc".to_string(),
+                settings_schema: String::new(),
+                methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                    schemas: method_schemas,
+                }),
+                runner_type: proto::jobworkerp::data::RunnerType::Workflow as i32,
+                worker_id: Some(proto::jobworkerp::data::WorkerId { value: 101 }),
+                ..Default::default()
+            };
+
+            let result = ToolConverter::convert_functions_to_mcp_tools(vec![spec]).unwrap();
+            let tool = result
+                .tools
+                .iter()
+                .find(|t| t.name == "non_object_worker")
+                .expect("worker tool should exist");
+            assert_eq!(
+                tool.input_schema.get("type").and_then(|v| v.as_str()),
+                Some("object"),
+                "non-object schema {non_object} must fall back to object type"
+            );
+            assert!(
+                tool.input_schema
+                    .get("properties")
+                    .and_then(|p| p.as_object())
+                    .is_some_and(|p| p.is_empty()),
+                "fallback must be an empty object schema for {non_object}"
+            );
+        }
+    }
+
+    /// A type union that includes "object" (e.g. `{"type":["object","null"]}`) is a
+    /// valid object schema for MCP and must be preserved, not discarded.
+    #[test]
+    fn test_worker_tool_schema_type_union_with_object_is_preserved() {
+        let mut method_schemas = std::collections::HashMap::new();
+        method_schemas.insert(
+            proto::DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: Some("union".to_string()),
+                arguments_schema: json!({
+                    "type": ["object", "null"],
+                    "properties": {"a": {"type": "string"}}
+                })
+                .to_string(),
+                result_schema: None,
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                annotations: None,
+            },
+        );
+        let spec = FunctionSpecs {
+            name: "union_worker".to_string(),
+            description: "desc".to_string(),
+            settings_schema: String::new(),
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
+            runner_type: proto::jobworkerp::data::RunnerType::Workflow as i32,
+            worker_id: Some(proto::jobworkerp::data::WorkerId { value: 102 }),
+            ..Default::default()
+        };
+
+        let result = ToolConverter::convert_functions_to_mcp_tools(vec![spec]).unwrap();
+        let tool = result
+            .tools
+            .iter()
+            .find(|t| t.name == "union_worker")
+            .expect("worker tool should exist");
+        assert!(
+            tool.input_schema
+                .get("type")
+                .and_then(|v| v.as_array())
+                .is_some_and(|a| a.iter().any(|t| t.as_str() == Some("object"))),
+            "type union including object must be preserved"
         );
         assert!(
             tool.input_schema

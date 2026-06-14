@@ -48,7 +48,20 @@ message FunctionCallRequest {
   optional RunnerParameters runner_parameters = 3;
 
   // Job Arguments in JSON format (with protobuf schema:
-  // jobworkerp.data.RunnerData.job_args_proto)
+  // jobworkerp.data.RunnerData.job_args_proto).
+  //
+  // Pass the contents of the method arguments schema directly here (no
+  // `settings`/`arguments` wrapper). This matches the schema published by
+  // FunctionService.FindList / Find as `FunctionSpecs` and the MCP tool
+  // inputSchema, so the same payload works over both transports:
+  //   - worker_name: provide the worker method's arguments directly. The
+  //     worker's init settings are fixed at creation time, so settings are not
+  //     accepted here. For a WORKFLOW worker's `run` (default) method, provide
+  //     the workflow `input` contents directly; the server wraps them into the
+  //     `input` field automatically.
+  //   - runner_name: provide the method arguments here and the runner init
+  //     settings separately in `runner_parameters.settings_json`. For a WORKFLOW
+  //     runner's `run` method, provide the workflow `input` contents directly.
   string args_json = 4;
 
   // Prevent from registering the same keys job in queue at the same time

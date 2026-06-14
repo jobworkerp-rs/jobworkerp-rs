@@ -123,7 +123,8 @@ fn test_config_default() {
     assert!(!config.exclude_worker_as_tool);
     assert!(config.set_name.is_none());
     assert_eq!(config.timeout_sec, 60);
-    assert!(config.streaming);
+    // Streaming is opt-in (MCP_STREAMING); most runners are non-streaming.
+    assert!(!config.streaming);
 }
 
 #[test]
