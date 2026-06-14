@@ -29,14 +29,20 @@ use std::collections::HashMap;
 
 impl crate::jobworkerp::runner::WorkflowRunnerSettings {
     /// Parse workflow definition from workflow_data to extract schema (document/input).
+    ///
+    /// `workflow_data` may hold the workflow definition as either JSON or YAML
+    /// (the execution path in `load_workflow_source` accepts both), so try JSON
+    /// first and fall back to YAML. Parsing only JSON here would make a
+    /// YAML-stored worker fall back to the generic runner schema even though it
+    /// runs fine.
     pub fn schema(&self) -> Option<serde_json::Map<String, serde_json::Value>> {
         use crate::jobworkerp::runner::workflow_runner_settings::WorkflowSource;
-        match &self.workflow_source {
-            Some(WorkflowSource::WorkflowData(data)) => {
-                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(data).ok()
-            }
-            _ => None,
-        }
+        let Some(WorkflowSource::WorkflowData(data)) = &self.workflow_source else {
+            return None;
+        };
+        let parsed: Result<serde_json::Map<String, serde_json::Value>, _> =
+            serde_json::from_str(data).or_else(|_| serde_yaml::from_str(data));
+        parsed.ok()
     }
 }
 
@@ -279,6 +285,47 @@ fn collect_workflow_stream(stream: BoxStream<'static, ResultOutputItem>) -> Coll
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jobworkerp::runner::WorkflowRunnerSettings;
+    use crate::jobworkerp::runner::workflow_runner_settings::WorkflowSource;
+
+    fn settings_with_data(data: &str) -> WorkflowRunnerSettings {
+        WorkflowRunnerSettings {
+            workflow_source: Some(WorkflowSource::WorkflowData(data.to_string())),
+            workflow_context: None,
+        }
+    }
+
+    #[test]
+    fn test_schema_parses_json_workflow_data() {
+        let json = r#"{"document":{"name":"wf","summary":"s"},"input":{"schema":{}}}"#;
+        let schema = settings_with_data(json)
+            .schema()
+            .expect("json should parse");
+        assert!(schema.contains_key("document"));
+        assert!(schema.contains_key("input"));
+    }
+
+    #[test]
+    fn test_schema_parses_yaml_workflow_data() {
+        // Workers may store the workflow definition as YAML (e.g. registered via
+        // `worker apply` with `$file: *.yaml`); schema extraction must handle it,
+        // otherwise the tool falls back to the generic WORKFLOW runner schema.
+        let yaml = "# a comment\ndocument:\n  name: wf\n  summary: s\ninput:\n  schema:\n    document:\n      type: object\n";
+        let schema = settings_with_data(yaml)
+            .schema()
+            .expect("yaml should parse");
+        assert!(schema.contains_key("document"));
+        assert!(schema.contains_key("input"));
+    }
+
+    #[test]
+    fn test_schema_none_when_no_workflow_data() {
+        let settings = WorkflowRunnerSettings {
+            workflow_source: None,
+            workflow_context: None,
+        };
+        assert!(settings.schema().is_none());
+    }
 
     #[test]
     fn test_resolve_method_run() {
