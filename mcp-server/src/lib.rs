@@ -49,11 +49,11 @@
 //!
 //! - `MCP_ENABLED`: Enable MCP server in all-in-one mode (default: false)
 //! - `MCP_ADDR`: HTTP server bind address (default: 127.0.0.1:8000)
-//! - `EXCLUDE_RUNNER_AS_TOOL`: Exclude runners from tools (default: false)
-//! - `EXCLUDE_WORKER_AS_TOOL`: Exclude workers from tools (default: false)
-//! - `TOOL_SET_NAME`: Expose only tools from specific FunctionSet
-//! - `REQUEST_TIMEOUT_SEC`: Request timeout (default: 60)
-//! - `MCP_STREAMING`: Enable streaming responses (default: true)
+//! - `MCP_EXCLUDE_RUNNER`: Exclude runners from tools (default: false)
+//! - `MCP_EXCLUDE_WORKER`: Exclude workers from tools (default: false)
+//! - `MCP_SET_NAME`: Expose only tools from specific FunctionSet
+//! - `MCP_TIMEOUT_SEC`: Request timeout (default: 60)
+//! - `MCP_STREAMING`: Enable streaming responses (default: false)
 //! - `MCP_AUTH_ENABLED`: Enable Bearer authentication (default: false)
 //! - `MCP_AUTH_TOKENS`: Valid tokens, comma-separated (default: demo-token)
 

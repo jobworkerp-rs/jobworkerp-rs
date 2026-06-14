@@ -65,9 +65,20 @@ pub struct ToolConverter;
 impl McpNameConverter for ToolConverter {}
 
 impl ToolConverter {
-    /// Convert FunctionSpecs to MCP Tools by combining settings and arguments schemas.
-    /// All runners use unified settings + arguments structure for consistency across runner types.
+    /// Convert FunctionSpecs to MCP Tools.
+    ///
+    /// The tool input schema shape depends on whether the function is backed by a
+    /// pre-configured Worker or a Runner invoked directly:
+    /// - Worker (`worker_id` set): settings are already fixed at worker creation
+    ///   time, so the tool exposes the method arguments directly at the top level
+    ///   (no `settings`/`arguments` wrapper). For WORKFLOW workers this means the
+    ///   workflow's own `input` schema is surfaced as-is, and callers pass the
+    ///   input fields directly.
+    /// - Runner (`worker_id` absent): direct execution still needs both the
+    ///   runner init `settings` and the call `arguments`, so they are wrapped into
+    ///   the unified `{ settings, arguments }` structure.
     pub fn convert_normal_function(tool: &FunctionSpecs) -> Vec<Tool> {
+        let is_worker = tool.worker_id.is_some();
         tool.methods
             .as_ref()
             .map(|methods| {
@@ -75,57 +86,29 @@ impl ToolConverter {
                     .schemas
                     .iter()
                     .filter_map(|(method_name, method_schema)| {
-                        let mut schema_combiner = SchemaCombiner::new();
+                        let schema = if is_worker {
+                            Self::build_worker_tool_schema(method_schema)
+                        } else {
+                            // Runner schema generation can fail; skip the method if so.
+                            Self::build_runner_tool_schema(tool, method_schema)?
+                        };
 
-                        if !tool.settings_schema.is_empty() {
-                            schema_combiner
-                                .add_schema_from_string(
-                                    "settings",
-                                    &tool.settings_schema,
-                                    Some("Tool init settings".to_string()),
-                                )
-                                .ok();
-                        }
+                        // Default method uses runner name only for simpler tool naming.
+                        // Non-default methods combine runner and method names to avoid conflicts.
+                        let tool_name = if method_name == proto::DEFAULT_METHOD_NAME {
+                            tool.name.clone()
+                        } else {
+                            Self::combine_names(&tool.name, method_name)
+                        };
 
-                        schema_combiner
-                            .add_schema_from_string(
-                                "arguments",
-                                &method_schema.arguments_schema,
-                                Some("Tool arguments".to_string()),
-                            )
-                            .inspect_err(|e| {
-                                tracing::error!("Failed to parse arguments schema: {}", e)
-                            })
-                            .ok();
-
-                        match schema_combiner.generate_combined_schema() {
-                            Ok(schema) => {
-                                // Default method uses runner name only for simpler tool naming.
-                                // Non-default methods combine runner and method names to avoid conflicts.
-                                let tool_name = if method_name == proto::DEFAULT_METHOD_NAME {
-                                    tool.name.clone()
-                                } else {
-                                    Self::combine_names(&tool.name, method_name)
-                                };
-
-                                Some(Tool::new(
-                                    tool_name,
-                                    method_schema
-                                        .description
-                                        .clone()
-                                        .unwrap_or_else(|| tool.description.clone()),
-                                    schema,
-                                ))
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to generate schema for method '{}': {}",
-                                    method_name,
-                                    e
-                                );
-                                None
-                            }
-                        }
+                        Some(Tool::new(
+                            tool_name,
+                            method_schema
+                                .description
+                                .clone()
+                                .unwrap_or_else(|| tool.description.clone()),
+                            schema,
+                        ))
                     })
                     .collect()
             })
@@ -133,6 +116,84 @@ impl ToolConverter {
                 tracing::error!("error: no methods found for runner: {:?}", &tool);
                 vec![]
             })
+    }
+
+    /// Build a Worker tool schema: the method arguments schema is exposed directly
+    /// (no `settings`/`arguments` wrapper). Falls back to an empty object schema
+    /// when the arguments schema is empty or unparseable.
+    fn build_worker_tool_schema(
+        method_schema: &proto::jobworkerp::function::data::MethodSchema,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        match serde_json::from_str::<serde_json::Value>(&method_schema.arguments_schema) {
+            Ok(serde_json::Value::Object(mut obj)) => {
+                // MCP requires every tool inputSchema to be an object schema with
+                // `"type": "object"`. A worker's arguments schema (e.g. a WORKFLOW
+                // worker with `input: {}`, or any schema that omits the top-level
+                // `type`) may not carry it, so default it here. We do not overwrite an
+                // existing `type` to avoid corrupting an intentionally-typed schema.
+                obj.entry("type")
+                    .or_insert_with(|| serde_json::Value::String("object".to_string()));
+                obj
+            }
+            Ok(other) => {
+                // A non-object JSON Schema (e.g. `true`/`false`) cannot be used as an
+                // MCP input schema object; fall back to an empty object schema.
+                tracing::warn!(
+                    "worker arguments schema is not a JSON object, using empty object: {:?}",
+                    other
+                );
+                Self::empty_object_schema()
+            }
+            Err(e) => {
+                tracing::error!("Failed to parse worker arguments schema: {}", e);
+                Self::empty_object_schema()
+            }
+        }
+    }
+
+    /// Build a Runner tool schema: combine init `settings` and call `arguments`
+    /// into the unified structure expected for direct runner execution.
+    fn build_runner_tool_schema(
+        tool: &FunctionSpecs,
+        method_schema: &proto::jobworkerp::function::data::MethodSchema,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let mut schema_combiner = SchemaCombiner::new();
+
+        if !tool.settings_schema.is_empty() {
+            schema_combiner
+                .add_schema_from_string(
+                    "settings",
+                    &tool.settings_schema,
+                    Some("Tool init settings".to_string()),
+                )
+                .ok();
+        }
+
+        schema_combiner
+            .add_schema_from_string(
+                "arguments",
+                &method_schema.arguments_schema,
+                Some("Tool arguments".to_string()),
+            )
+            .inspect_err(|e| tracing::error!("Failed to parse arguments schema: {}", e))
+            .ok();
+
+        match schema_combiner.generate_combined_schema() {
+            Ok(schema) => Some(schema),
+            Err(e) => {
+                tracing::error!("Failed to generate combined schema: {}", e);
+                None
+            }
+        }
+    }
+
+    /// An empty object JSON Schema (`{"type":"object","properties":{}}`) for tools
+    /// that take no arguments or whose arguments schema could not be used.
+    fn empty_object_schema() -> serde_json::Map<String, serde_json::Value> {
+        match serde_json::json!({"type": "object", "properties": {}}) {
+            serde_json::Value::Object(map) => map,
+            _ => unreachable!("json! object literal is always a Value::Object"),
+        }
     }
 
     pub fn convert_functions_to_mcp_tools(
@@ -430,16 +491,7 @@ impl ToolConverter {
         };
 
         // Empty input schema (no arguments needed to select a FunctionSet)
-        let schema = serde_json::Map::from_iter([
-            (
-                "type".to_string(),
-                serde_json::Value::String("object".to_string()),
-            ),
-            (
-                "properties".to_string(),
-                serde_json::Value::Object(serde_json::Map::new()),
-            ),
-        ]);
+        let schema = Self::empty_object_schema();
 
         let tool_name = format!("{}{}", Self::SELECTOR_TOOL_PREFIX, set_name);
         Some(Tool::new(tool_name, description, schema))
@@ -927,6 +979,76 @@ mod tests {
         }
     }
 
+    /// WORKFLOW worker spec: arguments_schema already holds the workflow's own
+    /// `input` schema (extracted in app crate). The MCP tool must expose this
+    /// directly at the top level without a `settings`/`arguments` wrapper.
+    fn make_workflow_worker_spec() -> FunctionSpecs {
+        let mut method_schemas = std::collections::HashMap::new();
+        method_schemas.insert(
+            proto::DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: Some("wf worker summary".to_string()),
+                arguments_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "owner": {"type": "string"},
+                        "repo": {"type": "string"}
+                    }
+                })
+                .to_string(),
+                result_schema: Some(json!({"type": "object"}).to_string()),
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                annotations: None,
+            },
+        );
+
+        FunctionSpecs {
+            name: "wf_worker".to_string(),
+            description: "wf worker description".to_string(),
+            // Worker settings are fixed at creation time; settings_schema is empty.
+            settings_schema: String::new(),
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
+            runner_type: proto::jobworkerp::data::RunnerType::Workflow as i32,
+            worker_id: Some(proto::jobworkerp::data::WorkerId { value: 42 }),
+            ..Default::default()
+        }
+    }
+
+    /// Non-WORKFLOW worker (e.g. COMMAND) backed by a pre-configured worker.
+    /// Like the workflow worker, its tool must expose arguments directly without
+    /// the `settings`/`arguments` wrapper.
+    fn make_command_worker_spec() -> FunctionSpecs {
+        let mut method_schemas = std::collections::HashMap::new();
+        method_schemas.insert(
+            proto::DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: Some("cmd worker".to_string()),
+                arguments_schema: json!({
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}}
+                })
+                .to_string(),
+                result_schema: None,
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                annotations: None,
+            },
+        );
+
+        FunctionSpecs {
+            name: "cmd_worker".to_string(),
+            description: "cmd worker description".to_string(),
+            settings_schema: String::new(),
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
+            runner_type: proto::jobworkerp::data::RunnerType::Command as i32,
+            worker_id: Some(proto::jobworkerp::data::WorkerId { value: 7 }),
+            ..Default::default()
+        }
+    }
+
     /// Helper function to verify schema has required fields
     fn assert_schema_required_fields(
         schema: &serde_json::Map<String, Value>,
@@ -1172,6 +1294,191 @@ mod tests {
         assert_schema_property(&tool_b.input_schema, "arguments", &expected_arguments_b);
         assert_schema_property(&tool_b.input_schema, "settings", &expected_settings);
     }
+
+    /// WORKFLOW worker: the tool input schema must surface the workflow's `input`
+    /// schema directly (no `settings`/`arguments` wrapper), so callers pass input
+    /// fields at the top level.
+    #[test]
+    fn test_workflow_worker_tool_schema_is_unwrapped() {
+        let result =
+            ToolConverter::convert_functions_to_mcp_tools(vec![make_workflow_worker_spec()])
+                .unwrap();
+        let tool = result
+            .tools
+            .iter()
+            .find(|t| t.name == "wf_worker")
+            .expect("workflow worker tool should exist");
+
+        // Description comes from the method (workflow summary), not the generic description.
+        assert_eq!(tool.description.as_ref().unwrap(), "wf worker summary");
+
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("input schema should have properties");
+
+        // No wrapper keys: input fields are exposed directly at the top level.
+        assert!(
+            !props.contains_key("arguments"),
+            "worker tool schema must not wrap input under 'arguments': {props:?}"
+        );
+        assert!(
+            !props.contains_key("settings"),
+            "worker tool schema must not contain 'settings': {props:?}"
+        );
+        assert!(
+            props.contains_key("owner") && props.contains_key("repo"),
+            "workflow input fields should be top-level properties: {props:?}"
+        );
+        assert_eq!(
+            tool.input_schema.get("type").and_then(|v| v.as_str()),
+            Some("object")
+        );
+    }
+
+    /// Non-WORKFLOW worker: same unwrapped shape as a workflow worker. The
+    /// distinction is worker-vs-runner, not the runner type.
+    #[test]
+    fn test_command_worker_tool_schema_is_unwrapped() {
+        let result =
+            ToolConverter::convert_functions_to_mcp_tools(vec![make_command_worker_spec()])
+                .unwrap();
+        let tool = result
+            .tools
+            .iter()
+            .find(|t| t.name == "cmd_worker")
+            .expect("command worker tool should exist");
+
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("input schema should have properties");
+
+        assert!(
+            !props.contains_key("arguments") && !props.contains_key("settings"),
+            "worker tool schema must be unwrapped: {props:?}"
+        );
+        assert!(
+            props.contains_key("command"),
+            "arguments fields should be top-level: {props:?}"
+        );
+    }
+
+    /// Runner direct execution (worker_id absent) keeps the wrapped
+    /// `{ settings, arguments }` structure, including for WORKFLOW runners.
+    #[test]
+    fn test_runner_tool_schema_stays_wrapped() {
+        let result =
+            ToolConverter::convert_functions_to_mcp_tools(vec![make_reusable_workflow_spec()])
+                .unwrap();
+        let tool = result
+            .tools
+            .iter()
+            .find(|t| t.name == "test_workflow")
+            .expect("runner tool should exist");
+
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("input schema should have properties");
+        assert!(
+            props.contains_key("arguments"),
+            "runner tool schema must keep the 'arguments' wrapper: {props:?}"
+        );
+    }
+
+    /// A worker whose arguments schema omits the top-level `type` (e.g. a WORKFLOW
+    /// worker defined with `input: {}`) must still produce an MCP-valid inputSchema
+    /// with `"type": "object"`, otherwise clients reject the tool list.
+    #[test]
+    fn test_worker_tool_schema_defaults_missing_type_to_object() {
+        let mut method_schemas = std::collections::HashMap::new();
+        method_schemas.insert(
+            proto::DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: Some("empty input".to_string()),
+                // Mimics `input: {}` — a JSON object schema without a `type` key.
+                arguments_schema: "{}".to_string(),
+                result_schema: None,
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                annotations: None,
+            },
+        );
+        let spec = FunctionSpecs {
+            name: "empty_input_worker".to_string(),
+            description: "desc".to_string(),
+            settings_schema: String::new(),
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
+            runner_type: proto::jobworkerp::data::RunnerType::Workflow as i32,
+            worker_id: Some(proto::jobworkerp::data::WorkerId { value: 99 }),
+            ..Default::default()
+        };
+
+        let result = ToolConverter::convert_functions_to_mcp_tools(vec![spec]).unwrap();
+        let tool = result
+            .tools
+            .iter()
+            .find(|t| t.name == "empty_input_worker")
+            .expect("worker tool should exist");
+        assert_eq!(
+            tool.input_schema.get("type").and_then(|v| v.as_str()),
+            Some("object"),
+            "missing top-level 'type' must default to 'object' for MCP validity"
+        );
+    }
+
+    /// An existing top-level `type` on the worker arguments schema must be preserved
+    /// (not overwritten with "object").
+    #[test]
+    fn test_worker_tool_schema_preserves_existing_type() {
+        let mut method_schemas = std::collections::HashMap::new();
+        method_schemas.insert(
+            proto::DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: Some("typed".to_string()),
+                arguments_schema:
+                    json!({"type": "object", "properties": {"a": {"type": "string"}}}).to_string(),
+                result_schema: None,
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                annotations: None,
+            },
+        );
+        let spec = FunctionSpecs {
+            name: "typed_worker".to_string(),
+            description: "desc".to_string(),
+            settings_schema: String::new(),
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
+            runner_type: proto::jobworkerp::data::RunnerType::Command as i32,
+            worker_id: Some(proto::jobworkerp::data::WorkerId { value: 100 }),
+            ..Default::default()
+        };
+
+        let result = ToolConverter::convert_functions_to_mcp_tools(vec![spec]).unwrap();
+        let tool = result
+            .tools
+            .iter()
+            .find(|t| t.name == "typed_worker")
+            .unwrap();
+        assert_eq!(
+            tool.input_schema.get("type").and_then(|v| v.as_str()),
+            Some("object")
+        );
+        assert!(
+            tool.input_schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .is_some_and(|p| p.contains_key("a")),
+            "existing properties must be preserved"
+        );
+    }
+
     #[test]
     fn test_convert_functions_to_ollama_tools() {
         let specs = vec![

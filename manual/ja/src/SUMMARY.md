@@ -6,6 +6,7 @@
   - [Docker](./getting-started/docker.md)
 - [クライアント実行例](./client-usage.md)
 - [gRPC直接利用 (protobuf reflection)](./grpc-direct-api.md)
+- [MCP Server](./mcp-server.md)
 - [Runner]()
   - [組み込みRunner](./runners/builtin.md)
   - [MCPプロキシ](./runners/mcp-proxy.md)
