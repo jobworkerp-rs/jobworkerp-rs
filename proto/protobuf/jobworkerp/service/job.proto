@@ -59,7 +59,6 @@ message ClientStreamRequest {
 service JobService {
   rpc Enqueue(JobRequest) returns (CreateJobResponse);
   // Direct response only, JobResult on metadata header of grpc response
-  // TODO Now support only for worker with storage_type: Scalable
   rpc EnqueueForStream(JobRequest)
       returns (stream jobworkerp.data.ResultOutputItem);
 

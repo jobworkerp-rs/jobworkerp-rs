@@ -254,6 +254,36 @@ pub trait FunctionApp:
                 (name.to_string(), None)
             };
 
+            // Resolve the worker's runner up front so we can both normalize the call
+            // arguments (worker tools expose input at the top level) and decode the
+            // result later. runner_data carries the runner_type needed to wrap WORKFLOW
+            // worker input; it stays None when the worker or runner cannot be resolved.
+            let worker_opt = self.worker_app().find_by_name(&worker_name).await.ok().flatten();
+            let runner_id = worker_opt
+                .as_ref()
+                .and_then(|w| w.data.as_ref())
+                .and_then(|d| d.runner_id.as_ref());
+            let runner_data = match runner_id {
+                Some(rid) => self
+                    .runner_app()
+                    .find_runner(rid)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|r| r.data),
+                None => None,
+            };
+            let runner_name = runner_data.as_ref().map(|rd| rd.name.clone());
+
+            // Match the non-streaming worker path: wrap flat worker input (into the
+            // workflow 'input' field for the WORKFLOW run method) instead of forwarding
+            // the raw payload, which the downstream input-key guard would misread.
+            let arguments = prepare_worker_call_arguments(
+                runner_data.as_ref().map(|rd| rd.runner_type()),
+                tool_name_opt.as_deref(),
+                arguments,
+            );
+
             let streaming_type = if streaming {
                 StreamingType::Response
             } else {
@@ -275,23 +305,6 @@ pub trait FunctionApp:
                 Ok((jid, jres, stream_opt)) => {
                     let job_id = jid.value.to_string();
                     let started_at = chrono::Utc::now().timestamp_millis();
-
-                    // Find worker to get runner information for decoding
-                    let worker_opt = self.worker_app().find_by_name(&worker_name).await.ok().flatten();
-                    let runner_name = if let Some(worker) = &worker_opt {
-                        if let Some(worker_data) = &worker.data {
-                            if let Some(runner_id) = &worker_data.runner_id {
-                                self.runner_app().find_runner(runner_id).await.ok().flatten()
-                                    .and_then(|r| r.data.map(|rd| rd.name))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
 
                     let stream = self.process_job_result_to_stream(
                         job_id,
@@ -1160,13 +1173,6 @@ pub trait FunctionApp:
                         (name.to_string(), None, false, None)
                     };
 
-                // Transform arguments (e.g. wrap into 'input' for Workflow runners)
-                let arguments = if let Some(rt) = runner_type_opt {
-                    transform_function_arguments_impl(rt, arguments)
-                } else {
-                    arguments
-                };
-                let request_args = serde_json::Value::Object(arguments.unwrap_or_default());
                 let (worker_name, tool_name_for_worker) =
                     if let Some((server_name, tool_name)) = Self::divide_names(name) {
                         (server_name, Some(tool_name))
@@ -1174,6 +1180,15 @@ pub trait FunctionApp:
                         (name.to_string(), tool_name_opt)
                     };
                 let using_for_result = tool_name_for_worker.clone();
+
+                // Worker path: wrap flat input into the workflow 'input' field for the
+                // WORKFLOW run method (using-aware, so non-run methods like create keep
+                // their own schema).
+                let request_args = prepare_worker_call_arguments(
+                    runner_type_opt,
+                    tool_name_for_worker.as_deref(),
+                    serde_json::Value::Object(arguments.unwrap_or_default()),
+                );
 
                 if supports_streaming {
                     let (rid, rdata) = runner_for_args.ok_or_else(|| {
@@ -1658,13 +1673,29 @@ pub trait UseFunctionApp {
     fn function_app(&self) -> &FunctionAppImpl;
 }
 
-/// Wrap flat JSON arguments into the 'input' field for Workflow runners.
+/// Whether a WORKFLOW method should receive workflow `input` wrapping.
+///
+/// Only the `run` method (the default, when `using` is None or `"run"`) takes
+/// `WorkflowRunArgs` with an `input` field. Other methods such as `create` use a
+/// different schema (`CreateWorkflowArgs` with `workflow_data`/`name`) and must not
+/// be wrapped.
+pub(crate) fn is_workflow_run_method(using: Option<&str>) -> bool {
+    using.is_none_or(|m| m == proto::DEFAULT_METHOD_NAME)
+}
+
+/// Wrap flat JSON arguments into the 'input' field for the Workflow `run` method.
 /// Used by transform_job_args to ensure args match protobuf schema before serialization.
+///
+/// `using` selects the workflow method: only `run` (the default) is wrapped; other
+/// methods like `create` are passed through so their own schema reaches protobuf
+/// conversion intact. The `contains_key("input")` guard keeps this idempotent on
+/// already-wrapped payloads.
 pub(crate) fn wrap_workflow_args_if_needed(
     rt: RunnerType,
+    using: Option<&str>,
     arg_json: serde_json::Value,
 ) -> serde_json::Value {
-    if rt != RunnerType::Workflow {
+    if rt != RunnerType::Workflow || !is_workflow_run_method(using) {
         return arg_json;
     }
     match &arg_json {
@@ -1679,6 +1710,64 @@ pub(crate) fn wrap_workflow_args_if_needed(
     }
 }
 
+/// Prepare arguments for a Worker job from an LLM/MCP tool call.
+///
+/// Worker tools advertise their input fields at the top level (no
+/// `settings`/`arguments` wrapper), because a Worker's init settings are already
+/// fixed at creation time. The payload is therefore taken verbatim as the worker's
+/// flat input — a worker whose own input contains a field named `arguments` or
+/// `input` keeps it intact — and then wrapped into the workflow `input` field for
+/// WORKFLOW workers.
+///
+/// Unlike [`wrap_workflow_args_if_needed`] (used on the runner/gRPC direct path,
+/// where a top-level `input` key means the payload is already protobuf-wrapped),
+/// this always wraps the entire payload for WORKFLOW workers. A worker whose own
+/// input schema has a top-level `input` field would otherwise be misread as
+/// already-wrapped, dropping its sibling fields. Downstream `transform_job_args`
+/// is idempotent (it skips wrapping when `input` is already present), so the
+/// single-wrapped result here passes through unchanged.
+///
+/// This also differs from [`transform_function_arguments_impl`], which is used on
+/// the runner direct-execution path where `{ settings, arguments }` is the real
+/// schema and the `arguments` key must be unwrapped. Worker tools do not use that
+/// wrapper, so no unwrapping happens here.
+///
+/// `runner_type` is optional because the worker's runner may be unresolved; when
+/// absent the payload is left flat (no workflow wrapping).
+///
+/// `using` is the worker method. Input wrapping only applies to the WORKFLOW `run`
+/// method (the default), whose args are `WorkflowRunArgs` with an `input` field.
+/// Other WORKFLOW methods such as `create` take a different schema
+/// (`CreateWorkflowArgs` with `workflow_data`/`name`), so their payload is left
+/// untouched for the method-specific protobuf conversion downstream.
+pub(crate) fn prepare_worker_call_arguments(
+    runner_type: Option<RunnerType>,
+    using: Option<&str>,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    if runner_type != Some(RunnerType::Workflow) || !is_workflow_run_method(using) {
+        return arguments;
+    }
+    match arguments {
+        // Always wrap the whole payload as the workflow input, even when it has a
+        // top-level `input` field of its own.
+        serde_json::Value::Object(_) => {
+            let input_json = serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".to_string());
+            serde_json::json!({ "input": input_json })
+        }
+        serde_json::Value::String(s) => serde_json::json!({ "input": s }),
+        other => other,
+    }
+}
+
+/// Transform `{ settings, arguments }`-wrapped arguments for the runner
+/// direct-execution path of a WORKFLOW runner: unwrap the `arguments` key and wrap
+/// its contents into the workflow `input` field (preserving a sibling `settings`).
+///
+/// Unlike [`prepare_worker_call_arguments`] (the Worker path, which never unwraps
+/// `arguments`) and [`wrap_workflow_args_if_needed`] (which wraps a flat payload
+/// without unwrapping), this is for the runner path where `{ settings, arguments }`
+/// is the real schema, so the `arguments` key must be unwrapped first.
 pub(crate) fn transform_function_arguments_impl(
     rt: RunnerType,
     arguments: Option<serde_json::Map<String, serde_json::Value>>,
@@ -1800,7 +1889,7 @@ mod tests {
     #[test]
     fn test_wrap_workflow_args_flat() {
         let arg = json!({"owner": "foo", "repo": "bar"});
-        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, arg);
+        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, None, arg);
         assert!(result.is_object());
         let input_str = result["input"].as_str().unwrap();
         let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
@@ -1811,36 +1900,64 @@ mod tests {
     #[test]
     fn test_wrap_workflow_args_already_has_input() {
         let arg = json!({"input": "{\"owner\":\"foo\"}"});
-        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, arg.clone());
+        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, None, arg.clone());
         assert_eq!(result, arg);
     }
 
     #[test]
     fn test_wrap_workflow_args_non_workflow_passthrough() {
         let arg = json!({"key": "value"});
-        let result = wrap_workflow_args_if_needed(RunnerType::Command, arg.clone());
+        let result = wrap_workflow_args_if_needed(RunnerType::Command, None, arg.clone());
         assert_eq!(result, arg);
     }
 
     #[test]
     fn test_wrap_workflow_args_empty_object() {
         let arg = json!({});
-        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, arg);
+        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, None, arg);
         assert_eq!(result["input"].as_str().unwrap(), "{}");
     }
 
     #[test]
     fn test_wrap_workflow_args_string_value() {
         let arg = json!("hello world");
-        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, arg);
+        let result = wrap_workflow_args_if_needed(RunnerType::Workflow, None, arg);
         assert_eq!(result["input"].as_str().unwrap(), "hello world");
     }
 
     #[test]
     fn test_wrap_workflow_args_string_non_workflow_passthrough() {
         let arg = json!("hello world");
-        let result = wrap_workflow_args_if_needed(RunnerType::Command, arg.clone());
+        let result = wrap_workflow_args_if_needed(RunnerType::Command, None, arg.clone());
         assert_eq!(result, arg);
+    }
+
+    #[test]
+    fn test_wrap_workflow_args_create_method_passthrough() {
+        // The WORKFLOW `create` method uses CreateWorkflowArgs (workflow_data/name),
+        // not WorkflowRunArgs. transform_job_args must not wrap it into `input`, or the
+        // create call loses its required fields.
+        let arg = json!({"workflow_data": "{...}", "name": "wf"});
+        let result =
+            wrap_workflow_args_if_needed(RunnerType::Workflow, Some("create"), arg.clone());
+        assert_eq!(
+            result, arg,
+            "create method args must reach protobuf conversion unwrapped"
+        );
+    }
+
+    #[test]
+    fn test_wrap_workflow_args_explicit_run_method_wrapped() {
+        let arg = json!({"owner": "foo"});
+        let result = wrap_workflow_args_if_needed(
+            RunnerType::Workflow,
+            Some(proto::DEFAULT_METHOD_NAME),
+            arg,
+        );
+        assert!(
+            result.get("input").and_then(|v| v.as_str()).is_some(),
+            "run method args must be wrapped into 'input'"
+        );
     }
 
     #[test]
@@ -1861,6 +1978,166 @@ mod tests {
         let inner: serde_json::Value = serde_json::from_str(parsed.as_str().unwrap()).unwrap();
         assert_eq!(inner["owner"], "foo");
         assert_eq!(inner["repo"], "bar");
+    }
+
+    /// Exercise the shared WORKFLOW worker argument preparation for the default
+    /// `run` method (using = None), as used by all worker enqueue paths.
+    fn workflow_worker_path(args: serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+        prepare_worker_call_arguments(
+            Some(RunnerType::Workflow),
+            None,
+            serde_json::Value::Object(args),
+        )
+    }
+
+    #[test]
+    fn test_workflow_worker_wraps_flat_args_into_input() {
+        // Worker tools advertise input at the top level; the whole payload is taken
+        // verbatim as the workflow input.
+        let args = serde_json::Map::from_iter([
+            ("owner".to_string(), json!("foo")),
+            ("repo".to_string(), json!("bar")),
+        ]);
+        let transformed = workflow_worker_path(args);
+        let input = transformed.get("input").and_then(|v| v.as_str()).unwrap();
+        let inner: serde_json::Value = serde_json::from_str(input).unwrap();
+        assert_eq!(inner["owner"], "foo");
+        assert_eq!(inner["repo"], "bar");
+    }
+
+    #[test]
+    fn test_workflow_worker_path_preserves_arguments_field_with_sibling() {
+        // A WORKFLOW worker whose input schema has a top-level `arguments` object
+        // field alongside other fields. Sending the payload as advertised must keep
+        // every field, including the sibling `owner`.
+        let args = serde_json::Map::from_iter([
+            ("arguments".to_string(), json!({"x": 1})),
+            ("owner".to_string(), json!("foo")),
+        ]);
+        let transformed = workflow_worker_path(args);
+        let input = transformed.get("input").and_then(|v| v.as_str()).unwrap();
+        let inner: serde_json::Value = serde_json::from_str(input).unwrap();
+        assert_eq!(
+            inner["arguments"],
+            json!({"x": 1}),
+            "the worker's own 'arguments' field must be preserved inside input"
+        );
+        assert_eq!(
+            inner["owner"], "foo",
+            "the sibling field must not be dropped"
+        );
+    }
+
+    #[test]
+    fn test_workflow_worker_path_preserves_sole_arguments_field() {
+        // A WORKFLOW worker whose input schema is a single `arguments` object field.
+        // The client sends {"arguments": {...}} exactly as advertised; without legacy
+        // unwrapping the `arguments` field survives inside the workflow input.
+        let args = serde_json::Map::from_iter([("arguments".to_string(), json!({"x": 1}))]);
+        let transformed = workflow_worker_path(args);
+        let input = transformed.get("input").and_then(|v| v.as_str()).unwrap();
+        let inner: serde_json::Value = serde_json::from_str(input).unwrap();
+        assert_eq!(
+            inner,
+            json!({"arguments": {"x": 1}}),
+            "a sole 'arguments' field must survive verbatim, not be unwrapped"
+        );
+    }
+
+    #[test]
+    fn test_workflow_worker_path_preserves_own_input_field() {
+        // A WORKFLOW worker whose input schema has a top-level `input` field of its
+        // own. The whole payload must be wrapped as the workflow input — not mistaken
+        // for an already-protobuf-wrapped value — so neither the worker's `input`
+        // field nor its siblings are lost.
+        let args = serde_json::Map::from_iter([
+            ("input".to_string(), json!("foo")),
+            ("other".to_string(), json!(1)),
+        ]);
+        let transformed = workflow_worker_path(args);
+        let input = transformed.get("input").and_then(|v| v.as_str()).unwrap();
+        let inner: serde_json::Value = serde_json::from_str(input).unwrap();
+        assert_eq!(
+            inner,
+            json!({"input": "foo", "other": 1}),
+            "the worker's own 'input' field and siblings must be preserved inside the workflow input"
+        );
+    }
+
+    #[test]
+    fn test_workflow_worker_path_wrap_is_single_then_idempotent() {
+        // The worker path wraps once; the downstream transform_job_args guard
+        // (contains_key("input")) must then leave it unchanged (no double wrapping).
+        let args = serde_json::Map::from_iter([("owner".to_string(), json!("foo"))]);
+        let wrapped = workflow_worker_path(args);
+        // Simulate the downstream idempotent re-wrap performed by transform_job_args.
+        let rewrapped = wrap_workflow_args_if_needed(RunnerType::Workflow, None, wrapped.clone());
+        assert_eq!(
+            rewrapped, wrapped,
+            "downstream re-wrap must be a no-op once the payload is already wrapped"
+        );
+    }
+
+    #[test]
+    fn test_prepare_worker_call_non_workflow_passes_through_verbatim() {
+        // A non-WORKFLOW worker: the payload is left flat (no 'input' wrapping) and
+        // taken verbatim, including any `arguments` field.
+        let args = serde_json::Map::from_iter([
+            ("arguments".to_string(), json!({"command": "date"})),
+            ("name".to_string(), json!("x")),
+        ]);
+        let prepared = prepare_worker_call_arguments(
+            Some(RunnerType::Command),
+            None,
+            serde_json::Value::Object(args.clone()),
+        );
+        assert_eq!(prepared, serde_json::Value::Object(args));
+    }
+
+    #[test]
+    fn test_prepare_worker_call_unresolved_runner_leaves_flat() {
+        // When the runner type is unknown, the payload is left flat (no wrapping).
+        let args = serde_json::Map::from_iter([("owner".to_string(), json!("foo"))]);
+        let prepared =
+            prepare_worker_call_arguments(None, None, serde_json::Value::Object(args.clone()));
+        assert_eq!(prepared, serde_json::Value::Object(args));
+    }
+
+    #[test]
+    fn test_prepare_worker_call_workflow_create_method_not_wrapped() {
+        // A WORKFLOW worker invoked with the non-run `create` method uses
+        // CreateWorkflowArgs (workflow_data/name), not WorkflowRunArgs. Its payload
+        // must NOT be wrapped into `input`, or the downstream protobuf conversion
+        // for create would fail to find its fields.
+        let args = serde_json::Map::from_iter([
+            ("workflow_data".to_string(), json!("{...}")),
+            ("name".to_string(), json!("wf")),
+        ]);
+        let prepared = prepare_worker_call_arguments(
+            Some(RunnerType::Workflow),
+            Some("create"),
+            serde_json::Value::Object(args.clone()),
+        );
+        assert_eq!(
+            prepared,
+            serde_json::Value::Object(args),
+            "create method args must be passed through verbatim, not wrapped into 'input'"
+        );
+    }
+
+    #[test]
+    fn test_prepare_worker_call_workflow_run_method_explicit_is_wrapped() {
+        // Explicitly passing the default `run` method behaves like None: wrapped.
+        let args = serde_json::Map::from_iter([("owner".to_string(), json!("foo"))]);
+        let prepared = prepare_worker_call_arguments(
+            Some(RunnerType::Workflow),
+            Some(proto::DEFAULT_METHOD_NAME),
+            serde_json::Value::Object(args),
+        );
+        assert!(
+            prepared.get("input").and_then(|v| v.as_str()).is_some(),
+            "run method payload must be wrapped into 'input'"
+        );
     }
 
     /// Regression test: Worker path must use transform_function_arguments_impl,
@@ -1889,8 +2166,11 @@ mod tests {
         assert_eq!(parsed["pull_number"], 187);
 
         // wrap_workflow_args_if_needed does NOT unwrap "arguments" — it wraps everything
-        let wrapped =
-            wrap_workflow_args_if_needed(RunnerType::Workflow, serde_json::Value::Object(args));
+        let wrapped = wrap_workflow_args_if_needed(
+            RunnerType::Workflow,
+            None,
+            serde_json::Value::Object(args),
+        );
         let wrapped_input_str = wrapped["input"].as_str().unwrap();
         let wrapped_parsed: serde_json::Value = serde_json::from_str(wrapped_input_str).unwrap();
         // The "arguments" key is still present (this was the bug)

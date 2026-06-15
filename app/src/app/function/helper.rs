@@ -286,21 +286,15 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                                 e
                             )
                         })?;
-                    // Transform arguments for Workflow/ReusableWorkflow (wrap into 'input' field)
-                    let arguments = match arguments {
-                        Value::Object(map) => {
-                            let transformed =
-                                crate::app::function::transform_function_arguments_impl(
-                                    rdata.runner_type(),
-                                    Some(map),
-                                );
-                            Value::Object(transformed.unwrap_or_default())
-                        }
-                        other => crate::app::function::wrap_workflow_args_if_needed(
-                            rdata.runner_type(),
-                            other,
-                        ),
-                    };
+                    // Worker tools expose their input fields at the top level: wrap flat
+                    // input into the workflow 'input' field for the WORKFLOW run method
+                    // (using-aware, so non-run methods like create keep their own schema).
+                    // Shared with enqueue_function_for_llm.
+                    let arguments = crate::app::function::prepare_worker_call_arguments(
+                        Some(rdata.runner_type()),
+                        using.as_deref(),
+                        arguments,
+                    );
                     tracing::debug!("job args (using: {:?}): {:#?}", using, &arguments);
                     let job_args = if let Some(desc) = args_descriptor {
                         ProtobufDescriptor::json_value_to_message(desc, &arguments, true, true)

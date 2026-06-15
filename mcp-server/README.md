@@ -109,6 +109,26 @@ MCP Server exposes the following jobworkerp Runners as tools:
 - `WORKFLOW`: Workflow execution (using="run" or "create")
 - Custom plugins
 
+In addition, registered **Workers** are exposed as tools (can be excluded with `MCP_EXCLUDE_WORKER=true`).
+
+## Tool Call Format
+
+The argument shape depends on the tool's target and is reflected directly in each tool's `inputSchema`, so passing arguments as advertised works correctly:
+
+- **Runner tools (direct execution)**: need both init settings and call arguments, so they use `{ "settings": {...}, "arguments": {...} }`.
+
+  ```json
+  { "arguments": { "command": "echo", "args": ["Hello, World!"] } }
+  ```
+
+- **Worker tools (pre-configured)**: settings are fixed at worker creation, so arguments are passed **directly at the top level** (no `settings`/`arguments` wrapper). For a WORKFLOW Worker, the workflow's `input` fields are passed directly at the top level (jobworkerp wraps them into the workflow `input` automatically).
+
+  ```json
+  { "owner": "jobworkerp-rs", "repo": "jobworkerp-rs" }
+  ```
+
+  A non-`run` WORKFLOW method (`worker_name___create`) is not wrapped into the workflow `input`; pass its own schema (e.g. `workflow_data` / `name`) at the top level instead.
+
 ## Authentication
 
 `mcp-http` supports Bearer token authentication:

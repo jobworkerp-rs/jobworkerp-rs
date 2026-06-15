@@ -702,6 +702,7 @@ pub trait UseJobExecutor:
         async move {
             let job_args = crate::app::function::wrap_workflow_args_if_needed(
                 rdata.runner_type(),
+                using,
                 job_args.clone(),
             );
 

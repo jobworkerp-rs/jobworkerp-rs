@@ -123,17 +123,18 @@ fn test_config_default() {
     assert!(!config.exclude_worker_as_tool);
     assert!(config.set_name.is_none());
     assert_eq!(config.timeout_sec, 60);
-    assert!(config.streaming);
+    // Streaming is opt-in (MCP_STREAMING); most runners are non-streaming.
+    assert!(!config.streaming);
 }
 
 #[test]
 fn test_config_from_env() {
     // SAFETY: called in test setup before spawning threads
     unsafe {
-        std::env::set_var("EXCLUDE_RUNNER_AS_TOOL", "true");
-        std::env::set_var("EXCLUDE_WORKER_AS_TOOL", "true");
-        std::env::set_var("TOOL_SET_NAME", "test_set");
-        std::env::set_var("REQUEST_TIMEOUT_SEC", "120");
+        std::env::set_var("MCP_EXCLUDE_RUNNER", "true");
+        std::env::set_var("MCP_EXCLUDE_WORKER", "true");
+        std::env::set_var("MCP_SET_NAME", "test_set");
+        std::env::set_var("MCP_TIMEOUT_SEC", "120");
         std::env::set_var("MCP_STREAMING", "false");
     }
 
@@ -147,10 +148,10 @@ fn test_config_from_env() {
 
     // SAFETY: called in test cleanup
     unsafe {
-        std::env::remove_var("EXCLUDE_RUNNER_AS_TOOL");
-        std::env::remove_var("EXCLUDE_WORKER_AS_TOOL");
-        std::env::remove_var("TOOL_SET_NAME");
-        std::env::remove_var("REQUEST_TIMEOUT_SEC");
+        std::env::remove_var("MCP_EXCLUDE_RUNNER");
+        std::env::remove_var("MCP_EXCLUDE_WORKER");
+        std::env::remove_var("MCP_SET_NAME");
+        std::env::remove_var("MCP_TIMEOUT_SEC");
         std::env::remove_var("MCP_STREAMING");
     }
 }
