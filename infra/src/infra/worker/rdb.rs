@@ -22,8 +22,8 @@ impl WorkerFilterBinding {
     /// Bind this parameter to a query that returns typed results (QueryAs)
     fn bind_query_as<'q, O>(
         &'q self,
-        query: sqlx::query::QueryAs<'q, Rdb, O, <Rdb as Database>::Arguments<'q>>,
-    ) -> sqlx::query::QueryAs<'q, Rdb, O, <Rdb as Database>::Arguments<'q>> {
+        query: sqlx::query::QueryAs<'q, Rdb, O, <Rdb as Database>::Arguments>,
+    ) -> sqlx::query::QueryAs<'q, Rdb, O, <Rdb as Database>::Arguments> {
         match self {
             WorkerFilterBinding::I32(value) => query.bind(*value),
             WorkerFilterBinding::I64(value) => query.bind(*value),
@@ -34,8 +34,8 @@ impl WorkerFilterBinding {
     /// Bind this parameter to a query that returns scalar values (QueryScalar)
     fn bind_query_scalar<'q, O>(
         &'q self,
-        query: sqlx::query::QueryScalar<'q, Rdb, O, <Rdb as Database>::Arguments<'q>>,
-    ) -> sqlx::query::QueryScalar<'q, Rdb, O, <Rdb as Database>::Arguments<'q>> {
+        query: sqlx::query::QueryScalar<'q, Rdb, O, <Rdb as Database>::Arguments>,
+    ) -> sqlx::query::QueryScalar<'q, Rdb, O, <Rdb as Database>::Arguments> {
         match self {
             WorkerFilterBinding::I32(value) => query.bind(*value),
             WorkerFilterBinding::I64(value) => query.bind(*value),
@@ -385,7 +385,9 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         };
 
         let full_sql = format!("{base_sql}{limit_clause}");
-        let query = sqlx::query_as::<_, WorkerRow>(&full_sql);
+        // AssertSqlSafe: WHERE/ORDER/LIMIT clauses are fixed fragments with bound
+        // parameters (no user input in the SQL text).
+        let query = sqlx::query_as::<_, WorkerRow>(sqlx::AssertSqlSafe(full_sql));
         let query = Self::bind_worker_filters_query_as(query, &bindings);
 
         query
@@ -444,7 +446,9 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         );
 
         let sql = format!("SELECT count(*) as count FROM worker{where_clause};");
-        let query = sqlx::query_scalar(&sql);
+        // AssertSqlSafe: WHERE clause is fixed fragments with bound parameters (no user
+        // input in the SQL text).
+        let query = sqlx::query_scalar(sqlx::AssertSqlSafe(sql));
         let query = Self::bind_worker_filters_query_scalar(query, &bindings);
 
         query
@@ -521,9 +525,9 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
     /// Bind filter parameters to a QueryAs query.
     #[allow(private_interfaces)]
     fn bind_worker_filters_query_as<'q, O>(
-        mut query: sqlx::query::QueryAs<'q, Rdb, O, <Rdb as Database>::Arguments<'q>>,
+        mut query: sqlx::query::QueryAs<'q, Rdb, O, <Rdb as Database>::Arguments>,
         bindings: &'q [WorkerFilterBinding],
-    ) -> sqlx::query::QueryAs<'q, Rdb, O, <Rdb as Database>::Arguments<'q>> {
+    ) -> sqlx::query::QueryAs<'q, Rdb, O, <Rdb as Database>::Arguments> {
         for binding in bindings {
             query = binding.bind_query_as(query);
         }
@@ -533,9 +537,9 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
     /// Bind filter parameters to a QueryScalar query.
     #[allow(private_interfaces)]
     fn bind_worker_filters_query_scalar<'q, O>(
-        mut query: sqlx::query::QueryScalar<'q, Rdb, O, <Rdb as Database>::Arguments<'q>>,
+        mut query: sqlx::query::QueryScalar<'q, Rdb, O, <Rdb as Database>::Arguments>,
         bindings: &'q [WorkerFilterBinding],
-    ) -> sqlx::query::QueryScalar<'q, Rdb, O, <Rdb as Database>::Arguments<'q>> {
+    ) -> sqlx::query::QueryScalar<'q, Rdb, O, <Rdb as Database>::Arguments> {
         for binding in bindings {
             query = binding.bind_query_scalar(query);
         }

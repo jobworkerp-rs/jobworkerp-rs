@@ -141,7 +141,10 @@ pub async fn find_overrides_batch_tx(
                     retry_type, retry_interval, retry_max_interval, retry_max_retry, retry_basis
              FROM job_execution_overrides WHERE job_id IN ( {params} )"
         );
-        let mut query = sqlx::query_as::<Rdb, JobExecutionOverridesRow>(&query_str);
+        // AssertSqlSafe: IN-clause uses a fixed placeholder count with bound values (no
+        // user input in the SQL text).
+        let mut query =
+            sqlx::query_as::<Rdb, JobExecutionOverridesRow>(sqlx::AssertSqlSafe(query_str));
         for id in chunk {
             query = query.bind(id);
         }

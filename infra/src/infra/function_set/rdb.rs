@@ -89,8 +89,9 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
             values.join(",")
         );
 
-        // Start with the base query
-        let mut q = sqlx::query::<Rdb>(&query);
+        // AssertSqlSafe: VALUES tuples are fixed placeholders with bound values (no user
+        // input in the SQL text).
+        let mut q = sqlx::query::<Rdb>(sqlx::AssertSqlSafe(query));
 
         // Bind all parameters for each target
         for (target_id, target_type, using) in &target_tuples {
