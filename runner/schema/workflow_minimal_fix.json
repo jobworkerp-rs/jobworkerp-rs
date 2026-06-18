@@ -6,7 +6,6 @@
   "type": "object",
   "required": [
     "document",
-    "input",
     "do"
   ],
   "properties": {

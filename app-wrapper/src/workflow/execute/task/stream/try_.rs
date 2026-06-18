@@ -554,10 +554,10 @@ mod tests {
                 metadata: serde_json::Map::new(),
                 ..Default::default()
             },
-            input: workflow::Input {
+            input: Some(workflow::Input {
                 schema: None,
                 from: None,
-            },
+            }),
             output: Some(Output {
                 as_: None,
                 schema: None,

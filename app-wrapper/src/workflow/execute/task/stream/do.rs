@@ -472,10 +472,10 @@ mod tests {
                 metadata: serde_json::Map::new(),
                 ..Default::default()
             },
-            input: Input {
+            input: Some(Input {
                 schema: None,
                 from: None,
-            },
+            }),
             output: Some(Output {
                 as_: None,
                 schema: None,
@@ -902,10 +902,10 @@ mod tests {
                     metadata: serde_json::Map::new(),
                     ..Default::default()
                 },
-                input: Input {
+                input: Some(Input {
                     schema: None,
                     from: None,
-                },
+                }),
                 output: None,
                 do_: TaskList(vec![
                     {
@@ -1112,10 +1112,10 @@ mod tests {
                     metadata: serde_json::Map::new(),
                     ..Default::default()
                 },
-                input: Input {
+                input: Some(Input {
                     schema: None,
                     from: None,
-                },
+                }),
                 output: Some(Output {
                     as_: None,
                     schema: None,
@@ -1282,10 +1282,10 @@ mod tests {
                     metadata: serde_json::Map::new(),
                     ..Default::default()
                 },
-                input: Input {
+                input: Some(Input {
                     schema: None,
                     from: None,
-                },
+                }),
                 output: Some(Output {
                     as_: None,
                     schema: None,

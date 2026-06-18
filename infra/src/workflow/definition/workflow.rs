@@ -5550,8 +5550,7 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"do\","]
-#[doc = "    \"document\","]
-#[doc = "    \"input\""]
+#[doc = "    \"document\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"checkpointing\": {"]
@@ -5684,7 +5683,8 @@ pub struct WorkflowSchema {
     pub do_: TaskList,
     pub document: Document,
     #[doc = "Workflow input configuration."]
-    pub input: Input,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub input: ::std::option::Option<Input>,
     #[doc = "Workflow output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
@@ -9602,7 +9602,7 @@ pub mod builder {
         >,
         do_: ::std::result::Result<super::TaskList, ::std::string::String>,
         document: ::std::result::Result<super::Document, ::std::string::String>,
-        input: ::std::result::Result<super::Input, ::std::string::String>,
+        input: ::std::result::Result<::std::option::Option<super::Input>, ::std::string::String>,
         output: ::std::result::Result<::std::option::Option<super::Output>, ::std::string::String>,
         timeout:
             ::std::result::Result<::std::option::Option<super::DoTimeout>, ::std::string::String>,
@@ -9613,7 +9613,7 @@ pub mod builder {
                 checkpointing: Ok(Default::default()),
                 do_: Err("no value supplied for do_".to_string()),
                 document: Err("no value supplied for document".to_string()),
-                input: Err("no value supplied for input".to_string()),
+                input: Ok(Default::default()),
                 output: Ok(Default::default()),
                 timeout: Ok(Default::default()),
             }
@@ -9652,7 +9652,7 @@ pub mod builder {
         }
         pub fn input<T>(mut self, value: T) -> Self
         where
-            T: ::std::convert::TryInto<super::Input>,
+            T: ::std::convert::TryInto<::std::option::Option<super::Input>>,
             T::Error: ::std::fmt::Display,
         {
             self.input = value

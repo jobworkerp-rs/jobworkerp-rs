@@ -69,7 +69,7 @@ impl CreateWorkflowRunnerImpl {
         let workflow_json = match &args.workflow_source {
             Some(workflow_source) => match workflow_source {
                 WorkflowSource::WorkflowData(data) => {
-                    // Parse as WorkflowSchema to validate required fields (do, document, input)
+                    // Parse as WorkflowSchema to validate required fields (do, document).
                     let _workflow: WorkflowSchema = serde_json::from_str(data)
                         .or_else(|_| serde_yaml::from_str(data))
                         .map_err(|e| anyhow!("Invalid workflow schema: {}", e))?;

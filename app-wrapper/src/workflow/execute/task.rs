@@ -891,33 +891,26 @@ impl TaskExecutor {
                 );
                 let task_name_str = task_name.to_string();
                 futures::stream::once(async move {
-                    match task_executor
+                    let ctx = task_executor
                         .execute(cx, task_name.as_str(), task_context.clone())
-                        .await
-                    {
-                        Ok(ctx) => {
-                            let mut expr = Self::expression(
-                                &*workflow_context.read().await,
-                                Arc::new(ctx.clone()),
-                            )
+                        .await?;
+                    let mut expr =
+                        Self::expression(&*workflow_context.read().await, Arc::new(ctx.clone()))
                             .await?;
-                            let result = Self::update_context_by_output(
-                                checkpoint_repository.clone(),
-                                execution_id.clone(),
-                                original_task.clone(),
-                                workflow_context.clone(),
-                                &mut expr,
-                                ctx,
-                            )
-                            .await?;
-                            Ok(WorkflowStreamEvent::task_completed(
-                                "callTask",
-                                &task_name_str,
-                                result,
-                            ))
-                        }
-                        Err(e) => Err(e),
-                    }
+                    let result = Self::update_context_by_output(
+                        checkpoint_repository.clone(),
+                        execution_id.clone(),
+                        original_task.clone(),
+                        workflow_context.clone(),
+                        &mut expr,
+                        ctx,
+                    )
+                    .await?;
+                    Ok(WorkflowStreamEvent::task_completed(
+                        "callTask",
+                        &task_name_str,
+                        result,
+                    ))
                 })
                 .boxed()
             }
@@ -1329,10 +1322,10 @@ mod tests {
                 metadata: serde_json::Map::new(),
                 ..Default::default()
             },
-            input: Input {
+            input: Some(Input {
                 schema: None,
                 from: None,
-            },
+            }),
             output: Some(Output {
                 as_: None,
                 schema: None,
@@ -1375,10 +1368,10 @@ mod tests {
                 metadata: serde_json::Map::new(),
                 ..Default::default()
             },
-            input: Input {
+            input: Some(Input {
                 schema: None,
                 from: None,
-            },
+            }),
             output: Some(Output {
                 as_: None,
                 schema: None,

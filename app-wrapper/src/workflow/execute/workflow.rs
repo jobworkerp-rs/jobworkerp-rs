@@ -294,7 +294,11 @@ impl WorkflowExecutor {
                 lock.input.clone()
             };
 
-            let input_with_defaults = if let Some(schema) = workflow.input.schema.as_ref() {
+            let workflow_input = workflow.input.as_ref();
+
+            let input_with_defaults = if let Some(schema) =
+                workflow_input.and_then(|input| input.schema.as_ref())
+            {
                 if let Some(schema_doc) = schema.json_schema() {
                     // First, validate the input
                     match jsonschema::validate(schema_doc, &input).map_err(|e| {
@@ -397,7 +401,9 @@ impl WorkflowExecutor {
             );
 
             // Transform input (using input with defaults applied)
-            let transformed_input = if let Some(from) = workflow.input.from.as_ref() {
+            let transformed_input = if let Some(from) =
+                workflow_input.and_then(|input| input.from.as_ref())
+            {
                 match WorkflowExecutor::transform_input(input_with_defaults.clone(), from, &expression) {
                     Ok(v) => v,
                     Err(e) => {
@@ -1042,6 +1048,7 @@ mod tests {
             WorkflowVersion,
         },
     };
+    use crate::workflow::execute::task::TaskExecutorTrait;
 
     use app::module::test::create_hybrid_test_app;
     use futures::{StreamExt, pin_mut};
@@ -1093,10 +1100,10 @@ mod tests {
                 metadata: serde_json::Map::new(),
                 ..Default::default()
             },
-            input: Input {
+            input: Some(Input {
                 schema: None,
                 from: None,
-            },
+            }),
             output: Some(Output {
                 as_: None,
                 schema: None,
@@ -1654,10 +1661,10 @@ mod tests {
                 metadata: serde_json::Map::new(),
                 ..Default::default()
             },
-            input: Input {
+            input: Some(Input {
                 schema: None,
                 from: None,
-            },
+            }),
             output: Some(Output {
                 as_: None,
                 schema: None,
@@ -1800,10 +1807,10 @@ mod tests {
                 tags: serde_json::Map::new(),
                 metadata: serde_json::Map::new(),
             },
-            input: Input {
+            input: Some(Input {
                 schema: None,
                 from: None,
-            },
+            }),
             output: Some(Output {
                 as_: Some(workflow::OutputAs::Variant0("${.final_result}".to_string())),
                 schema: None,
@@ -2267,6 +2274,81 @@ mod tests {
             assert!(
                 output.get("completed").is_none(),
                 "after_wait task should not have executed"
+            );
+        });
+    }
+
+    #[test]
+    fn test_workflow_without_root_input_keeps_runtime_input_for_task_execution() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "no-root-input-test",
+                    "version": "1.0.0"
+                },
+                "do": [
+                    {
+                        "copy_input": {
+                            "set": {
+                                "data": "${.data}"
+                            }
+                        }
+                    }
+                ]
+            });
+
+            let workflow =
+                serde_json::from_value::<WorkflowSchema>(workflow_json).expect("Valid workflow");
+            assert!(workflow.input.is_none());
+
+            let input = Arc::new(serde_json::json!({"data": "runtime"}));
+            let context = Arc::new(serde_json::json!({}));
+
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+
+            let task = workflow
+                .do_
+                .0
+                .first()
+                .and_then(|task| task.get("copy_input"))
+                .expect("copy_input task must exist")
+                .clone();
+            let Task::SetTask(set_task) = task else {
+                panic!("copy_input must be a set task");
+            };
+            let executor = crate::workflow::execute::task::set::SetTaskExecutor::new(
+                workflow_context.clone(),
+                set_task,
+            );
+            let task_context = TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            );
+
+            let task_context = executor
+                .execute(
+                    Arc::new(opentelemetry::Context::current()),
+                    "copy_input",
+                    task_context,
+                )
+                .await
+                .expect("set task must execute with runtime input");
+
+            assert_eq!(
+                *workflow_context.read().await.input,
+                serde_json::json!({"data": "runtime"})
+            );
+            assert_eq!(
+                task_context.output.get("data"),
+                Some(&serde_json::json!("runtime"))
             );
         });
     }
