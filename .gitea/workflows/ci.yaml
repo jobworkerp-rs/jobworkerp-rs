@@ -13,10 +13,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - name: apt upgrade
+      - name: apt update
         run: |
           apt-get update
-          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang libclang-dev  gobjc gnustep gnustep-devel g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
+          apt-get install -y sudo lv zsh git curl build-essential mold clang libclang-dev  gobjc gnustep gnustep-devel g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
           # Install Node.js for setup-protoc action
           curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
           apt-get install -y nodejs
@@ -96,10 +96,10 @@ jobs:
 #          - 7005:7005
 
     steps:
-      - name: apt upgrade
+      - name: apt update
         run: |
           apt-get update
-          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang libclang-dev  gobjc gnustep gnustep-devel g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
+          apt-get install -y sudo lv zsh git curl build-essential mold clang libclang-dev  gobjc gnustep gnustep-devel g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
           # Install Node.js for setup-protoc action
           curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
           apt-get install -y nodejs
