@@ -7,7 +7,7 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext},
         expression::UseExpression,
-        task::run::resolve_run_task_timeout_sec,
+        task::{NamedTimeouts, run::resolve_run_task_timeout_sec},
     },
 };
 use anyhow::{Result, anyhow};
@@ -46,6 +46,7 @@ const CONTENT_TYPE_JSON: &str = "application/json";
 pub struct CallTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
     default_task_timeout: Duration,
+    named_timeouts: Arc<NamedTimeouts>,
     task: workflow::CallTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
     metadata: Arc<HashMap<String, String>>,
@@ -60,6 +61,7 @@ impl CallTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_task_timeout: Duration,
+        named_timeouts: Arc<NamedTimeouts>,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         task: workflow::CallTask,
         metadata: Arc<HashMap<String, String>>,
@@ -67,6 +69,7 @@ impl CallTaskExecutor {
         Self {
             workflow_context,
             default_task_timeout,
+            named_timeouts,
             task,
             job_executor_wrapper,
             metadata,
@@ -408,8 +411,11 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
         let uri = Self::ensure_supported(&call)?;
         let (settings, args, output) = Self::http_request_parts(uri, call)
             .map_err(|e| Self::unsupported("with", e.to_string()))?;
-        let timeout_sec =
-            resolve_run_task_timeout_sec(self.task.timeout.as_ref(), self.default_task_timeout);
+        let timeout_sec = resolve_run_task_timeout_sec(
+            self.task.timeout.as_ref(),
+            &self.named_timeouts,
+            self.default_task_timeout,
+        )?;
 
         let raw_response = self
             .execute_http_runner(cx, settings, args, task_name, timeout_sec)

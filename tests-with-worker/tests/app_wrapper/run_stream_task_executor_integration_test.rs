@@ -17,7 +17,7 @@ use app_wrapper::workflow::{
     },
     execute::{
         context::{TaskContext, WorkflowContext, WorkflowStatus, WorkflowStreamEvent},
-        task::{StreamTaskExecutorTrait, stream::run::RunStreamTaskExecutor},
+        task::{NamedTimeouts, StreamTaskExecutorTrait, stream::run::RunStreamTaskExecutor},
     },
 };
 use futures::StreamExt;
@@ -122,6 +122,7 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
         let executor = RunStreamTaskExecutor::new(
             workflow_context.clone(),
             Duration::from_secs(30),
+            Arc::new(NamedTimeouts::new()),
             job_executors.clone(),
             run_task,
             Arc::new(HashMap::new()),
@@ -249,6 +250,7 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
         let executor = RunStreamTaskExecutor::new(
             workflow_context.clone(),
             Duration::from_secs(30),
+            Arc::new(NamedTimeouts::new()),
             job_executors.clone(),
             run_task,
             Arc::new(HashMap::new()),
@@ -382,6 +384,7 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
         let executor = RunStreamTaskExecutor::new(
             workflow_context.clone(),
             Duration::from_secs(30),
+            Arc::new(NamedTimeouts::new()),
             job_executors.clone(),
             run_task,
             Arc::new(HashMap::new()),

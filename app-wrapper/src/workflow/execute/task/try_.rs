@@ -3,7 +3,7 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext},
         task::{
-            ExecutionId, Result, StreamTaskExecutorTrait, TaskExecutorTrait,
+            ExecutionId, NamedTimeouts, Result, StreamTaskExecutorTrait, TaskExecutorTrait,
             stream::do_::DoTaskStreamExecutor,
         },
     },
@@ -22,6 +22,7 @@ use tokio::{sync::RwLock, time::Instant};
 pub struct TryTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
     default_timeout: Duration,
+    named_timeouts: Arc<NamedTimeouts>,
     task: workflow::TryTask,
     job_executors: Arc<JobExecutorWrapper>,
     checkpoint_repository: Option<
@@ -36,6 +37,7 @@ impl TryTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_timeout: Duration,
+        named_timeouts: Arc<NamedTimeouts>,
         task: workflow::TryTask,
         job_executors: Arc<JobExecutorWrapper>,
         checkpoint_repository: Option<
@@ -48,6 +50,7 @@ impl TryTaskExecutor {
         Self {
             workflow_context,
             default_timeout,
+            named_timeouts,
             task,
             job_executors,
             checkpoint_repository,
@@ -200,6 +203,7 @@ impl TryTaskExecutor {
         let do_stream_executor = Arc::new(DoTaskStreamExecutor::new(
             self.workflow_context.clone(),
             self.default_timeout,
+            self.named_timeouts.clone(),
             self.metadata.clone(),
             do_tasks,
             self.job_executors.clone(),
@@ -531,6 +535,7 @@ mod tests {
         let try_executor = TryTaskExecutor::new(
             workflow_context.clone(),
             Duration::from_secs(60), // default timeout
+            Arc::new(NamedTimeouts::new()),
             try_task.clone(),
             job_executors.clone(),
             None,

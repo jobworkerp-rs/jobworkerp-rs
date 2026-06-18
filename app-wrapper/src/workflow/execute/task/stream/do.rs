@@ -7,7 +7,7 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, Then, WorkflowContext, WorkflowStatus, WorkflowStreamEvent},
         expression::UseExpression,
-        task::{ExecutionId, TaskExecutor, trace::TaskTracing},
+        task::{ExecutionId, NamedTimeouts, TaskExecutor, trace::TaskTracing},
     },
 };
 use anyhow::Result;
@@ -30,6 +30,7 @@ type CheckPointRepo =
 pub struct DoTaskStreamExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
     default_timeout: Duration, // default timeout for tasks
+    named_timeouts: Arc<NamedTimeouts>,
     // for secret metadata
     #[debug_stub = "HashMap<String, String>"]
     metadata: Arc<HashMap<String, String>>,
@@ -52,6 +53,7 @@ impl DoTaskStreamExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_timeout: Duration,
+        named_timeouts: Arc<NamedTimeouts>,
         metadata: Arc<HashMap<String, String>>,
         task: workflow::DoTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -64,6 +66,7 @@ impl DoTaskStreamExecutor {
         Self {
             workflow_context,
             default_timeout,
+            named_timeouts,
             metadata,
             task,
             job_executor_wrapper,
@@ -200,6 +203,7 @@ impl DoTaskStreamExecutor {
                 let mut stream = TaskExecutor::new(
                     self.workflow_context.clone(),
                     self.default_timeout,
+                    self.named_timeouts.clone(),
                     job_exec.clone(),
                     self.checkpoint_repository.clone(),
                     &name,
@@ -482,6 +486,7 @@ mod tests {
             }),
             do_: task_list,
             timeout: None,
+            use_: None,
         }
     }
 
@@ -504,6 +509,7 @@ mod tests {
             let executor = DoTaskStreamExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(1200), // 20 minutes
+                Arc::new(NamedTimeouts::new()),
                 Arc::new(HashMap::new()),
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
@@ -648,6 +654,7 @@ mod tests {
             let executor = DoTaskStreamExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(1200), // 20 minutes
+                Arc::new(NamedTimeouts::new()),
                 Arc::new(HashMap::new()),
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
@@ -757,6 +764,7 @@ mod tests {
                 let executor = DoTaskStreamExecutor::new(
                     workflow_context.clone(),
                     Duration::from_secs(1200), // 20 minutes
+                    Arc::new(NamedTimeouts::new()),
                     Arc::new(HashMap::new()),
                     do_task,
                     Arc::new(JobExecutorWrapper::new(app_module.clone())),
@@ -836,6 +844,7 @@ mod tests {
                 let executor = DoTaskStreamExecutor::new(
                     workflow_context.clone(),
                     Duration::from_secs(1200), // 20 minutes
+                    Arc::new(NamedTimeouts::new()),
                     Arc::new(HashMap::new()),
                     do_task,
                     Arc::new(JobExecutorWrapper::new(app_module.clone())),
@@ -964,6 +973,7 @@ mod tests {
                     },
                 ]),
                 timeout: None,
+                use_: None,
             });
 
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
@@ -978,6 +988,7 @@ mod tests {
             let executor = DoTaskStreamExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(1200), // 20 minutes
+                Arc::new(NamedTimeouts::new()),
                 Arc::new(HashMap::new()),
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
@@ -1122,6 +1133,7 @@ mod tests {
                 }),
                 do_: task_list,
                 timeout: None,
+                use_: None,
             };
 
             let input = Arc::new(serde_json::json!({"test": "input"}));
@@ -1144,6 +1156,7 @@ mod tests {
             let executor = DoTaskStreamExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(1200),
+                Arc::new(NamedTimeouts::new()),
                 Arc::new(HashMap::new()),
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
@@ -1292,6 +1305,7 @@ mod tests {
                 }),
                 do_: task_list,
                 timeout: None,
+                use_: None,
             };
 
             let input = Arc::new(serde_json::json!({"test": "input"}));
@@ -1314,6 +1328,7 @@ mod tests {
             let executor = DoTaskStreamExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(1200),
+                Arc::new(NamedTimeouts::new()),
                 Arc::new(HashMap::new()),
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),

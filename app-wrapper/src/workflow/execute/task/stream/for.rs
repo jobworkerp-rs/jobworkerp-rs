@@ -7,7 +7,7 @@ use crate::workflow::{
         context::{TaskContext, WorkflowContext, WorkflowStatus, WorkflowStreamEvent},
         expression::UseExpression,
         task::{
-            ExecutionId, StreamTaskExecutorTrait, stream::do_::DoTaskStreamExecutor,
+            ExecutionId, NamedTimeouts, StreamTaskExecutorTrait, stream::do_::DoTaskStreamExecutor,
             trace::TaskTracing,
         },
     },
@@ -24,6 +24,7 @@ use tokio::sync::{Mutex, RwLock, mpsc};
 pub struct ForTaskStreamExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
     default_timeout: Duration,
+    named_timeouts: Arc<NamedTimeouts>,
     task: workflow::ForTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
     checkpoint_repository: Option<
@@ -45,6 +46,7 @@ impl ForTaskStreamExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_timeout: Duration,
+        named_timeouts: Arc<NamedTimeouts>,
         task: workflow::ForTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         checkpoint_repository: Option<
@@ -57,6 +59,7 @@ impl ForTaskStreamExecutor {
         Self {
             workflow_context,
             default_timeout,
+            named_timeouts,
             task,
             job_executor_wrapper,
             checkpoint_repository,
@@ -365,6 +368,7 @@ impl ForTaskStreamExecutor {
                 let checkpoint_repository = self.checkpoint_repository.clone();
                 let execution_id = self.execution_id.clone();
                 let default_timeout = self.default_timeout;
+                let named_timeouts = self.named_timeouts.clone();
                 let on_error = self.task.on_error;
                 let cancel_tx_clone = cancel_tx.clone();
                 let mut cancel_rx_clone = cancel_rx.clone();
@@ -403,6 +407,7 @@ impl ForTaskStreamExecutor {
                 let do_stream_executor = DoTaskStreamExecutor::new(
                     workflow_context.clone(),
                     default_timeout,
+                    named_timeouts,
                     meta.clone(),
                     do_task_clone,
                     job_executor_wrapper_clone,
@@ -696,6 +701,7 @@ impl ForTaskStreamExecutor {
                         let do_stream_executor = DoTaskStreamExecutor::new(
                             self.workflow_context.clone(),
                             self.default_timeout,
+                            self.named_timeouts.clone(),
                             self.metadata.clone(),
                             do_task.clone(),
                             self.job_executor_wrapper.clone(),

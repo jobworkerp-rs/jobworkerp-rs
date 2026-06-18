@@ -100,10 +100,31 @@
       "title": "Input",
       "description": "Workflow input configuration."
     },
+    "use": {
+      "$ref": "#/$defs/reusableComponents",
+      "title": "Use",
+      "description": "Reusable workflow components supported by this implementation."
+    },
     "do": {
       "$ref": "#/$defs/taskList",
       "title": "Do",
       "description": "Tasks to execute in this workflow."
+    },
+    "timeout": {
+      "title": "DoTimeout",
+      "description": "Workflow-level timeout configuration. Applied to the implicit root task that wraps all tasks declared under `do`. Overrides the `WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC` environment variable (default 3600s) and allows specifying durations longer than 1 hour.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/timeout",
+          "title": "TimeoutDefinition",
+          "description": "The workflow's timeout configuration."
+        },
+        {
+          "type": "string",
+          "title": "TimeoutReference",
+          "description": "The name of a named timeout defined in reusable components."
+        }
+      ]
     },
     "output": {
       "$ref": "#/$defs/output",
@@ -112,6 +133,22 @@
     }
   },
   "$defs": {
+    "reusableComponents": {
+      "type": "object",
+      "title": "ReusableComponents",
+      "description": "Reusable workflow components.",
+      "unevaluatedProperties": false,
+      "properties": {
+        "timeouts": {
+          "type": "object",
+          "title": "ReusableTimeouts",
+          "description": "Named timeout definitions.",
+          "additionalProperties": {
+            "$ref": "#/$defs/timeout"
+          }
+        }
+      }
+    },
     "taskList": {
       "title": "TaskList",
       "description": "Ordered list of named tasks.",

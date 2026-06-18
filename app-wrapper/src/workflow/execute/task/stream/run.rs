@@ -9,7 +9,7 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext, WorkflowStreamEvent},
         expression::UseExpression,
-        task::{StreamTaskExecutorTrait, run::resolve_run_task_timeout_sec},
+        task::{NamedTimeouts, StreamTaskExecutorTrait, run::resolve_run_task_timeout_sec},
     },
 };
 use anyhow::Result;
@@ -31,6 +31,7 @@ use tokio::sync::RwLock;
 pub struct RunStreamTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
     default_task_timeout: Duration,
+    named_timeouts: Arc<NamedTimeouts>,
     task: workflow::RunTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
     metadata: Arc<HashMap<String, String>>,
@@ -45,6 +46,7 @@ impl RunStreamTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_task_timeout: Duration,
+        named_timeouts: Arc<NamedTimeouts>,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         task: workflow::RunTask,
         metadata: Arc<HashMap<String, String>>,
@@ -52,6 +54,7 @@ impl RunStreamTaskExecutor {
         Self {
             workflow_context,
             default_task_timeout,
+            named_timeouts,
             task,
             job_executor_wrapper,
             metadata,
@@ -141,6 +144,7 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
         let task = self.task.clone();
         let base_metadata = self.metadata.clone();
         let default_timeout = self.default_task_timeout;
+        let named_timeouts = self.named_timeouts.clone();
 
         // Create channel for streaming events
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<
@@ -157,6 +161,7 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
                 &task,
                 &base_metadata,
                 default_timeout,
+                &named_timeouts,
                 &cx,
                 &task_name,
                 task_context,
@@ -241,6 +246,7 @@ async fn prepare_streaming_job(
     task: &workflow::RunTask,
     base_metadata: &Arc<HashMap<String, String>>,
     default_timeout: Duration,
+    named_timeouts: &NamedTimeouts,
     cx: &Arc<opentelemetry::Context>,
     task_name: &Arc<String>,
     task_context: TaskContext,
@@ -253,7 +259,8 @@ async fn prepare_streaming_job(
     } = task;
 
     // === 1. Timeout setting ===
-    let timeout_sec = resolve_run_task_timeout_sec(timeout.as_ref(), default_timeout);
+    let timeout_sec =
+        resolve_run_task_timeout_sec(timeout.as_ref(), named_timeouts, default_timeout)?;
 
     // === 2. Metadata merge ===
     let mut metadata = (**base_metadata).clone();

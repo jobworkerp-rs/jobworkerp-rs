@@ -236,6 +236,7 @@ impl Default for WorkflowSchema {
             input: Default::default(),
             output: Default::default(),
             timeout: Default::default(),
+            use_: Default::default(),
         }
     }
 }

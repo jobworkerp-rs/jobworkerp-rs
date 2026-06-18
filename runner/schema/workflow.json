@@ -100,6 +100,11 @@
       "title": "Input",
       "description": "Workflow input configuration."
     },
+    "use": {
+      "$ref": "#/$defs/reusableComponents",
+      "title": "Use",
+      "description": "Reusable workflow components supported by this implementation."
+    },
     "do": {
       "$ref": "#/$defs/taskList",
       "title": "Do",
@@ -128,6 +133,22 @@
     }
   },
   "$defs": {
+    "reusableComponents": {
+      "type": "object",
+      "title": "ReusableComponents",
+      "description": "Reusable workflow components.",
+      "unevaluatedProperties": false,
+      "properties": {
+        "timeouts": {
+          "type": "object",
+          "title": "ReusableTimeouts",
+          "description": "Named timeout definitions.",
+          "additionalProperties": {
+            "$ref": "#/$defs/timeout"
+          }
+        }
+      }
+    },
     "taskList": {
       "title": "TaskList",
       "description": "Ordered list of named tasks.",

@@ -1,4 +1,7 @@
-use super::{expression::UseExpression, task::TaskExecutor};
+use super::{
+    expression::UseExpression,
+    task::{NamedTimeouts, TaskExecutor},
+};
 use crate::modules::AppWrapperModule;
 use crate::workflow::definition::{
     transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
@@ -187,6 +190,13 @@ impl WorkflowExecutor {
         let default_task_timeout = Duration::from_secs(self.default_task_timeout_sec);
         let checkpoint_repository = self.checkpoint_repository.clone();
         let emit_streaming_data_flag = emit_streaming_data;
+        let named_timeouts: Arc<NamedTimeouts> = Arc::new(
+            workflow
+                .use_
+                .as_ref()
+                .map(|components| components.timeouts.clone())
+                .unwrap_or_default(),
+        );
 
         stream! {
             // Set workflow to running status
@@ -442,6 +452,7 @@ impl WorkflowExecutor {
             let task_executor = TaskExecutor::new(
                 initial_wfc.clone(),
                 default_task_timeout,
+                named_timeouts,
                 job_executors,
                 checkpoint_repository.clone(),
                 ROOT_TASK_NAME,
@@ -1110,6 +1121,7 @@ mod tests {
             }),
             do_: task_list,
             timeout: None,
+            use_: None,
         }
     }
 
@@ -1675,6 +1687,7 @@ mod tests {
             }),
             do_: task_list,
             timeout: None,
+            use_: None,
         }
     }
 
@@ -1821,6 +1834,7 @@ mod tests {
             }),
             do_: task_list,
             timeout: None,
+            use_: None,
         }
     }
     async fn load_test_workflow_from_yaml(yaml_path: &str) -> WorkflowSchema {

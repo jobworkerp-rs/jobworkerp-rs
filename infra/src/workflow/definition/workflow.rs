@@ -3042,6 +3042,55 @@ impl RetryPolicy {
         Default::default()
     }
 }
+#[doc = "Reusable workflow components."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"ReusableComponents\","]
+#[doc = "  \"description\": \"Reusable workflow components.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"timeouts\": {"]
+#[doc = "      \"title\": \"ReusableTimeouts\","]
+#[doc = "      \"description\": \"Named timeout definitions.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": {"]
+#[doc = "        \"$ref\": \"#/$defs/timeout\""]
+#[doc = "      }"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"unevaluatedProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+pub struct ReusableComponents {
+    #[doc = "Named timeout definitions."]
+    #[serde(
+        default,
+        skip_serializing_if = ":: std :: collections :: HashMap::is_empty"
+    )]
+    pub timeouts: ::std::collections::HashMap<::std::string::String, Timeout>,
+}
+impl ::std::convert::From<&ReusableComponents> for ReusableComponents {
+    fn from(value: &ReusableComponents) -> Self {
+        value.clone()
+    }
+}
+impl ::std::default::Default for ReusableComponents {
+    fn default() -> Self {
+        Self {
+            timeouts: Default::default(),
+        }
+    }
+}
+impl ReusableComponents {
+    pub fn builder() -> builder::ReusableComponents {
+        Default::default()
+    }
+}
 #[doc = "Execute using a function configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -5669,6 +5718,11 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"use\": {"]
+#[doc = "      \"title\": \"Use\","]
+#[doc = "      \"description\": \"Reusable workflow components supported by this implementation.\","]
+#[doc = "      \"$ref\": \"#/$defs/reusableComponents\""]
 #[doc = "    }"]
 #[doc = "  }"]
 #[doc = "}"]
@@ -5691,6 +5745,13 @@ pub struct WorkflowSchema {
     #[doc = "Workflow-level timeout configuration. Applied to the implicit root task that wraps all tasks declared under `do`. Overrides the `WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC` environment variable (default 3600s) and allows specifying durations longer than 1 hour."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub timeout: ::std::option::Option<DoTimeout>,
+    #[doc = "Reusable workflow components supported by this implementation."]
+    #[serde(
+        rename = "use",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub use_: ::std::option::Option<ReusableComponents>,
 }
 impl ::std::convert::From<&WorkflowSchema> for WorkflowSchema {
     fn from(value: &WorkflowSchema) -> Self {
@@ -7879,6 +7940,51 @@ pub mod builder {
         }
     }
     #[derive(Clone, Debug)]
+    pub struct ReusableComponents {
+        timeouts: ::std::result::Result<
+            ::std::collections::HashMap<::std::string::String, super::Timeout>,
+            ::std::string::String,
+        >,
+    }
+    impl ::std::default::Default for ReusableComponents {
+        fn default() -> Self {
+            Self {
+                timeouts: Ok(Default::default()),
+            }
+        }
+    }
+    impl ReusableComponents {
+        pub fn timeouts<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<
+                    ::std::collections::HashMap<::std::string::String, super::Timeout>,
+                >,
+            T::Error: ::std::fmt::Display,
+        {
+            self.timeouts = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for timeouts: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<ReusableComponents> for super::ReusableComponents {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: ReusableComponents,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                timeouts: value.timeouts?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::ReusableComponents> for ReusableComponents {
+        fn from(value: super::ReusableComponents) -> Self {
+            Self {
+                timeouts: Ok(value.timeouts),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
     pub struct RunFunction {
         function: ::std::result::Result<super::RunJobFunction, ::std::string::String>,
     }
@@ -9606,6 +9712,10 @@ pub mod builder {
         output: ::std::result::Result<::std::option::Option<super::Output>, ::std::string::String>,
         timeout:
             ::std::result::Result<::std::option::Option<super::DoTimeout>, ::std::string::String>,
+        use_: ::std::result::Result<
+            ::std::option::Option<super::ReusableComponents>,
+            ::std::string::String,
+        >,
     }
     impl ::std::default::Default for WorkflowSchema {
         fn default() -> Self {
@@ -9616,6 +9726,7 @@ pub mod builder {
                 input: Ok(Default::default()),
                 output: Ok(Default::default()),
                 timeout: Ok(Default::default()),
+                use_: Ok(Default::default()),
             }
         }
     }
@@ -9680,6 +9791,16 @@ pub mod builder {
                 .map_err(|e| format!("error converting supplied value for timeout: {}", e));
             self
         }
+        pub fn use_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::ReusableComponents>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.use_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for use_: {}", e));
+            self
+        }
     }
     impl ::std::convert::TryFrom<WorkflowSchema> for super::WorkflowSchema {
         type Error = super::error::ConversionError;
@@ -9693,6 +9814,7 @@ pub mod builder {
                 input: value.input?,
                 output: value.output?,
                 timeout: value.timeout?,
+                use_: value.use_?,
             })
         }
     }
@@ -9705,6 +9827,7 @@ pub mod builder {
                 input: Ok(value.input),
                 output: Ok(value.output),
                 timeout: Ok(value.timeout),
+                use_: Ok(value.use_),
             }
         }
     }
