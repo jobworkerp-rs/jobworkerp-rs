@@ -190,6 +190,34 @@ do:
         ok: true
 "#;
 
+    const NAMED_TIMEOUTS: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: named-timeouts, version: "1.0.0" }
+use:
+  timeouts:
+    long-running:
+      after:
+        minutes: 30
+timeout: long-running
+do:
+  - init:
+      timeout: long-running
+      set:
+        ok: true
+"#;
+
+    const UNSUPPORTED_NAMED_RETRIES: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: unsupported-retries, version: "1.0.0" }
+use:
+  retries:
+    default:
+      delay:
+        seconds: 1
+do:
+  - init:
+      set:
+        ok: true
+"#;
+
     const MISSING_DOCUMENT: &str = r#"
 do:
   - init:
@@ -350,6 +378,16 @@ do:
     #[test]
     fn minimal_workflow_without_input_passes() {
         run_validate(MINIMAL_WITHOUT_INPUT).unwrap();
+    }
+
+    #[test]
+    fn named_timeouts_pass() {
+        run_validate(NAMED_TIMEOUTS).unwrap();
+    }
+
+    #[test]
+    fn unsupported_named_retries_fail() {
+        assert!(run_validate(UNSUPPORTED_NAMED_RETRIES).is_err());
     }
 
     #[test]

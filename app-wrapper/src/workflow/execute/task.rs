@@ -48,11 +48,34 @@ pub mod try_;
 // for DebugStub
 type CheckPointRepo =
     Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>;
+pub type NamedTimeouts = HashMap<String, workflow::Timeout>;
+
+pub(crate) fn resolve_timeout_duration(
+    timeout: Option<&workflow::TaskTimeout>,
+    named_timeouts: &NamedTimeouts,
+    default_task_timeout: Duration,
+) -> Result<Duration, Box<workflow::Error>> {
+    match timeout {
+        Some(workflow::TaskTimeout::Timeout(t)) => Ok(Duration::from_millis(t.after.to_millis())),
+        Some(workflow::TaskTimeout::TaskTimeoutReference(name)) => named_timeouts
+            .get(name)
+            .map(|t| Duration::from_millis(t.after.to_millis()))
+            .ok_or_else(|| {
+                workflow::errors::ErrorFactory::new().bad_argument(
+                    format!("Unresolved timeout reference: {name}"),
+                    None,
+                    None,
+                )
+            }),
+        None => Ok(default_task_timeout),
+    }
+}
 
 #[derive(DebugStub, Clone)]
 pub struct TaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
     default_task_timeout: Duration,
+    named_timeouts: Arc<NamedTimeouts>,
     #[debug_stub = "AppModule"]
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
     #[debug_stub = "CheckPointRepositoryWithIdImpl"]
@@ -74,6 +97,7 @@ impl TaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_task_timeout: Duration,
+        named_timeouts: Arc<NamedTimeouts>,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         checkpoint_repository: Option<Arc<dyn CheckPointRepositoryWithId>>,
         task_name: &str,
@@ -85,6 +109,7 @@ impl TaskExecutor {
         Self {
             workflow_context,
             default_task_timeout,
+            named_timeouts,
             job_executor_wrapper,
             checkpoint_repository,
             task_name: task_name.to_owned(),
@@ -94,17 +119,15 @@ impl TaskExecutor {
         }
     }
 
-    /// Resolve the timeout duration for the current task.
-    /// Uses task-specific timeout if defined, otherwise falls back to default.
-    fn resolve_timeout(&self) -> Duration {
-        match self.task.timeout() {
-            Some(workflow::TaskTimeout::Timeout(t)) => Duration::from_millis(t.after.to_millis()),
-            Some(workflow::TaskTimeout::TaskTimeoutReference(_)) => {
-                // TaskTimeoutReference is not supported yet, fall back to default
-                self.default_task_timeout
-            }
-            None => self.default_task_timeout,
-        }
+    /// Resolve the timeout duration for the current task: an inline timeout, a
+    /// named timeout reference from `use.timeouts`, or the default when none is
+    /// set. Errors if a referenced timeout name is undefined.
+    fn resolve_timeout(&self) -> Result<Duration, Box<workflow::Error>> {
+        resolve_timeout_duration(
+            self.task.timeout(),
+            &self.named_timeouts,
+            self.default_task_timeout,
+        )
     }
 
     async fn load_checkpoint(
@@ -434,7 +457,12 @@ impl TaskExecutor {
         }
 
         // Task-level timeout configuration
-        let timeout_duration = self.resolve_timeout();
+        let timeout_duration = match self.resolve_timeout() {
+            Ok(timeout) => timeout,
+            Err(e) => {
+                return Box::pin(futures::stream::once(async move { Err(e) }));
+            }
+        };
         let deadline = tokio::time::Instant::now() + timeout_duration;
         let task_name_for_timeout = self.task_name.clone();
 
@@ -748,6 +776,7 @@ impl TaskExecutor {
                 let job_executor_wrapper_clone = job_executor_wrapper.clone();
                 let metadata_clone = self.metadata.clone();
                 let default_task_timeout = self.default_task_timeout;
+                let named_timeouts = self.named_timeouts.clone();
                 let emit_streaming = self.emit_streaming_data;
 
                 Box::pin(stream! {
@@ -755,6 +784,7 @@ impl TaskExecutor {
                     let executor = DoTaskStreamExecutor::new(
                         workflow_context.clone(),
                         default_task_timeout,
+                        named_timeouts,
                         metadata_clone,
                         task_clone,
                         job_executor_wrapper_clone,
@@ -773,6 +803,7 @@ impl TaskExecutor {
                 let task_clone = task.clone();
                 let job_executor_wrapper_clone = job_executor_wrapper.clone();
                 let metadata_clone = self.metadata.clone();
+                let named_timeouts = self.named_timeouts.clone();
                 let emit_streaming = self.emit_streaming_data;
 
                 Box::pin(stream! {
@@ -780,6 +811,7 @@ impl TaskExecutor {
                     let executor = ForTaskStreamExecutor::new(
                         workflow_context.clone(),
                         default_task_timeout,
+                        named_timeouts,
                         task_clone,
                         job_executor_wrapper_clone,
                         checkpoint_repository.clone(),
@@ -799,6 +831,7 @@ impl TaskExecutor {
                 let fork_executor = ForkTaskExecutor::new(
                     workflow_context.clone(),
                     default_task_timeout,
+                    self.named_timeouts.clone(),
                     task,
                     job_executor_wrapper.clone(),
                     checkpoint_repository.clone(),
@@ -885,6 +918,7 @@ impl TaskExecutor {
                 let task_executor = CallTaskExecutor::new(
                     workflow_context.clone(),
                     default_task_timeout,
+                    self.named_timeouts.clone(),
                     job_executor_wrapper.clone(),
                     task,
                     self.metadata.clone(),
@@ -928,11 +962,13 @@ impl TaskExecutor {
                 // - Emits StreamingJobStarted and StreamingJobCompleted events
                 if use_streaming {
                     let metadata = self.metadata.clone();
+                    let named_timeouts = self.named_timeouts.clone();
                     // Process stream events, applying update_context_by_output to StreamingJobCompleted
                     Box::pin(async_stream::stream! {
                         let task_executor = RunStreamTaskExecutor::new(
                             workflow_context.clone(),
                             default_task_timeout,
+                            named_timeouts,
                             job_executor_wrapper.clone(),
                             task,
                             metadata,
@@ -991,6 +1027,7 @@ impl TaskExecutor {
                     let task_executor = RunTaskExecutor::new(
                         workflow_context.clone(),
                         default_task_timeout,
+                        self.named_timeouts.clone(),
                         job_executor_wrapper.clone(),
                         task,
                         self.metadata.clone(),
@@ -1100,12 +1137,14 @@ impl TaskExecutor {
                 let task_clone = task.clone();
                 let job_executor_wrapper_clone = job_executor_wrapper.clone();
                 let metadata_clone = self.metadata.clone();
+                let named_timeouts = self.named_timeouts.clone();
                 let emit_streaming = self.emit_streaming_data;
 
                 Box::pin(stream! {
                     let executor = TryStreamTaskExecutor::new(
                         workflow_context.clone(),
                         default_task_timeout,
+                        named_timeouts,
                         task_clone,
                         job_executor_wrapper_clone,
                         checkpoint_repository.clone(),
@@ -1332,6 +1371,7 @@ mod tests {
             }),
             do_: task_list,
             timeout: None,
+            use_: None,
         }
     }
 
@@ -1378,6 +1418,7 @@ mod tests {
             }),
             do_: task_list,
             timeout: None,
+            use_: None,
         }
     }
 
@@ -1481,6 +1522,7 @@ mod tests {
             let task_executor = TaskExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(60),
+                Arc::new(NamedTimeouts::new()),
                 job_executor_wrapper,
                 None, // checkpoint_repository
                 "run_command",
@@ -1552,6 +1594,7 @@ mod tests {
             let task_executor = TaskExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(60),
+                Arc::new(NamedTimeouts::new()),
                 job_executor_wrapper,
                 None,
                 "set_value",
@@ -1783,6 +1826,7 @@ mod tests {
             let task_executor = TaskExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(60), // default timeout (should be overridden)
+                Arc::new(NamedTimeouts::new()),
                 job_executor_wrapper,
                 None,
                 "set_with_timeout",
@@ -1792,7 +1836,7 @@ mod tests {
             );
 
             let resolved = task_executor.resolve_timeout();
-            assert_eq!(resolved, Duration::from_millis(500));
+            assert_eq!(resolved.unwrap(), Duration::from_millis(500));
         });
     }
 
@@ -1835,6 +1879,7 @@ mod tests {
             let task_executor = TaskExecutor::new(
                 workflow_context.clone(),
                 default_timeout,
+                Arc::new(NamedTimeouts::new()),
                 job_executor_wrapper,
                 None,
                 "set_no_timeout",
@@ -1844,7 +1889,7 @@ mod tests {
             );
 
             let resolved = task_executor.resolve_timeout();
-            assert_eq!(resolved, default_timeout);
+            assert_eq!(resolved.unwrap(), default_timeout);
         });
     }
 
@@ -1913,6 +1958,7 @@ mod tests {
             let task_executor = TaskExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(60),
+                Arc::new(NamedTimeouts::new()),
                 job_executor_wrapper,
                 None,
                 "do_with_timeout",
@@ -1976,60 +2022,48 @@ mod tests {
         });
     }
 
-    /// Test resolve_timeout() with TaskTimeoutReference falls back to default
+    /// Test resolve_timeout() with TaskTimeoutReference resolves named timeout
     #[test]
-    fn test_resolve_timeout_with_reference_uses_default() {
+    fn test_resolve_timeout_with_reference_uses_named_timeout() {
+        use crate::workflow::definition::workflow::{
+            Duration as WfDuration, TaskTimeout, Timeout as WfTimeout,
+        };
+
+        let mut named_timeouts = super::NamedTimeouts::new();
+        named_timeouts.insert(
+            "some-named-timeout".to_string(),
+            WfTimeout {
+                after: WfDuration::from_millis(750),
+            },
+        );
+
+        let resolved = super::resolve_timeout_duration(
+            Some(&TaskTimeout::TaskTimeoutReference(
+                "some-named-timeout".to_string(),
+            )),
+            &named_timeouts,
+            Duration::from_secs(90),
+        )
+        .expect("named timeout must resolve");
+
+        assert_eq!(resolved, Duration::from_millis(750));
+    }
+
+    /// Test resolve_timeout() with unresolved TaskTimeoutReference returns error
+    #[test]
+    fn test_resolve_timeout_with_unresolved_reference_returns_error() {
         use crate::workflow::definition::workflow::TaskTimeout;
 
-        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-            let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module.clone()));
+        let err = super::resolve_timeout_duration(
+            Some(&TaskTimeout::TaskTimeoutReference(
+                "missing-timeout".to_string(),
+            )),
+            &super::NamedTimeouts::new(),
+            Duration::from_secs(90),
+        )
+        .expect_err("unresolved timeout reference must fail");
 
-            let workflow = create_workflow_with_set_task();
-            let input = Arc::new(serde_json::json!({}));
-            let context = Arc::new(serde_json::json!({}));
-
-            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
-                &workflow,
-                input.clone(),
-                context.clone(),
-                None,
-            )));
-
-            // Task with TaskTimeoutReference (should fall back to default)
-            let task_with_ref_timeout = Task::SetTask(SetTask {
-                set: {
-                    let mut m = serde_json::Map::new();
-                    m.insert("key".to_string(), serde_json::json!("value"));
-                    m
-                },
-                export: None,
-                if_: None,
-                input: None,
-                metadata: serde_json::Map::new(),
-                output: None,
-                then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
-                timeout: Some(TaskTimeout::TaskTimeoutReference(
-                    "some-named-timeout".to_string(),
-                )),
-                checkpoint: false,
-            });
-
-            let default_timeout = Duration::from_secs(90);
-            let task_executor = TaskExecutor::new(
-                workflow_context.clone(),
-                default_timeout,
-                job_executor_wrapper,
-                None,
-                "set_with_ref_timeout",
-                Arc::new(task_with_ref_timeout),
-                Arc::new(HashMap::new()),
-                false, // emit_streaming_data (tests don't need streaming events)
-            );
-
-            let resolved = task_executor.resolve_timeout();
-            // TaskTimeoutReference is not yet supported, should fall back to default
-            assert_eq!(resolved, default_timeout);
-        });
+        assert_eq!(err.status, 400);
+        assert!(format!("{err:?}").contains("missing-timeout"));
     }
 }

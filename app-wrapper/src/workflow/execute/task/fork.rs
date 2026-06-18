@@ -1,4 +1,4 @@
-use super::TaskExecutor;
+use super::{NamedTimeouts, TaskExecutor};
 use crate::workflow::{
     definition::workflow::{Task, tasks::TaskTrait},
     execute::{
@@ -29,6 +29,7 @@ type CheckPointRepo =
 pub struct ForkTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
     default_task_timeout: Duration,
+    named_timeouts: Arc<NamedTimeouts>,
     #[debug_stub = "AppModule"]
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
     pub checkpoint_repository: Option<CheckPointRepo>,
@@ -45,6 +46,7 @@ impl ForkTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_task_timeout: Duration,
+        named_timeouts: Arc<NamedTimeouts>,
         task: workflow::ForkTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         checkpoint_repository: Option<
@@ -57,6 +59,7 @@ impl ForkTaskExecutor {
         Self {
             workflow_context,
             default_task_timeout,
+            named_timeouts,
             job_executor_wrapper,
             checkpoint_repository,
             task,
@@ -77,6 +80,7 @@ impl ForkTaskExecutor {
         task: Arc<Task>,
         execution_id: Option<Arc<ExecutionId>>,
         default_task_timeout: Duration,
+        named_timeouts: Arc<NamedTimeouts>,
         metadata: Arc<HashMap<String, String>>,
         cx: Arc<opentelemetry::Context>,
         emit_streaming_data: bool,
@@ -85,6 +89,7 @@ impl ForkTaskExecutor {
         let task_executor = TaskExecutor::new(
             workflow_context,
             default_task_timeout,
+            named_timeouts,
             job_executor_wrapper,
             checkpoint_repository,
             name,
@@ -137,6 +142,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                     let execution_id = self.execution_id.clone();
                     let cxc = cx.clone();
                     let default_task_timeout = self.default_task_timeout;
+                    let named_timeouts = self.named_timeouts.clone();
                     let emit_streaming = self.emit_streaming_data;
                     let future = Box::pin(async move {
                         Self::execute_task(
@@ -148,6 +154,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                             task_clone,
                             execution_id,
                             default_task_timeout,
+                            named_timeouts,
                             metadata_clone,
                             cxc,
                             emit_streaming,
@@ -356,6 +363,7 @@ mod tests {
             let fork_task_executor = ForkTaskExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(1200), // default task timeout
+                Arc::new(NamedTimeouts::new()),
                 fork_task,
                 job_executor_wrapper,
                 None,
@@ -432,6 +440,7 @@ mod tests {
             let fork_task_executor = ForkTaskExecutor::new(
                 workflow_context,
                 Duration::from_secs(1200), // default task timeout
+                Arc::new(NamedTimeouts::new()),
                 fork_task,
                 job_executor_wrapper,
                 None,
@@ -515,6 +524,7 @@ mod tests {
             let fork_task_executor = ForkTaskExecutor::new(
                 workflow_context,
                 Duration::from_secs(1200), // default task timeout
+                Arc::new(NamedTimeouts::new()),
                 fork_task,
                 job_executor_wrapper,
                 None,

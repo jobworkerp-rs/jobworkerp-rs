@@ -8,7 +8,7 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext, WorkflowStreamEvent},
         expression::UseExpression,
-        task::ExecutionId,
+        task::{ExecutionId, NamedTimeouts},
     },
 };
 use app::app::job::execute::JobExecutorWrapper;
@@ -25,6 +25,7 @@ type CheckPointRepo =
 pub struct TryStreamTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
     default_timeout: Duration,
+    named_timeouts: Arc<NamedTimeouts>,
     task: workflow::TryTask,
     #[debug_stub = "JobExecutorWrapper"]
     job_executors: Arc<JobExecutorWrapper>,
@@ -41,6 +42,7 @@ impl TryStreamTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_timeout: Duration,
+        named_timeouts: Arc<NamedTimeouts>,
         task: workflow::TryTask,
         job_executors: Arc<JobExecutorWrapper>,
         checkpoint_repository: Option<CheckPointRepo>,
@@ -51,6 +53,7 @@ impl TryStreamTaskExecutor {
         Self {
             workflow_context,
             default_timeout,
+            named_timeouts,
             task,
             job_executors,
             checkpoint_repository,
@@ -64,6 +67,7 @@ impl TryStreamTaskExecutor {
     fn execute_try_stream(
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_timeout: Duration,
+        named_timeouts: Arc<NamedTimeouts>,
         metadata: Arc<HashMap<String, String>>,
         task: workflow::TryTask,
         job_executors: Arc<JobExecutorWrapper>,
@@ -120,6 +124,7 @@ impl TryStreamTaskExecutor {
                 let do_stream_executor = DoTaskStreamExecutor::new(
                     workflow_context.clone(),
                     default_timeout,
+                    named_timeouts.clone(),
                     metadata.clone(),
                     do_tasks,
                     job_executors.clone(),
@@ -235,6 +240,7 @@ impl TryStreamTaskExecutor {
                             let catch_do_executor = DoTaskStreamExecutor::new(
                                 workflow_context.clone(),
                                 default_timeout,
+                                named_timeouts.clone(),
                                 metadata.clone(),
                                 do_tasks,
                                 job_executors.clone(),
@@ -518,6 +524,7 @@ impl StreamTaskExecutorTrait<'_> for TryStreamTaskExecutor {
         Self::execute_try_stream(
             self.workflow_context.clone(),
             self.default_timeout,
+            self.named_timeouts.clone(),
             self.metadata.clone(),
             self.task.clone(),
             self.job_executors.clone(),
@@ -564,6 +571,7 @@ mod tests {
             }),
             do_: TaskList(vec![]),
             timeout: None,
+            use_: None,
         }
     }
 
@@ -655,6 +663,7 @@ mod tests {
             let executor = TryStreamTaskExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(60),
+                Arc::new(NamedTimeouts::new()),
                 try_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 None,
@@ -738,6 +747,7 @@ mod tests {
             let executor = TryStreamTaskExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(60),
+                Arc::new(NamedTimeouts::new()),
                 try_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 None,
@@ -802,6 +812,7 @@ mod tests {
             let executor = TryStreamTaskExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(60),
+                Arc::new(NamedTimeouts::new()),
                 try_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 None,
@@ -915,6 +926,7 @@ mod tests {
             let executor = TryStreamTaskExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(60),
+                Arc::new(NamedTimeouts::new()),
                 try_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 None,
@@ -1060,6 +1072,7 @@ mod tests {
             let executor = TryStreamTaskExecutor::new(
                 workflow_context.clone(),
                 Duration::from_secs(60),
+                Arc::new(NamedTimeouts::new()),
                 try_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 None,

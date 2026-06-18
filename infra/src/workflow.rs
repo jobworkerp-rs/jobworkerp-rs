@@ -106,6 +106,23 @@ impl WorkflowLoader {
         jobworkerp_runner::validation::validate_workflow_schema(instance).await
     }
 
+    fn parse_json_or_yaml_value(data: &str) -> Result<serde_json::Value> {
+        match serde_json::from_str::<serde_json::Value>(data) {
+            Ok(value) => Ok(value),
+            Err(json_error) => {
+                let yaml_value = serde_yaml::from_str::<serde_yaml::Value>(data).map_err(|e| {
+                    anyhow!(
+                        "Failed to parse workflow as JSON ({}) or YAML ({})",
+                        json_error,
+                        e
+                    )
+                })?;
+                serde_json::to_value(yaml_value)
+                    .map_err(|e| anyhow!("Failed to convert workflow YAML to JSON: {}", e))
+            }
+        }
+    }
+
     pub async fn load_workflow(
         &self,
         url_or_path: Option<&str>,
@@ -143,7 +160,10 @@ impl WorkflowLoader {
                         wf.document.name.as_str()
                     );
                     if validate && !*SKIP_SCHEMA_VALIDATION {
-                        let json = serde_json::to_value(&wf)?;
+                        // Validate the raw document before serde drops unknown fields.
+                        // This keeps unsupported components such as `use.retries`
+                        // from being silently ignored by generated structs.
+                        let json = Self::parse_json_or_yaml_value(data)?;
                         self.validate_schema(&json).await?;
                     }
                     Ok(wf)
@@ -172,6 +192,7 @@ impl WorkflowLoader {
                                 definition::workflow::DoTimeout::Variant1(name)
                             }
                         }),
+                        use_: None,
                     })
                 }
             }
@@ -601,6 +622,69 @@ do:
         assert!(
             workflow.input.is_none(),
             "root input absence must be preserved in WorkflowSchema"
+        );
+    }
+
+    #[tokio::test]
+    async fn loader_accepts_named_timeouts() {
+        let yaml = r#"
+document:
+  dsl: "1.0.0-jobworkerp"
+  namespace: repro
+  name: named-timeouts
+  version: "1.0.0"
+use:
+  timeouts:
+    long-running:
+      after:
+        minutes: 30
+timeout: long-running
+do:
+  - init:
+      timeout: long-running
+      set:
+        ok: true
+"#;
+        let loader = super::WorkflowLoader::new_local_only();
+        let workflow = loader
+            .load_workflow(None, Some(yaml), true)
+            .await
+            .expect("workflow with named timeouts must validate and deserialize");
+
+        let timeouts = workflow
+            .use_
+            .expect("use components must deserialize")
+            .timeouts;
+        assert_eq!(timeouts["long-running"].after.to_millis(), 30 * 60 * 1000);
+    }
+
+    #[tokio::test]
+    async fn loader_rejects_unsupported_reusable_components() {
+        let yaml = r#"
+document:
+  dsl: "1.0.0-jobworkerp"
+  namespace: repro
+  name: unsupported-use-retries
+  version: "1.0.0"
+use:
+  retries:
+    default:
+      delay:
+        seconds: 1
+do:
+  - init:
+      set:
+        ok: true
+"#;
+        let loader = super::WorkflowLoader::new_local_only();
+        let err = loader
+            .load_workflow(None, Some(yaml), true)
+            .await
+            .expect_err("unsupported reusable components must be rejected");
+
+        assert!(
+            err.to_string().contains("retries"),
+            "error must mention rejected reusable component: {err}"
         );
     }
 

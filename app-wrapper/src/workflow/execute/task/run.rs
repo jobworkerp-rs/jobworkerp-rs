@@ -9,6 +9,7 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext},
         expression::UseExpression,
+        task::{NamedTimeouts, resolve_timeout_duration},
     },
 };
 use anyhow::Result;
@@ -24,6 +25,7 @@ use tokio::sync::RwLock;
 pub struct RunTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
     default_task_timeout: Duration,
+    named_timeouts: Arc<NamedTimeouts>,
     task: workflow::RunTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
     metadata: Arc<HashMap<String, String>>,
@@ -33,25 +35,26 @@ impl UseJqAndTemplateTransformer for RunTaskExecutor {}
 impl UseExpressionTransformer for RunTaskExecutor {}
 impl Tracing for RunTaskExecutor {}
 
-/// Convert a task's optional YAML `timeout` block to job timeout in seconds.
+/// Resolve a task's timeout to job timeout in seconds, handling an inline
+/// timeout, a named timeout reference from `use.timeouts`, or the default.
+/// Errors if a referenced timeout name is undefined.
 /// `max(1, ...)` prevents sub-second durations from immediately tripping the
 /// receiver-side timeout. Shared by `RunTaskExecutor` and `stream::run` so the
 /// two execution paths stay in lockstep with the receiver-side timeout
 /// contract.
 pub(crate) fn resolve_run_task_timeout_sec(
     timeout: Option<&workflow::TaskTimeout>,
+    named_timeouts: &NamedTimeouts,
     default_task_timeout: Duration,
-) -> u32 {
-    if let Some(workflow::TaskTimeout::Timeout(duration)) = timeout {
-        std::cmp::max(1, duration.after.to_millis().div_ceil(1000) as u32)
-    } else {
-        default_task_timeout.as_secs() as u32
-    }
+) -> Result<u32, Box<workflow::Error>> {
+    let duration = resolve_timeout_duration(timeout, named_timeouts, default_task_timeout)?;
+    Ok(std::cmp::max(1, duration.as_millis().div_ceil(1000) as u32))
 }
 impl RunTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_task_timeout: Duration,
+        named_timeouts: Arc<NamedTimeouts>,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         task: workflow::RunTask,
         metadata: Arc<HashMap<String, String>>,
@@ -59,6 +62,7 @@ impl RunTaskExecutor {
         Self {
             workflow_context,
             default_task_timeout,
+            named_timeouts,
             task,
             job_executor_wrapper,
             metadata,
@@ -304,7 +308,11 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             run,
             ..
         } = &self.task;
-        let timeout_sec = resolve_run_task_timeout_sec(timeout.as_ref(), self.default_task_timeout);
+        let timeout_sec = resolve_run_task_timeout_sec(
+            timeout.as_ref(),
+            &self.named_timeouts,
+            self.default_task_timeout,
+        )?;
 
         // merge metadata: create new metadata with both self.metadata and task metadata
         let mut metadata = (*self.metadata).clone();
@@ -778,6 +786,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
 mod tests {
     use super::RunTaskExecutor;
     use crate::workflow::definition::workflow;
+    use crate::workflow::execute::task::NamedTimeouts;
     use proto::jobworkerp::data::{QueueType, ResponseType};
 
     fn worker_options_with_queue_and_response(
@@ -853,8 +862,10 @@ mod tests {
         let t = task_timeout_hours(24);
         let resolved = super::resolve_run_task_timeout_sec(
             Some(&t),
+            &NamedTimeouts::new(),
             std::time::Duration::from_secs(3600), // fallback that must NOT win
-        );
+        )
+        .unwrap();
         assert_eq!(
             resolved, 86_400,
             "24h must resolve to 86400s, not the default"
@@ -863,9 +874,39 @@ mod tests {
 
     #[test]
     fn timeout_sec_uses_default_when_yaml_omits_timeout() {
-        let resolved =
-            super::resolve_run_task_timeout_sec(None, std::time::Duration::from_secs(3600));
+        let resolved = super::resolve_run_task_timeout_sec(
+            None,
+            &NamedTimeouts::new(),
+            std::time::Duration::from_secs(3600),
+        )
+        .unwrap();
         assert_eq!(resolved, 3600);
+    }
+
+    #[test]
+    fn timeout_sec_resolves_named_timeout() {
+        let mut named_timeouts = NamedTimeouts::new();
+        named_timeouts.insert(
+            "long-running".to_string(),
+            workflow::Timeout {
+                after: workflow::Duration::Inline {
+                    days: None,
+                    hours: None,
+                    minutes: Some(30),
+                    seconds: None,
+                    milliseconds: None,
+                },
+            },
+        );
+        let timeout = workflow::TaskTimeout::TaskTimeoutReference("long-running".to_string());
+        let resolved = super::resolve_run_task_timeout_sec(
+            Some(&timeout),
+            &named_timeouts,
+            std::time::Duration::from_secs(3600),
+        )
+        .unwrap();
+
+        assert_eq!(resolved, 30 * 60);
     }
 
     #[test]
@@ -879,8 +920,12 @@ mod tests {
                 milliseconds: Some(250),
             },
         });
-        let resolved =
-            super::resolve_run_task_timeout_sec(Some(&t), std::time::Duration::from_secs(3600));
+        let resolved = super::resolve_run_task_timeout_sec(
+            Some(&t),
+            &NamedTimeouts::new(),
+            std::time::Duration::from_secs(3600),
+        )
+        .unwrap();
         assert_eq!(
             resolved, 1,
             "sub-second durations must round up to 1s, not 0"
