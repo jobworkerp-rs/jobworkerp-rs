@@ -68,7 +68,9 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
         args.add(offset).map_err(|e| {
             JobWorkerError::OtherError(format!("sql args err:{now:?}, error:{e:?}"))
         })?;
-        let mut rows = sqlx::query_with::<Rdb, _>(&query, args)
+        // AssertSqlSafe: IN-clause uses a fixed placeholder count with arguments bound
+        // separately (no user input in the SQL text).
+        let mut rows = sqlx::query_with::<Rdb, _>(sqlx::AssertSqlSafe(query), args)
             .fetch_all(self.db_pool())
             .await
             .map_err(JobWorkerError::DBError)

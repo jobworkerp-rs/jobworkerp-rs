@@ -552,8 +552,9 @@ pub trait RunnerRepository:
         // Pagination
         query_str.push_str(" LIMIT ? OFFSET ?");
 
-        // Build query and bind parameters
-        let mut query = sqlx::query_as::<Rdb, RunnerRow>(&query_str);
+        // AssertSqlSafe: IN / ORDER BY / LIMIT fragments are fixed strings with bound
+        // parameters; the sort field is selected from an allow-list, not user input.
+        let mut query = sqlx::query_as::<Rdb, RunnerRow>(sqlx::AssertSqlSafe(query_str));
 
         // Bind runner types
         for rt in &runner_types {
@@ -611,8 +612,9 @@ pub trait RunnerRepository:
             query_str.push_str(" AND name LIKE ?");
         }
 
-        // Build query and bind parameters
-        let mut query = sqlx::query_scalar::<Rdb, i64>(&query_str);
+        // AssertSqlSafe: IN-clause and LIKE fragments are fixed strings with bound
+        // parameters (no user input in the SQL text).
+        let mut query = sqlx::query_scalar::<Rdb, i64>(sqlx::AssertSqlSafe(query_str));
 
         // Bind runner types
         for rt in &runner_types {

@@ -114,7 +114,7 @@ serde_with = "3"
 serde_yaml = "0.9"
 signal-hook = "0.4"
 signal-hook-tokio = "0.4"
-sqlx = { version = "0.8", features = [
+sqlx = { version = "0.9", features = [
     "runtime-tokio",
     "tls-rustls",
     "chrono",
