@@ -159,7 +159,7 @@ impl WorkflowLoader {
                     Ok(definition::workflow::WorkflowSchema {
                         checkpointing: None,
                         do_: do_task.do_,
-                        input: do_task.input.unwrap_or_default(),
+                        input: Some(do_task.input.unwrap_or_default()),
                         output: do_task.output,
                         document: definition::workflow::Document::default(),
                         // Preserve the task-level timeout from the legacy DoTask input as
@@ -402,8 +402,8 @@ mod test {
         assert_eq!(flow.document.name.as_str(), "switch-test");
         assert!(
             flow.input
-                .schema
                 .as_ref()
+                .and_then(|input| input.schema.as_ref())
                 .is_some_and(|s| { s.json_schema().is_some() })
         );
 
@@ -424,8 +424,8 @@ mod test {
         assert_eq!(flow.document.name.as_str(), "ls-test");
         assert!(
             flow.input
-                .schema
                 .as_ref()
+                .and_then(|input| input.schema.as_ref())
                 .is_some_and(|s| { s.json_schema().is_some() })
         );
 
@@ -577,6 +577,31 @@ do:
             .load_workflow(None, Some(yaml), true)
             .await
             .expect("doTask with if/export/then must validate");
+    }
+
+    #[tokio::test]
+    async fn loader_accepts_workflow_without_root_input() {
+        let yaml = r#"
+document:
+  dsl: "1.0.0-jobworkerp"
+  namespace: repro
+  name: no-root-input
+  version: "1.0.0"
+do:
+  - init:
+      set:
+        ok: true
+"#;
+        let loader = super::WorkflowLoader::new_local_only();
+        let workflow = loader
+            .load_workflow(None, Some(yaml), true)
+            .await
+            .expect("workflow without root input must validate and deserialize");
+
+        assert!(
+            workflow.input.is_none(),
+            "root input absence must be preserved in WorkflowSchema"
+        );
     }
 
     #[test]

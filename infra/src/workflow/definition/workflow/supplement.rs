@@ -247,7 +247,7 @@ impl WorkflowSchema {
         }
         DoTask {
             do_: self.do_.clone(),
-            input: Some(self.input.clone()),
+            input: Some(self.input.clone().unwrap_or_default()),
             output: self.output.clone(),
             metadata: meta_map,
             // Propagate workflow-level timeout to the implicit root DoTask so

@@ -21,6 +21,8 @@ use serde_json::{Map, Value, json};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 
+// Canonical name of the built-in HTTP_REQUEST runner. Must equal
+// `RunnerType::HttpRequest.as_str_name()`; a unit test guards against drift.
 const HTTP_REQUEST_RUNNER_NAME: &str = "HTTP_REQUEST";
 
 // Response fields emitted by the HTTP_REQUEST runner. The runner output shape is
@@ -33,7 +35,12 @@ const RES_KEY: &str = "key";
 const RES_VALUE: &str = "value";
 const RES_STATUS_CODE_CAMEL: &str = "statusCode";
 const RES_STATUS_CODE_SNAKE: &str = "status_code";
+// Key/value field names of the {key, value} pairs the HTTP_REQUEST runner accepts
+// for request headers and queries. Kept separate from the RES_* response contract.
+const ARG_KEY: &str = "key";
+const ARG_VALUE: &str = "value";
 const HEADER_CONTENT_TYPE: &str = "content-type";
+const HEADER_CONTENT_TYPE_TITLE: &str = "Content-Type";
 const CONTENT_TYPE_JSON: &str = "application/json";
 
 pub struct CallTaskExecutor {
@@ -75,18 +82,13 @@ impl CallTaskExecutor {
     }
 
     fn endpoint_uri(endpoint: &workflow::HttpEndpoint) -> Result<String> {
-        match serde_json::to_value(endpoint)? {
-            Value::String(uri) => Ok(uri),
-            Value::Object(mut object) => {
-                if object.get("authentication").is_some() {
-                    return Err(anyhow!("endpoint authentication is not supported"));
-                }
-                object
-                    .remove("uri")
-                    .and_then(|v| v.as_str().map(ToOwned::to_owned))
-                    .ok_or_else(|| anyhow!("endpoint.uri must be a string"))
-            }
-            _ => Err(anyhow!("endpoint must be a string URI or object with uri")),
+        match endpoint {
+            workflow::HttpEndpoint::Uri(uri) => Ok(uri.clone()),
+            workflow::HttpEndpoint::Object {
+                authentication: Some(_),
+                ..
+            } => Err(anyhow!("endpoint authentication is not supported")),
+            workflow::HttpEndpoint::Object { uri, .. } => Ok(uri.clone()),
         }
     }
 
@@ -129,13 +131,19 @@ impl CallTaskExecutor {
         }
     }
 
+    // Build a {key, value} pair in the shape the HTTP_REQUEST runner expects for
+    // a single header or query argument.
+    fn key_value(key: &str, value: &str) -> Value {
+        json!({ ARG_KEY: key, ARG_VALUE: value })
+    }
+
     fn map_to_key_values(map: Map<String, Value>, field: &str) -> Result<Vec<Value>> {
         let mut out = Vec::new();
         for (key, value) in map {
             for value in
                 Self::value_to_http_strings(value).map_err(|e| anyhow!("{field}.{key}: {e}"))?
             {
-                out.push(json!({ "key": key, "value": value }));
+                out.push(Self::key_value(&key, &value));
             }
         }
         Ok(out)
@@ -345,12 +353,15 @@ impl CallTaskExecutor {
         if json_body
             && !headers.iter().any(|header| {
                 header
-                    .get(RES_KEY)
+                    .get(ARG_KEY)
                     .and_then(Value::as_str)
                     .is_some_and(|key| key.eq_ignore_ascii_case(HEADER_CONTENT_TYPE))
             })
         {
-            headers.push(json!({ "key": "Content-Type", "value": CONTENT_TYPE_JSON }));
+            headers.push(Self::key_value(
+                HEADER_CONTENT_TYPE_TITLE,
+                CONTENT_TYPE_JSON,
+            ));
         }
         let mut args = json!({
             "method": call.method.to_ascii_uppercase(),
@@ -419,7 +430,16 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proto::jobworkerp::data::RunnerType;
     use serde_json::json;
+
+    #[test]
+    fn http_request_runner_name_matches_proto_enum() {
+        assert_eq!(
+            HTTP_REQUEST_RUNNER_NAME,
+            RunnerType::HttpRequest.as_str_name()
+        );
+    }
 
     #[test]
     fn map_to_key_values_stringifies_scalar_values() {

@@ -143,6 +143,10 @@ do:
                   storeFailure: true
 ```
 
+root の `input` セクションは任意です。省略した場合、jobworkerp-rs は入力
+schema 検証と `input.from` 変換を行わず、実行時に渡された input をそのまま
+ワークフロータスクへ渡します。
+
 ## ワークフローランナーの利用方法
 
 ### gRPC APIを使用する場合

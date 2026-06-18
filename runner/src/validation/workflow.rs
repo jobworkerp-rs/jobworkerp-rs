@@ -182,6 +182,25 @@ do:
         endpoint: https://example.com/items
 "#;
 
+    const MINIMAL_WITHOUT_INPUT: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: minimal-no-input, version: "1.0.0" }
+do:
+  - init:
+      set:
+        ok: true
+"#;
+
+    const MISSING_DOCUMENT: &str = r#"
+do:
+  - init:
+      set:
+        ok: true
+"#;
+
+    const MISSING_DO: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: missing-do, version: "1.0.0" }
+"#;
+
     const CALL_HTTP_ENDPOINT_OBJECT: &str = r#"
 document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-object, version: "1.0.0" }
 input: { schema: { document: { type: object } } }
@@ -326,6 +345,21 @@ do:
     #[test]
     fn call_http_minimal_passes() {
         run_validate(CALL_HTTP_MINIMAL).unwrap();
+    }
+
+    #[test]
+    fn minimal_workflow_without_input_passes() {
+        run_validate(MINIMAL_WITHOUT_INPUT).unwrap();
+    }
+
+    #[test]
+    fn workflow_without_document_still_fails() {
+        assert!(run_validate(MISSING_DOCUMENT).is_err());
+    }
+
+    #[test]
+    fn workflow_without_do_still_fails() {
+        assert!(run_validate(MISSING_DO).is_err());
     }
 
     #[test]

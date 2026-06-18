@@ -22,7 +22,7 @@ description: >-
   - Workflow: access via $workflow (e.g., $workflow.input.key, $workflow.id, $workflow.definition, $workflow.context_variables)
   - Task: access via $task (e.g., $task.definition, $task.input, $task.raw_output, $task.output, $task.flow_directive)
 type: object
-required: [document, input, do]
+required: [document, do]
 properties:
   checkpointing:
     type: object

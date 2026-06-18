@@ -299,4 +299,18 @@ mod tests {
         let do_task = wf.create_do_task(Arc::new(HashMap::new()));
         assert!(do_task.timeout.is_none());
     }
+
+    #[test]
+    fn test_create_do_task_defaults_missing_root_input() {
+        use std::sync::Arc;
+
+        let wf = WorkflowSchema {
+            input: None,
+            ..Default::default()
+        };
+
+        let do_task = wf.create_do_task(Arc::new(HashMap::new()));
+
+        assert_eq!(do_task.input, Some(Input::default()));
+    }
 }

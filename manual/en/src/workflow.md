@@ -141,6 +141,10 @@ do:
                   storeFailure: true
 ```
 
+The root `input` section is optional. When it is omitted, jobworkerp-rs does not
+apply input schema validation or `input.from` transformation, and the runtime
+input is passed to the workflow tasks unchanged.
+
 ## How to Use the Workflow Runner
 
 ### Using gRPC API
