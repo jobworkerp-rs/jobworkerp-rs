@@ -201,6 +201,9 @@ do:
         output: response
 "#;
 
+    const CALL_HTTP_E2E_FIXTURE: &str =
+        include_str!("../../../app-wrapper/test-files/workflow-call-http-test.yaml");
+
     const CALL_HTTP_MISSING_METHOD: &str = r#"
 document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-missing-method, version: "1.0.0" }
 input: { schema: { document: { type: object } } }
@@ -328,6 +331,11 @@ do:
     #[test]
     fn call_http_endpoint_object_passes() {
         run_validate(CALL_HTTP_ENDPOINT_OBJECT).unwrap();
+    }
+
+    #[test]
+    fn call_http_e2e_fixture_passes() {
+        run_validate(CALL_HTTP_E2E_FIXTURE).unwrap();
     }
 
     #[test]

@@ -1,0 +1,33 @@
+document:
+  dsl: 1.0.0
+  namespace: examples
+  name: call-http-test
+  version: 1.0.0
+  summary: Minimal HTTP GET call task workflow for e2e tests
+
+input:
+  schema:
+    format: json
+    document:
+      type: object
+      properties:
+        endpoint:
+          type: string
+          description: HTTP endpoint URL for the call task.
+          default: https://www.google.com/generate_204
+
+do:
+  - callHttp:
+      call: http
+      with:
+        method: get
+        endpoint: ${.endpoint}
+        headers:
+          Accept: "*/*"
+        output: response
+
+output:
+  as:
+    statusCode: ${.statusCode}
+    headers: ${.headers}
+    body: ${.body}
