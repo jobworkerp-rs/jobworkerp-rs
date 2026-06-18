@@ -9,7 +9,10 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext, WorkflowStreamEvent},
         expression::UseExpression,
-        task::{NamedTimeouts, StreamTaskExecutorTrait, run::resolve_run_task_timeout_sec},
+        task::{
+            NamedTimeouts, StreamTaskExecutorTrait,
+            run::{alias, resolve_run_task_timeout_sec},
+        },
     },
 };
 use anyhow::Result;
@@ -528,6 +531,38 @@ async fn prepare_streaming_job(
                 tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming runner function job by jobworkerp");
                 workflow::errors::ErrorFactory::new().service_unavailable(
                     "Failed to start streaming runner job by jobworkerp".to_string(),
+                    Some(pos_for_err),
+                    Some(e.to_string()),
+                )
+            })?
+        }
+
+        // Serverless Workflow-style/jobworkerp extension aliases backed by
+        // existing jobworkerp runners.
+        workflow::RunTaskConfiguration::Shell(_)
+        | workflow::RunTaskConfiguration::Container(_)
+        | workflow::RunTaskConfiguration::Workflow(_) => {
+            let normalized =
+                alias::resolve_run_alias::<RunStreamTaskExecutor>(run, &task_context, &expression)
+                    .await?;
+
+            let pos_for_err = task_context.position.read().await.as_error_instance();
+            start_runner_streaming_job_static(
+                job_executor_wrapper,
+                metadata.clone(),
+                timeout_sec,
+                normalized.runner_name,
+                None,
+                None,
+                normalized.arguments,
+                task_name,
+                normalized.using,
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming run alias by jobworkerp");
+                workflow::errors::ErrorFactory::new().service_unavailable(
+                    "Failed to start streaming run alias by jobworkerp".to_string(),
                     Some(pos_for_err),
                     Some(e.to_string()),
                 )

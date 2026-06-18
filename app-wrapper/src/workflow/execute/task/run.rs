@@ -1,3 +1,4 @@
+pub(crate) mod alias;
 pub mod python;
 
 use super::TaskExecutorTrait;
@@ -768,6 +769,40 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     }
                     Err(e) => Err(e),
                 }
+            }
+            workflow::RunTaskConfiguration::Shell(_)
+            | workflow::RunTaskConfiguration::Container(_)
+            | workflow::RunTaskConfiguration::Workflow(_) => {
+                let normalized =
+                    alias::resolve_run_alias::<Self>(run, &task_context, &expression).await?;
+
+                let pos_for_err = task_context.position.read().await.as_error_instance();
+                let output = self
+                    .execute_by_jobworkerp(
+                        cx.clone(),
+                        normalized.runner_name,
+                        None,
+                        None,
+                        normalized.arguments,
+                        task_name,
+                        normalized.using,
+                        timeout_sec,
+                    )
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(error = ?e, position = %pos_for_err, "Failed to execute run alias by jobworkerp");
+                        workflow::errors::ErrorFactory::new().service_unavailable(
+                            "Failed to execute run alias by jobworkerp".to_string(),
+                            Some(pos_for_err),
+                            Some(e.to_string()),
+                        )
+                    })?;
+                task_context.set_raw_output(output);
+
+                task_context.remove_position().await;
+                task_context.remove_position().await;
+
+                Ok(task_context)
             } // _ => {
               //     let pos = task_context.position.clone();
               //     let mut pos = pos.write().await;

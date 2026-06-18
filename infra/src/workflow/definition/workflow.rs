@@ -519,6 +519,132 @@ impl ::std::convert::TryFrom<::std::string::String> for CheckpointConfigStorage 
         value.parse()
     }
 }
+#[doc = "ContainerConfiguration"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"ContainerConfiguration\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"image\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"command\": {"]
+#[doc = "      \"title\": \"ContainerCommand\","]
+#[doc = "      \"default\": [],"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"type\": \"string\""]
+#[doc = "      }"]
+#[doc = "    },"]
+#[doc = "    \"entrypoint\": {"]
+#[doc = "      \"title\": \"ContainerEntrypoint\","]
+#[doc = "      \"default\": [],"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"type\": \"string\""]
+#[doc = "      }"]
+#[doc = "    },"]
+#[doc = "    \"env\": {"]
+#[doc = "      \"title\": \"ContainerEnvironment\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": {"]
+#[doc = "        \"type\": \"string\""]
+#[doc = "      }"]
+#[doc = "    },"]
+#[doc = "    \"image\": {"]
+#[doc = "      \"title\": \"ContainerImage\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"successExitCodes\": {"]
+#[doc = "      \"title\": \"ContainerSuccessExitCodes\","]
+#[doc = "      \"description\": \"Additional container process exit codes to treat as success. (jobworkerp extension)\","]
+#[doc = "      \"default\": [],"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"type\": \"integer\","]
+#[doc = "        \"format\": \"int32\""]
+#[doc = "      }"]
+#[doc = "    },"]
+#[doc = "    \"timeoutSec\": {"]
+#[doc = "      \"title\": \"ContainerTimeoutSec\","]
+#[doc = "      \"description\": \"Job timeout in seconds. (jobworkerp extension)\","]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"format\": \"uint64\""]
+#[doc = "    },"]
+#[doc = "    \"treatNonzeroAsError\": {"]
+#[doc = "      \"title\": \"ContainerTreatNonzeroAsError\","]
+#[doc = "      \"description\": \"Treat non-zero exit codes as task failure unless the code is listed in successExitCodes. (jobworkerp extension)\","]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"user\": {"]
+#[doc = "      \"title\": \"ContainerUser\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"workingDir\": {"]
+#[doc = "      \"title\": \"ContainerWorkingDirectory\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerConfiguration {
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub command: ::std::vec::Vec<::std::string::String>,
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub entrypoint: ::std::vec::Vec<::std::string::String>,
+    #[serde(
+        default,
+        skip_serializing_if = ":: std :: collections :: HashMap::is_empty"
+    )]
+    pub env: ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+    pub image: ::std::string::String,
+    #[doc = "Additional container process exit codes to treat as success. (jobworkerp extension)"]
+    #[serde(
+        rename = "successExitCodes",
+        default,
+        skip_serializing_if = "::std::vec::Vec::is_empty"
+    )]
+    pub success_exit_codes: ::std::vec::Vec<i32>,
+    #[doc = "Job timeout in seconds. (jobworkerp extension)"]
+    #[serde(
+        rename = "timeoutSec",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub timeout_sec: ::std::option::Option<u64>,
+    #[doc = "Treat non-zero exit codes as task failure unless the code is listed in successExitCodes. (jobworkerp extension)"]
+    #[serde(
+        rename = "treatNonzeroAsError",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub treat_nonzero_as_error: ::std::option::Option<bool>,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub user: ::std::option::Option<::std::string::String>,
+    #[serde(
+        rename = "workingDir",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub working_dir: ::std::option::Option<::std::string::String>,
+}
+impl ::std::convert::From<&ContainerConfiguration> for ContainerConfiguration {
+    fn from(value: &ContainerConfiguration) -> Self {
+        value.clone()
+    }
+}
+impl ContainerConfiguration {
+    pub fn builder() -> builder::ContainerConfiguration {
+        Default::default()
+    }
+}
 #[doc = "DoTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -3091,6 +3217,42 @@ impl ReusableComponents {
         Default::default()
     }
 }
+#[doc = "Execute a container. Some optional fields are jobworkerp extensions."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"RunContainer\","]
+#[doc = "  \"description\": \"Execute a container. Some optional fields are jobworkerp extensions.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"container\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"container\": {"]
+#[doc = "      \"$ref\": \"#/$defs/containerConfiguration\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RunContainer {
+    pub container: ContainerConfiguration,
+}
+impl ::std::convert::From<&RunContainer> for RunContainer {
+    fn from(value: &RunContainer) -> Self {
+        value.clone()
+    }
+}
+impl RunContainer {
+    pub fn builder() -> builder::RunContainer {
+        Default::default()
+    }
+}
 #[doc = "Execute using a function configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -3490,14 +3652,14 @@ impl RunRunner {
         Default::default()
     }
 }
-#[doc = "Execute inline or external scripts (Serverless Workflow v1.0.0 compliant)"]
+#[doc = "Execute inline or external scripts. This is close to Serverless Workflow\nv1.0.0 run.script, but await/return are not implemented by the workflow\nexecutor yet.\n"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"RunScript\","]
-#[doc = "  \"description\": \"Execute inline or external scripts (Serverless Workflow v1.0.0 compliant)\","]
+#[doc = "  \"description\": \"Execute inline or external scripts. This is close to Serverless Workflow\\nv1.0.0 run.script, but await/return are not implemented by the workflow\\nexecutor yet.\\n\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"script\""]
@@ -3575,6 +3737,42 @@ impl RunScript {
         Default::default()
     }
 }
+#[doc = "Execute a shell command. Some optional fields are jobworkerp extensions."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"RunShell\","]
+#[doc = "  \"description\": \"Execute a shell command. Some optional fields are jobworkerp extensions.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"shell\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"shell\": {"]
+#[doc = "      \"$ref\": \"#/$defs/shellConfiguration\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RunShell {
+    pub shell: ShellConfiguration,
+}
+impl ::std::convert::From<&RunShell> for RunShell {
+    fn from(value: &RunShell) -> Self {
+        value.clone()
+    }
+}
+impl RunShell {
+    pub fn builder() -> builder::RunShell {
+        Default::default()
+    }
+}
 #[doc = "RunTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -3634,6 +3832,15 @@ impl RunScript {
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"$ref\": \"#/$defs/runScript\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"$ref\": \"#/$defs/runShell\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"$ref\": \"#/$defs/runContainer\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"$ref\": \"#/$defs/runWorkflow\""]
 #[doc = "        }"]
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
@@ -3754,6 +3961,15 @@ impl RunTask {
 #[doc = "    },"]
 #[doc = "    {"]
 #[doc = "      \"$ref\": \"#/$defs/runScript\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/runShell\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/runContainer\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/runWorkflow\""]
 #[doc = "    }"]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
@@ -3788,6 +4004,9 @@ pub enum RunTaskConfiguration {
     Runner(RunRunner),
     Function(RunFunction),
     Script(RunScript),
+    Shell(RunShell),
+    Container(RunContainer),
+    Workflow(RunWorkflow),
 }
 impl ::std::convert::From<&Self> for RunTaskConfiguration {
     fn from(value: &RunTaskConfiguration) -> Self {
@@ -3812,6 +4031,21 @@ impl ::std::convert::From<RunFunction> for RunTaskConfiguration {
 impl ::std::convert::From<RunScript> for RunTaskConfiguration {
     fn from(value: RunScript) -> Self {
         Self::Script(value)
+    }
+}
+impl ::std::convert::From<RunShell> for RunTaskConfiguration {
+    fn from(value: RunShell) -> Self {
+        Self::Shell(value)
+    }
+}
+impl ::std::convert::From<RunContainer> for RunTaskConfiguration {
+    fn from(value: RunContainer) -> Self {
+        Self::Container(value)
+    }
+}
+impl ::std::convert::From<RunWorkflow> for RunTaskConfiguration {
+    fn from(value: RunWorkflow) -> Self {
+        Self::Workflow(value)
     }
 }
 #[doc = "Execute using a worker configuration."]
@@ -3872,6 +4106,42 @@ impl ::std::convert::From<&RunWorker> for RunWorker {
 }
 impl RunWorker {
     pub fn builder() -> builder::RunWorker {
+        Default::default()
+    }
+}
+#[doc = "Execute a nested workflow using jobworkerp's source-based workflow extension."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"RunWorkflow\","]
+#[doc = "  \"description\": \"Execute a nested workflow using jobworkerp's source-based workflow extension.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"workflow\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"workflow\": {"]
+#[doc = "      \"$ref\": \"#/$defs/workflowConfiguration\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RunWorkflow {
+    pub workflow: WorkflowConfiguration,
+}
+impl ::std::convert::From<&RunWorkflow> for RunWorkflow {
+    fn from(value: &RunWorkflow) -> Self {
+        value.clone()
+    }
+}
+impl RunWorkflow {
+    pub fn builder() -> builder::RunWorkflow {
         Default::default()
     }
 }
@@ -4157,6 +4427,111 @@ impl ::std::convert::From<&SetTask> for SetTask {
 impl SetTask {
     pub fn builder() -> builder::SetTask {
         Default::default()
+    }
+}
+#[doc = "Shell command configuration. A string is treated as the command."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"ShellConfiguration\","]
+#[doc = "  \"description\": \"Shell command configuration. A string is treated as the command.\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"title\": \"ShellCommandLine\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"title\": \"ShellCommand\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"command\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"args\": {"]
+#[doc = "          \"title\": \"ShellCommandArguments\","]
+#[doc = "          \"default\": [],"]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"type\": \"string\""]
+#[doc = "          }"]
+#[doc = "        },"]
+#[doc = "        \"command\": {"]
+#[doc = "          \"title\": \"ShellCommandName\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        \"successExitCodes\": {"]
+#[doc = "          \"title\": \"ShellSuccessExitCodes\","]
+#[doc = "          \"description\": \"Additional process exit codes to treat as success. (jobworkerp extension)\","]
+#[doc = "          \"default\": [],"]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"type\": \"integer\","]
+#[doc = "            \"format\": \"int32\""]
+#[doc = "          }"]
+#[doc = "        },"]
+#[doc = "        \"treatNonzeroAsError\": {"]
+#[doc = "          \"title\": \"ShellTreatNonzeroAsError\","]
+#[doc = "          \"description\": \"Treat non-zero exit codes as task failure unless the code is listed in successExitCodes. (jobworkerp extension)\","]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"withMemoryMonitoring\": {"]
+#[doc = "          \"title\": \"ShellMemoryMonitoring\","]
+#[doc = "          \"description\": \"Enable process memory observation. (jobworkerp extension)\","]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"workingDir\": {"]
+#[doc = "          \"title\": \"ShellWorkingDirectory\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum ShellConfiguration {
+    Variant0(::std::string::String),
+    Variant1 {
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        args: ::std::vec::Vec<::std::string::String>,
+        command: ::std::string::String,
+        #[doc = "Additional process exit codes to treat as success. (jobworkerp extension)"]
+        #[serde(
+            rename = "successExitCodes",
+            default,
+            skip_serializing_if = "::std::vec::Vec::is_empty"
+        )]
+        success_exit_codes: ::std::vec::Vec<i32>,
+        #[doc = "Treat non-zero exit codes as task failure unless the code is listed in successExitCodes. (jobworkerp extension)"]
+        #[serde(
+            rename = "treatNonzeroAsError",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        treat_nonzero_as_error: ::std::option::Option<bool>,
+        #[doc = "Enable process memory observation. (jobworkerp extension)"]
+        #[serde(
+            rename = "withMemoryMonitoring",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        with_memory_monitoring: ::std::option::Option<bool>,
+        #[serde(
+            rename = "workingDir",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        working_dir: ::std::option::Option<::std::string::String>,
+    },
+}
+impl ::std::convert::From<&Self> for ShellConfiguration {
+    fn from(value: &ShellConfiguration) -> Self {
+        value.clone()
     }
 }
 #[doc = "Case condition and action definition."]
@@ -5340,6 +5715,88 @@ impl WorkerOptions {
         Default::default()
     }
 }
+#[doc = "Nested workflow source. Parent workflow_context is inherited implicitly; workflowContext is not a DSL field. (jobworkerp extension)"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"WorkflowConfiguration\","]
+#[doc = "  \"description\": \"Nested workflow source. Parent workflow_context is inherited implicitly; workflowContext is not a DSL field. (jobworkerp extension)\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"required\": ["]
+#[doc = "        \"workflowData\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"required\": ["]
+#[doc = "        \"workflowUrl\""]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"executionId\": {"]
+#[doc = "      \"title\": \"WorkflowExecutionId\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"input\": {"]
+#[doc = "      \"title\": \"WorkflowInput\","]
+#[doc = "      \"description\": \"Input passed to the nested workflow. Non-string values are serialized as JSON.\""]
+#[doc = "    },"]
+#[doc = "    \"workflowData\": {"]
+#[doc = "      \"title\": \"WorkflowData\","]
+#[doc = "      \"description\": \"Inline nested workflow definition as JSON or YAML. (jobworkerp extension)\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"workflowUrl\": {"]
+#[doc = "      \"title\": \"WorkflowUrl\","]
+#[doc = "      \"description\": \"Nested workflow definition URL or path. (jobworkerp extension)\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum WorkflowConfiguration {
+    Variant0 {
+        #[serde(
+            rename = "executionId",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        execution_id: ::std::option::Option<::std::string::String>,
+        #[doc = "Input passed to the nested workflow. Non-string values are serialized as JSON."]
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        input: ::std::option::Option<::serde_json::Value>,
+        #[doc = "Inline nested workflow definition as JSON or YAML. (jobworkerp extension)"]
+        #[serde(rename = "workflowData")]
+        workflow_data: ::std::string::String,
+    },
+    Variant1 {
+        #[serde(
+            rename = "executionId",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        execution_id: ::std::option::Option<::std::string::String>,
+        #[doc = "Input passed to the nested workflow. Non-string values are serialized as JSON."]
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        input: ::std::option::Option<::serde_json::Value>,
+        #[doc = "Nested workflow definition URL or path. (jobworkerp extension)"]
+        #[serde(rename = "workflowUrl")]
+        workflow_url: ::std::string::String,
+    },
+}
+impl ::std::convert::From<&Self> for WorkflowConfiguration {
+    fn from(value: &WorkflowConfiguration) -> Self {
+        value.clone()
+    }
+}
 #[doc = "DSL version used by this workflow."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -6251,6 +6708,178 @@ pub mod builder {
             Self {
                 enabled: Ok(value.enabled),
                 storage: Ok(value.storage),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct ContainerConfiguration {
+        command:
+            ::std::result::Result<::std::vec::Vec<::std::string::String>, ::std::string::String>,
+        entrypoint:
+            ::std::result::Result<::std::vec::Vec<::std::string::String>, ::std::string::String>,
+        env: ::std::result::Result<
+            ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+            ::std::string::String,
+        >,
+        image: ::std::result::Result<::std::string::String, ::std::string::String>,
+        success_exit_codes: ::std::result::Result<::std::vec::Vec<i32>, ::std::string::String>,
+        timeout_sec: ::std::result::Result<::std::option::Option<u64>, ::std::string::String>,
+        treat_nonzero_as_error:
+            ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+        user: ::std::result::Result<
+            ::std::option::Option<::std::string::String>,
+            ::std::string::String,
+        >,
+        working_dir: ::std::result::Result<
+            ::std::option::Option<::std::string::String>,
+            ::std::string::String,
+        >,
+    }
+    impl ::std::default::Default for ContainerConfiguration {
+        fn default() -> Self {
+            Self {
+                command: Ok(Default::default()),
+                entrypoint: Ok(Default::default()),
+                env: Ok(Default::default()),
+                image: Err("no value supplied for image".to_string()),
+                success_exit_codes: Ok(Default::default()),
+                timeout_sec: Ok(Default::default()),
+                treat_nonzero_as_error: Ok(Default::default()),
+                user: Ok(Default::default()),
+                working_dir: Ok(Default::default()),
+            }
+        }
+    }
+    impl ContainerConfiguration {
+        pub fn command<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.command = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for command: {}", e));
+            self
+        }
+        pub fn entrypoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.entrypoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for entrypoint: {}", e));
+            self
+        }
+        pub fn env<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<
+                    ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+                >,
+            T::Error: ::std::fmt::Display,
+        {
+            self.env = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for env: {}", e));
+            self
+        }
+        pub fn image<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::string::String>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.image = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for image: {}", e));
+            self
+        }
+        pub fn success_exit_codes<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::vec::Vec<i32>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.success_exit_codes = value.try_into().map_err(|e| {
+                format!(
+                    "error converting supplied value for success_exit_codes: {}",
+                    e
+                )
+            });
+            self
+        }
+        pub fn timeout_sec<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<u64>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.timeout_sec = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for timeout_sec: {}", e));
+            self
+        }
+        pub fn treat_nonzero_as_error<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<bool>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.treat_nonzero_as_error = value.try_into().map_err(|e| {
+                format!(
+                    "error converting supplied value for treat_nonzero_as_error: {}",
+                    e
+                )
+            });
+            self
+        }
+        pub fn user<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.user = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for user: {}", e));
+            self
+        }
+        pub fn working_dir<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.working_dir = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for working_dir: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<ContainerConfiguration> for super::ContainerConfiguration {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: ContainerConfiguration,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                command: value.command?,
+                entrypoint: value.entrypoint?,
+                env: value.env?,
+                image: value.image?,
+                success_exit_codes: value.success_exit_codes?,
+                timeout_sec: value.timeout_sec?,
+                treat_nonzero_as_error: value.treat_nonzero_as_error?,
+                user: value.user?,
+                working_dir: value.working_dir?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::ContainerConfiguration> for ContainerConfiguration {
+        fn from(value: super::ContainerConfiguration) -> Self {
+            Self {
+                command: Ok(value.command),
+                entrypoint: Ok(value.entrypoint),
+                env: Ok(value.env),
+                image: Ok(value.image),
+                success_exit_codes: Ok(value.success_exit_codes),
+                timeout_sec: Ok(value.timeout_sec),
+                treat_nonzero_as_error: Ok(value.treat_nonzero_as_error),
+                user: Ok(value.user),
+                working_dir: Ok(value.working_dir),
             }
         }
     }
@@ -7985,6 +8614,46 @@ pub mod builder {
         }
     }
     #[derive(Clone, Debug)]
+    pub struct RunContainer {
+        container: ::std::result::Result<super::ContainerConfiguration, ::std::string::String>,
+    }
+    impl ::std::default::Default for RunContainer {
+        fn default() -> Self {
+            Self {
+                container: Err("no value supplied for container".to_string()),
+            }
+        }
+    }
+    impl RunContainer {
+        pub fn container<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::ContainerConfiguration>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.container = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for container: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<RunContainer> for super::RunContainer {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: RunContainer,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                container: value.container?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::RunContainer> for RunContainer {
+        fn from(value: super::RunContainer) -> Self {
+            Self {
+                container: Ok(value.container),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
     pub struct RunFunction {
         function: ::std::result::Result<super::RunJobFunction, ::std::string::String>,
     }
@@ -8293,6 +8962,44 @@ pub mod builder {
         }
     }
     #[derive(Clone, Debug)]
+    pub struct RunShell {
+        shell: ::std::result::Result<super::ShellConfiguration, ::std::string::String>,
+    }
+    impl ::std::default::Default for RunShell {
+        fn default() -> Self {
+            Self {
+                shell: Err("no value supplied for shell".to_string()),
+            }
+        }
+    }
+    impl RunShell {
+        pub fn shell<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::ShellConfiguration>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.shell = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for shell: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<RunShell> for super::RunShell {
+        type Error = super::error::ConversionError;
+        fn try_from(value: RunShell) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                shell: value.shell?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::RunShell> for RunShell {
+        fn from(value: super::RunShell) -> Self {
+            Self {
+                shell: Ok(value.shell),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
     pub struct RunTask {
         checkpoint: ::std::result::Result<bool, ::std::string::String>,
         export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
@@ -8505,6 +9212,46 @@ pub mod builder {
         fn from(value: super::RunWorker) -> Self {
             Self {
                 worker: Ok(value.worker),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct RunWorkflow {
+        workflow: ::std::result::Result<super::WorkflowConfiguration, ::std::string::String>,
+    }
+    impl ::std::default::Default for RunWorkflow {
+        fn default() -> Self {
+            Self {
+                workflow: Err("no value supplied for workflow".to_string()),
+            }
+        }
+    }
+    impl RunWorkflow {
+        pub fn workflow<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::WorkflowConfiguration>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.workflow = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for workflow: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<RunWorkflow> for super::RunWorkflow {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: RunWorkflow,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                workflow: value.workflow?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::RunWorkflow> for RunWorkflow {
+        fn from(value: super::RunWorkflow) -> Self {
+            Self {
+                workflow: Ok(value.workflow),
             }
         }
     }

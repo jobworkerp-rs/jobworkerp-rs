@@ -294,6 +294,112 @@ do:
         endpoint: https://example.com
 "#;
 
+    const RUN_SHELL_STRING: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-shell-string, version: "1.0.0" }
+do:
+  - echo:
+      run:
+        shell: "echo hello"
+"#;
+
+    const RUN_SHELL_OBJECT: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-shell-object, version: "1.0.0" }
+do:
+  - echo:
+      run:
+        shell:
+          command: echo
+          args: ["hello"]
+          workingDir: /tmp
+          withMemoryMonitoring: true
+          treatNonzeroAsError: true
+          successExitCodes: [0, 2]
+"#;
+
+    const RUN_CONTAINER: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-container, version: "1.0.0" }
+do:
+  - boxed:
+      run:
+        container:
+          image: alpine:3.20
+          command: ["echo", "hello"]
+          entrypoint: ["/bin/sh", "-c"]
+          env:
+            GREETING: hello
+          workingDir: /work
+          treatNonzeroAsError: true
+          successExitCodes: [0]
+"#;
+
+    const RUN_CONTAINER_MISSING_IMAGE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-container-missing-image, version: "1.0.0" }
+do:
+  - boxed:
+      run:
+        container:
+          command: ["echo", "hello"]
+"#;
+
+    const RUN_WORKFLOW_DATA: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-workflow-data, version: "1.0.0" }
+do:
+  - nested:
+      run:
+        workflow:
+          workflowData: |
+            document: { dsl: "1.0.0-jobworkerp", namespace: t, name: child, version: "1.0.0" }
+            do:
+              - init: { set: { ok: true } }
+          input:
+            value: 1
+          executionId: child-1
+"#;
+
+    const RUN_WORKFLOW_CONTEXT_ARGUMENT: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-workflow-context-argument, version: "1.0.0" }
+do:
+  - nested:
+      run:
+        workflow:
+          workflowData: |
+            document: { dsl: "1.0.0-jobworkerp", namespace: t, name: child, version: "1.0.0" }
+            do: []
+          workflowContext:
+            trace: yes
+"#;
+
+    const RUN_WORKFLOW_URL: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-workflow-url, version: "1.0.0" }
+do:
+  - nested:
+      run:
+        workflow:
+          workflowUrl: file:///tmp/child.yaml
+          input: "{}"
+"#;
+
+    const RUN_WORKFLOW_MISSING_SOURCE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-workflow-missing-source, version: "1.0.0" }
+do:
+  - nested:
+      run:
+        workflow:
+          input: "{}"
+"#;
+
+    const RUN_ALIAS_AMBIGUOUS_WITH_RUNNER: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-alias-ambiguous, version: "1.0.0" }
+do:
+  - bad:
+      run:
+        shell: "echo hello"
+        runner:
+          name: COMMAND
+          arguments:
+            command: echo
+"#;
+
     // The schema relies on `allOf:[{$ref: taskBase}, {properties: ...}]` to
     // share base properties across every task type. If this stops propagating
     // evaluated properties through `$ref` in some future jsonschema version,
@@ -428,6 +534,51 @@ do:
     #[test]
     fn call_grpc_is_rejected_in_phase_1() {
         assert!(run_validate(CALL_GRPC_UNSUPPORTED).is_err());
+    }
+
+    #[test]
+    fn run_shell_string_passes() {
+        run_validate(RUN_SHELL_STRING).unwrap();
+    }
+
+    #[test]
+    fn run_shell_object_passes() {
+        run_validate(RUN_SHELL_OBJECT).unwrap();
+    }
+
+    #[test]
+    fn run_container_passes() {
+        run_validate(RUN_CONTAINER).unwrap();
+    }
+
+    #[test]
+    fn run_container_missing_image_fails() {
+        assert!(run_validate(RUN_CONTAINER_MISSING_IMAGE).is_err());
+    }
+
+    #[test]
+    fn run_workflow_data_passes() {
+        run_validate(RUN_WORKFLOW_DATA).unwrap();
+    }
+
+    #[test]
+    fn run_workflow_context_argument_fails() {
+        assert!(run_validate(RUN_WORKFLOW_CONTEXT_ARGUMENT).is_err());
+    }
+
+    #[test]
+    fn run_workflow_url_passes() {
+        run_validate(RUN_WORKFLOW_URL).unwrap();
+    }
+
+    #[test]
+    fn run_workflow_missing_source_fails() {
+        assert!(run_validate(RUN_WORKFLOW_MISSING_SOURCE).is_err());
+    }
+
+    #[test]
+    fn run_alias_with_runner_is_rejected_as_ambiguous() {
+        assert!(run_validate(RUN_ALIAS_AMBIGUOUS_WITH_RUNNER).is_err());
     }
 
     // Combined regression: switch + tryTask + raise + flowDirective `exit`

@@ -608,12 +608,48 @@
                 },
                 {
                   "$ref": "#/$defs/runScript"
+                },
+                {
+                  "$ref": "#/$defs/runShell"
+                },
+                {
+                  "$ref": "#/$defs/runContainer"
+                },
+                {
+                  "$ref": "#/$defs/runWorkflow"
                 }
               ]
             }
           }
         }
-      ]
+      ],
+      "properties": {
+        "run": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/runWorker"
+            },
+            {
+              "$ref": "#/$defs/runRunner"
+            },
+            {
+              "$ref": "#/$defs/runFunction"
+            },
+            {
+              "$ref": "#/$defs/runScript"
+            },
+            {
+              "$ref": "#/$defs/runShell"
+            },
+            {
+              "$ref": "#/$defs/runContainer"
+            },
+            {
+              "$ref": "#/$defs/runWorkflow"
+            }
+          ]
+        }
+      }
     },
     "runRunner": {
       "type": "object",
@@ -837,7 +873,7 @@
     "runScript": {
       "type": "object",
       "title": "RunScript",
-      "description": "Execute inline or external scripts (Serverless Workflow v1.0.0 compliant)",
+      "description": "Execute inline or external scripts. This is close to Serverless Workflow\nv1.0.0 run.script, but await/return are not implemented by the workflow\nexecutor yet.\n",
       "required": [
         "script"
       ],
@@ -1506,6 +1542,208 @@
       "description": "Plain string without runtime expressions.",
       "minLength": 1,
       "pattern": "^\\s*(?!.*\\$\\{).*$"
+    },
+    "runShell": {
+      "type": "object",
+      "title": "RunShell",
+      "description": "Execute a shell command. Some optional fields are jobworkerp extensions.",
+      "required": [
+        "shell"
+      ],
+      "properties": {
+        "shell": {
+          "$ref": "#/$defs/shellConfiguration"
+        }
+      },
+      "additionalProperties": false
+    },
+    "shellConfiguration": {
+      "title": "ShellConfiguration",
+      "description": "Shell command configuration. A string is treated as the command.",
+      "oneOf": [
+        {
+          "type": "string",
+          "title": "ShellCommandLine"
+        },
+        {
+          "type": "object",
+          "title": "ShellCommand",
+          "required": [
+            "command"
+          ],
+          "properties": {
+            "command": {
+              "type": "string",
+              "title": "ShellCommandName"
+            },
+            "args": {
+              "type": "array",
+              "title": "ShellCommandArguments",
+              "default": [],
+              "items": {
+                "type": "string"
+              }
+            },
+            "workingDir": {
+              "type": "string",
+              "title": "ShellWorkingDirectory"
+            },
+            "withMemoryMonitoring": {
+              "type": "boolean",
+              "title": "ShellMemoryMonitoring",
+              "description": "Enable process memory observation. (jobworkerp extension)"
+            },
+            "treatNonzeroAsError": {
+              "type": "boolean",
+              "title": "ShellTreatNonzeroAsError",
+              "description": "Treat non-zero exit codes as task failure unless the code is listed in successExitCodes. (jobworkerp extension)"
+            },
+            "successExitCodes": {
+              "type": "array",
+              "title": "ShellSuccessExitCodes",
+              "description": "Additional process exit codes to treat as success. (jobworkerp extension)",
+              "default": [],
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "runContainer": {
+      "type": "object",
+      "title": "RunContainer",
+      "description": "Execute a container. Some optional fields are jobworkerp extensions.",
+      "required": [
+        "container"
+      ],
+      "properties": {
+        "container": {
+          "$ref": "#/$defs/containerConfiguration"
+        }
+      },
+      "additionalProperties": false
+    },
+    "containerConfiguration": {
+      "type": "object",
+      "title": "ContainerConfiguration",
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "image": {
+          "type": "string",
+          "title": "ContainerImage"
+        },
+        "command": {
+          "type": "array",
+          "title": "ContainerCommand",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "entrypoint": {
+          "type": "array",
+          "title": "ContainerEntrypoint",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "type": "object",
+          "title": "ContainerEnvironment",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "user": {
+          "type": "string",
+          "title": "ContainerUser"
+        },
+        "workingDir": {
+          "type": "string",
+          "title": "ContainerWorkingDirectory"
+        },
+        "timeoutSec": {
+          "type": "integer",
+          "format": "uint64",
+          "title": "ContainerTimeoutSec",
+          "description": "Job timeout in seconds. (jobworkerp extension)"
+        },
+        "treatNonzeroAsError": {
+          "type": "boolean",
+          "title": "ContainerTreatNonzeroAsError",
+          "description": "Treat non-zero exit codes as task failure unless the code is listed in successExitCodes. (jobworkerp extension)"
+        },
+        "successExitCodes": {
+          "type": "array",
+          "title": "ContainerSuccessExitCodes",
+          "description": "Additional container process exit codes to treat as success. (jobworkerp extension)",
+          "default": [],
+          "items": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "runWorkflow": {
+      "type": "object",
+      "title": "RunWorkflow",
+      "description": "Execute a nested workflow using jobworkerp's source-based workflow extension.",
+      "required": [
+        "workflow"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/workflowConfiguration"
+        }
+      },
+      "additionalProperties": false
+    },
+    "workflowConfiguration": {
+      "type": "object",
+      "title": "WorkflowConfiguration",
+      "description": "Nested workflow source. Parent workflow_context is inherited implicitly; workflowContext is not a DSL field. (jobworkerp extension)",
+      "oneOf": [
+        {
+          "required": [
+            "workflowData"
+          ]
+        },
+        {
+          "required": [
+            "workflowUrl"
+          ]
+        }
+      ],
+      "properties": {
+        "workflowData": {
+          "type": "string",
+          "title": "WorkflowData",
+          "description": "Inline nested workflow definition as JSON or YAML. (jobworkerp extension)"
+        },
+        "workflowUrl": {
+          "type": "string",
+          "title": "WorkflowUrl",
+          "description": "Nested workflow definition URL or path. (jobworkerp extension)"
+        },
+        "input": {
+          "title": "WorkflowInput",
+          "description": "Input passed to the nested workflow. Non-string values are serialized as JSON."
+        },
+        "executionId": {
+          "type": "string",
+          "title": "WorkflowExecutionId"
+        }
+      },
+      "additionalProperties": false
     }
   }
 }
