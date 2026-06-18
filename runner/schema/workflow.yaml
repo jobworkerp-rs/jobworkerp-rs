@@ -3,11 +3,13 @@
 #     yq --output-format=json runner/schema/workflow.yaml > runner/schema/workflow.json
 #     cargo typify runner/schema/workflow.json
 #
-$id: https://serverlessworkflow.io/schemas/1.0.0/workflow.yaml
+$id: urn:jobworkerp-rs:schemas:serverless-workflow:1.0.0-jobworkerp:workflow
 $schema: https://json-schema.org/draft/2020-12/schema
 title: WorkflowSchema
 description: >-
   Workflow schema supporting job execution with functions and tools.
+  This is a jobworkerp extension schema based on Serverless Workflow 1.0.0,
+  not the official schema URL.
   
   Runtime expressions are supported in fields marked in descriptions:
   - jq syntax: ${.key.subkey} for data access, ${$task.input} for context
@@ -174,6 +176,7 @@ $defs:
       - $ref: "#/$defs/forkTask"
       - $ref: "#/$defs/forTask"
       - $ref: "#/$defs/raiseTask"
+      - $ref: "#/$defs/callTask"
       - $ref: "#/$defs/runTask"
       - $ref: "#/$defs/setTask"
       - $ref: "#/$defs/switchTask"
@@ -289,6 +292,73 @@ $defs:
                 title: RaiseErrorReference
                 description: Reference to named error definition.
         required: [error]
+  callTask:
+    type: object
+    $ref: "#/$defs/taskBase"
+    title: CallTask
+    description: Invoke a service through a Serverless Workflow call task.
+    required: [call, with]
+    unevaluatedProperties: false
+    properties:
+      call:
+        type: string
+        title: CallTaskType
+        description: Phase 1 supports only the HTTP call type.
+        enum: [http]
+      with:
+        $ref: "#/$defs/callHttp"
+        title: CallTaskWith
+        description: HTTP call input.
+  callHttp:
+    type: object
+    title: CallHttp
+    description: HTTP call parameters supported by the jobworkerp adapter.
+    required: [method, endpoint]
+    unevaluatedProperties: false
+    properties:
+      method:
+        type: string
+        title: HttpMethod
+        description: HTTP method to execute.
+      endpoint:
+        title: HttpEndpoint
+        description: Literal endpoint URI or endpoint object.
+        oneOf:
+          - type: string
+            title: HttpEndpointUri
+          - type: object
+            title: HttpEndpointObject
+            required: [uri]
+            unevaluatedProperties: false
+            properties:
+              uri:
+                type: string
+                title: HttpEndpointObjectUri
+              authentication:
+                title: HttpEndpointAuthentication
+                description: Accepted for validation but not executed in Phase 1.
+      headers:
+        type: object
+        title: HttpHeaders
+        description: Header map. Values are converted to strings by the executor.
+        additionalProperties: true
+      query:
+        type: object
+        title: HttpQuery
+        description: Query parameter map. Values are converted to strings by the executor.
+        additionalProperties: true
+      body:
+        title: HttpBody
+        description: Request body. Non-string values are serialized as JSON.
+      output:
+        type: string
+        title: HttpOutput
+        description: HTTP output shape.
+        enum: [content, response]
+        default: content
+      redirect:
+        title: HttpRedirect
+        description: Accepted for validation but not executed in Phase 1.
   runTask:
     type: object
     $ref: "#/$defs/taskBase"

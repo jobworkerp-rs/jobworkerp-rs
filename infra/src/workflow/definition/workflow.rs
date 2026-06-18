@@ -41,6 +41,319 @@ pub mod error {
         }
     }
 }
+#[doc = "HTTP call parameters supported by the jobworkerp adapter."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"CallHttp\","]
+#[doc = "  \"description\": \"HTTP call parameters supported by the jobworkerp adapter.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"endpoint\","]
+#[doc = "    \"method\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"body\": {"]
+#[doc = "      \"title\": \"HttpBody\","]
+#[doc = "      \"description\": \"Request body. Non-string values are serialized as JSON.\""]
+#[doc = "    },"]
+#[doc = "    \"endpoint\": {"]
+#[doc = "      \"title\": \"HttpEndpoint\","]
+#[doc = "      \"description\": \"Literal endpoint URI or endpoint object.\","]
+#[doc = "      \"oneOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"title\": \"HttpEndpointUri\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"title\": \"HttpEndpointObject\","]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"uri\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"authentication\": {"]
+#[doc = "              \"title\": \"HttpEndpointAuthentication\","]
+#[doc = "              \"description\": \"Accepted for validation but not executed in Phase 1.\""]
+#[doc = "            },"]
+#[doc = "            \"uri\": {"]
+#[doc = "              \"title\": \"HttpEndpointObjectUri\","]
+#[doc = "              \"type\": \"string\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"unevaluatedProperties\": false"]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"headers\": {"]
+#[doc = "      \"title\": \"HttpHeaders\","]
+#[doc = "      \"description\": \"Header map. Values are converted to strings by the executor.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": true"]
+#[doc = "    },"]
+#[doc = "    \"method\": {"]
+#[doc = "      \"title\": \"HttpMethod\","]
+#[doc = "      \"description\": \"HTTP method to execute.\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"output\": {"]
+#[doc = "      \"title\": \"HttpOutput\","]
+#[doc = "      \"description\": \"HTTP output shape.\","]
+#[doc = "      \"default\": \"content\","]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"content\","]
+#[doc = "        \"response\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"query\": {"]
+#[doc = "      \"title\": \"HttpQuery\","]
+#[doc = "      \"description\": \"Query parameter map. Values are converted to strings by the executor.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": true"]
+#[doc = "    },"]
+#[doc = "    \"redirect\": {"]
+#[doc = "      \"title\": \"HttpRedirect\","]
+#[doc = "      \"description\": \"Accepted for validation but not executed in Phase 1.\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"unevaluatedProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+pub struct CallHttp {
+    #[doc = "Request body. Non-string values are serialized as JSON."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub body: ::std::option::Option<::serde_json::Value>,
+    #[doc = "Literal endpoint URI or endpoint object."]
+    pub endpoint: HttpEndpoint,
+    #[doc = "Header map. Values are converted to strings by the executor."]
+    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+    pub headers: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    #[doc = "HTTP method to execute."]
+    pub method: ::std::string::String,
+    #[doc = "HTTP output shape."]
+    #[serde(default = "defaults::call_http_output")]
+    pub output: HttpOutput,
+    #[doc = "Query parameter map. Values are converted to strings by the executor."]
+    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+    pub query: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    #[doc = "Accepted for validation but not executed in Phase 1."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub redirect: ::std::option::Option<::serde_json::Value>,
+}
+impl ::std::convert::From<&CallHttp> for CallHttp {
+    fn from(value: &CallHttp) -> Self {
+        value.clone()
+    }
+}
+impl CallHttp {
+    pub fn builder() -> builder::CallHttp {
+        Default::default()
+    }
+}
+#[doc = "CallTask"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"call\","]
+#[doc = "    \"with\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"call\": {"]
+#[doc = "      \"title\": \"CallTaskType\","]
+#[doc = "      \"description\": \"Phase 1 supports only the HTTP call type.\","]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"http\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"checkpoint\": {"]
+#[doc = "      \"title\": \"Checkpoint\","]
+#[doc = "      \"description\": \"Save workflow state after this task for checkpoint/restart.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"export\": {"]
+#[doc = "      \"title\": \"TaskBaseExport\","]
+#[doc = "      \"description\": \"Export task output to workflow context.\","]
+#[doc = "      \"$ref\": \"#/$defs/export\""]
+#[doc = "    },"]
+#[doc = "    \"if\": {"]
+#[doc = "      \"title\": \"TaskBaseIf\","]
+#[doc = "      \"description\": \"Runtime expression to conditionally execute this task.\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"input\": {"]
+#[doc = "      \"title\": \"TaskBaseInput\","]
+#[doc = "      \"description\": \"Task input configuration.\","]
+#[doc = "      \"$ref\": \"#/$defs/input\""]
+#[doc = "    },"]
+#[doc = "    \"metadata\": {"]
+#[doc = "      \"title\": \"TaskMetadata\","]
+#[doc = "      \"description\": \"Additional task metadata.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": true"]
+#[doc = "    },"]
+#[doc = "    \"output\": {"]
+#[doc = "      \"title\": \"TaskBaseOutput\","]
+#[doc = "      \"description\": \"Task output configuration.\","]
+#[doc = "      \"$ref\": \"#/$defs/output\""]
+#[doc = "    },"]
+#[doc = "    \"then\": {"]
+#[doc = "      \"title\": \"TaskBaseThen\","]
+#[doc = "      \"description\": \"Flow control directive executed after task completion.\","]
+#[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
+#[doc = "    },"]
+#[doc = "    \"timeout\": {"]
+#[doc = "      \"title\": \"TaskTimeout\","]
+#[doc = "      \"oneOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"title\": \"TaskTimeoutDefinition\","]
+#[doc = "          \"description\": \"Task timeout configuration.\","]
+#[doc = "          \"$ref\": \"#/$defs/timeout\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"title\": \"TaskTimeoutReference\","]
+#[doc = "          \"description\": \"Reference to named timeout configuration.\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"with\": {"]
+#[doc = "      \"title\": \"CallTaskWith\","]
+#[doc = "      \"description\": \"HTTP call input.\","]
+#[doc = "      \"$ref\": \"#/$defs/callHttp\""]
+#[doc = "    }"]
+#[doc = "  }"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+pub struct CallTask {
+    #[doc = "Phase 1 supports only the HTTP call type."]
+    pub call: CallTaskType,
+    #[doc = "Save workflow state after this task for checkpoint/restart."]
+    #[serde(default)]
+    pub checkpoint: bool,
+    #[doc = "Export task output to workflow context."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub export: ::std::option::Option<Export>,
+    #[doc = "Runtime expression to conditionally execute this task."]
+    #[serde(
+        rename = "if",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub if_: ::std::option::Option<::std::string::String>,
+    #[doc = "Task input configuration."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub input: ::std::option::Option<Input>,
+    #[doc = "Additional task metadata."]
+    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+    pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    #[doc = "Task output configuration."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub output: ::std::option::Option<Output>,
+    #[doc = "Flow control directive executed after task completion."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub then: ::std::option::Option<FlowDirective>,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub timeout: ::std::option::Option<TaskTimeout>,
+    #[doc = "HTTP call input."]
+    pub with: CallHttp,
+}
+impl ::std::convert::From<&CallTask> for CallTask {
+    fn from(value: &CallTask) -> Self {
+        value.clone()
+    }
+}
+impl CallTask {
+    pub fn builder() -> builder::CallTask {
+        Default::default()
+    }
+}
+#[doc = "Phase 1 supports only the HTTP call type."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"CallTaskType\","]
+#[doc = "  \"description\": \"Phase 1 supports only the HTTP call type.\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"http\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum CallTaskType {
+    #[serde(rename = "http")]
+    Http,
+}
+impl ::std::convert::From<&Self> for CallTaskType {
+    fn from(value: &CallTaskType) -> Self {
+        value.clone()
+    }
+}
+impl ::std::fmt::Display for CallTaskType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Http => write!(f, "http"),
+        }
+    }
+}
+impl ::std::str::FromStr for CallTaskType {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "http" => Ok(Self::Http),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for CallTaskType {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for CallTaskType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for CallTaskType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
 #[doc = "Static error filter configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -1591,6 +1904,142 @@ impl ::std::convert::From<&ForkTaskConfiguration> for ForkTaskConfiguration {
 impl ForkTaskConfiguration {
     pub fn builder() -> builder::ForkTaskConfiguration {
         Default::default()
+    }
+}
+#[doc = "Literal endpoint URI or endpoint object."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"HttpEndpoint\","]
+#[doc = "  \"description\": \"Literal endpoint URI or endpoint object.\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"title\": \"HttpEndpointUri\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"title\": \"HttpEndpointObject\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"uri\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"authentication\": {"]
+#[doc = "          \"title\": \"HttpEndpointAuthentication\","]
+#[doc = "          \"description\": \"Accepted for validation but not executed in Phase 1.\""]
+#[doc = "        },"]
+#[doc = "        \"uri\": {"]
+#[doc = "          \"title\": \"HttpEndpointObjectUri\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"unevaluatedProperties\": false"]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum HttpEndpoint {
+    Uri(::std::string::String),
+    Object {
+        #[doc = "Accepted for validation but not executed in Phase 1."]
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        authentication: ::std::option::Option<::serde_json::Value>,
+        uri: ::std::string::String,
+    },
+}
+impl ::std::convert::From<&Self> for HttpEndpoint {
+    fn from(value: &HttpEndpoint) -> Self {
+        value.clone()
+    }
+}
+#[doc = "HTTP output shape."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"HttpOutput\","]
+#[doc = "  \"description\": \"HTTP output shape.\","]
+#[doc = "  \"default\": \"content\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"content\","]
+#[doc = "    \"response\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum HttpOutput {
+    #[serde(rename = "content")]
+    Content,
+    #[serde(rename = "response")]
+    Response,
+}
+impl ::std::convert::From<&Self> for HttpOutput {
+    fn from(value: &HttpOutput) -> Self {
+        value.clone()
+    }
+}
+impl ::std::fmt::Display for HttpOutput {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Content => write!(f, "content"),
+            Self::Response => write!(f, "response"),
+        }
+    }
+}
+impl ::std::str::FromStr for HttpOutput {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "content" => Ok(Self::Content),
+            "response" => Ok(Self::Response),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for HttpOutput {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for HttpOutput {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for HttpOutput {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::default::Default for HttpOutput {
+    fn default() -> Self {
+        HttpOutput::Content
     }
 }
 #[doc = "Input configuration for workflow or task."]
@@ -3868,6 +4317,9 @@ impl SwitchTask {
 #[doc = "      \"$ref\": \"#/$defs/raiseTask\""]
 #[doc = "    },"]
 #[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/callTask\""]
+#[doc = "    },"]
+#[doc = "    {"]
 #[doc = "      \"$ref\": \"#/$defs/runTask\""]
 #[doc = "    },"]
 #[doc = "    {"]
@@ -3896,6 +4348,7 @@ pub enum Task {
     ForkTask(ForkTask),
     ForTask(ForTask),
     RaiseTask(RaiseTask),
+    CallTask(CallTask),
     RunTask(RunTask),
     SetTask(SetTask),
     SwitchTask(SwitchTask),
@@ -3921,6 +4374,11 @@ impl ::std::convert::From<ForTask> for Task {
 impl ::std::convert::From<RaiseTask> for Task {
     fn from(value: RaiseTask) -> Self {
         Self::RaiseTask(value)
+    }
+}
+impl ::std::convert::From<CallTask> for Task {
+    fn from(value: CallTask) -> Self {
+        Self::CallTask(value)
     }
 }
 impl ::std::convert::From<RunTask> for Task {
@@ -5080,15 +5538,15 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
             })
     }
 }
-#[doc = "Workflow schema supporting job execution with functions and tools.\nRuntime expressions are supported in fields marked in descriptions: - jq syntax: ${.key.subkey} for data access, ${$task.input} for context - liquid syntax: $${..} for templates\nAvailable context variables: - Task input data: direct key access via ${.key} (only within current task context) - Task output data: direct key access via ${.key} (only within current task context) - Context vars: set by task.export, setTask (access via $variable_name for jq, {{ variable_name }} for liquid) - Workflow: access via $workflow (e.g., $workflow.input.key, $workflow.id, $workflow.definition, $workflow.context_variables) - Task: access via $task (e.g., $task.definition, $task.input, $task.raw_output, $task.output, $task.flow_directive)"]
+#[doc = "Workflow schema supporting job execution with functions and tools. This is a jobworkerp extension schema based on Serverless Workflow 1.0.0, not the official schema URL.\nRuntime expressions are supported in fields marked in descriptions: - jq syntax: ${.key.subkey} for data access, ${$task.input} for context - liquid syntax: $${..} for templates\nAvailable context variables: - Task input data: direct key access via ${.key} (only within current task context) - Task output data: direct key access via ${.key} (only within current task context) - Context vars: set by task.export, setTask (access via $variable_name for jq, {{ variable_name }} for liquid) - Workflow: access via $workflow (e.g., $workflow.input.key, $workflow.id, $workflow.definition, $workflow.context_variables) - Task: access via $task (e.g., $task.definition, $task.input, $task.raw_output, $task.output, $task.flow_directive)"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"$id\": \"https://serverlessworkflow.io/schemas/1.0.0/workflow.yaml\","]
+#[doc = "  \"$id\": \"urn:jobworkerp-rs:schemas:serverless-workflow:1.0.0-jobworkerp:workflow\","]
 #[doc = "  \"title\": \"WorkflowSchema\","]
-#[doc = "  \"description\": \"Workflow schema supporting job execution with functions and tools.\\nRuntime expressions are supported in fields marked in descriptions: - jq syntax: ${.key.subkey} for data access, ${$task.input} for context - liquid syntax: $${..} for templates\\nAvailable context variables: - Task input data: direct key access via ${.key} (only within current task context) - Task output data: direct key access via ${.key} (only within current task context) - Context vars: set by task.export, setTask (access via $variable_name for jq, {{ variable_name }} for liquid) - Workflow: access via $workflow (e.g., $workflow.input.key, $workflow.id, $workflow.definition, $workflow.context_variables) - Task: access via $task (e.g., $task.definition, $task.input, $task.raw_output, $task.output, $task.flow_directive)\","]
+#[doc = "  \"description\": \"Workflow schema supporting job execution with functions and tools. This is a jobworkerp extension schema based on Serverless Workflow 1.0.0, not the official schema URL.\\nRuntime expressions are supported in fields marked in descriptions: - jq syntax: ${.key.subkey} for data access, ${$task.input} for context - liquid syntax: $${..} for templates\\nAvailable context variables: - Task input data: direct key access via ${.key} (only within current task context) - Task output data: direct key access via ${.key} (only within current task context) - Context vars: set by task.export, setTask (access via $variable_name for jq, {{ variable_name }} for liquid) - Workflow: access via $workflow (e.g., $workflow.input.key, $workflow.id, $workflow.definition, $workflow.context_variables) - Task: access via $task (e.g., $task.definition, $task.input, $task.raw_output, $task.output, $task.flow_directive)\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"do\","]
@@ -5325,6 +5783,320 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowVersion {
 }
 #[doc = r" Types for composing complex structures."]
 pub mod builder {
+    #[derive(Clone, Debug)]
+    pub struct CallHttp {
+        body: ::std::result::Result<
+            ::std::option::Option<::serde_json::Value>,
+            ::std::string::String,
+        >,
+        endpoint: ::std::result::Result<super::HttpEndpoint, ::std::string::String>,
+        headers: ::std::result::Result<
+            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+            ::std::string::String,
+        >,
+        method: ::std::result::Result<::std::string::String, ::std::string::String>,
+        output: ::std::result::Result<super::HttpOutput, ::std::string::String>,
+        query: ::std::result::Result<
+            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+            ::std::string::String,
+        >,
+        redirect: ::std::result::Result<
+            ::std::option::Option<::serde_json::Value>,
+            ::std::string::String,
+        >,
+    }
+    impl ::std::default::Default for CallHttp {
+        fn default() -> Self {
+            Self {
+                body: Ok(Default::default()),
+                endpoint: Err("no value supplied for endpoint".to_string()),
+                headers: Ok(Default::default()),
+                method: Err("no value supplied for method".to_string()),
+                output: Ok(super::defaults::call_http_output()),
+                query: Ok(Default::default()),
+                redirect: Ok(Default::default()),
+            }
+        }
+    }
+    impl CallHttp {
+        pub fn body<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<::serde_json::Value>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for body: {}", e));
+            self
+        }
+        pub fn endpoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::HttpEndpoint>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.endpoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for endpoint: {}", e));
+            self
+        }
+        pub fn headers<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
+            T::Error: ::std::fmt::Display,
+        {
+            self.headers = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for headers: {}", e));
+            self
+        }
+        pub fn method<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::string::String>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.method = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for method: {}", e));
+            self
+        }
+        pub fn output<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::HttpOutput>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.output = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for output: {}", e));
+            self
+        }
+        pub fn query<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
+            T::Error: ::std::fmt::Display,
+        {
+            self.query = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for query: {}", e));
+            self
+        }
+        pub fn redirect<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<::serde_json::Value>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.redirect = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for redirect: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<CallHttp> for super::CallHttp {
+        type Error = super::error::ConversionError;
+        fn try_from(value: CallHttp) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                body: value.body?,
+                endpoint: value.endpoint?,
+                headers: value.headers?,
+                method: value.method?,
+                output: value.output?,
+                query: value.query?,
+                redirect: value.redirect?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::CallHttp> for CallHttp {
+        fn from(value: super::CallHttp) -> Self {
+            Self {
+                body: Ok(value.body),
+                endpoint: Ok(value.endpoint),
+                headers: Ok(value.headers),
+                method: Ok(value.method),
+                output: Ok(value.output),
+                query: Ok(value.query),
+                redirect: Ok(value.redirect),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct CallTask {
+        call: ::std::result::Result<super::CallTaskType, ::std::string::String>,
+        checkpoint: ::std::result::Result<bool, ::std::string::String>,
+        export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
+        if_: ::std::result::Result<
+            ::std::option::Option<::std::string::String>,
+            ::std::string::String,
+        >,
+        input: ::std::result::Result<::std::option::Option<super::Input>, ::std::string::String>,
+        metadata: ::std::result::Result<
+            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+            ::std::string::String,
+        >,
+        output: ::std::result::Result<::std::option::Option<super::Output>, ::std::string::String>,
+        then: ::std::result::Result<
+            ::std::option::Option<super::FlowDirective>,
+            ::std::string::String,
+        >,
+        timeout:
+            ::std::result::Result<::std::option::Option<super::TaskTimeout>, ::std::string::String>,
+        with: ::std::result::Result<super::CallHttp, ::std::string::String>,
+    }
+    impl ::std::default::Default for CallTask {
+        fn default() -> Self {
+            Self {
+                call: Err("no value supplied for call".to_string()),
+                checkpoint: Ok(Default::default()),
+                export: Ok(Default::default()),
+                if_: Ok(Default::default()),
+                input: Ok(Default::default()),
+                metadata: Ok(Default::default()),
+                output: Ok(Default::default()),
+                then: Ok(Default::default()),
+                timeout: Ok(Default::default()),
+                with: Err("no value supplied for with".to_string()),
+            }
+        }
+    }
+    impl CallTask {
+        pub fn call<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::CallTaskType>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.call = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for call: {}", e));
+            self
+        }
+        pub fn checkpoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.checkpoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+            self
+        }
+        pub fn export<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::Export>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.export = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for export: {}", e));
+            self
+        }
+        pub fn if_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.if_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+            self
+        }
+        pub fn input<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::Input>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.input = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for input: {}", e));
+            self
+        }
+        pub fn metadata<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
+            T::Error: ::std::fmt::Display,
+        {
+            self.metadata = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+            self
+        }
+        pub fn output<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::Output>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.output = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for output: {}", e));
+            self
+        }
+        pub fn then<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::FlowDirective>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.then = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for then: {}", e));
+            self
+        }
+        pub fn timeout<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::TaskTimeout>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.timeout = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+            self
+        }
+        pub fn with<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::CallHttp>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.with = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for with: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<CallTask> for super::CallTask {
+        type Error = super::error::ConversionError;
+        fn try_from(value: CallTask) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                call: value.call?,
+                checkpoint: value.checkpoint?,
+                export: value.export?,
+                if_: value.if_?,
+                input: value.input?,
+                metadata: value.metadata?,
+                output: value.output?,
+                then: value.then?,
+                timeout: value.timeout?,
+                with: value.with?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::CallTask> for CallTask {
+        fn from(value: super::CallTask) -> Self {
+            Self {
+                call: Ok(value.call),
+                checkpoint: Ok(value.checkpoint),
+                export: Ok(value.export),
+                if_: Ok(value.if_),
+                input: Ok(value.input),
+                metadata: Ok(value.metadata),
+                output: Ok(value.output),
+                then: Ok(value.then),
+                timeout: Ok(value.timeout),
+                with: Ok(value.with),
+            }
+        }
+    }
     #[derive(Clone, Debug)]
     pub struct CatchErrors {
         with:
@@ -8939,6 +9711,9 @@ pub mod builder {
 }
 #[doc = r" Generation of default values for serde."]
 pub mod defaults {
+    pub(super) fn call_http_output() -> super::HttpOutput {
+        super::HttpOutput::Content
+    }
     pub(super) fn for_task_on_error() -> super::ForOnError {
         super::ForOnError::Break
     }
