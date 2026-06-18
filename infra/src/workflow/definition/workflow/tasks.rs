@@ -170,6 +170,42 @@ impl TaskTrait for RaiseTask {
     }
 }
 
+impl TaskTrait for CallTask {
+    fn export(&self) -> ::std::option::Option<&Export> {
+        self.export.as_ref()
+    }
+    fn checkpoint(&self) -> bool {
+        self.checkpoint
+    }
+
+    fn if_(&self) -> ::std::option::Option<&::std::string::String> {
+        self.if_.as_ref()
+    }
+
+    fn input(&self) -> ::std::option::Option<&Input> {
+        self.input.as_ref()
+    }
+
+    fn metadata(&self) -> &::serde_json::Map<::std::string::String, ::serde_json::Value> {
+        &self.metadata
+    }
+
+    fn output(&self) -> ::std::option::Option<&Output> {
+        self.output.as_ref()
+    }
+
+    fn then(&self) -> ::std::option::Option<&FlowDirective> {
+        self.then.as_ref()
+    }
+
+    fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
+        self.timeout.as_ref()
+    }
+    fn task_type(&self) -> &'static str {
+        "call"
+    }
+}
+
 impl TaskTrait for RunTask {
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
@@ -349,7 +385,7 @@ impl TaskTrait for WaitTask {
 impl TaskTrait for Task {
     fn export(&self) -> ::std::option::Option<&Export> {
         match self {
-            // Task::CallTask(t) => t.export(),
+            Task::CallTask(t) => t.export(),
             Task::ForkTask(t) => t.export(),
             // Task::EmitTask(t) => t.export(),
             Task::ForTask(t) => t.export(), // Needs to be matched before DoTask
@@ -365,7 +401,7 @@ impl TaskTrait for Task {
 
     fn if_(&self) -> ::std::option::Option<&::std::string::String> {
         match self {
-            // Task::CallTask(t) => t.if_(),
+            Task::CallTask(t) => t.if_(),
             Task::ForkTask(t) => t.if_(),
             // Task::EmitTask(t) => t.if_(),
             Task::ForTask(t) => t.if_(), // Needs to be matched before DoTask
@@ -381,7 +417,7 @@ impl TaskTrait for Task {
 
     fn input(&self) -> ::std::option::Option<&Input> {
         match self {
-            // Task::CallTask(t) => t.input(),
+            Task::CallTask(t) => t.input(),
             Task::ForkTask(t) => t.input(),
             // Task::EmitTask(t) => t.input(),
             Task::ForTask(t) => t.input(), // Needs to be matched before DoTask
@@ -397,7 +433,7 @@ impl TaskTrait for Task {
 
     fn metadata(&self) -> &::serde_json::Map<::std::string::String, ::serde_json::Value> {
         match self {
-            // Task::CallTask(t) => t.metadata(),
+            Task::CallTask(t) => t.metadata(),
             Task::ForkTask(t) => t.metadata(),
             // Task::EmitTask(t) => t.metadata(),
             Task::ForTask(t) => t.metadata(),
@@ -413,7 +449,7 @@ impl TaskTrait for Task {
 
     fn output(&self) -> ::std::option::Option<&Output> {
         match self {
-            // Task::CallTask(t) => t.output(),
+            Task::CallTask(t) => t.output(),
             Task::ForkTask(t) => t.output(),
             // Task::EmitTask(t) => t.output(),
             Task::ForTask(t) => t.output(),
@@ -429,7 +465,7 @@ impl TaskTrait for Task {
 
     fn then(&self) -> ::std::option::Option<&FlowDirective> {
         match self {
-            // Task::CallTask(t) => t.then(),
+            Task::CallTask(t) => t.then(),
             Task::ForkTask(t) => t.then(),
             // Task::EmitTask(t) => t.then(),
             Task::ForTask(t) => t.then(),
@@ -445,7 +481,7 @@ impl TaskTrait for Task {
 
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
         match self {
-            // Task::CallTask(t) => t.timeout(),
+            Task::CallTask(t) => t.timeout(),
             Task::ForkTask(t) => t.timeout(),
             // Task::EmitTask(t) => t.timeout(),
             Task::ForTask(t) => t.timeout(),
@@ -461,7 +497,7 @@ impl TaskTrait for Task {
 
     fn checkpoint(&self) -> bool {
         match self {
-            // Task::CallTask(t) => t.checkpoint(),
+            Task::CallTask(t) => t.checkpoint(),
             Task::ForkTask(t) => t.checkpoint,
             // Task::EmitTask(t) => t.checkpoint(),
             Task::ForTask(t) => t.checkpoint,
@@ -477,6 +513,7 @@ impl TaskTrait for Task {
 
     fn task_type(&self) -> &'static str {
         match self {
+            Task::CallTask(_) => "call",
             Task::ForkTask(_) => "fork",
             Task::ForTask(_) => "for",
             Task::DoTask(_) => "do",

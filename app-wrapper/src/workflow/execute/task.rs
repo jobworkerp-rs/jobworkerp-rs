@@ -16,6 +16,7 @@ use crate::workflow::{
 use anyhow::Result;
 use app::app::job::execute::JobExecutorWrapper;
 use async_stream::stream;
+use call::CallTaskExecutor;
 use command_utils::trace::Tracing;
 use debug_stub_derive::DebugStub;
 use fork::ForkTaskExecutor;
@@ -443,6 +444,7 @@ impl TaskExecutor {
             Task::ForTask(_) => "forTask",
             Task::ForkTask(_) => "forkTask",
             Task::RaiseTask(_) => "raiseTask",
+            Task::CallTask(_) => "callTask",
             Task::RunTask(_) => "runTask",
             Task::SetTask(_) => "setTask",
             Task::SwitchTask(_) => "switchTask",
@@ -870,6 +872,46 @@ impl TaskExecutor {
                             .await?;
                             Ok(WorkflowStreamEvent::task_completed(
                                 "raiseTask",
+                                &task_name_str,
+                                result,
+                            ))
+                        }
+                        Err(e) => Err(e),
+                    }
+                })
+                .boxed()
+            }
+            Task::CallTask(task) => {
+                let task_executor = CallTaskExecutor::new(
+                    workflow_context.clone(),
+                    default_task_timeout,
+                    job_executor_wrapper.clone(),
+                    task,
+                    self.metadata.clone(),
+                );
+                let task_name_str = task_name.to_string();
+                futures::stream::once(async move {
+                    match task_executor
+                        .execute(cx, task_name.as_str(), task_context.clone())
+                        .await
+                    {
+                        Ok(ctx) => {
+                            let mut expr = Self::expression(
+                                &*workflow_context.read().await,
+                                Arc::new(ctx.clone()),
+                            )
+                            .await?;
+                            let result = Self::update_context_by_output(
+                                checkpoint_repository.clone(),
+                                execution_id.clone(),
+                                original_task.clone(),
+                                workflow_context.clone(),
+                                &mut expr,
+                                ctx,
+                            )
+                            .await?;
+                            Ok(WorkflowStreamEvent::task_completed(
+                                "callTask",
                                 &task_name_str,
                                 result,
                             ))

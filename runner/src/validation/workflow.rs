@@ -171,6 +171,82 @@ do:
         - body: { set: { y: 1 } }
 "#;
 
+    const CALL_HTTP_MINIMAL: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http, version: "1.0.0" }
+input: { schema: { document: { type: object } } }
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint: https://example.com/items
+"#;
+
+    const CALL_HTTP_ENDPOINT_OBJECT: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-object, version: "1.0.0" }
+input: { schema: { document: { type: object } } }
+do:
+  - fetch:
+      call: http
+      with:
+        method: POST
+        endpoint:
+          uri: https://example.com/items
+        headers:
+          Content-Type: application/json
+        query:
+          page: "1"
+        body:
+          name: test
+        output: response
+"#;
+
+    const CALL_HTTP_E2E_FIXTURE: &str =
+        include_str!("../../../app-wrapper/test-files/workflow-call-http-test.yaml");
+
+    const CALL_HTTP_MISSING_METHOD: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-missing-method, version: "1.0.0" }
+input: { schema: { document: { type: object } } }
+do:
+  - fetch:
+      call: http
+      with:
+        endpoint: https://example.com/items
+"#;
+
+    const CALL_HTTP_MISSING_ENDPOINT: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-missing-endpoint, version: "1.0.0" }
+input: { schema: { document: { type: object } } }
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+"#;
+
+    const CALL_HTTP_RAW_OUTPUT_UNSUPPORTED: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-raw-output, version: "1.0.0" }
+input: { schema: { document: { type: object } } }
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint: https://example.com/items
+        output: raw
+"#;
+
+    const CALL_GRPC_UNSUPPORTED: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-grpc, version: "1.0.0" }
+input: { schema: { document: { type: object } } }
+do:
+  - fetch:
+      call: grpc
+      with:
+        method: Get
+        endpoint: https://example.com
+"#;
+
     // The schema relies on `allOf:[{$ref: taskBase}, {properties: ...}]` to
     // share base properties across every task type. If this stops propagating
     // evaluated properties through `$ref` in some future jsonschema version,
@@ -245,6 +321,41 @@ do:
     #[test]
     fn case_e_for_without_onerror_passes() {
         run_validate(CASE_E).unwrap();
+    }
+
+    #[test]
+    fn call_http_minimal_passes() {
+        run_validate(CALL_HTTP_MINIMAL).unwrap();
+    }
+
+    #[test]
+    fn call_http_endpoint_object_passes() {
+        run_validate(CALL_HTTP_ENDPOINT_OBJECT).unwrap();
+    }
+
+    #[test]
+    fn call_http_e2e_fixture_passes() {
+        run_validate(CALL_HTTP_E2E_FIXTURE).unwrap();
+    }
+
+    #[test]
+    fn call_http_missing_method_fails() {
+        assert!(run_validate(CALL_HTTP_MISSING_METHOD).is_err());
+    }
+
+    #[test]
+    fn call_http_missing_endpoint_fails() {
+        assert!(run_validate(CALL_HTTP_MISSING_ENDPOINT).is_err());
+    }
+
+    #[test]
+    fn call_http_raw_output_is_rejected_in_phase_1() {
+        assert!(run_validate(CALL_HTTP_RAW_OUTPUT_UNSUPPORTED).is_err());
+    }
+
+    #[test]
+    fn call_grpc_is_rejected_in_phase_1() {
+        assert!(run_validate(CALL_GRPC_UNSUPPORTED).is_err());
     }
 
     // Combined regression: switch + tryTask + raise + flowDirective `exit`
