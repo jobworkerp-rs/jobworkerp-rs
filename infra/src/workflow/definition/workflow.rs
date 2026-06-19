@@ -3391,6 +3391,12 @@ impl RunContainer {
 #[doc = "    \"function\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"await\": {"]
+#[doc = "      \"title\": \"AwaitProcessCompletion\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"function\": {"]
 #[doc = "      \"title\": \"RunJobFunction\","]
 #[doc = "      \"description\": \"Executes a job using a specified function(runner or worker).\","]
@@ -3465,6 +3471,9 @@ impl RunContainer {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunFunction {
+    #[doc = "Wait for process completion before continuing."]
+    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+    pub await_: bool,
     #[doc = "Executes a job using a specified function(runner or worker)."]
     pub function: RunJobFunction,
 }
@@ -3721,6 +3730,12 @@ impl RunJobWorker {
 #[doc = "    \"runner\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"await\": {"]
+#[doc = "      \"title\": \"AwaitProcessCompletion\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"runner\": {"]
 #[doc = "      \"title\": \"RunJobRunner\","]
 #[doc = "      \"description\": \"Executes a job using a specified runner.\","]
@@ -3765,6 +3780,9 @@ impl RunJobWorker {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunRunner {
+    #[doc = "Wait for process completion before continuing."]
+    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+    pub await_: bool,
     pub runner: RunJobRunner,
 }
 impl ::std::convert::From<&RunRunner> for RunRunner {
@@ -3777,19 +3795,25 @@ impl RunRunner {
         Default::default()
     }
 }
-#[doc = "Execute inline or external scripts. This is close to Serverless Workflow\nv1.0.0 run.script, but await/return are not implemented by the workflow\nexecutor yet.\n"]
+#[doc = "Execute inline or external scripts. This is close to Serverless Workflow\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\nbut return is not implemented for scripts.\n"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"RunScript\","]
-#[doc = "  \"description\": \"Execute inline or external scripts. This is close to Serverless Workflow\\nv1.0.0 run.script, but await/return are not implemented by the workflow\\nexecutor yet.\\n\","]
+#[doc = "  \"description\": \"Execute inline or external scripts. This is close to Serverless Workflow\\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\\nbut return is not implemented for scripts.\\n\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"script\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"await\": {"]
+#[doc = "      \"title\": \"AwaitProcessCompletion\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"script\": {"]
 #[doc = "      \"title\": \"ScriptConfiguration\","]
 #[doc = "      \"description\": \"Script execution configuration\","]
@@ -3850,6 +3874,9 @@ impl RunRunner {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunScript {
+    #[doc = "Wait for process completion before continuing."]
+    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+    pub await_: bool,
     pub script: ScriptConfiguration,
 }
 impl ::std::convert::From<&RunScript> for RunScript {
@@ -4170,6 +4197,12 @@ impl ::std::convert::From<RunWorkflow> for RunTaskConfiguration {
 #[doc = "    \"worker\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"await\": {"]
+#[doc = "      \"title\": \"AwaitProcessCompletion\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"worker\": {"]
 #[doc = "      \"title\": \"RunJobWorker\","]
 #[doc = "      \"description\": \"Executes a job using a specified worker (configured runner with settings and options).\","]
@@ -4206,6 +4239,9 @@ impl ::std::convert::From<RunWorkflow> for RunTaskConfiguration {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunWorker {
+    #[doc = "Wait for process completion before continuing."]
+    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+    pub await_: bool,
     pub worker: RunJobWorker,
 }
 impl ::std::convert::From<&RunWorker> for RunWorker {
@@ -4231,6 +4267,12 @@ impl RunWorker {
 #[doc = "    \"workflow\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"await\": {"]
+#[doc = "      \"title\": \"AwaitProcessCompletion\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"workflow\": {"]
 #[doc = "      \"$ref\": \"#/$defs/workflowConfiguration\""]
 #[doc = "    }"]
@@ -4242,6 +4284,9 @@ impl RunWorker {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunWorkflow {
+    #[doc = "Wait for process completion before continuing."]
+    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+    pub await_: bool,
     pub workflow: WorkflowConfiguration,
 }
 impl ::std::convert::From<&RunWorkflow> for RunWorkflow {
@@ -8792,16 +8837,28 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct RunFunction {
+        await_: ::std::result::Result<bool, ::std::string::String>,
         function: ::std::result::Result<super::RunJobFunction, ::std::string::String>,
     }
     impl ::std::default::Default for RunFunction {
         fn default() -> Self {
             Self {
+                await_: Ok(super::defaults::default_bool::<true>()),
                 function: Err("no value supplied for function".to_string()),
             }
         }
     }
     impl RunFunction {
+        pub fn await_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.await_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
         pub fn function<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<super::RunJobFunction>,
@@ -8819,6 +8876,7 @@ pub mod builder {
             value: RunFunction,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                await_: value.await_?,
                 function: value.function?,
             })
         }
@@ -8826,6 +8884,7 @@ pub mod builder {
     impl ::std::convert::From<super::RunFunction> for RunFunction {
         fn from(value: super::RunFunction) -> Self {
             Self {
+                await_: Ok(value.await_),
                 function: Ok(value.function),
             }
         }
@@ -9020,16 +9079,28 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct RunRunner {
+        await_: ::std::result::Result<bool, ::std::string::String>,
         runner: ::std::result::Result<super::RunJobRunner, ::std::string::String>,
     }
     impl ::std::default::Default for RunRunner {
         fn default() -> Self {
             Self {
+                await_: Ok(super::defaults::default_bool::<true>()),
                 runner: Err("no value supplied for runner".to_string()),
             }
         }
     }
     impl RunRunner {
+        pub fn await_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.await_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
         pub fn runner<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<super::RunJobRunner>,
@@ -9047,6 +9118,7 @@ pub mod builder {
             value: RunRunner,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                await_: value.await_?,
                 runner: value.runner?,
             })
         }
@@ -9054,22 +9126,35 @@ pub mod builder {
     impl ::std::convert::From<super::RunRunner> for RunRunner {
         fn from(value: super::RunRunner) -> Self {
             Self {
+                await_: Ok(value.await_),
                 runner: Ok(value.runner),
             }
         }
     }
     #[derive(Clone, Debug)]
     pub struct RunScript {
+        await_: ::std::result::Result<bool, ::std::string::String>,
         script: ::std::result::Result<super::ScriptConfiguration, ::std::string::String>,
     }
     impl ::std::default::Default for RunScript {
         fn default() -> Self {
             Self {
+                await_: Ok(super::defaults::default_bool::<true>()),
                 script: Err("no value supplied for script".to_string()),
             }
         }
     }
     impl RunScript {
+        pub fn await_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.await_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
         pub fn script<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<super::ScriptConfiguration>,
@@ -9087,6 +9172,7 @@ pub mod builder {
             value: RunScript,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                await_: value.await_?,
                 script: value.script?,
             })
         }
@@ -9094,6 +9180,7 @@ pub mod builder {
     impl ::std::convert::From<super::RunScript> for RunScript {
         fn from(value: super::RunScript) -> Self {
             Self {
+                await_: Ok(value.await_),
                 script: Ok(value.script),
             }
         }
@@ -9342,16 +9429,28 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct RunWorker {
+        await_: ::std::result::Result<bool, ::std::string::String>,
         worker: ::std::result::Result<super::RunJobWorker, ::std::string::String>,
     }
     impl ::std::default::Default for RunWorker {
         fn default() -> Self {
             Self {
+                await_: Ok(super::defaults::default_bool::<true>()),
                 worker: Err("no value supplied for worker".to_string()),
             }
         }
     }
     impl RunWorker {
+        pub fn await_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.await_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
         pub fn worker<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<super::RunJobWorker>,
@@ -9369,6 +9468,7 @@ pub mod builder {
             value: RunWorker,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                await_: value.await_?,
                 worker: value.worker?,
             })
         }
@@ -9376,22 +9476,35 @@ pub mod builder {
     impl ::std::convert::From<super::RunWorker> for RunWorker {
         fn from(value: super::RunWorker) -> Self {
             Self {
+                await_: Ok(value.await_),
                 worker: Ok(value.worker),
             }
         }
     }
     #[derive(Clone, Debug)]
     pub struct RunWorkflow {
+        await_: ::std::result::Result<bool, ::std::string::String>,
         workflow: ::std::result::Result<super::WorkflowConfiguration, ::std::string::String>,
     }
     impl ::std::default::Default for RunWorkflow {
         fn default() -> Self {
             Self {
+                await_: Ok(super::defaults::default_bool::<true>()),
                 workflow: Err("no value supplied for workflow".to_string()),
             }
         }
     }
     impl RunWorkflow {
+        pub fn await_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.await_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
         pub fn workflow<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<super::WorkflowConfiguration>,
@@ -9409,6 +9522,7 @@ pub mod builder {
             value: RunWorkflow,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                await_: value.await_?,
                 workflow: value.workflow?,
             })
         }
@@ -9416,6 +9530,7 @@ pub mod builder {
     impl ::std::convert::From<super::RunWorkflow> for RunWorkflow {
         fn from(value: super::RunWorkflow) -> Self {
             Self {
+                await_: Ok(value.await_),
                 workflow: Ok(value.workflow),
             }
         }

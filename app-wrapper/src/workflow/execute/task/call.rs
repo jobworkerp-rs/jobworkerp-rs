@@ -319,6 +319,7 @@ impl CallTaskExecutor {
                 timeout_sec,
                 StreamingType::None,
                 None,
+                None,
             )
             .await?;
 

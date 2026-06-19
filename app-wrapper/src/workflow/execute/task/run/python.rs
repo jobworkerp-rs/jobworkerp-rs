@@ -322,6 +322,10 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             .and_then(|v| v.parse::<bool>().ok())
             .unwrap_or(false);
 
+        // await:false runs the script fire-and-forget. NoResult is applied as a
+        // per-job override (not on worker_data) because use_static reuses an
+        // existing persisted worker whose response_type would otherwise win.
+        let await_completion = self.task.await_;
         let worker_data = WorkerData {
             name: format!("python_{}", task_name),
             description: format!("Script task: {}", task_name),
@@ -366,11 +370,18 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
                     self.task_timeout.as_secs() as u32,
                     StreamingType::None,
                     None, // using not used for Python script execution
+                    super::no_result_override_if(!await_completion),
                 )
                 .await,
             service_unavailable,
             "Failed to enqueue script execution job"
         );
+
+        if !await_completion {
+            // Fire-and-forget: continue with the current task input as output.
+            task_context.set_raw_output(task_context.input.as_ref().clone());
+            return Ok(task_context);
+        }
 
         let output_bytes = bail_with_position!(
             task_context,

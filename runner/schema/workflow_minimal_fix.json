@@ -638,6 +638,12 @@
         "runner"
       ],
       "properties": {
+        "await": {
+          "type": "boolean",
+          "default": true,
+          "title": "AwaitProcessCompletion",
+          "description": "Wait for process completion before continuing."
+        },
         "runner": {
           "type": "object",
           "title": "RunJobRunner",
@@ -741,6 +747,12 @@
         "worker"
       ],
       "properties": {
+        "await": {
+          "type": "boolean",
+          "default": true,
+          "title": "AwaitProcessCompletion",
+          "description": "Wait for process completion before continuing."
+        },
         "worker": {
           "type": "object",
           "title": "RunJobWorker",
@@ -780,6 +792,12 @@
         "function"
       ],
       "properties": {
+        "await": {
+          "type": "boolean",
+          "default": true,
+          "title": "AwaitProcessCompletion",
+          "description": "Wait for process completion before continuing."
+        },
         "function": {
           "type": "object",
           "title": "RunJobFunction",
@@ -857,6 +875,12 @@
         "script"
       ],
       "properties": {
+        "await": {
+          "type": "boolean",
+          "default": true,
+          "title": "AwaitProcessCompletion",
+          "description": "Wait for process completion before continuing."
+        },
         "script": {
           "type": "object",
           "title": "ScriptConfiguration",
@@ -1718,6 +1742,12 @@
         "workflow"
       ],
       "properties": {
+        "await": {
+          "type": "boolean",
+          "default": true,
+          "title": "AwaitProcessCompletion",
+          "description": "Wait for process completion before continuing."
+        },
         "workflow": {
           "$ref": "#/$defs/workflowConfiguration"
         }

@@ -1330,6 +1330,7 @@ mod tests {
                 "run_command".to_string(),
                 Task::RunTask(RunTask {
                     run: RunTaskConfiguration::Runner(RunRunner {
+                        await_: true,
                         runner: RunJobRunner {
                             name: "COMMAND".to_string(),
                             arguments: args,

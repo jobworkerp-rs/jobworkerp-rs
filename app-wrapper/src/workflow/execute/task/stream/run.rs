@@ -151,6 +151,24 @@ fn apply_output_adapter(
     }
 }
 
+/// Streaming execution must collect a runner result to forward stream items, so
+/// `await: false` (fire-and-forget) is incompatible with `useStreaming: true`.
+/// Reject it uniformly across every run.* instance with one positioned error.
+async fn reject_await_false_for_streaming(
+    await_completion: bool,
+    task_context: &TaskContext,
+) -> Result<(), Box<workflow::Error>> {
+    if await_completion {
+        return Ok(());
+    }
+    let pos = task_context.position.read().await.as_error_instance();
+    Err(workflow::errors::ErrorFactory::new().bad_argument(
+        "run.await=false is not supported with streaming execution".to_string(),
+        Some(pos),
+        Some("useStreaming=true requires collecting a runner result".to_string()),
+    ))
+}
+
 impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
     fn execute_stream(
         &self,
@@ -329,6 +347,7 @@ async fn prepare_streaming_job(
     let (handle, output_adapter) = match run {
         // Worker configuration
         workflow::RunTaskConfiguration::Worker(workflow::RunWorker {
+            await_,
             worker:
                 RunJobWorker {
                     arguments,
@@ -337,6 +356,7 @@ async fn prepare_streaming_job(
                 },
         }) => {
             task_context.add_position_name("worker".to_string()).await;
+            reject_await_false_for_streaming(*await_, &task_context).await?;
 
             let args = match RunStreamTaskExecutor::transform_map(
                 task_context.input.clone(),
@@ -381,6 +401,7 @@ async fn prepare_streaming_job(
 
         // Function(WorkerFunction) configuration
         workflow::RunTaskConfiguration::Function(workflow::RunFunction {
+            await_,
             function:
                 workflow::RunJobFunction::WorkerFunction {
                     arguments,
@@ -389,6 +410,7 @@ async fn prepare_streaming_job(
                 },
         }) => {
             task_context.add_position_name("function".to_string()).await;
+            reject_await_false_for_streaming(*await_, &task_context).await?;
 
             let args = match RunStreamTaskExecutor::transform_map(
                 task_context.input.clone(),
@@ -433,6 +455,7 @@ async fn prepare_streaming_job(
 
         // Runner configuration
         workflow::RunTaskConfiguration::Runner(workflow::RunRunner {
+            await_,
             runner:
                 RunJobRunner {
                     arguments,
@@ -443,6 +466,7 @@ async fn prepare_streaming_job(
                 },
         }) => {
             task_context.add_position_name("runner".to_string()).await;
+            reject_await_false_for_streaming(*await_, &task_context).await?;
 
             let args = match RunStreamTaskExecutor::transform_map(
                 task_context.input.clone(),
@@ -507,6 +531,7 @@ async fn prepare_streaming_job(
 
         // Function(RunnerFunction) configuration
         workflow::RunTaskConfiguration::Function(workflow::RunFunction {
+            await_,
             function:
                 workflow::RunJobFunction::RunnerFunction {
                     arguments,
@@ -517,6 +542,7 @@ async fn prepare_streaming_job(
                 },
         }) => {
             task_context.add_position_name("function".to_string()).await;
+            reject_await_false_for_streaming(*await_, &task_context).await?;
 
             let args = match RunStreamTaskExecutor::transform_map(
                 task_context.input.clone(),
@@ -587,15 +613,8 @@ async fn prepare_streaming_job(
             let normalized =
                 alias::resolve_run_alias::<RunStreamTaskExecutor>(run, &task_context, &expression)
                     .await?;
-            if !normalized.await_completion {
-                let pos = task_context.position.read().await.as_error_instance();
-                return Err(workflow::errors::ErrorFactory::new().bad_argument(
-                    "run.await=false is not supported with streaming execution".to_string(),
-                    Some(pos),
-                    Some("useStreaming=true requires collecting a runner result".to_string()),
-                ));
-            }
-            let output_adapter = if matches!(normalized.position_name, "shell" | "container") {
+            reject_await_false_for_streaming(normalized.await_completion, &task_context).await?;
+            let output_adapter = if normalized.produces_process_result() {
                 Some(ProcessOutputAdapter {
                     return_type: normalized.return_type,
                     input: task_context.input.as_ref().clone(),
@@ -914,6 +933,7 @@ async fn start_worker_streaming_job_static(
             timeout_sec,
             StreamingType::Internal,
             using.clone(),
+            None, // streaming always collects a result, so no NoResult override
         )
         .await?;
 
@@ -1066,5 +1086,25 @@ mod tests {
         let output = apply_output_adapter(raw.clone(), None).unwrap();
 
         assert_eq!(output, raw);
+    }
+
+    #[tokio::test]
+    async fn await_true_is_allowed_under_streaming() {
+        let task_context = TaskContext::new_empty();
+        reject_await_false_for_streaming(true, &task_context)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn await_false_is_rejected_under_streaming() {
+        let task_context = TaskContext::new_empty();
+        let err = reject_await_false_for_streaming(false, &task_context)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("run.await=false is not supported with streaming execution")
+        );
     }
 }

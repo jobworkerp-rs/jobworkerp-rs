@@ -442,6 +442,116 @@ do:
           code: "print('hello')"
 "#;
 
+    // `await` is a common run option available on every run.* instance. These
+    // fixtures verify it validates regardless of the underlying execution kind.
+    const RUN_RUNNER_AWAIT_FALSE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-runner-await-false, version: "1.0.0" }
+do:
+  - fire:
+      run:
+        await: false
+        runner:
+          name: COMMAND
+          arguments:
+            command: echo
+"#;
+
+    const RUN_FUNCTION_RUNNER_AWAIT_FALSE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-function-runner-await-false, version: "1.0.0" }
+do:
+  - fire:
+      run:
+        await: false
+        function:
+          runnerName: COMMAND
+          arguments:
+            command: echo
+"#;
+
+    const RUN_FUNCTION_WORKER_AWAIT_FALSE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-function-worker-await-false, version: "1.0.0" }
+do:
+  - fire:
+      run:
+        await: false
+        function:
+          workerName: my-worker
+          arguments:
+            command: echo
+"#;
+
+    const RUN_WORKER_AWAIT_FALSE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-worker-await-false, version: "1.0.0" }
+do:
+  - fire:
+      run:
+        await: false
+        worker:
+          name: my-worker
+          arguments:
+            command: echo
+"#;
+
+    const RUN_SCRIPT_AWAIT_FALSE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-script-await-false, version: "1.0.0" }
+do:
+  - fire:
+      run:
+        await: false
+        script:
+          language: python
+          code: "print('hello')"
+"#;
+
+    const RUN_WORKFLOW_AWAIT_FALSE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-workflow-await-false, version: "1.0.0" }
+do:
+  - fire:
+      run:
+        await: false
+        workflow:
+          workflowUrl: file:///tmp/child.yaml
+"#;
+
+    // `return` is shell/container-only (those produce ProcessResult); runner /
+    // function / worker have runner-defined output types, so `return` must be
+    // rejected there.
+    const RUN_RUNNER_RETURN_UNSUPPORTED: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-runner-return-unsupported, version: "1.0.0" }
+do:
+  - bad:
+      run:
+        return: stdout
+        runner:
+          name: COMMAND
+          arguments:
+            command: echo
+"#;
+
+    const RUN_FUNCTION_RETURN_UNSUPPORTED: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-function-return-unsupported, version: "1.0.0" }
+do:
+  - bad:
+      run:
+        return: stdout
+        function:
+          runnerName: COMMAND
+          arguments:
+            command: echo
+"#;
+
+    const RUN_WORKER_RETURN_UNSUPPORTED: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-worker-return-unsupported, version: "1.0.0" }
+do:
+  - bad:
+      run:
+        return: stdout
+        worker:
+          name: my-worker
+          arguments:
+            command: echo
+"#;
+
     // The schema relies on `allOf:[{$ref: taskBase}, {properties: ...}]` to
     // share base properties across every task type. If this stops propagating
     // evaluated properties through `$ref` in some future jsonschema version,
@@ -641,6 +751,51 @@ do:
     #[test]
     fn run_script_return_is_rejected() {
         assert!(run_validate(RUN_SCRIPT_RETURN_UNSUPPORTED).is_err());
+    }
+
+    #[test]
+    fn run_runner_await_false_passes() {
+        run_validate(RUN_RUNNER_AWAIT_FALSE).unwrap();
+    }
+
+    #[test]
+    fn run_function_runner_await_false_passes() {
+        run_validate(RUN_FUNCTION_RUNNER_AWAIT_FALSE).unwrap();
+    }
+
+    #[test]
+    fn run_function_worker_await_false_passes() {
+        run_validate(RUN_FUNCTION_WORKER_AWAIT_FALSE).unwrap();
+    }
+
+    #[test]
+    fn run_worker_await_false_passes() {
+        run_validate(RUN_WORKER_AWAIT_FALSE).unwrap();
+    }
+
+    #[test]
+    fn run_script_await_false_passes() {
+        run_validate(RUN_SCRIPT_AWAIT_FALSE).unwrap();
+    }
+
+    #[test]
+    fn run_workflow_await_false_passes() {
+        run_validate(RUN_WORKFLOW_AWAIT_FALSE).unwrap();
+    }
+
+    #[test]
+    fn run_runner_return_is_rejected() {
+        assert!(run_validate(RUN_RUNNER_RETURN_UNSUPPORTED).is_err());
+    }
+
+    #[test]
+    fn run_function_return_is_rejected() {
+        assert!(run_validate(RUN_FUNCTION_RETURN_UNSUPPORTED).is_err());
+    }
+
+    #[test]
+    fn run_worker_return_is_rejected() {
+        assert!(run_validate(RUN_WORKER_RETURN_UNSUPPORTED).is_err());
     }
 
     // Combined regression: switch + tryTask + raise + flowDirective `exit`

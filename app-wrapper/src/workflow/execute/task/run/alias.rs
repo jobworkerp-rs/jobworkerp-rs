@@ -17,6 +17,16 @@ pub(crate) struct NormalizedRun {
     pub(crate) return_type: workflow::ProcessReturnType,
 }
 
+impl NormalizedRun {
+    /// Whether this alias is backed by a runner that emits a `ProcessResult`
+    /// (shell/container) and therefore needs `adapt_process_return_output`.
+    /// Keeps the decision with the type that owns `position_name`/`return_type`
+    /// so call sites don't re-derive it from the segment string.
+    pub(crate) fn produces_process_result(&self) -> bool {
+        matches!(self.position_name, "shell" | "container")
+    }
+}
+
 /// Failure modes when turning a run alias into a [`NormalizedRun`]. Kept
 /// distinct so call sites can map them onto the right workflow error: transform
 /// failures already carry a positioned `workflow::Error`, everything else is a
@@ -164,8 +174,8 @@ pub(crate) fn normalize_alias_value(value: Value) -> Result<NormalizedRun> {
         (Some(shell), None, None) => normalize_shell(shell, process_options),
         (None, Some(container), None) => normalize_container(container, process_options),
         (None, None, Some(workflow)) => {
-            process_options.reject_if_present("run.workflow")?;
-            normalize_workflow(workflow)
+            process_options.reject_return_if_present("run.workflow")?;
+            normalize_workflow(workflow, process_options)
         }
         _ => Err(anyhow!(
             "run alias must contain exactly one of shell, container, or workflow"
@@ -177,12 +187,15 @@ pub(crate) fn normalize_alias_value(value: Value) -> Result<NormalizedRun> {
 struct ProcessOptions {
     await_completion: bool,
     return_type: workflow::ProcessReturnType,
-    explicitly_set: bool,
+    /// Whether `return` was explicitly present. `return` is shell/container-only
+    /// (those produce a ProcessResult); workflow has a runner-defined output
+    /// type so it must reject `return`. `await`, by contrast, is a common run
+    /// option honored by every alias, so it is never rejected here.
+    return_was_set: bool,
 }
 
 impl ProcessOptions {
     fn take_from(obj: &mut Map<String, Value>) -> Result<Self> {
-        let await_was_set = obj.contains_key("await");
         let return_was_set = obj.contains_key("return");
         let await_completion = match obj.remove("await") {
             Some(Value::Bool(value)) => value,
@@ -208,13 +221,13 @@ impl ProcessOptions {
         Ok(Self {
             await_completion,
             return_type,
-            explicitly_set: await_was_set || return_was_set,
+            return_was_set,
         })
     }
 
-    fn reject_if_present(&self, alias_name: &str) -> Result<()> {
-        if self.explicitly_set {
-            return Err(anyhow!("{alias_name} does not support await or return"));
+    fn reject_return_if_present(&self, alias_name: &str) -> Result<()> {
+        if self.return_was_set {
+            return Err(anyhow!("{alias_name} does not support return"));
         }
         Ok(())
     }
@@ -271,7 +284,7 @@ fn normalize_container(container: Value, process_options: ProcessOptions) -> Res
     })
 }
 
-fn normalize_workflow(workflow: Value) -> Result<NormalizedRun> {
+fn normalize_workflow(workflow: Value, process_options: ProcessOptions) -> Result<NormalizedRun> {
     let Value::Object(mut workflow) = workflow else {
         return Err(anyhow!("run.workflow must be an object"));
     };
@@ -296,7 +309,7 @@ fn normalize_workflow(workflow: Value) -> Result<NormalizedRun> {
         runner_name: "WORKFLOW",
         arguments: Value::Object(workflow),
         using: Some("run".to_string()),
-        await_completion: true,
+        await_completion: process_options.await_completion,
         return_type: workflow::ProcessReturnType::Stdout,
     })
 }
@@ -565,9 +578,8 @@ mod tests {
     }
 
     #[test]
-    fn workflow_alias_rejects_explicit_process_options_even_when_default() {
+    fn workflow_alias_rejects_return_option() {
         let err = normalize_alias_value(json!({
-            "await": true,
             "return": "stdout",
             "workflow": {
                 "workflowUrl": "file:///tmp/child.yaml"
@@ -575,7 +587,21 @@ mod tests {
         }))
         .unwrap_err();
 
-        assert!(err.to_string().contains("does not support await or return"));
+        assert!(err.to_string().contains("does not support return"));
+    }
+
+    #[test]
+    fn workflow_alias_honors_await_false() {
+        let normalized = normalize_alias_value(json!({
+            "await": false,
+            "workflow": {
+                "workflowUrl": "file:///tmp/child.yaml"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(normalized.position_name, "workflow");
+        assert!(!normalized.await_completion);
     }
 
     #[test]
@@ -678,6 +704,7 @@ do:
         value: ${ .child_value }
 "#;
         let run = RunTaskConfiguration::Workflow(RunWorkflow {
+            await_: true,
             workflow: WorkflowConfiguration::Variant0 {
                 execution_id: Some("${ .execution_id }".to_string()),
                 input: Some(json!({ "child_value": "${ .parent_value }" })),
@@ -711,6 +738,7 @@ do:
         value: ${ .child_value }
 "#;
         let run = RunTaskConfiguration::Workflow(RunWorkflow {
+            await_: true,
             workflow: WorkflowConfiguration::Variant0 {
                 execution_id: None,
                 input: Some(json!({ "child_value": "from-parent" })),
@@ -740,6 +768,7 @@ do:
         value: ${ .child_value }
 "#;
         let run = RunTaskConfiguration::Workflow(RunWorkflow {
+            await_: true,
             workflow: WorkflowConfiguration::Variant0 {
                 execution_id: None,
                 input: Some(json!({ "child_value": "from-parent" })),

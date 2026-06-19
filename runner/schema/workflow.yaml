@@ -413,6 +413,11 @@ $defs:
     description: Execute using a runner configuration.
     required: [runner]
     properties:
+      await: &awaitProcessCompletion
+        type: boolean
+        default: true
+        title: AwaitProcessCompletion
+        description: Wait for process completion before continuing.
       runner:
         type: object
         title: RunJobRunner
@@ -499,6 +504,7 @@ $defs:
     description: Execute using a worker configuration.
     required: [worker]
     properties:
+      await: *awaitProcessCompletion
       worker:
         type: object
         title: RunJobWorker
@@ -529,6 +535,7 @@ $defs:
     description: Execute using a function configuration.
     required: [function]
     properties:
+      await: *awaitProcessCompletion
       function:
         type: object
         title: RunJobFunction
@@ -591,10 +598,11 @@ $defs:
     title: RunScript
     description: |
       Execute inline or external scripts. This is close to Serverless Workflow
-      v1.0.0 run.script, but await/return are not implemented by the workflow
-      executor yet.
+      v1.0.0 run.script. await is supported (await: false runs fire-and-forget),
+      but return is not implemented for scripts.
     required: [script]
     properties:
+      await: *awaitProcessCompletion
       script:
         type: object
         title: ScriptConfiguration
@@ -635,12 +643,8 @@ $defs:
     description: Execute a shell command. Some optional fields are jobworkerp extensions.
     required: [shell]
     properties:
-      await:
-        type: boolean
-        default: true
-        title: AwaitProcessCompletion
-        description: Wait for process completion before continuing.
-      return:
+      await: *awaitProcessCompletion
+      return: &processReturnType
         type: string
         title: ProcessReturnType
         description: Process output type to return.
@@ -694,17 +698,8 @@ $defs:
     description: Execute a container. Some optional fields are jobworkerp extensions.
     required: [container]
     properties:
-      await:
-        type: boolean
-        default: true
-        title: AwaitProcessCompletion
-        description: Wait for process completion before continuing.
-      return:
-        type: string
-        title: ProcessReturnType
-        description: Process output type to return.
-        enum: [stdout, stderr, code, all, none]
-        default: stdout
+      await: *awaitProcessCompletion
+      return: *processReturnType
       container:
         $ref: "#/$defs/containerConfiguration"
     additionalProperties: false
@@ -763,6 +758,7 @@ $defs:
     description: Execute a nested workflow using jobworkerp's source-based workflow extension.
     required: [workflow]
     properties:
+      await: *awaitProcessCompletion
       workflow:
         $ref: "#/$defs/workflowConfiguration"
     additionalProperties: false

@@ -19,9 +19,22 @@ use app::app::{
     runner::UseRunnerApp,
 };
 use command_utils::trace::Tracing;
-use proto::jobworkerp::data::{QueueType, ResponseType, StreamingType, WorkerData};
+use proto::jobworkerp::data::{
+    JobExecutionOverrides, QueueType, ResponseType, StreamingType, WorkerData,
+};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
+
+/// Build a per-job override forcing NoResult (fire-and-forget) when `condition`
+/// holds. Used for `await: false` so the response type is overridden per enqueue
+/// even when a static worker's persisted definition says Direct. Shared by the
+/// runner/worker and script execution paths.
+pub(crate) fn no_result_override_if(condition: bool) -> Option<JobExecutionOverrides> {
+    condition.then(|| JobExecutionOverrides {
+        response_type: Some(ResponseType::NoResult as i32),
+        ..Default::default()
+    })
+}
 
 pub struct RunTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
@@ -146,7 +159,10 @@ impl RunTaskExecutor {
         // silently capping at `default_task_timeout`.
         timeout_sec: u32,
         await_completion: bool,
-        output_when_not_awaiting: Option<serde_json::Value>,
+        // Returned as-is when await:false. Passed as `Arc` so the common
+        // await:true path clones only the pointer, never the (possibly large)
+        // input value.
+        output_when_not_awaiting: Arc<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let runner = self
             .job_executor_wrapper
@@ -179,9 +195,10 @@ impl RunTaskExecutor {
             });
         worker_data.runner_id = runner.id;
         worker_data.runner_settings = settings;
-        if !await_completion {
-            worker_data.response_type = ResponseType::NoResult as i32;
-        }
+        // await:false runs fire-and-forget. Apply NoResult as a per-job override
+        // rather than mutating worker_data, because use_static workers reuse an
+        // existing persisted worker whose response_type would otherwise win.
+        let overrides = no_result_override_if(!await_completion);
         // inject metadata from opentelemetry context for remote job
         let mut metadata = (*self.metadata).clone();
         Self::inject_metadata_from_context(&mut metadata, &cx);
@@ -219,12 +236,13 @@ impl RunTaskExecutor {
                 timeout_sec,
                 StreamingType::None,
                 using.clone(),
+                overrides,
             )
             .await?;
 
         if !await_completion {
             drop(result_fut);
-            return Ok(output_when_not_awaiting.unwrap_or(serde_json::Value::Null));
+            return Ok(output_when_not_awaiting.as_ref().clone());
         }
 
         self.workflow_context
@@ -251,6 +269,7 @@ impl RunTaskExecutor {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_by_worker_name(
         &self,
         metadata: Arc<HashMap<String, String>>,
@@ -258,7 +277,13 @@ impl RunTaskExecutor {
         job_args: &serde_json::Value,
         using: Option<String>,
         timeout_sec: u32,
+        await_completion: bool,
+        output_when_not_awaiting: Arc<serde_json::Value>,
     ) -> Result<serde_json::Value> {
+        // await:false applies NoResult as a per-job override. The worker is
+        // referenced by name (an existing, possibly static, definition whose
+        // persisted response_type we must not depend on), so the override is the
+        // only reliable way to force fire-and-forget for this enqueue.
         let child = self
             .job_executor_wrapper
             .enqueue_with_worker_name_channel(
@@ -269,8 +294,18 @@ impl RunTaskExecutor {
                 timeout_sec,
                 StreamingType::None,
                 using,
+                no_result_override_if(!await_completion),
             )
             .await?;
+
+        // Fire-and-forget: the job is already enqueued, so dropping the result
+        // future leaves it running while the workflow continues with the current
+        // task input. We don't register it for cancellation because we are
+        // intentionally not tracking its completion.
+        if !await_completion {
+            drop(child.result_fut);
+            return Ok(output_when_not_awaiting.as_ref().clone());
+        }
 
         self.workflow_context
             .read()
@@ -374,6 +409,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
         // currently support only RunTaskConfiguration
         match run {
             workflow::RunTaskConfiguration::Worker(workflow::RunWorker {
+                await_,
                 worker:
                     RunJobWorker {
                         arguments,
@@ -408,6 +444,8 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         &args,
                         using.clone(),
                         timeout_sec,
+                        *await_,
+                        task_context.input.clone(),
                     )
                     .await
                 {
@@ -432,6 +470,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                 Ok(task_context)
             }
             workflow::RunTaskConfiguration::Runner(workflow::RunRunner {
+                await_,
                 runner:
                     RunJobRunner {
                         arguments,
@@ -524,8 +563,10 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         task_name,
                         transformed_using,
                         timeout_sec,
-                        true,
-                        None,
+                        *await_,
+                        // await:false returns the current task input unchanged
+                        // so downstream tasks keep a stable shape.
+                        task_context.input.clone(),
                     )
                     .await
                 {
@@ -550,6 +591,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                 Ok(task_context)
             }
             workflow::RunTaskConfiguration::Function(workflow::RunFunction {
+                await_,
                 function:
                     workflow::RunJobFunction::WorkerFunction {
                         arguments,
@@ -621,6 +663,8 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         &args,
                         transformed_using,
                         timeout_sec,
+                        *await_,
+                        task_context.input.clone(),
                     )
                     .await
                 {
@@ -645,6 +689,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                 Ok(task_context)
             }
             workflow::RunTaskConfiguration::Function(workflow::RunFunction {
+                await_,
                 function:
                     workflow::RunJobFunction::RunnerFunction {
                         arguments,
@@ -738,8 +783,8 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         task_name,
                         transformed_using,
                         timeout_sec,
-                        true,
-                        None,
+                        *await_,
+                        task_context.input.clone(),
                     )
                     .await
                 {
@@ -791,8 +836,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     alias::resolve_run_alias::<Self>(run, &task_context, &expression).await?;
                 let await_completion = normalized.await_completion;
                 let return_type = normalized.return_type;
-                let position_name = normalized.position_name;
-                let task_input = task_context.input.as_ref().clone();
+                let needs_process_adaptation = normalized.produces_process_result();
 
                 let pos_for_err = task_context.position.read().await.as_error_instance();
                 let output = self
@@ -805,8 +849,8 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         task_name,
                         normalized.using,
                         timeout_sec,
-                        normalized.await_completion,
-                        Some(task_input.clone()),
+                        await_completion,
+                        task_context.input.clone(),
                     )
                     .await
                     .map_err(|e| {
@@ -817,16 +861,19 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                             Some(e.to_string()),
                         )
                     })?;
-                let output = if await_completion && matches!(position_name, "shell" | "container") {
-                    alias::adapt_process_return_output(output, return_type, &task_input).map_err(
-                        |e| {
-                            workflow::errors::ErrorFactory::new().bad_argument(
-                                "Failed to adapt run alias process output".to_string(),
-                                Some(pos_for_err),
-                                Some(e.to_string()),
-                            )
-                        },
-                    )?
+                let output = if await_completion && needs_process_adaptation {
+                    alias::adapt_process_return_output(
+                        output,
+                        return_type,
+                        task_context.input.as_ref(),
+                    )
+                    .map_err(|e| {
+                        workflow::errors::ErrorFactory::new().bad_argument(
+                            "Failed to adapt run alias process output".to_string(),
+                            Some(pos_for_err),
+                            Some(e.to_string()),
+                        )
+                    })?
                 } else {
                     output
                 };
@@ -852,10 +899,23 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
 
 #[cfg(test)]
 mod tests {
-    use super::RunTaskExecutor;
+    use super::{RunTaskExecutor, no_result_override_if};
     use crate::workflow::definition::workflow;
     use crate::workflow::execute::task::NamedTimeouts;
     use proto::jobworkerp::data::{QueueType, ResponseType};
+
+    #[test]
+    fn no_result_override_set_for_await_false() {
+        let overrides = no_result_override_if(true).expect("override expected when await:false");
+        assert_eq!(overrides.response_type, Some(ResponseType::NoResult as i32));
+    }
+
+    #[test]
+    fn no_result_override_absent_for_await_true() {
+        // await:true must not override response_type so a static worker keeps its
+        // own (typically Direct) definition.
+        assert!(no_result_override_if(false).is_none());
+    }
 
     fn worker_options_with_queue_and_response(
         queue_type: workflow::QueueType,
