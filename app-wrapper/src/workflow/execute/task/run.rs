@@ -145,6 +145,8 @@ impl RunTaskExecutor {
         // Threaded through so RunRunner / RunFunction paths honor it instead of
         // silently capping at `default_task_timeout`.
         timeout_sec: u32,
+        await_completion: bool,
+        output_when_not_awaiting: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let runner = self
             .job_executor_wrapper
@@ -177,6 +179,9 @@ impl RunTaskExecutor {
             });
         worker_data.runner_id = runner.id;
         worker_data.runner_settings = settings;
+        if !await_completion {
+            worker_data.response_type = ResponseType::NoResult as i32;
+        }
         // inject metadata from opentelemetry context for remote job
         let mut metadata = (*self.metadata).clone();
         Self::inject_metadata_from_context(&mut metadata, &cx);
@@ -216,6 +221,11 @@ impl RunTaskExecutor {
                 using.clone(),
             )
             .await?;
+
+        if !await_completion {
+            drop(result_fut);
+            return Ok(output_when_not_awaiting.unwrap_or(serde_json::Value::Null));
+        }
 
         self.workflow_context
             .read()
@@ -514,6 +524,8 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         task_name,
                         transformed_using,
                         timeout_sec,
+                        true,
+                        None,
                     )
                     .await
                 {
@@ -726,6 +738,8 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         task_name,
                         transformed_using,
                         timeout_sec,
+                        true,
+                        None,
                     )
                     .await
                 {
@@ -775,6 +789,10 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             | workflow::RunTaskConfiguration::Workflow(_) => {
                 let normalized =
                     alias::resolve_run_alias::<Self>(run, &task_context, &expression).await?;
+                let await_completion = normalized.await_completion;
+                let return_type = normalized.return_type;
+                let position_name = normalized.position_name;
+                let task_input = task_context.input.as_ref().clone();
 
                 let pos_for_err = task_context.position.read().await.as_error_instance();
                 let output = self
@@ -787,16 +805,31 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         task_name,
                         normalized.using,
                         timeout_sec,
+                        normalized.await_completion,
+                        Some(task_input.clone()),
                     )
                     .await
                     .map_err(|e| {
                         tracing::error!(error = ?e, position = %pos_for_err, "Failed to execute run alias by jobworkerp");
                         workflow::errors::ErrorFactory::new().service_unavailable(
                             "Failed to execute run alias by jobworkerp".to_string(),
-                            Some(pos_for_err),
+                            Some(pos_for_err.clone()),
                             Some(e.to_string()),
                         )
                     })?;
+                let output = if await_completion && matches!(position_name, "shell" | "container") {
+                    alias::adapt_process_return_output(output, return_type, &task_input).map_err(
+                        |e| {
+                            workflow::errors::ErrorFactory::new().bad_argument(
+                                "Failed to adapt run alias process output".to_string(),
+                                Some(pos_for_err),
+                                Some(e.to_string()),
+                            )
+                        },
+                    )?
+                } else {
+                    output
+                };
                 task_context.set_raw_output(output);
 
                 task_context.remove_position().await;

@@ -130,8 +130,25 @@ struct StreamingPreparation {
     handle: StreamingJobHandle,
     position: String,
     task_context: TaskContext,
+    output_adapter: Option<ProcessOutputAdapter>,
     /// Stream subscription - subscribed immediately after job enqueue to avoid race condition
     stream: BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
+}
+
+struct ProcessOutputAdapter {
+    return_type: workflow::ProcessReturnType,
+    input: serde_json::Value,
+}
+
+fn apply_output_adapter(
+    output: serde_json::Value,
+    adapter: Option<ProcessOutputAdapter>,
+) -> Result<serde_json::Value> {
+    if let Some(adapter) = adapter {
+        alias::adapt_process_return_output(output, adapter.return_type, &adapter.input)
+    } else {
+        Ok(output)
+    }
 }
 
 impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
@@ -207,7 +224,20 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
             // Set output on task context
             match output {
                 Ok(o) => {
-                    task_context.set_raw_output(o);
+                    let output = match apply_output_adapter(o, prep.output_adapter) {
+                        Ok(output) => output,
+                        Err(e) => {
+                            tracing::error!(error = ?e, job_id = %job_id_value, "Failed to adapt streaming run alias process output");
+                            let _ = event_tx.send(Err(workflow::errors::ErrorFactory::new()
+                                .bad_argument(
+                                    "Failed to adapt run alias process output".to_string(),
+                                    None,
+                                    Some(e.to_string()),
+                                )));
+                            return;
+                        }
+                    };
+                    task_context.set_raw_output(output);
                 }
                 Err(e) => {
                     tracing::error!(error = ?e, job_id = %job_id_value, "Failed to process stream");
@@ -296,7 +326,7 @@ async fn prepare_streaming_job(
     };
 
     // === 5. Start job based on configuration ===
-    let handle = match run {
+    let (handle, output_adapter) = match run {
         // Worker configuration
         workflow::RunTaskConfiguration::Worker(workflow::RunWorker {
             worker:
@@ -327,23 +357,26 @@ async fn prepare_streaming_job(
 
             // Capture position before await to avoid blocking_read() in async context
             let pos_for_err = task_context.position.read().await.as_error_instance();
-            start_worker_streaming_job_static(
-                job_executor_wrapper,
-                metadata.clone(),
-                worker_name,
-                args,
-                timeout_sec,
-                using.clone(),
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming job by jobworkerp (function)");
-                workflow::errors::ErrorFactory::new().service_unavailable(
-                    "Failed to start streaming job by jobworkerp".to_string(),
-                    Some(pos_for_err),
-                    Some(e.to_string()),
+            (
+                start_worker_streaming_job_static(
+                    job_executor_wrapper,
+                    metadata.clone(),
+                    worker_name,
+                    args,
+                    timeout_sec,
+                    using.clone(),
                 )
-            })?
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming job by jobworkerp (function)");
+                    workflow::errors::ErrorFactory::new().service_unavailable(
+                        "Failed to start streaming job by jobworkerp".to_string(),
+                        Some(pos_for_err),
+                        Some(e.to_string()),
+                    )
+                })?,
+                None,
+            )
         }
 
         // Function(WorkerFunction) configuration
@@ -376,23 +409,26 @@ async fn prepare_streaming_job(
 
             // Capture position before await to avoid blocking_read() in async context
             let pos_for_err = task_context.position.read().await.as_error_instance();
-            start_worker_streaming_job_static(
-                job_executor_wrapper,
-                metadata.clone(),
-                worker_name,
-                args,
-                timeout_sec,
-                using.clone(),
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming job by jobworkerp (worker function)");
-                workflow::errors::ErrorFactory::new().service_unavailable(
-                    "Failed to start streaming job by jobworkerp".to_string(),
-                    Some(pos_for_err),
-                    Some(e.to_string()),
+            (
+                start_worker_streaming_job_static(
+                    job_executor_wrapper,
+                    metadata.clone(),
+                    worker_name,
+                    args,
+                    timeout_sec,
+                    using.clone(),
                 )
-            })?
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming job by jobworkerp (worker function)");
+                    workflow::errors::ErrorFactory::new().service_unavailable(
+                        "Failed to start streaming job by jobworkerp".to_string(),
+                        Some(pos_for_err),
+                        Some(e.to_string()),
+                    )
+                })?,
+                None,
+            )
         }
 
         // Runner configuration
@@ -444,26 +480,29 @@ async fn prepare_streaming_job(
 
             // Capture position before await to avoid blocking_read() in async context
             let pos_for_err = task_context.position.read().await.as_error_instance();
-            start_runner_streaming_job_static(
-                job_executor_wrapper,
-                metadata.clone(),
-                timeout_sec,
-                runner_name,
-                Some(transformed_settings),
-                options.clone(),
-                args,
-                task_name,
-                using.clone(),
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming runner job by jobworkerp");
-                workflow::errors::ErrorFactory::new().service_unavailable(
-                    "Failed to start streaming runner job by jobworkerp".to_string(),
-                    Some(pos_for_err),
-                    Some(e.to_string()),
+            (
+                start_runner_streaming_job_static(
+                    job_executor_wrapper,
+                    metadata.clone(),
+                    timeout_sec,
+                    runner_name,
+                    Some(transformed_settings),
+                    options.clone(),
+                    args,
+                    task_name,
+                    using.clone(),
                 )
-            })?
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming runner job by jobworkerp");
+                    workflow::errors::ErrorFactory::new().service_unavailable(
+                        "Failed to start streaming runner job by jobworkerp".to_string(),
+                        Some(pos_for_err),
+                        Some(e.to_string()),
+                    )
+                })?,
+                None,
+            )
         }
 
         // Function(RunnerFunction) configuration
@@ -515,26 +554,29 @@ async fn prepare_streaming_job(
 
             // Capture position before await to avoid blocking_read() in async context
             let pos_for_err = task_context.position.read().await.as_error_instance();
-            start_runner_streaming_job_static(
-                job_executor_wrapper,
-                metadata.clone(),
-                timeout_sec,
-                runner_name,
-                Some(transformed_settings),
-                options.clone(),
-                args,
-                task_name,
-                using.clone(),
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming runner function job by jobworkerp");
-                workflow::errors::ErrorFactory::new().service_unavailable(
-                    "Failed to start streaming runner job by jobworkerp".to_string(),
-                    Some(pos_for_err),
-                    Some(e.to_string()),
+            (
+                start_runner_streaming_job_static(
+                    job_executor_wrapper,
+                    metadata.clone(),
+                    timeout_sec,
+                    runner_name,
+                    Some(transformed_settings),
+                    options.clone(),
+                    args,
+                    task_name,
+                    using.clone(),
                 )
-            })?
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming runner function job by jobworkerp");
+                    workflow::errors::ErrorFactory::new().service_unavailable(
+                        "Failed to start streaming runner job by jobworkerp".to_string(),
+                        Some(pos_for_err),
+                        Some(e.to_string()),
+                    )
+                })?,
+                None,
+            )
         }
 
         // Serverless Workflow-style/jobworkerp extension aliases backed by
@@ -545,9 +587,25 @@ async fn prepare_streaming_job(
             let normalized =
                 alias::resolve_run_alias::<RunStreamTaskExecutor>(run, &task_context, &expression)
                     .await?;
+            if !normalized.await_completion {
+                let pos = task_context.position.read().await.as_error_instance();
+                return Err(workflow::errors::ErrorFactory::new().bad_argument(
+                    "run.await=false is not supported with streaming execution".to_string(),
+                    Some(pos),
+                    Some("useStreaming=true requires collecting a runner result".to_string()),
+                ));
+            }
+            let output_adapter = if matches!(normalized.position_name, "shell" | "container") {
+                Some(ProcessOutputAdapter {
+                    return_type: normalized.return_type,
+                    input: task_context.input.as_ref().clone(),
+                })
+            } else {
+                None
+            };
 
             let pos_for_err = task_context.position.read().await.as_error_instance();
-            start_runner_streaming_job_static(
+            let handle = start_runner_streaming_job_static(
                 job_executor_wrapper,
                 metadata.clone(),
                 timeout_sec,
@@ -563,10 +621,11 @@ async fn prepare_streaming_job(
                 tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming run alias by jobworkerp");
                 workflow::errors::ErrorFactory::new().service_unavailable(
                     "Failed to start streaming run alias by jobworkerp".to_string(),
-                    Some(pos_for_err),
-                    Some(e.to_string()),
-                )
-            })?
+                            Some(pos_for_err),
+                            Some(e.to_string()),
+                        )
+            })?;
+            (handle, output_adapter)
         }
 
         // Script configuration is not supported for streaming
@@ -617,6 +676,7 @@ async fn prepare_streaming_job(
         handle,
         position,
         task_context,
+        output_adapter,
         stream,
     })
 }
@@ -978,4 +1038,33 @@ async fn start_runner_streaming_job_static(
         using,
         timeout_sec,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn output_adapter_applies_process_return_for_streaming_aliases() {
+        let output = apply_output_adapter(
+            json!({"exitCode": 0, "stdout": "streamed", "stderr": ""}),
+            Some(ProcessOutputAdapter {
+                return_type: workflow::ProcessReturnType::Stdout,
+                input: json!({"original": true}),
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(output, json!("streamed"));
+    }
+
+    #[test]
+    fn output_adapter_keeps_raw_output_when_not_alias_process() {
+        let raw = json!({"exitCode": 0, "stdout": "streamed"});
+
+        let output = apply_output_adapter(raw.clone(), None).unwrap();
+
+        assert_eq!(output, raw);
+    }
 }

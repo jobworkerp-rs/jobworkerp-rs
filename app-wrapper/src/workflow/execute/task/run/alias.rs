@@ -2,7 +2,7 @@ use crate::workflow::definition::{transform::UseExpressionTransformer, workflow}
 use crate::workflow::execute::context::TaskContext;
 use anyhow::{Result, anyhow};
 use serde_json::{Map, Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NormalizedRun {
@@ -13,6 +13,8 @@ pub(crate) struct NormalizedRun {
     pub(crate) runner_name: &'static str,
     pub(crate) arguments: Value,
     pub(crate) using: Option<String>,
+    pub(crate) await_completion: bool,
+    pub(crate) return_type: workflow::ProcessReturnType,
 }
 
 /// Failure modes when turning a run alias into a [`NormalizedRun`]. Kept
@@ -62,8 +64,29 @@ fn preserve_workflow_data(
     let preserved = alias_map
         .get_mut("workflow")
         .and_then(Value::as_object_mut)
-        .and_then(|workflow| workflow.remove("workflowData"));
+        .and_then(|workflow| {
+            if workflow
+                .get("workflowData")
+                .is_some_and(should_preserve_workflow_data)
+            {
+                workflow.remove("workflowData")
+            } else {
+                None
+            }
+        });
     (alias_map, preserved)
+}
+
+fn should_preserve_workflow_data(workflow_data: &Value) -> bool {
+    let Some(workflow_data) = workflow_data.as_str() else {
+        return true;
+    };
+    !is_entire_expression(workflow_data)
+}
+
+fn is_entire_expression(value: &str) -> bool {
+    let trimmed = value.trim();
+    (trimmed.starts_with("${") || trimmed.starts_with("$${")) && trimmed.ends_with('}')
 }
 
 fn restore_workflow_data(transformed: &mut Value, workflow_data: Option<Value>) {
@@ -131,21 +154,73 @@ pub(crate) fn normalize_alias_value(value: Value) -> Result<NormalizedRun> {
         return Err(anyhow!("run alias must be an object"));
     };
 
+    let process_options = ProcessOptions::take_from(&mut obj)?;
+
     match (
         obj.remove("shell"),
         obj.remove("container"),
         obj.remove("workflow"),
     ) {
-        (Some(shell), None, None) => normalize_shell(shell),
-        (None, Some(container), None) => normalize_container(container),
-        (None, None, Some(workflow)) => normalize_workflow(workflow),
+        (Some(shell), None, None) => normalize_shell(shell, process_options),
+        (None, Some(container), None) => normalize_container(container, process_options),
+        (None, None, Some(workflow)) => {
+            process_options.reject_if_present("run.workflow")?;
+            normalize_workflow(workflow)
+        }
         _ => Err(anyhow!(
             "run alias must contain exactly one of shell, container, or workflow"
         )),
     }
 }
 
-fn normalize_shell(shell: Value) -> Result<NormalizedRun> {
+#[derive(Clone, Debug)]
+struct ProcessOptions {
+    await_completion: bool,
+    return_type: workflow::ProcessReturnType,
+    explicitly_set: bool,
+}
+
+impl ProcessOptions {
+    fn take_from(obj: &mut Map<String, Value>) -> Result<Self> {
+        let await_was_set = obj.contains_key("await");
+        let return_was_set = obj.contains_key("return");
+        let await_completion = match obj.remove("await") {
+            Some(Value::Bool(value)) => value,
+            Some(other) => {
+                return Err(anyhow!(
+                    "run.await must be a boolean, got {}",
+                    type_name(&other)
+                ));
+            }
+            None => true,
+        };
+        let return_type = match obj.remove("return") {
+            Some(Value::String(value)) => workflow::ProcessReturnType::from_str(&value)
+                .map_err(|_| anyhow!("unsupported run.return value: {value}"))?,
+            Some(other) => {
+                return Err(anyhow!(
+                    "run.return must be a string, got {}",
+                    type_name(&other)
+                ));
+            }
+            None => workflow::ProcessReturnType::Stdout,
+        };
+        Ok(Self {
+            await_completion,
+            return_type,
+            explicitly_set: await_was_set || return_was_set,
+        })
+    }
+
+    fn reject_if_present(&self, alias_name: &str) -> Result<()> {
+        if self.explicitly_set {
+            return Err(anyhow!("{alias_name} does not support await or return"));
+        }
+        Ok(())
+    }
+}
+
+fn normalize_shell(shell: Value, process_options: ProcessOptions) -> Result<NormalizedRun> {
     let arguments = match shell {
         Value::String(command) => json!({ "command": command }),
         Value::Object(shell) => Value::Object(shell),
@@ -162,10 +237,12 @@ fn normalize_shell(shell: Value) -> Result<NormalizedRun> {
         runner_name: "COMMAND",
         arguments,
         using: None,
+        await_completion: process_options.await_completion,
+        return_type: process_options.return_type,
     })
 }
 
-fn normalize_container(container: Value) -> Result<NormalizedRun> {
+fn normalize_container(container: Value, process_options: ProcessOptions) -> Result<NormalizedRun> {
     let Value::Object(mut container) = container else {
         return Err(anyhow!("run.container must be an object"));
     };
@@ -189,6 +266,8 @@ fn normalize_container(container: Value) -> Result<NormalizedRun> {
         runner_name: "DOCKER",
         arguments: Value::Object(container),
         using: None,
+        await_completion: process_options.await_completion,
+        return_type: process_options.return_type,
     })
 }
 
@@ -217,6 +296,8 @@ fn normalize_workflow(workflow: Value) -> Result<NormalizedRun> {
         runner_name: "WORKFLOW",
         arguments: Value::Object(workflow),
         using: Some("run".to_string()),
+        await_completion: true,
+        return_type: workflow::ProcessReturnType::Stdout,
     })
 }
 
@@ -238,6 +319,45 @@ pub(crate) fn attach_inherited_workflow_context(
         Value::String(workflow_context),
     );
     Ok(())
+}
+
+pub(crate) fn adapt_process_return_output(
+    raw_output: Value,
+    return_type: workflow::ProcessReturnType,
+    input: &Value,
+) -> Result<Value> {
+    match return_type {
+        workflow::ProcessReturnType::Stdout => {
+            Ok(Value::String(process_text(&raw_output, "stdout")))
+        }
+        workflow::ProcessReturnType::Stderr => {
+            Ok(Value::String(process_text(&raw_output, "stderr")))
+        }
+        workflow::ProcessReturnType::Code => Ok(Value::Number(process_code(&raw_output)?.into())),
+        workflow::ProcessReturnType::All => Ok(json!({
+            "code": process_code(&raw_output)?,
+            "stdout": process_text(&raw_output, "stdout"),
+            "stderr": process_text(&raw_output, "stderr"),
+        })),
+        workflow::ProcessReturnType::None => Ok(input.clone()),
+    }
+}
+
+fn process_text(raw_output: &Value, key: &str) -> String {
+    raw_output
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn process_code(raw_output: &Value) -> Result<i64> {
+    raw_output
+        .get("exitCode")
+        .or_else(|| raw_output.get("exit_code"))
+        .or_else(|| raw_output.get("code"))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("process result is missing exitCode"))
 }
 
 fn env_to_vec(env: Value) -> Result<Vec<Value>> {
@@ -278,8 +398,10 @@ fn type_name(value: &Value) -> &'static str {
 mod tests {
     use super::*;
     use crate::workflow::definition::workflow::{
-        RunShell, RunTaskConfiguration, RunWorkflow, ShellConfiguration, WorkflowConfiguration,
+        ContainerConfiguration, ProcessReturnType, RunContainer, RunShell, RunTaskConfiguration,
+        RunWorkflow, ShellConfiguration, WorkflowConfiguration,
     };
+    use std::collections::HashMap;
 
     #[test]
     fn shell_string_maps_to_command_runner_arguments() {
@@ -443,6 +565,20 @@ mod tests {
     }
 
     #[test]
+    fn workflow_alias_rejects_explicit_process_options_even_when_default() {
+        let err = normalize_alias_value(json!({
+            "await": true,
+            "return": "stdout",
+            "workflow": {
+                "workflowUrl": "file:///tmp/child.yaml"
+            }
+        }))
+        .unwrap_err();
+
+        assert!(err.to_string().contains("does not support await or return"));
+    }
+
+    #[test]
     fn ambiguous_alias_is_rejected() {
         let err = normalize_alias_value(json!({
             "shell": "echo hello",
@@ -456,6 +592,8 @@ mod tests {
     #[test]
     fn generated_shell_variant_serializes_to_normalizable_alias() {
         let run = RunTaskConfiguration::Shell(RunShell {
+            await_: true,
+            return_: ProcessReturnType::Stdout,
             shell: ShellConfiguration::Variant0("echo hello".to_string()),
         });
 
@@ -463,6 +601,48 @@ mod tests {
 
         assert_eq!(normalized.runner_name, "COMMAND");
         assert_eq!(normalized.arguments, json!({ "command": "echo hello" }));
+        assert!(normalized.await_completion);
+        assert_eq!(normalized.return_type, ProcessReturnType::Stdout);
+    }
+
+    #[test]
+    fn generated_shell_preserves_await_and_return_options() {
+        let run = RunTaskConfiguration::Shell(RunShell {
+            await_: false,
+            return_: ProcessReturnType::All,
+            shell: ShellConfiguration::Variant0("echo hello".to_string()),
+        });
+
+        let normalized = normalize_alias_value(serde_json::to_value(run).unwrap()).unwrap();
+
+        assert!(!normalized.await_completion);
+        assert_eq!(normalized.return_type, ProcessReturnType::All);
+    }
+
+    #[test]
+    fn generated_container_preserves_await_and_return_options() {
+        let run = RunTaskConfiguration::Container(RunContainer {
+            await_: true,
+            return_: ProcessReturnType::Code,
+            container: ContainerConfiguration {
+                image: "alpine:3.20".to_string(),
+                command: vec!["echo".to_string(), "hello".to_string()],
+                entrypoint: Vec::new(),
+                env: HashMap::new(),
+                success_exit_codes: Vec::new(),
+                timeout_sec: None,
+                treat_nonzero_as_error: None,
+                user: None,
+                working_dir: None,
+            },
+        });
+
+        let normalized = normalize_alias_value(serde_json::to_value(run).unwrap()).unwrap();
+
+        assert!(normalized.await_completion);
+        assert_eq!(normalized.return_type, ProcessReturnType::Code);
+        assert_eq!(normalized.runner_name, "DOCKER");
+        assert_eq!(normalized.arguments["image"], "alpine:3.20");
     }
 
     /// Minimal transformer so `interpret_run_alias` can be exercised without a
@@ -474,6 +654,8 @@ mod tests {
     #[test]
     fn interpret_run_alias_expands_expressions_then_normalizes() {
         let run = RunTaskConfiguration::Shell(RunShell {
+            await_: true,
+            return_: ProcessReturnType::Stdout,
             shell: ShellConfiguration::Variant0("${ .cmd }".to_string()),
         });
         let raw_input = Arc::new(json!({ "cmd": "echo hi" }));
@@ -520,8 +702,68 @@ do:
     }
 
     #[test]
+    fn interpret_run_alias_expands_workflow_data_when_entire_field_is_parent_expression() {
+        let child_workflow = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: dynamic-child, version: "1.0.0" }
+do:
+  - use-child-input:
+      set:
+        value: ${ .child_value }
+"#;
+        let run = RunTaskConfiguration::Workflow(RunWorkflow {
+            workflow: WorkflowConfiguration::Variant0 {
+                execution_id: None,
+                input: Some(json!({ "child_value": "from-parent" })),
+                workflow_data: "${ .child_workflow }".to_string(),
+            },
+        });
+        let raw_input = Arc::new(json!({ "child_workflow": child_workflow }));
+
+        let normalized =
+            interpret_run_alias::<TestTransformer>(&run, raw_input, &BTreeMap::new()).unwrap();
+
+        assert_eq!(normalized.runner_name, "WORKFLOW");
+        assert_eq!(normalized.arguments["workflowData"], child_workflow);
+        assert_eq!(
+            normalized.arguments["input"],
+            r#"{"child_value":"from-parent"}"#
+        );
+    }
+
+    #[test]
+    fn interpret_run_alias_expands_workflow_data_when_entire_field_is_liquid_expression() {
+        let child_workflow = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: liquid-child, version: "1.0.0" }
+do:
+  - use-child-input:
+      set:
+        value: ${ .child_value }
+"#;
+        let run = RunTaskConfiguration::Workflow(RunWorkflow {
+            workflow: WorkflowConfiguration::Variant0 {
+                execution_id: None,
+                input: Some(json!({ "child_value": "from-parent" })),
+                workflow_data: "$${{{ child_workflow }}}".to_string(),
+            },
+        });
+        let raw_input = Arc::new(json!({ "child_workflow": child_workflow }));
+
+        let normalized =
+            interpret_run_alias::<TestTransformer>(&run, raw_input, &BTreeMap::new()).unwrap();
+
+        assert_eq!(normalized.runner_name, "WORKFLOW");
+        assert_eq!(normalized.arguments["workflowData"], child_workflow);
+        assert_eq!(
+            normalized.arguments["input"],
+            r#"{"child_value":"from-parent"}"#
+        );
+    }
+
+    #[test]
     fn interpret_run_alias_surfaces_transform_errors() {
         let run = RunTaskConfiguration::Shell(RunShell {
+            await_: true,
+            return_: ProcessReturnType::Stdout,
             shell: ShellConfiguration::Variant0("${ . | invalid_jq_func }".to_string()),
         });
 
@@ -530,5 +772,49 @@ do:
                 .unwrap_err();
 
         assert!(matches!(err, AliasError::Transform(_)));
+    }
+
+    #[test]
+    fn process_return_stdout_stderr_code_all_and_none_are_adapted() {
+        let raw = json!({
+            "exitCode": 7,
+            "stdout": "out",
+            "stderr": "err",
+            "containerId": "debug-only"
+        });
+        let input = json!({"original": true});
+
+        assert_eq!(
+            adapt_process_return_output(raw.clone(), ProcessReturnType::Stdout, &input).unwrap(),
+            json!("out")
+        );
+        assert_eq!(
+            adapt_process_return_output(raw.clone(), ProcessReturnType::Stderr, &input).unwrap(),
+            json!("err")
+        );
+        assert_eq!(
+            adapt_process_return_output(raw.clone(), ProcessReturnType::Code, &input).unwrap(),
+            json!(7)
+        );
+        assert_eq!(
+            adapt_process_return_output(raw.clone(), ProcessReturnType::All, &input).unwrap(),
+            json!({"code": 7, "stdout": "out", "stderr": "err"})
+        );
+        assert_eq!(
+            adapt_process_return_output(raw, ProcessReturnType::None, &input).unwrap(),
+            input
+        );
+    }
+
+    #[test]
+    fn process_return_code_requires_exit_code() {
+        let err = adapt_process_return_output(
+            json!({"stdout": "out"}),
+            ProcessReturnType::Code,
+            &json!({}),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("exitCode"));
     }
 }

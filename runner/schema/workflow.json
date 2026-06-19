@@ -546,27 +546,6 @@
           "title": "RunTaskConfiguration",
           "description": "Process execution configuration.",
           "unevaluatedProperties": false,
-          "properties": {
-            "await": {
-              "type": "boolean",
-              "default": true,
-              "title": "AwaitProcessCompletion",
-              "description": "Wait for process completion before continuing."
-            },
-            "return": {
-              "type": "string",
-              "title": "ProcessReturnType",
-              "description": "Process output type to return.",
-              "enum": [
-                "stdout",
-                "stderr",
-                "code",
-                "all",
-                "none"
-              ],
-              "default": "stdout"
-            }
-          },
           "oneOf": [
             {
               "$ref": "#/$defs/runWorker"
@@ -883,6 +862,25 @@
         "shell"
       ],
       "properties": {
+        "await": {
+          "type": "boolean",
+          "default": true,
+          "title": "AwaitProcessCompletion",
+          "description": "Wait for process completion before continuing."
+        },
+        "return": {
+          "type": "string",
+          "title": "ProcessReturnType",
+          "description": "Process output type to return.",
+          "enum": [
+            "stdout",
+            "stderr",
+            "code",
+            "all",
+            "none"
+          ],
+          "default": "stdout"
+        },
         "shell": {
           "$ref": "#/$defs/shellConfiguration"
         }
@@ -953,6 +951,25 @@
         "container"
       ],
       "properties": {
+        "await": {
+          "type": "boolean",
+          "default": true,
+          "title": "AwaitProcessCompletion",
+          "description": "Wait for process completion before continuing."
+        },
+        "return": {
+          "type": "string",
+          "title": "ProcessReturnType",
+          "description": "Process output type to return.",
+          "enum": [
+            "stdout",
+            "stderr",
+            "code",
+            "all",
+            "none"
+          ],
+          "default": "stdout"
+        },
         "container": {
           "$ref": "#/$defs/containerConfiguration"
         }

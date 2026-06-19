@@ -316,6 +316,15 @@ do:
           successExitCodes: [0, 2]
 "#;
 
+    const RUN_SHELL_RETURN_ALL: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-shell-return-all, version: "1.0.0" }
+do:
+  - echo:
+      run:
+        return: all
+        shell: "echo hello"
+"#;
+
     const RUN_CONTAINER: &str = r#"
 document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-container, version: "1.0.0" }
 do:
@@ -330,6 +339,18 @@ do:
           workingDir: /work
           treatNonzeroAsError: true
           successExitCodes: [0]
+"#;
+
+    const RUN_CONTAINER_AWAIT_FALSE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-container-await-false, version: "1.0.0" }
+do:
+  - boxed:
+      run:
+        await: false
+        return: code
+        container:
+          image: alpine:3.20
+          command: ["echo", "hello"]
 "#;
 
     const RUN_CONTAINER_MISSING_IMAGE: &str = r#"
@@ -379,6 +400,16 @@ do:
           input: "{}"
 "#;
 
+    const RUN_WORKFLOW_RETURN_UNSUPPORTED: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-workflow-return-unsupported, version: "1.0.0" }
+do:
+  - nested:
+      run:
+        return: all
+        workflow:
+          workflowUrl: file:///tmp/child.yaml
+"#;
+
     const RUN_WORKFLOW_MISSING_SOURCE: &str = r#"
 document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-workflow-missing-source, version: "1.0.0" }
 do:
@@ -398,6 +429,17 @@ do:
           name: COMMAND
           arguments:
             command: echo
+"#;
+
+    const RUN_SCRIPT_RETURN_UNSUPPORTED: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-script-return-unsupported, version: "1.0.0" }
+do:
+  - script:
+      run:
+        return: stdout
+        script:
+          language: python
+          code: "print('hello')"
 "#;
 
     // The schema relies on `allOf:[{$ref: taskBase}, {properties: ...}]` to
@@ -547,8 +589,18 @@ do:
     }
 
     #[test]
+    fn run_shell_return_all_passes() {
+        run_validate(RUN_SHELL_RETURN_ALL).unwrap();
+    }
+
+    #[test]
     fn run_container_passes() {
         run_validate(RUN_CONTAINER).unwrap();
+    }
+
+    #[test]
+    fn run_container_await_false_with_return_passes() {
+        run_validate(RUN_CONTAINER_AWAIT_FALSE).unwrap();
     }
 
     #[test]
@@ -572,6 +624,11 @@ do:
     }
 
     #[test]
+    fn run_workflow_return_is_rejected() {
+        assert!(run_validate(RUN_WORKFLOW_RETURN_UNSUPPORTED).is_err());
+    }
+
+    #[test]
     fn run_workflow_missing_source_fails() {
         assert!(run_validate(RUN_WORKFLOW_MISSING_SOURCE).is_err());
     }
@@ -579,6 +636,11 @@ do:
     #[test]
     fn run_alias_with_runner_is_rejected_as_ambiguous() {
         assert!(run_validate(RUN_ALIAS_AMBIGUOUS_WITH_RUNNER).is_err());
+    }
+
+    #[test]
+    fn run_script_return_is_rejected() {
+        assert!(run_validate(RUN_SCRIPT_RETURN_UNSUPPORTED).is_err());
     }
 
     // Combined regression: switch + tryTask + raise + flowDirective `exit`
