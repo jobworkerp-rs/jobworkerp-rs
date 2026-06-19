@@ -1,6 +1,7 @@
 pub mod checkpoint;
 pub mod context;
 pub mod expression;
+pub(crate) mod secret;
 pub mod task;
 pub mod workflow;
 

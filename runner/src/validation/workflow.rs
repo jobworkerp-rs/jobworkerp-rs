@@ -271,6 +271,164 @@ do:
         method: GET
 "#;
 
+    const CALL_HTTP_AUTH_BEARER_INLINE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-bearer, version: "1.0.0" }
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: https://example.com/items
+          authentication:
+            bearer:
+              token: my-token
+"#;
+
+    const CALL_HTTP_AUTH_BASIC_INLINE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-basic, version: "1.0.0" }
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: https://example.com/items
+          authentication:
+            basic:
+              username: admin
+              password: secret
+"#;
+
+    const CALL_HTTP_AUTH_USE_REFERENCE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-auth-use, version: "1.0.0" }
+use:
+  secrets: [GITHUB_TOKEN]
+  authentications:
+    apiAuth:
+      bearer:
+        token: "${ $secrets.GITHUB_TOKEN }"
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: https://example.com/items
+          authentication:
+            use: apiAuth
+"#;
+
+    const CALL_HTTP_AUTH_UNKNOWN_SCHEME: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-auth-unknown, version: "1.0.0" }
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: https://example.com/items
+          authentication:
+            digest:
+              username: admin
+              password: secret
+"#;
+
+    const CALL_HTTP_AUTH_USE_REFERENCE_EXTRA_PROPERTY: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-auth-use-typo, version: "1.0.0" }
+use:
+  authentications:
+    apiAuth:
+      bearer:
+        token: my-token
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: https://example.com/items
+          authentication:
+            use: apiAuth
+            us: apiAuth
+"#;
+
+    const CALL_HTTP_AUTH_BASIC_MISSING_PASSWORD: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-basic-bad, version: "1.0.0" }
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: https://example.com/items
+          authentication:
+            basic:
+              username: admin
+"#;
+
+    const CALL_HTTP_AUTH_BEARER_USE_SECRET: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-bearer-use, version: "1.0.0" }
+use:
+  secrets: [API_TOKEN]
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: https://example.com/items
+          authentication:
+            bearer:
+              use: API_TOKEN
+"#;
+
+    const CALL_HTTP_AUTH_BASIC_USE_SECRET: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-basic-use, version: "1.0.0" }
+use:
+  secrets: [CREDS]
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: https://example.com/items
+          authentication:
+            basic:
+              use: CREDS
+"#;
+
+    const CALL_HTTP_AUTH_BEARER_USE_AND_TOKEN: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-bearer-mixed, version: "1.0.0" }
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: https://example.com/items
+          authentication:
+            bearer:
+              use: X
+              token: y
+"#;
+
+    const CALL_HTTP_AUTH_BEARER_TYPO_FIELD: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-bearer-typo, version: "1.0.0" }
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: https://example.com/items
+          authentication:
+            bearer:
+              token: "real"
+              tokne: "typo"
+"#;
+
     const CALL_HTTP_RAW_OUTPUT_UNSUPPORTED: &str = r#"
 document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-raw-output, version: "1.0.0" }
 input: { schema: { document: { type: object } } }
@@ -676,6 +834,62 @@ do:
     #[test]
     fn call_http_missing_endpoint_fails() {
         assert!(run_validate(CALL_HTTP_MISSING_ENDPOINT).is_err());
+    }
+
+    #[test]
+    fn call_http_bearer_inline_passes() {
+        run_validate(CALL_HTTP_AUTH_BEARER_INLINE).unwrap();
+    }
+
+    #[test]
+    fn call_http_basic_inline_passes() {
+        run_validate(CALL_HTTP_AUTH_BASIC_INLINE).unwrap();
+    }
+
+    #[test]
+    fn call_http_authentication_use_reference_passes() {
+        run_validate(CALL_HTTP_AUTH_USE_REFERENCE).unwrap();
+    }
+
+    #[test]
+    fn call_http_authentication_use_reference_extra_property_fails() {
+        // A typo/extra field next to `use` (e.g. `us`) must be rejected by the
+        // validation schema, not silently ignored at runtime.
+        assert!(run_validate(CALL_HTTP_AUTH_USE_REFERENCE_EXTRA_PROPERTY).is_err());
+    }
+
+    #[test]
+    fn call_http_unknown_authentication_scheme_fails() {
+        // digest / oauth2 / oidc / certificate are out of scope for this phase.
+        assert!(run_validate(CALL_HTTP_AUTH_UNKNOWN_SCHEME).is_err());
+    }
+
+    #[test]
+    fn call_http_basic_missing_password_fails() {
+        assert!(run_validate(CALL_HTTP_AUTH_BASIC_MISSING_PASSWORD).is_err());
+    }
+
+    #[test]
+    fn call_http_bearer_use_secret_passes() {
+        run_validate(CALL_HTTP_AUTH_BEARER_USE_SECRET).unwrap();
+    }
+
+    #[test]
+    fn call_http_basic_use_secret_passes() {
+        run_validate(CALL_HTTP_AUTH_BASIC_USE_SECRET).unwrap();
+    }
+
+    #[test]
+    fn call_http_bearer_use_and_token_mixed_fails() {
+        // `bearer` must be exactly inline-properties XOR a `{ use }` reference.
+        assert!(run_validate(CALL_HTTP_AUTH_BEARER_USE_AND_TOKEN).is_err());
+    }
+
+    #[test]
+    fn call_http_bearer_unknown_field_fails() {
+        // A typo'd field (e.g. `tokne`) must be rejected by validation rather
+        // than silently dropped by serde.
+        assert!(run_validate(CALL_HTTP_AUTH_BEARER_TYPO_FIELD).is_err());
     }
 
     #[test]

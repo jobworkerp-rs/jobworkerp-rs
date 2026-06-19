@@ -129,6 +129,78 @@ $defs:
         description: Named timeout definitions.
         additionalProperties:
           $ref: "#/$defs/timeout"
+      authentications:
+        type: object
+        title: ReusableAuthentications
+        description: >-
+          Named authentication policy definitions referenced via
+          `authentication: { use: <name> }`.
+        additionalProperties:
+          $ref: "#/$defs/authenticationPolicy"
+      secrets:
+        type: array
+        title: ReusableSecrets
+        description: >-
+          Declared secret names. Values are supplied at runtime via the
+          `WORKFLOW_SECRET_<UPPER_SNAKE_NAME>` environment variable and are
+          never written in the workflow definition. Only declared names may be
+          referenced through `${ $secrets.<name> }`.
+        items:
+          type: string
+  secretBasedAuthenticationPolicy:
+    title: SecretBasedAuthenticationPolicy
+    description: >-
+      Reference to a declared secret (under `use.secrets`). The runtime resolves
+      the value from the `WORKFLOW_SECRET_<UPPER_SNAKE_NAME>` environment variable.
+    type: object
+    required: [use]
+    unevaluatedProperties: false
+    properties:
+      use:
+        type: string
+        title: SecretBasedAuthenticationUse
+  authenticationPolicy:
+    title: AuthenticationPolicy
+    description: >-
+      Inline authentication policy. Property values may be literals or runtime
+      expressions (`${ $secrets.<name> }`), or the scheme may reference a declared
+      secret via `{ use: <name> }`.
+    type: object
+    unevaluatedProperties: false
+    oneOf:
+      - title: BasicAuthenticationPolicy
+        required: [basic]
+        properties:
+          basic:
+            title: BasicAuthentication
+            oneOf:
+              - title: BasicAuthenticationProperties
+                type: object
+                required: [username, password]
+                unevaluatedProperties: false
+                properties:
+                  username:
+                    type: string
+                    title: BasicAuthenticationUsername
+                  password:
+                    type: string
+                    title: BasicAuthenticationPassword
+              - $ref: "#/$defs/secretBasedAuthenticationPolicy"
+      - title: BearerAuthenticationPolicy
+        required: [bearer]
+        properties:
+          bearer:
+            title: BearerAuthentication
+            oneOf:
+              - title: BearerAuthenticationProperties
+                type: object
+                required: [token]
+                unevaluatedProperties: false
+                properties:
+                  token:
+                    type: string
+                    title: BearerAuthenticationToken
+              - $ref: "#/$defs/secretBasedAuthenticationPolicy"
   taskList:
     title: TaskList
     description: Ordered list of named tasks.
@@ -352,7 +424,21 @@ $defs:
                 title: HttpEndpointObjectUri
               authentication:
                 title: HttpEndpointAuthentication
-                description: Accepted for validation but not executed in Phase 1.
+                description: >-
+                  Endpoint authentication. Inline bearer/basic policy, or a
+                  reference to a named policy declared under
+                  `use.authentications`.
+                oneOf:
+                  - $ref: "#/$defs/authenticationPolicy"
+                  - title: AuthenticationPolicyReference
+                    type: object
+                    required: [use]
+                    unevaluatedProperties: false
+                    properties:
+                      use:
+                        type: string
+                        title: AuthenticationPolicyUse
+                        description: Name of a policy declared under use.authentications.
       headers:
         type: object
         title: HttpHeaders

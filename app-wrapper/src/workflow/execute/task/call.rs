@@ -7,6 +7,7 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext},
         expression::UseExpression,
+        secret,
         task::{NamedTimeouts, run::resolve_run_task_timeout_sec},
     },
 };
@@ -85,13 +86,77 @@ impl CallTaskExecutor {
     }
 
     fn endpoint_uri(endpoint: &workflow::HttpEndpoint) -> Result<String> {
+        let (workflow::HttpEndpoint::Uri(uri) | workflow::HttpEndpoint::Object { uri, .. }) =
+            endpoint;
+        Ok(uri.clone())
+    }
+
+    fn endpoint_authentication(
+        endpoint: &workflow::HttpEndpoint,
+    ) -> Option<&workflow::HttpEndpointAuthentication> {
         match endpoint {
-            workflow::HttpEndpoint::Uri(uri) => Ok(uri.clone()),
             workflow::HttpEndpoint::Object {
-                authentication: Some(_),
+                authentication: Some(auth),
                 ..
-            } => Err(anyhow!("endpoint authentication is not supported")),
-            workflow::HttpEndpoint::Object { uri, .. } => Ok(uri.clone()),
+            } => Some(auth),
+            _ => None,
+        }
+    }
+
+    /// Resolve an endpoint authentication (inline policy or `use:` reference)
+    /// into a concrete policy.
+    ///
+    /// Inline policies (`Variant0`) live inside `task.with`, so their expressions
+    /// (e.g. `bearer.token: "${ $secrets.X }"`) are already expanded by the
+    /// `transform_value` over `with`. Named policies (`use:` references) are
+    /// stored verbatim in `use.authentications` and never passed through that
+    /// transform, so they are expanded here with the same expression context.
+    ///
+    /// The named policy's own `$secrets` references are resolved here, after the
+    /// `use` name is known (the name itself may have been an expression resolved
+    /// during the `with` transform). Only secrets the policy actually references
+    /// are loaded, and they are injected into a local expression copy — never
+    /// into the shared context.
+    fn resolve_authentication(
+        endpoint_auth: &workflow::HttpEndpointAuthentication,
+        named: &std::collections::HashMap<String, workflow::AuthenticationPolicy>,
+        declared_secrets: &std::collections::HashSet<String>,
+        raw_input: Arc<Value>,
+        expression: &std::collections::BTreeMap<String, Arc<Value>>,
+    ) -> Result<workflow::AuthenticationPolicy, Box<workflow::Error>> {
+        match endpoint_auth {
+            workflow::HttpEndpointAuthentication::Variant0(policy) => Ok(policy.clone()),
+            workflow::HttpEndpointAuthentication::Variant1 { use_ } => {
+                let policy = named.get(use_).ok_or_else(|| {
+                    Self::unsupported(
+                        "authentication",
+                        format!("authentication '{use_}' is not defined in use.authentications"),
+                    )
+                })?;
+                let policy_value = serde_json::to_value(policy).map_err(|e| {
+                    Self::unsupported(
+                        "authentication",
+                        format!("failed to serialize authentication '{use_}': {e}"),
+                    )
+                })?;
+                // Resolve the secrets this specific policy references and inject
+                // them into a local expression copy before transforming it. This
+                // works even when the `use` name was expression-driven, because
+                // the policy is only known here (post-`with`-transform).
+                let policy_secrets =
+                    secret::resolve_secrets_for(declared_secrets, &policy_value.to_string())
+                        .map_err(|e| Self::unsupported("authentication", e.to_string()))?;
+                let mut policy_expression = expression.clone();
+                secret::merge_secrets(&mut policy_expression, policy_secrets);
+                let transformed =
+                    Self::transform_value(raw_input, policy_value, &policy_expression)?;
+                serde_json::from_value(transformed).map_err(|e| {
+                    Self::unsupported(
+                        "authentication",
+                        format!("invalid authentication '{use_}' after expansion: {e}"),
+                    )
+                })
+            }
         }
     }
 
@@ -350,9 +415,21 @@ impl CallTaskExecutor {
     fn http_request_parts(
         uri: String,
         call: workflow::CallHttp,
+        auth_header: Option<(String, String)>,
     ) -> Result<(Value, Value, HttpOutput)> {
         let settings = json!({ "base_url": uri });
         let mut headers = Self::map_to_key_values(call.headers, "headers")?;
+        // An authentication policy wins over a hand-written Authorization header:
+        // drop any existing one, then append the policy-derived value.
+        if let Some((name, value)) = auth_header {
+            headers.retain(|header| {
+                !header
+                    .get(ARG_KEY)
+                    .and_then(Value::as_str)
+                    .is_some_and(|key| key.eq_ignore_ascii_case(&name))
+            });
+            headers.push(Self::key_value(&name, &value));
+        }
         let (body, json_body) = Self::body_to_string(call.body)?;
         if json_body
             && !headers.iter().any(|header| {
@@ -389,14 +466,39 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
     ) -> Result<TaskContext, Box<workflow::Error>> {
         task_context.add_position_name("call".to_string()).await;
 
-        let expression = Self::expression(
-            &*self.workflow_context.read().await,
-            Arc::new(task_context.clone()),
-        )
-        .await?;
+        // Snapshot the workflow's reusable auth/secret declarations and build the
+        // expression context under a single read guard. The declarations are
+        // serde(skip) on WorkflowContext, so they are never serialized into the
+        // expression context below.
+        let (named_authentications, declared_secrets, mut expression) = {
+            let wfc = self.workflow_context.read().await;
+            let named_authentications = wfc.authentications.clone();
+            let declared_secrets = wfc.declared_secrets.clone();
+            let expression = Self::expression(&wfc, Arc::new(task_context.clone())).await?;
+            (named_authentications, declared_secrets, expression)
+        };
 
         let call_value = serde_json::to_value(&self.task.with)
             .map_err(|e| Self::unsupported("with", format!("serialization failed: {e}")))?;
+
+        // Inject the secrets that `with` itself references as `$secrets.<name>`
+        // for this call task only. Only secrets actually referenced are resolved
+        // (an unused declaration must not force its env var to be set). Secrets
+        // referenced *inside a named authentication policy* are resolved later in
+        // `resolve_authentication`, once the `use` name is known (it may itself be
+        // expression-driven). Resolved from env; never written back to any shared
+        // context.
+        // Undeclared `$secrets.X` references must error before transformation,
+        // even when no secrets are declared at all (otherwise jq yields `null`
+        // and Liquid an empty string, e.g. forging an empty `Bearer ` header).
+        // `resolve_secrets_for` scans `with` once for both the undeclared-guard
+        // and the resolution; the empty-declarations case still runs the guard.
+        let secrets = secret::resolve_secrets_for(&declared_secrets, &call_value.to_string())
+            .map_err(|e| Self::unsupported("authentication", e.to_string()))?;
+        if !declared_secrets.is_empty() {
+            expression.insert("secrets".to_string(), Arc::new(secrets));
+        }
+
         let transformed_call =
             match Self::transform_value(task_context.input.clone(), call_value, &expression) {
                 Ok(value) => value,
@@ -410,7 +512,28 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
         let call: workflow::CallHttp = serde_json::from_value(transformed_call)
             .map_err(|e| Self::unsupported("with", format!("invalid transformed call: {e}")))?;
         let uri = Self::ensure_supported(&call)?;
-        let (settings, args, output) = Self::http_request_parts(uri, call)
+        // Resolve endpoint authentication (inline policy already expanded by
+        // transform, or `use:` reference expanded with the same context here)
+        // into an Authorization header. A `{ use: <name> }` secret reference is
+        // resolved from the environment via the declared-secret gate.
+        let auth_header = match Self::endpoint_authentication(&call.endpoint) {
+            Some(endpoint_auth) => {
+                let policy = Self::resolve_authentication(
+                    endpoint_auth,
+                    &named_authentications,
+                    &declared_secrets,
+                    task_context.input.clone(),
+                    &expression,
+                )?;
+                let header = secret::authentication_header(&policy, &declared_secrets, &|k| {
+                    std::env::var(k).ok()
+                })
+                .map_err(|e| Self::unsupported("authentication", e.to_string()))?;
+                Some(header)
+            }
+            None => None,
+        };
+        let (settings, args, output) = Self::http_request_parts(uri, call, auth_header)
             .map_err(|e| Self::unsupported("with", e.to_string()))?;
         let timeout_sec = resolve_run_task_timeout_sec(
             self.task.timeout.as_ref(),
@@ -439,6 +562,280 @@ mod tests {
     use super::*;
     use proto::jobworkerp::data::RunnerType;
     use serde_json::json;
+
+    fn empty_expression() -> std::collections::BTreeMap<String, Arc<Value>> {
+        std::collections::BTreeMap::new()
+    }
+
+    fn no_secrets() -> std::collections::HashSet<String> {
+        std::collections::HashSet::new()
+    }
+
+    // Inline policies don't read secrets; this getter must never be consulted.
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
+
+    fn bearer_inline(token: &str) -> workflow::AuthenticationPolicy {
+        workflow::AuthenticationPolicy::Bearer(
+            workflow::BearerAuthentication::BearerAuthenticationProperties {
+                token: token.to_string(),
+            },
+        )
+    }
+
+    #[test]
+    fn referenced_secret_names_match_jq_and_liquid_forms() {
+        let names = secret::referenced_secret_names(r#"{"t":"${ $secrets.API_TOKEN }"}"#);
+        assert!(names.contains("API_TOKEN"));
+        let names = secret::referenced_secret_names(r#"{"t":"$${{{ secrets.API_TOKEN }}}"}"#);
+        assert!(names.contains("API_TOKEN"));
+        // Plain text with no expression span yields nothing.
+        assert!(secret::referenced_secret_names(r#"{"t":"no reference here"}"#).is_empty());
+        // A different secret name is not reported for an unrelated reference.
+        let names = secret::referenced_secret_names(r#"{"t":"${ $secrets.OTHER }"}"#);
+        assert!(!names.contains("API_TOKEN"));
+        assert!(names.contains("OTHER"));
+    }
+
+    #[test]
+    fn referenced_secret_names_match_bracket_notation() {
+        // Names that are not valid bare jq identifiers must use bracket notation.
+        // As serialized by serde_json, the inner double quotes are escaped.
+        let serialized =
+            serde_json::json!({"token": "${ $secrets[\"github-token\"] }"}).to_string();
+        assert!(secret::referenced_secret_names(&serialized).contains("github-token"));
+        // Single-quote bracket form (not escaped in JSON).
+        let names = secret::referenced_secret_names(r#"{"t":"${ $secrets['github-token'] }"}"#);
+        assert!(names.contains("github-token"));
+        // Unrelated name is not reported.
+        assert!(!secret::referenced_secret_names(&serialized).contains("other-token"));
+    }
+
+    #[test]
+    fn referenced_secret_names_respect_dot_notation_boundary() {
+        // `${ $secrets.API_TOKEN }` references `API_TOKEN`, not the prefix `API`.
+        let names = secret::referenced_secret_names(r#"{"t":"${ $secrets.API_TOKEN }"}"#);
+        assert!(names.contains("API_TOKEN"));
+        assert!(!names.contains("API"));
+        // But an exact dot reference to the shorter name is matched.
+        let names = secret::referenced_secret_names(r#"{"t":"${ $secrets.API }"}"#);
+        assert!(names.contains("API"));
+    }
+
+    fn declared(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn referenced_secret_names_extracts_dot_and_bracket_forms() {
+        let serialized = serde_json::json!({
+            "a": "${ $secrets.API_TOKEN }",
+            "b": "$${{{ secrets.OTHER }}}",
+            "c": "${ $secrets[\"github-token\"] }",
+            "d": "${ $secrets['gitlab-token'] }",
+        })
+        .to_string();
+        let names = secret::referenced_secret_names(&serialized);
+        assert!(names.contains("API_TOKEN"));
+        assert!(names.contains("OTHER"));
+        assert!(names.contains("github-token"));
+        assert!(names.contains("gitlab-token"));
+    }
+
+    #[test]
+    fn referenced_secret_names_ignores_text_without_references() {
+        let names = secret::referenced_secret_names(r#"{"t":"no secrets used"}"#);
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn undeclared_secret_reference_is_rejected() {
+        // Declared only TOKEN, but the expression references MISSING.
+        let serialized = r#"{"t":"$${{{ secrets.MISSING }}}"}"#;
+        let err = secret::ensure_no_undeclared_secret_references(&declared(&["TOKEN"]), serialized)
+            .unwrap_err();
+        assert!(err.to_string().contains("MISSING"));
+        assert!(err.to_string().contains("not declared"));
+    }
+
+    #[test]
+    fn undeclared_secret_reference_with_no_declarations_is_rejected() {
+        // The empty-declaration case must still error (not silently expand).
+        let serialized = r#"{"t":"${ $secrets.MISSING }"}"#;
+        let err =
+            secret::ensure_no_undeclared_secret_references(&no_secrets(), serialized).unwrap_err();
+        assert!(err.to_string().contains("MISSING"));
+    }
+
+    #[test]
+    fn declared_secret_reference_is_accepted() {
+        let serialized = r#"{"t":"${ $secrets.API_TOKEN }"}"#;
+        assert!(
+            secret::ensure_no_undeclared_secret_references(&declared(&["API_TOKEN"]), serialized,)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn undeclared_bracket_secret_reference_is_rejected() {
+        let serialized = serde_json::json!({"t": "${ $secrets[\"github-token\"] }"}).to_string();
+        let err =
+            secret::ensure_no_undeclared_secret_references(&declared(&["other"]), &serialized)
+                .unwrap_err();
+        assert!(err.to_string().contains("github-token"));
+    }
+
+    #[test]
+    fn literal_secrets_text_outside_expression_is_not_a_reference() {
+        // A URI or body that merely contains the substring `secrets.<name>` must
+        // not be treated as a secret reference: only `${...}` / `$${...}` spans
+        // count. Otherwise an ordinary call.http would spuriously fail.
+        let serialized = serde_json::json!({
+            "endpoint": {"uri": "https://example.com/secrets.API_TOKEN"},
+            "body": "see secrets.MISSING for details",
+        })
+        .to_string();
+        assert!(
+            secret::referenced_secret_names(&serialized).is_empty(),
+            "literal text must not yield secret references"
+        );
+        assert!(
+            secret::ensure_no_undeclared_secret_references(&no_secrets(), &serialized).is_ok(),
+            "literal text must not raise an undeclared-secret error"
+        );
+    }
+
+    #[test]
+    fn secrets_reference_inside_expression_is_detected_amid_literal_text() {
+        // A genuine expression reference must still be caught even when unrelated
+        // literal `secrets.*` text is present elsewhere in `with`.
+        let serialized = serde_json::json!({
+            "endpoint": {"uri": "https://example.com/secrets.PUBLIC_PATH"},
+            "headers": {"Authorization": "${ \"Bearer \" + $secrets.API_TOKEN }"},
+        })
+        .to_string();
+        let names = secret::referenced_secret_names(&serialized);
+        assert!(names.contains("API_TOKEN"));
+        // The literal path segment must not be picked up.
+        assert!(!names.contains("PUBLIC_PATH"));
+    }
+
+    #[test]
+    fn liquid_expression_secret_reference_is_detected() {
+        let serialized = serde_json::json!({
+            "headers": {"Authorization": "$${{{ 'Bearer ' | append: secrets.API_TOKEN }}}"},
+        })
+        .to_string();
+        let names = secret::referenced_secret_names(&serialized);
+        assert!(names.contains("API_TOKEN"));
+    }
+
+    #[test]
+    fn liquid_output_literal_secret_like_text_is_not_a_reference() {
+        let serialized = serde_json::json!({
+            "headers": {"X-Path": "$${API path is secrets.PUBLIC_PATH}"},
+        })
+        .to_string();
+        let names = secret::referenced_secret_names(&serialized);
+        assert!(
+            names.is_empty(),
+            "Liquid output literals outside tags must not be treated as secret references"
+        );
+        assert!(secret::ensure_no_undeclared_secret_references(&no_secrets(), &serialized).is_ok());
+    }
+
+    #[test]
+    fn secret_reference_after_earlier_expression_brace_is_detected() {
+        let serialized = serde_json::json!({
+            "headers": {
+                "JqObjectLiteral": "${ {\"prefix\":\"Bearer \"}.prefix + $secrets.API_TOKEN }",
+                "LiquidEarlierTag": "$${{{ user }}{{ secrets.API_TOKEN }}}",
+            },
+        })
+        .to_string();
+        let names = secret::referenced_secret_names(&serialized);
+        assert!(names.contains("API_TOKEN"));
+    }
+
+    #[test]
+    fn input_fields_named_like_secrets_are_not_secret_references() {
+        let serialized = serde_json::json!({
+            "headers": {
+                "FromInput": "${ .secrets.API_TOKEN }",
+                "NestedName": "${ .notsecrets.API_TOKEN }",
+                "LiquidNestedName": "$${ notsecrets.API_TOKEN }",
+                "LiquidBracketNestedName": "$${ notsecrets[\"API_TOKEN\"] }",
+            },
+        })
+        .to_string();
+        let names = secret::referenced_secret_names(&serialized);
+        assert!(
+            names.is_empty(),
+            "only actual $secrets/secrets globals should be treated as secret references"
+        );
+        assert!(secret::ensure_no_undeclared_secret_references(&no_secrets(), &serialized).is_ok());
+    }
+
+    #[test]
+    fn quoted_secret_like_text_inside_expression_is_not_a_reference() {
+        let serialized = serde_json::json!({
+            "headers": {
+                "JqDoubleQuoted": "${ \"https://example.com/$secrets.API_TOKEN\" }",
+                "JqBracketQuoted": "${ \"$secrets[\\\"github-token\\\"]\" }",
+                "LiquidSingleQuoted": "$${ 'secrets.API_TOKEN' }",
+                "LiquidDoubleQuoted": "$${ \"secrets[\\\"github-token\\\"]\" }",
+            },
+        })
+        .to_string();
+        let names = secret::referenced_secret_names(&serialized);
+        assert!(
+            names.is_empty(),
+            "secret-like text inside expression string literals must not be treated as references"
+        );
+        assert!(secret::ensure_no_undeclared_secret_references(&no_secrets(), &serialized).is_ok());
+    }
+
+    #[test]
+    fn non_ascii_literal_text_does_not_panic_secret_scan() {
+        let serialized = serde_json::json!({
+            "headers": {"X-Message": "こんにちは"},
+            "body": "認証情報は使いません",
+        })
+        .to_string();
+        assert!(secret::referenced_secret_names(&serialized).is_empty());
+        assert!(secret::ensure_no_undeclared_secret_references(&no_secrets(), &serialized).is_ok());
+    }
+
+    #[test]
+    fn resolve_declared_secrets_skips_secret_only_in_literal_text() {
+        // A declared secret that appears only as literal text (an endpoint URI
+        // path segment) is not an expression reference, so its env var must not be
+        // required. With no env set, resolution returns an empty object instead of
+        // erroring.
+        let serialized = serde_json::json!({
+            "endpoint": {"uri": "https://example.com/secrets.API_TOKEN"},
+        })
+        .to_string();
+        let resolved =
+            secret::resolve_declared_secrets(&declared(&["API_TOKEN"]), &serialized).unwrap();
+        assert_eq!(resolved, json!({}));
+    }
+
+    #[test]
+    fn resolve_declared_secrets_requires_env_for_expression_reference() {
+        // When the secret is referenced inside an expression span, its env var is
+        // required; absent it, resolution errors (does not silently skip).
+        let serialized = serde_json::json!({
+            "headers": {"Authorization": "${ \"Bearer \" + $secrets.API_TOKEN }"},
+        })
+        .to_string();
+        // SAFETY: tests run single-threaded (`--test-threads=1`).
+        unsafe { std::env::remove_var("WORKFLOW_SECRET_API_TOKEN") };
+        let err =
+            secret::resolve_declared_secrets(&declared(&["API_TOKEN"]), &serialized).unwrap_err();
+        assert!(err.to_string().contains("API_TOKEN"));
+    }
 
     #[test]
     fn http_request_runner_name_matches_proto_enum() {
@@ -505,7 +902,8 @@ mod tests {
         .unwrap();
 
         let uri = CallTaskExecutor::ensure_supported(&call).unwrap();
-        let (_settings, args, _output) = CallTaskExecutor::http_request_parts(uri, call).unwrap();
+        let (_settings, args, _output) =
+            CallTaskExecutor::http_request_parts(uri, call, None).unwrap();
 
         assert_eq!(args["method"], json!("POST"));
         assert_eq!(
@@ -526,7 +924,8 @@ mod tests {
         .unwrap();
 
         let uri = CallTaskExecutor::ensure_supported(&call).unwrap();
-        let (_settings, args, _output) = CallTaskExecutor::http_request_parts(uri, call).unwrap();
+        let (_settings, args, _output) =
+            CallTaskExecutor::http_request_parts(uri, call, None).unwrap();
 
         assert_eq!(
             args["headers"],
@@ -544,7 +943,8 @@ mod tests {
         .unwrap();
 
         let uri = CallTaskExecutor::ensure_supported(&call).unwrap();
-        let (settings, args, output) = CallTaskExecutor::http_request_parts(uri, call).unwrap();
+        let (settings, args, output) =
+            CallTaskExecutor::http_request_parts(uri, call, None).unwrap();
 
         assert_eq!(
             settings,
@@ -594,19 +994,224 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_authentication_is_rejected_by_adapter() {
+    fn bearer_authentication_becomes_authorization_header() {
+        let policy = bearer_inline("abc123");
+        let (name, value) = secret::authentication_header(&policy, &no_secrets(), &no_env).unwrap();
+        assert_eq!(name, "Authorization");
+        assert_eq!(value, "Bearer abc123");
+    }
+
+    #[test]
+    fn basic_authentication_base64_encodes_credentials() {
+        let policy = workflow::AuthenticationPolicy::Basic(
+            workflow::BasicAuthentication::BasicAuthenticationProperties {
+                username: "Aladdin".to_string(),
+                password: "open sesame".to_string(),
+            },
+        );
+        let (name, value) = secret::authentication_header(&policy, &no_secrets(), &no_env).unwrap();
+        assert_eq!(name, "Authorization");
+        // RFC 7617 §2 reference vector.
+        assert_eq!(value, "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
+    }
+
+    #[test]
+    fn bearer_use_reference_resolves_secret_from_env() {
+        // `{ bearer: { use: API_TOKEN } }` resolves from the declared-secret env.
+        let policy = workflow::AuthenticationPolicy::Bearer(
+            workflow::BearerAuthentication::SecretBasedAuthenticationPolicy(
+                workflow::SecretBasedAuthenticationPolicy {
+                    use_: "API_TOKEN".parse().unwrap(),
+                },
+            ),
+        );
+        let declared: std::collections::HashSet<String> =
+            ["API_TOKEN".to_string()].into_iter().collect();
+        let getter = |k: &str| (k == "WORKFLOW_SECRET_API_TOKEN").then(|| "env-token".to_string());
+        let (_, value) = secret::authentication_header(&policy, &declared, &getter).unwrap();
+        assert_eq!(value, "Bearer env-token");
+    }
+
+    #[test]
+    fn basic_use_reference_resolves_secret_from_env() {
+        let policy = workflow::AuthenticationPolicy::Basic(
+            workflow::BasicAuthentication::SecretBasedAuthenticationPolicy(
+                workflow::SecretBasedAuthenticationPolicy {
+                    use_: "CREDS".parse().unwrap(),
+                },
+            ),
+        );
+        let declared: std::collections::HashSet<String> =
+            ["CREDS".to_string()].into_iter().collect();
+        let getter = |k: &str| {
+            (k == "WORKFLOW_SECRET_CREDS")
+                .then(|| r#"{"username": "Aladdin", "password": "open sesame"}"#.to_string())
+        };
+        let (_, value) = secret::authentication_header(&policy, &declared, &getter).unwrap();
+        assert_eq!(value, "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
+    }
+
+    #[test]
+    fn use_reference_to_undeclared_secret_is_rejected_without_leaking() {
+        let policy = workflow::AuthenticationPolicy::Bearer(
+            workflow::BearerAuthentication::SecretBasedAuthenticationPolicy(
+                workflow::SecretBasedAuthenticationPolicy {
+                    use_: "API_TOKEN".parse().unwrap(),
+                },
+            ),
+        );
+        // Not declared in use.secrets -> error, env never read.
+        let getter = |_: &str| Some("leaked".to_string());
+        let err = secret::authentication_header(&policy, &no_secrets(), &getter).unwrap_err();
+        assert!(err.to_string().contains("API_TOKEN"));
+        assert!(!err.to_string().contains("leaked"));
+    }
+
+    #[test]
+    fn inline_endpoint_authentication_is_accepted() {
         let call: workflow::CallHttp = serde_json::from_value(json!({
             "method": "GET",
             "endpoint": {
                 "uri": "https://example.com/items",
-                "authentication": {"bearer": "token"}
+                "authentication": {"bearer": {"token": "tok"}}
             }
         }))
         .unwrap();
 
-        let err = CallTaskExecutor::ensure_supported(&call).unwrap_err();
+        // No longer rejected.
+        let uri = CallTaskExecutor::ensure_supported(&call).unwrap();
+        assert_eq!(uri, "https://example.com/items");
 
-        assert!(err.to_string().contains("authentication"));
+        let auth = CallTaskExecutor::endpoint_authentication(&call.endpoint).unwrap();
+        let named = std::collections::HashMap::new();
+        let policy = CallTaskExecutor::resolve_authentication(
+            auth,
+            &named,
+            &no_secrets(),
+            Arc::new(json!({})),
+            &empty_expression(),
+        )
+        .unwrap();
+        let (_, value) = secret::authentication_header(&policy, &no_secrets(), &no_env).unwrap();
+        assert_eq!(value, "Bearer tok");
+    }
+
+    #[test]
+    fn use_reference_resolves_named_authentication() {
+        let call: workflow::CallHttp = serde_json::from_value(json!({
+            "method": "GET",
+            "endpoint": {
+                "uri": "https://example.com/items",
+                "authentication": {"use": "apiAuth"}
+            }
+        }))
+        .unwrap();
+
+        let mut named = std::collections::HashMap::new();
+        named.insert("apiAuth".to_string(), bearer_inline("named-tok"));
+
+        let auth = CallTaskExecutor::endpoint_authentication(&call.endpoint).unwrap();
+        let policy = CallTaskExecutor::resolve_authentication(
+            auth,
+            &named,
+            &no_secrets(),
+            Arc::new(json!({})),
+            &empty_expression(),
+        )
+        .unwrap();
+        let (_, value) = secret::authentication_header(&policy, &no_secrets(), &no_env).unwrap();
+        assert_eq!(value, "Bearer named-tok");
+    }
+
+    #[test]
+    fn use_reference_expands_expressions_in_named_policy() {
+        // A named policy referencing `$secrets` must be expanded with the call's
+        // expression context, not sent as the literal `${ $secrets.X }` string.
+        let call: workflow::CallHttp = serde_json::from_value(json!({
+            "method": "GET",
+            "endpoint": {
+                "uri": "https://example.com/items",
+                "authentication": {"use": "apiAuth"}
+            }
+        }))
+        .unwrap();
+
+        let mut named = std::collections::HashMap::new();
+        named.insert(
+            "apiAuth".to_string(),
+            bearer_inline("${ $secrets.API_TOKEN }"),
+        );
+
+        // The policy references `$secrets.API_TOKEN`, so the name must be declared
+        // in `use.secrets`; `resolve_authentication` resolves it from the env
+        // (test-threads=1 makes the env mutation safe here).
+        let env_name = "WORKFLOW_SECRET_API_TOKEN";
+        // SAFETY: tests run single-threaded (`--test-threads=1`).
+        unsafe { std::env::set_var(env_name, "resolved-secret") };
+
+        let auth = CallTaskExecutor::endpoint_authentication(&call.endpoint).unwrap();
+        let policy = CallTaskExecutor::resolve_authentication(
+            auth,
+            &named,
+            &declared(&["API_TOKEN"]),
+            Arc::new(json!({})),
+            &empty_expression(),
+        )
+        .unwrap();
+
+        // SAFETY: tests run single-threaded (`--test-threads=1`).
+        unsafe { std::env::remove_var(env_name) };
+
+        let (_, value) = secret::authentication_header(&policy, &no_secrets(), &no_env).unwrap();
+        assert_eq!(value, "Bearer resolved-secret");
+    }
+
+    #[test]
+    fn undefined_use_reference_is_rejected() {
+        let call: workflow::CallHttp = serde_json::from_value(json!({
+            "method": "GET",
+            "endpoint": {
+                "uri": "https://example.com/items",
+                "authentication": {"use": "missing"}
+            }
+        }))
+        .unwrap();
+
+        let auth = CallTaskExecutor::endpoint_authentication(&call.endpoint).unwrap();
+        let named = std::collections::HashMap::new();
+        let err = CallTaskExecutor::resolve_authentication(
+            auth,
+            &named,
+            &no_secrets(),
+            Arc::new(json!({})),
+            &empty_expression(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn authentication_overrides_handwritten_authorization_header() {
+        let call: workflow::CallHttp = serde_json::from_value(json!({
+            "method": "GET",
+            "endpoint": "https://example.com/items",
+            "headers": {"Authorization": "Bearer handwritten"}
+        }))
+        .unwrap();
+
+        let uri = CallTaskExecutor::ensure_supported(&call).unwrap();
+        let auth = Some(("Authorization".to_string(), "Bearer policy".to_string()));
+        let (_settings, args, _output) =
+            CallTaskExecutor::http_request_parts(uri, call, auth).unwrap();
+
+        let headers = args["headers"].as_array().unwrap();
+        let auth_values: Vec<&str> = headers
+            .iter()
+            .filter(|h| h["key"].as_str() == Some("Authorization"))
+            .map(|h| h["value"].as_str().unwrap())
+            .collect();
+        // Exactly one Authorization header, the policy value (not the handwritten one).
+        assert_eq!(auth_values, vec!["Bearer policy"]);
     }
 
     #[test]

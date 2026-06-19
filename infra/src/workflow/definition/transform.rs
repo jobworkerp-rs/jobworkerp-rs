@@ -10,6 +10,71 @@ const FILTER_START: &str = "${";
 const FILTER_END: &str = "}";
 const TEMPLATE_START: &str = "$${";
 const TEMPLATE_END: &str = "}";
+/// Expression-context key holding authentication secrets. Reserved so that raw
+/// workflow input cannot shadow it during Liquid global construction.
+const RESERVED_SECRETS_KEY: &str = "secrets";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransformExpression<'a> {
+    Jq(&'a str),
+    Liquid(&'a str),
+}
+
+pub fn transform_expression_body(filter: &str) -> Option<TransformExpression<'_>> {
+    if is_transform_template(filter) {
+        Some(TransformExpression::Liquid(liquid_template_body(filter)))
+    } else if is_transform_filter(filter) {
+        Some(TransformExpression::Jq(jq_filter_body(filter)))
+    } else {
+        None
+    }
+}
+
+pub fn is_transform_filter(filter: &str) -> bool {
+    filter.trim_start().starts_with(FILTER_START) && filter.trim_end().ends_with(FILTER_END)
+}
+
+pub fn is_transform_template(filter: &str) -> bool {
+    filter.trim_start().starts_with(TEMPLATE_START) && filter.trim_end().ends_with(TEMPLATE_END)
+}
+
+pub fn jq_filter_body(filter: &str) -> &str {
+    filter
+        .trim()
+        .trim_start_matches(FILTER_START)
+        .trim_end_matches(FILTER_END)
+}
+
+pub fn liquid_template_body(template: &str) -> &str {
+    let template = template
+        .trim()
+        .trim_start_matches(TEMPLATE_START)
+        .trim_end();
+    template.strip_suffix(TEMPLATE_END).unwrap_or(template)
+}
+
+pub fn liquid_template_tag_bodies(template: &str) -> Vec<&str> {
+    let mut spans = Vec::new();
+    let mut rest = template;
+    while let Some(start_rel) = rest.find("{") {
+        let after_start = &rest[start_rel..];
+        let (inner_start_len, close) = if after_start.starts_with("{{") {
+            (2, "}}")
+        } else if after_start.starts_with("{%") {
+            (2, "%}")
+        } else {
+            rest = &after_start[1..];
+            continue;
+        };
+        let inner = &after_start[inner_start_len..];
+        let Some(end_rel) = inner.find(close) else {
+            break;
+        };
+        spans.push(&inner[..end_rel]);
+        rest = &inner[end_rel + close.len()..];
+    }
+    spans
+}
 
 pub trait UseJqAndTemplateTransformer {
     fn execute_transform(
@@ -49,10 +114,22 @@ pub trait UseJqAndTemplateTransformer {
     }
 
     fn is_transform_filter(filter: &str) -> bool {
-        filter.trim_start().starts_with(FILTER_START) && filter.trim_end().ends_with(FILTER_END)
+        is_transform_filter(filter)
     }
     fn is_transform_template(filter: &str) -> bool {
-        filter.trim_start().starts_with(TEMPLATE_START) && filter.trim_end().ends_with(TEMPLATE_END)
+        is_transform_template(filter)
+    }
+    fn transform_expression_body(filter: &str) -> Option<TransformExpression<'_>> {
+        transform_expression_body(filter)
+    }
+    fn jq_filter_body(filter: &str) -> &str {
+        jq_filter_body(filter)
+    }
+    fn liquid_template_body(template: &str) -> &str {
+        liquid_template_body(template)
+    }
+    fn liquid_template_tag_bodies(template: &str) -> Vec<&str> {
+        liquid_template_tag_bodies(template)
     }
     fn eval_as_bool(value: &serde_json::Value) -> bool {
         match value {
@@ -89,10 +166,7 @@ pub trait UseJqAndTemplateTransformer {
         context: &BTreeMap<String, Arc<serde_json::Value>>,
     ) -> Result<serde_json::Value, Box<workflow::Error>> {
         if Self::is_transform_filter(filter) {
-            let filter = filter
-                .trim()
-                .trim_start_matches(FILTER_START)
-                .trim_end_matches(FILTER_END);
+            let filter = Self::jq_filter_body(filter);
             command_utils::util::jq::execute_jq((*raw_input).clone(), filter, context).map_err(
                 |e| {
                     workflow::errors::ErrorFactory::create(
@@ -120,13 +194,7 @@ pub trait UseJqAndTemplateTransformer {
                 con: &BTreeMap<String, Arc<serde_json::Value>>,
                 templ: &str,
             ) -> Result<String, liquid::Error> {
-                let mut templ = templ
-                    .trim()
-                    .trim_start_matches(TEMPLATE_START)
-                    // .trim_end_matches(TEMPLATE_END) // remove last all '}' but only one
-                    .trim_end()
-                    .to_string();
-                templ.pop(); // remove last one '}'
+                let templ = liquid_template_body(templ);
                 let liquid_parser = LIQUID_PARSER.get_or_init(|| {
                     liquid::ParserBuilder::with_stdlib()
                         .filter(JsonEncode)
@@ -134,7 +202,7 @@ pub trait UseJqAndTemplateTransformer {
                         .build()
                         .unwrap()
                 });
-                let templ = liquid_parser.parse(templ.as_str())?;
+                let templ = liquid_parser.parse(templ)?;
 
                 let mut globals = liquid::to_object(con)?;
                 // overwrite with raw_input if key is duplicated
@@ -147,6 +215,17 @@ pub trait UseJqAndTemplateTransformer {
                             &serde_json::json!({"raw_input":(*raw_in).clone()}),
                         )?);
                     }
+                }
+                // `secrets` is reserved for authentication material injected by the
+                // call-task context; raw input must never shadow it (otherwise a
+                // workflow input containing {"secrets": {...}} could override the
+                // env-derived secret and forge Authorization headers). Re-apply the
+                // context value after the raw-input merge so it always wins.
+                if let Some(secrets) = con.get(RESERVED_SECRETS_KEY) {
+                    globals.insert(
+                        RESERVED_SECRETS_KEY.into(),
+                        liquid::model::to_value(&**secrets)?,
+                    );
                 }
                 let output = templ.render(&globals)?;
                 Ok(output)
@@ -192,6 +271,39 @@ mod test_use_jq_and_template_transformer {
         ));
         assert!(!DefaultTransformer::is_transform_template("key"));
         assert!(!DefaultTransformer::is_transform_template("key | @text"));
+    }
+
+    #[test]
+    fn test_transform_expression_body_matches_transformer_trimming() {
+        assert_eq!(
+            DefaultTransformer::transform_expression_body(
+                "${ {prefix:\"Bearer \"}.prefix + $secrets.API_TOKEN }"
+            ),
+            Some(TransformExpression::Jq(
+                " {prefix:\"Bearer \"}.prefix + $secrets.API_TOKEN "
+            ))
+        );
+        assert_eq!(
+            DefaultTransformer::transform_expression_body("$${{{ user }}{{ secrets.API_TOKEN }}}"),
+            Some(TransformExpression::Liquid(
+                "{{ user }}{{ secrets.API_TOKEN }}"
+            ))
+        );
+        assert_eq!(DefaultTransformer::transform_expression_body("plain"), None);
+    }
+
+    #[test]
+    fn test_liquid_template_tag_bodies_extracts_only_liquid_tags() {
+        assert_eq!(
+            DefaultTransformer::liquid_template_tag_bodies(
+                "literal secrets.PUBLIC_PATH {{ secrets.API_TOKEN }} {% assign x = y %}"
+            ),
+            vec![" secrets.API_TOKEN ", " assign x = y "]
+        );
+        assert!(
+            DefaultTransformer::liquid_template_tag_bodies("literal secrets.PUBLIC_PATH")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -253,6 +365,37 @@ mod test_use_jq_and_template_transformer {
         let result =
             DefaultTransformer::execute_liquid_template(input.clone(), template, &context).unwrap();
         assert_eq!(result, "1hoge");
+    }
+
+    #[test]
+    fn liquid_raw_input_cannot_shadow_context_secrets() {
+        // Context (call-task expression) injects the env-derived secret.
+        let mut context = BTreeMap::new();
+        context.insert(
+            "secrets".to_string(),
+            Arc::new(json!({ "API_TOKEN": "env-secret" })),
+        );
+        // Attacker-controlled workflow input tries to override `secrets`.
+        let input = Arc::new(json!({
+            "secrets": { "API_TOKEN": "attacker-controlled" },
+        }));
+        let template = "$${{{ secrets.API_TOKEN }}}";
+        let result =
+            DefaultTransformer::execute_liquid_template(input.clone(), template, &context).unwrap();
+        // The context secret must win, not the raw input.
+        assert_eq!(result, "env-secret");
+    }
+
+    #[test]
+    fn liquid_raw_input_non_secret_keys_still_shadow_context() {
+        // Non-reserved keys keep the documented raw-input-wins behavior.
+        let mut context = BTreeMap::new();
+        context.insert("key".to_string(), Arc::new(json!("from-context")));
+        let input = Arc::new(json!({ "key": "from-input" }));
+        let template = "$${{{ key }}}";
+        let result =
+            DefaultTransformer::execute_liquid_template(input.clone(), template, &context).unwrap();
+        assert_eq!(result, "from-input");
     }
 
     #[test]

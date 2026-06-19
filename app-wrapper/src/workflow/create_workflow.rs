@@ -1,4 +1,3 @@
-use crate::workflow::definition::WorkflowSchema;
 use anyhow::{Context, Result, anyhow};
 use app::module::AppModule;
 use async_trait::async_trait;
@@ -69,14 +68,23 @@ impl CreateWorkflowRunnerImpl {
         let workflow_json = match &args.workflow_source {
             Some(workflow_source) => match workflow_source {
                 WorkflowSource::WorkflowData(data) => {
-                    // Parse as WorkflowSchema to validate required fields (do, document).
-                    let _workflow: WorkflowSchema = serde_json::from_str(data)
-                        .or_else(|_| serde_yaml::from_str(data))
+                    // Parse via WorkflowLoader, which normalizes YAML through a
+                    // serde_json::Value first. Parsing a WorkflowSchema directly
+                    // from YAML breaks externally-tagged enums such as
+                    // `authentication.bearer: { token: ... }` (serde_yaml 0.9
+                    // rejects the map form), so the loader path is required for
+                    // auth-bearing workflows. Keep the validated raw value for
+                    // storage so unknown fields cannot be silently dropped by
+                    // typed serde deserialization.
+                    let workflow_json = self
+                        .app
+                        .workflow_loader
+                        .load_workflow_value(None, Some(data), true)
+                        .await
                         .map_err(|e| anyhow!("Invalid workflow schema: {}", e))?;
-                    // Return as serde_json::Value for storage
-                    serde_json::from_str(data)
-                        .or_else(|_| serde_yaml::from_str::<serde_json::Value>(data))
-                        .map_err(|e| anyhow!("Failed to parse workflow data: {}", e))?
+                    infra::workflow::WorkflowLoader::parse_workflow_value(workflow_json.clone())
+                        .map_err(|e| anyhow!("Invalid workflow schema: {}", e))?;
+                    workflow_json
                 }
                 WorkflowSource::WorkflowUrl(url) => self.load_workflow_from_url(url).await?,
             },
@@ -100,15 +108,14 @@ impl CreateWorkflowRunnerImpl {
     async fn load_workflow_from_url(&self, url: &str) -> Result<serde_json::Value> {
         tracing::info!("Loading workflow from URL: {}", url);
 
-        let workflow_schema = self
+        let workflow_json = self
             .app
             .workflow_loader
-            .load_workflow(Some(url), None, true)
+            .load_workflow_value(Some(url), None, true)
             .await
             .context("Failed to load workflow from URL")?;
-
-        let workflow_json = serde_json::to_value(&workflow_schema)
-            .context("Failed to serialize WorkflowSchema to JSON")?;
+        infra::workflow::WorkflowLoader::parse_workflow_value(workflow_json.clone())
+            .context("Failed to parse workflow from URL")?;
 
         tracing::info!("Successfully loaded and parsed workflow from URL: {}", url);
         Ok(workflow_json)

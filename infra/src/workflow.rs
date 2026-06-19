@@ -123,6 +123,39 @@ impl WorkflowLoader {
         }
     }
 
+    pub async fn load_workflow_value(
+        &self,
+        url_or_path: Option<&str>,
+        json_or_yaml_data: Option<&str>,
+        validate: bool,
+    ) -> Result<serde_json::Value> {
+        let value = if let Some(url_or_path) = url_or_path {
+            tracing::debug!("workflow url_or_path: {}", url_or_path);
+            self.load_url_or_path::<serde_json::Value>(url_or_path)
+                .await?
+        } else if let Some(data) = json_or_yaml_data {
+            tracing::debug!("workflow string_data: {}", data);
+            Self::parse_json_or_yaml_value(data)?
+        } else {
+            return Err(anyhow!("url_or_path or json_or_yaml_data is required"));
+        };
+
+        if validate && !*SKIP_SCHEMA_VALIDATION {
+            self.validate_schema(&value).await?;
+        }
+
+        Ok(value)
+    }
+
+    pub fn parse_workflow_value(
+        value: serde_json::Value,
+    ) -> Result<definition::workflow::WorkflowSchema> {
+        let wf = serde_json::from_value::<definition::workflow::WorkflowSchema>(value)
+            .map_err(|e| anyhow!("Failed to parse workflow schema: {e}"))?;
+        Self::validate_lightweight(&wf)?;
+        Ok(wf)
+    }
+
     pub async fn load_workflow(
         &self,
         url_or_path: Option<&str>,
@@ -130,29 +163,28 @@ impl WorkflowLoader {
         validate: bool,
     ) -> Result<definition::workflow::WorkflowSchema> {
         let wf = if let Some(url_or_path) = url_or_path {
-            tracing::debug!("workflow url_or_path: {}", url_or_path);
             let json = self
-                .load_url_or_path::<serde_json::Value>(url_or_path)
+                .load_workflow_value(Some(url_or_path), None, validate)
                 .await?;
-
-            // validate schema (skip if WORKFLOW_SKIP_SCHEMA_VALIDATION=true)
-            if validate && !*SKIP_SCHEMA_VALIDATION {
-                self.validate_schema(&json).await?;
-            }
             // convert to workflow schema
-            serde_json::from_value(json).map_err(|e| {
+            Self::parse_workflow_value(json).map_err(|e| {
                 anyhow!(
-                    "Failed to parse workflow schema from url_or_path: {}, error: {}",
-                    url_or_path,
-                    e
+                    "Failed to parse workflow schema from url_or_path: {url_or_path}, error: {e}"
                 )
             })
         } else if let Some(data) = json_or_yaml_data {
             tracing::debug!("workflow string_data: {}", data);
-            // Try to parse as complete WorkflowSchema first
-            match serde_json::from_str::<definition::workflow::WorkflowSchema>(data)
-                .or_else(|_| serde_yaml::from_str::<definition::workflow::WorkflowSchema>(data))
-            {
+            // Normalize to a JSON value first, then deserialize from it. Parsing a
+            // WorkflowSchema directly from YAML breaks externally-tagged enums such
+            // as `use.authentications.<name>` (e.g. `bearer: { token: ... }`):
+            // serde_yaml 0.9 expects a `!bearer` YAML tag and rejects the map form,
+            // whereas serde_json accepts it. Converting YAML->JSON first makes both
+            // input formats take the same, working deserialization path.
+            let raw_value = Self::parse_json_or_yaml_value(data);
+            match raw_value.and_then(|value| {
+                serde_json::from_value::<definition::workflow::WorkflowSchema>(value)
+                    .map_err(|e| anyhow!("Failed to parse workflow schema: {e}"))
+            }) {
                 Ok(wf) => {
                     // Successfully parsed as WorkflowSchema
                     tracing::debug!(
@@ -200,7 +232,6 @@ impl WorkflowLoader {
             Err(anyhow!("url_or_path or json_or_yaml_data is required"))
         }?;
 
-        // Perform lightweight structural validation
         Self::validate_lightweight(&wf)?;
 
         Ok(wf)
@@ -685,6 +716,132 @@ do:
         assert!(
             err.to_string().contains("retries"),
             "error must mention rejected reusable component: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn loader_rejects_empty_do_even_when_schema_validation_is_disabled() {
+        let yaml = r#"
+document:
+  dsl: "1.0.0-jobworkerp"
+  namespace: repro
+  name: empty-do
+  version: "1.0.0"
+do: []
+"#;
+        let loader = super::WorkflowLoader::new_local_only();
+        let err = loader
+            .load_workflow(None, Some(yaml), false)
+            .await
+            .expect_err(
+                "lightweight validation must reject empty do even without schema validation",
+            );
+
+        assert!(
+            err.to_string().contains("at least one task"),
+            "error must mention lightweight validation failure: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn loader_value_rejects_unknown_authentication_properties_before_serde_drops_them() {
+        let yaml = r#"
+document:
+  dsl: "1.0.0-jobworkerp"
+  namespace: repro
+  name: auth-typo
+  version: "1.0.0"
+do:
+  - callApi:
+      call: http
+      with:
+        method: get
+        endpoint:
+          uri: "https://example.com"
+          authentication:
+            bearer:
+              token: "ok"
+              tokne: "typo"
+"#;
+        let loader = super::WorkflowLoader::new_local_only();
+        let err = loader
+            .load_workflow_value(None, Some(yaml), true)
+            .await
+            .expect_err("raw workflow validation must reject unknown auth fields");
+
+        assert!(
+            err.to_string().contains("tokne"),
+            "error must mention unknown field before serde can drop it: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn loader_value_preserves_valid_authentication_yaml_shape() {
+        let yaml = r#"
+document:
+  dsl: "1.0.0-jobworkerp"
+  namespace: repro
+  name: auth-valid
+  version: "1.0.0"
+do:
+  - callApi:
+      call: http
+      with:
+        method: get
+        endpoint:
+          uri: "https://example.com"
+          authentication:
+            bearer:
+              token: "ok"
+"#;
+        let loader = super::WorkflowLoader::new_local_only();
+        let value = loader
+            .load_workflow_value(None, Some(yaml), true)
+            .await
+            .expect("valid auth-bearing YAML must validate as raw value");
+
+        assert_eq!(
+            value["do"][0]["callApi"]["with"]["endpoint"]["authentication"]["bearer"]["token"],
+            serde_json::json!("ok")
+        );
+    }
+
+    #[test]
+    fn parse_workflow_value_validates_already_loaded_value_without_reloading() {
+        let value = serde_json::json!({
+            "document": {
+                "dsl": "1.0.0-jobworkerp",
+                "namespace": "repro",
+                "name": "loaded-value",
+                "version": "1.0.0"
+            },
+            "do": [
+                {"init": {"set": {"ok": true}}}
+            ]
+        });
+
+        let workflow = super::WorkflowLoader::parse_workflow_value(value)
+            .expect("already loaded workflow value must parse");
+        assert_eq!(workflow.document.name.as_str(), "loaded-value");
+    }
+
+    #[test]
+    fn parse_workflow_value_rejects_structurally_invalid_loaded_value() {
+        let value = serde_json::json!({
+            "document": {
+                "dsl": "1.0.0-jobworkerp",
+                "namespace": "repro",
+                "name": "invalid",
+                "version": "1.0.0"
+            },
+            "do": []
+        });
+
+        let err = super::WorkflowLoader::parse_workflow_value(value)
+            .expect_err("already loaded value must still run lightweight validation");
+        assert!(
+            err.to_string().contains("at least one task"),
+            "error must mention structural validation failure: {err}"
         );
     }
 

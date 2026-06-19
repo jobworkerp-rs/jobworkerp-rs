@@ -418,7 +418,7 @@ pub trait UseJobExecutor:
             }) = self.runner_app().find_runner_by_name(runner_name).await?
             // TODO local cache? (2 times request in this function)
             {
-                tracing::debug!("job args: {:#?}", &job_args);
+                tracing::debug!("job args: {:#?}", redact_sensitive_args(&job_args));
                 let job_args = self
                     .transform_job_args(&rid, &rdata, &job_args, using.as_deref())
                     .await?;
@@ -464,7 +464,7 @@ pub trait UseJobExecutor:
             }) = self.runner_app().find_runner_by_name(runner_name).await?
             // TODO local cache? (2 times request in this function)
             {
-                tracing::debug!("job args: {:#?}", &job_args);
+                tracing::debug!("job args: {:#?}", redact_sensitive_args(&job_args));
                 let job_args = self
                     .transform_job_args(&rid, &rdata, &job_args, using.as_deref())
                     .await?;
@@ -739,7 +739,11 @@ pub trait UseJobExecutor:
                 args_descriptor = Self::parse_job_args_schema_descriptor(rdata, method_name)?;
             }
 
-            tracing::debug!("job args (using: {:?}): {:#?}", using, &job_args);
+            tracing::debug!(
+                "job args (using: {:?}): {:#?}",
+                using,
+                redact_sensitive_args(&job_args)
+            );
             if let Some(desc) = args_descriptor {
                 Ok(
                     ProtobufDescriptor::json_value_to_message(desc, &job_args, true, true)
@@ -871,6 +875,59 @@ pub trait UseJobExecutor:
     }
 }
 
+/// Placeholder substituted for redacted sensitive values in logs.
+const REDACTED: &str = "***REDACTED***";
+
+/// Header names whose values carry credentials and must never be logged.
+/// Matched case-insensitively against the `key` of `{key, value}` pairs (the
+/// shape the HTTP_REQUEST runner uses for headers/queries). This is a generic
+/// HTTP-credential rule, not tied to any single runner type.
+const SENSITIVE_HEADER_KEYS: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+];
+
+/// Return a copy of `args` with credential-bearing values masked, for safe
+/// logging. Only `{key, value}` pairs whose `key` is a sensitive header name are
+/// redacted (e.g. a transformed `call.http`'s `Authorization` header derived
+/// from a `WORKFLOW_SECRET_*`); all other content is preserved so the log stays
+/// useful. Non-sensitive job args incur a clone only when debug logging is on.
+fn redact_sensitive_args(args: &serde_json::Value) -> serde_json::Value {
+    match args {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), redact_sensitive_args(v)))
+                .collect(),
+        ),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(redact_key_value_or_recurse).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// For array elements: if the element is a `{key, value}` pair with a sensitive
+/// `key`, replace its `value` with the placeholder; otherwise recurse.
+fn redact_key_value_or_recurse(item: &serde_json::Value) -> serde_json::Value {
+    if let serde_json::Value::Object(obj) = item
+        && let Some(serde_json::Value::String(key)) = obj.get("key")
+        && obj.contains_key("value")
+        && SENSITIVE_HEADER_KEYS
+            .iter()
+            .any(|s| key.eq_ignore_ascii_case(s))
+    {
+        let mut redacted = obj.clone();
+        redacted.insert(
+            "value".to_string(),
+            serde_json::Value::String(REDACTED.to_string()),
+        );
+        return serde_json::Value::Object(redacted);
+    }
+    redact_sensitive_args(item)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,5 +993,62 @@ mod tests {
 
         app_module.job_app.delete_job(&child.job_id).await?;
         Ok(())
+    }
+
+    #[test]
+    fn redact_masks_authorization_header_value() {
+        let args = serde_json::json!({
+            "method": "GET",
+            "headers": [
+                {"key": "Authorization", "value": "Bearer s3cret-token"},
+                {"key": "Content-Type", "value": "application/json"},
+            ],
+        });
+        let redacted = redact_sensitive_args(&args);
+        let headers = redacted["headers"].as_array().unwrap();
+        let auth = headers
+            .iter()
+            .find(|h| h["key"] == "Authorization")
+            .unwrap();
+        assert_eq!(auth["value"], REDACTED);
+        // The secret must not survive anywhere in the redacted output.
+        assert!(!redacted.to_string().contains("s3cret-token"));
+        // Non-sensitive headers are preserved verbatim.
+        let ct = headers.iter().find(|h| h["key"] == "Content-Type").unwrap();
+        assert_eq!(ct["value"], "application/json");
+    }
+
+    #[test]
+    fn redact_matches_header_key_case_insensitively() {
+        let args = serde_json::json!({
+            "headers": [{"key": "authorization", "value": "Basic dXNlcjpwYXNz"}],
+        });
+        let redacted = redact_sensitive_args(&args);
+        assert_eq!(redacted["headers"][0]["value"], REDACTED);
+        assert!(!redacted.to_string().contains("dXNlcjpwYXNz"));
+    }
+
+    #[test]
+    fn redact_preserves_non_sensitive_args() {
+        // A plain value resembling a header key but not in {key,value} form must
+        // be left untouched.
+        let args = serde_json::json!({
+            "queries": [{"key": "q", "value": "authorization"}],
+            "body": "authorization details",
+        });
+        let redacted = redact_sensitive_args(&args);
+        assert_eq!(redacted, args);
+    }
+
+    #[test]
+    fn redact_handles_nested_structures() {
+        let args = serde_json::json!({
+            "outer": {
+                "headers": [{"key": "Cookie", "value": "session=abc"}],
+            },
+        });
+        let redacted = redact_sensitive_args(&args);
+        assert_eq!(redacted["outer"]["headers"][0]["value"], REDACTED);
+        assert!(!redacted.to_string().contains("session=abc"));
     }
 }

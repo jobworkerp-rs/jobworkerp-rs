@@ -179,6 +179,60 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
     })
 }
 
+/// CREATE_WORKFLOW must accept a YAML workflow whose `call: http` endpoint
+/// carries `authentication` (an externally-tagged enum that `serde_yaml`
+/// rejects when parsed directly). Guards the YAML->JSON normalization in the
+/// create path.
+#[test]
+fn test_create_workflow_with_authentication_yaml_db_integration() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app = Arc::new(create_hybrid_test_app().await?);
+        let mut runner = CreateWorkflowRunnerImpl::new(app.clone())?;
+
+        // YAML with bearer auth — the case that broke direct serde_yaml parsing.
+        let yaml = r#"document:
+  dsl: 1.0.0
+  namespace: db-integration-test
+  name: create-workflow-auth-yaml
+  version: 1.0.0
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint:
+          uri: https://example.com/items
+          authentication:
+            bearer:
+              token: "static-token"
+"#;
+
+        let worker_name = "db-test-create-workflow-auth-yaml";
+        let test_args = CreateWorkflowArgs {
+            workflow_source: Some(WorkflowSource::WorkflowData(yaml.to_string())),
+            name: worker_name.to_string(),
+            worker_options: None,
+            workflow_context: None,
+        };
+
+        let serialized_args = ProstMessageCodec::serialize_message(&test_args)?;
+        let (result, _) = runner.run(&serialized_args, HashMap::new(), None).await;
+
+        let output_bytes =
+            result.map_err(|e| anyhow::anyhow!("CREATE_WORKFLOW with auth YAML failed: {e}"))?;
+        let create_result: CreateWorkflowResult =
+            ProstMessageCodec::deserialize_message(&output_bytes)?;
+        assert!(
+            create_result.worker_id.is_some(),
+            "WorkerId should be present for an auth-bearing YAML workflow"
+        );
+        let found = app.worker_app.find_by_name(worker_name).await?;
+        assert!(found.is_some(), "Created worker not found in DB");
+
+        Ok(())
+    })
+}
+
 /// CREATE_WORKFLOW Workflow URL DB integration test
 /// Fetch workflow from URL and create worker
 #[ignore = "local url"]
