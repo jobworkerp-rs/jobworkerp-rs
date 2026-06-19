@@ -3,6 +3,7 @@ mod app_wrapper {
     mod auto_select_genai_function_set_test;
     mod call_http_workflow_integration_test;
     mod nested_workflow_diagnostics_test;
+    mod run_script_workflow_integration_test;
     mod run_stream_task_executor_integration_test;
     mod run_stream_task_executor_test;
     mod simple_genai_tool_test;
