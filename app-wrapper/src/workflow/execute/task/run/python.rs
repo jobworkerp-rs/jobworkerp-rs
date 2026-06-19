@@ -184,6 +184,24 @@ impl PythonTaskExecutor {
     }
 }
 
+/// Shape a `PythonCommandResult` into the Serverless Workflow v1.0.0 process
+/// result `{code, stdout, stderr}` and apply `return`, reusing the same adapter
+/// as run.shell / run.container so all run process tasks behave identically.
+/// `return: stdout` (the default) yields the raw stdout string — script output
+/// is not JSON-parsed.
+fn adapt_script_return_output(
+    result: PythonCommandResult,
+    return_type: workflow::ProcessReturnType,
+    input: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let process_result = serde_json::json!({
+        "code": result.exit_code,
+        "stdout": result.output,
+        "stderr": result.output_stderr.unwrap_or_default(),
+    });
+    super::alias::adapt_process_return_output(process_result, return_type, input)
+}
+
 impl TaskExecutorTrait<'_> for PythonTaskExecutor {
     async fn execute(
         &self,
@@ -415,8 +433,12 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             ));
         }
 
-        let script_output: serde_json::Value = serde_json::from_str(&result.output)
-            .unwrap_or_else(|_| serde_json::Value::String(result.output.clone()));
+        let script_output = bail_with_position!(
+            task_context,
+            adapt_script_return_output(result, self.task.return_, task_context.input.as_ref()),
+            bad_argument,
+            "Failed to adapt script process output"
+        );
 
         task_context.set_raw_output(script_output);
 
@@ -425,5 +447,80 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
         // task_context.remove_position().await;
 
         Ok(task_context)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn result(exit_code: i32, stdout: &str, stderr: Option<&str>) -> PythonCommandResult {
+        PythonCommandResult {
+            exit_code,
+            output: stdout.to_string(),
+            output_stderr: stderr.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn adapts_each_return_type() {
+        use workflow::ProcessReturnType::{All, Code, Stderr, Stdout};
+        let cases: Vec<(
+            &str,
+            PythonCommandResult,
+            workflow::ProcessReturnType,
+            Value,
+        )> = vec![
+            // Default `stdout` returns the raw stdout string — JSON-looking
+            // stdout must NOT be parsed (guards the dropped JSON-parse default).
+            (
+                "stdout not parsed",
+                result(0, "{\"a\": 1}", None),
+                Stdout,
+                json!("{\"a\": 1}"),
+            ),
+            (
+                "stdout raw",
+                result(0, "hello\n", Some("warn")),
+                Stdout,
+                json!("hello\n"),
+            ),
+            (
+                "stderr",
+                result(0, "out", Some("boom")),
+                Stderr,
+                json!("boom"),
+            ),
+            (
+                "stderr absent -> empty",
+                result(0, "out", None),
+                Stderr,
+                json!(""),
+            ),
+            ("code", result(0, "out", None), Code, json!(0)),
+            (
+                "all",
+                result(0, "out", Some("err")),
+                All,
+                json!({"code": 0, "stdout": "out", "stderr": "err"}),
+            ),
+        ];
+        for (label, res, return_type, expected) in cases {
+            let out = adapt_script_return_output(res, return_type, &json!({})).unwrap();
+            assert_eq!(out, expected, "case: {label}");
+        }
+    }
+
+    #[test]
+    fn return_none_returns_task_input() {
+        let input = json!({"keep": "me"});
+        let out = adapt_script_return_output(
+            result(0, "ignored stdout", Some("ignored stderr")),
+            workflow::ProcessReturnType::None,
+            &input,
+        )
+        .unwrap();
+        assert_eq!(out, input);
     }
 }

@@ -348,6 +348,11 @@ manual/en/book/
 manual/ja/book/
 manual/site/
 
+# Workflow schema generation intermediates (authoritative output is
+# infra/src/workflow/definition/workflow.rs; see scripts/update_workflow_schema.sh)
+runner/schema/workflow.rs
+runner/schema/bak/
+
 # spec docs
 spec-docs/
 

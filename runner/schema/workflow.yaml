@@ -599,10 +599,20 @@ $defs:
     description: |
       Execute inline or external scripts. This is close to Serverless Workflow
       v1.0.0 run.script. await is supported (await: false runs fire-and-forget),
-      but return is not implemented for scripts.
+      and return shapes the process result (stdout/stderr/code/all/none, default
+      stdout). Unlike run.shell / run.container, run.script has no
+      treatNonzeroAsError / successExitCodes option: a non-zero exit always
+      fails the task before return is applied, so return: code / all only
+      observe a successful exit (0).
     required: [script]
     properties:
       await: *awaitProcessCompletion
+      return: &processReturnType
+        type: string
+        title: ProcessReturnType
+        description: Process output type to return.
+        enum: [stdout, stderr, code, all, none]
+        default: stdout
       script:
         type: object
         title: ScriptConfiguration
@@ -644,12 +654,7 @@ $defs:
     required: [shell]
     properties:
       await: *awaitProcessCompletion
-      return: &processReturnType
-        type: string
-        title: ProcessReturnType
-        description: Process output type to return.
-        enum: [stdout, stderr, code, all, none]
-        default: stdout
+      return: *processReturnType
       shell:
         $ref: "#/$defs/shellConfiguration"
     additionalProperties: false

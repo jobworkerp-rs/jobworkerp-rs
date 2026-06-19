@@ -431,12 +431,12 @@ do:
             command: echo
 "#;
 
-    const RUN_SCRIPT_RETURN_UNSUPPORTED: &str = r#"
-document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-script-return-unsupported, version: "1.0.0" }
+    const RUN_SCRIPT_RETURN: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: run-script-return, version: "1.0.0" }
 do:
   - script:
       run:
-        return: stdout
+        return: all
         script:
           language: python
           code: "print('hello')"
@@ -749,8 +749,9 @@ do:
     }
 
     #[test]
-    fn run_script_return_is_rejected() {
-        assert!(run_validate(RUN_SCRIPT_RETURN_UNSUPPORTED).is_err());
+    fn run_script_return_passes() {
+        // run.script now supports `return` like run.shell / run.container.
+        run_validate(RUN_SCRIPT_RETURN).unwrap();
     }
 
     #[test]

@@ -812,7 +812,7 @@
     "runScript": {
       "type": "object",
       "title": "RunScript",
-      "description": "Execute inline or external scripts. This is close to Serverless Workflow\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\nbut return is not implemented for scripts.\n",
+      "description": "Execute inline or external scripts. This is close to Serverless Workflow\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\nand return shapes the process result (stdout/stderr/code/all/none, default\nstdout). Unlike run.shell / run.container, run.script has no\ntreatNonzeroAsError / successExitCodes option: a non-zero exit always\nfails the task before return is applied, so return: code / all only\nobserve a successful exit (0).\n",
       "required": [
         "script"
       ],
@@ -822,6 +822,19 @@
           "default": true,
           "title": "AwaitProcessCompletion",
           "description": "Wait for process completion before continuing."
+        },
+        "return": {
+          "type": "string",
+          "title": "ProcessReturnType",
+          "description": "Process output type to return.",
+          "enum": [
+            "stdout",
+            "stderr",
+            "code",
+            "all",
+            "none"
+          ],
+          "default": "stdout"
         },
         "script": {
           "type": "object",

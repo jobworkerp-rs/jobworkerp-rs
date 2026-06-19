@@ -3795,14 +3795,14 @@ impl RunRunner {
         Default::default()
     }
 }
-#[doc = "Execute inline or external scripts. This is close to Serverless Workflow\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\nbut return is not implemented for scripts.\n"]
+#[doc = "Execute inline or external scripts. This is close to Serverless Workflow\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\nand return shapes the process result (stdout/stderr/code/all/none, default\nstdout). Unlike run.shell / run.container, run.script has no\ntreatNonzeroAsError / successExitCodes option: a non-zero exit always\nfails the task before return is applied, so return: code / all only\nobserve a successful exit (0).\n"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"RunScript\","]
-#[doc = "  \"description\": \"Execute inline or external scripts. This is close to Serverless Workflow\\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\\nbut return is not implemented for scripts.\\n\","]
+#[doc = "  \"description\": \"Execute inline or external scripts. This is close to Serverless Workflow\\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\\nand return shapes the process result (stdout/stderr/code/all/none, default\\nstdout). Unlike run.shell / run.container, run.script has no\\ntreatNonzeroAsError / successExitCodes option: a non-zero exit always\\nfails the task before return is applied, so return: code / all only\\nobserve a successful exit (0).\\n\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"script\""]
@@ -3813,6 +3813,19 @@ impl RunRunner {
 #[doc = "      \"description\": \"Wait for process completion before continuing.\","]
 #[doc = "      \"default\": true,"]
 #[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"return\": {"]
+#[doc = "      \"title\": \"ProcessReturnType\","]
+#[doc = "      \"description\": \"Process output type to return.\","]
+#[doc = "      \"default\": \"stdout\","]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"stdout\","]
+#[doc = "        \"stderr\","]
+#[doc = "        \"code\","]
+#[doc = "        \"all\","]
+#[doc = "        \"none\""]
+#[doc = "      ]"]
 #[doc = "    },"]
 #[doc = "    \"script\": {"]
 #[doc = "      \"title\": \"ScriptConfiguration\","]
@@ -3877,6 +3890,9 @@ pub struct RunScript {
     #[doc = "Wait for process completion before continuing."]
     #[serde(rename = "await", default = "defaults::default_bool::<true>")]
     pub await_: bool,
+    #[doc = "Process output type to return."]
+    #[serde(rename = "return", default = "defaults::run_script_return")]
+    pub return_: ProcessReturnType,
     pub script: ScriptConfiguration,
 }
 impl ::std::convert::From<&RunScript> for RunScript {
@@ -9134,12 +9150,14 @@ pub mod builder {
     #[derive(Clone, Debug)]
     pub struct RunScript {
         await_: ::std::result::Result<bool, ::std::string::String>,
+        return_: ::std::result::Result<super::ProcessReturnType, ::std::string::String>,
         script: ::std::result::Result<super::ScriptConfiguration, ::std::string::String>,
     }
     impl ::std::default::Default for RunScript {
         fn default() -> Self {
             Self {
                 await_: Ok(super::defaults::default_bool::<true>()),
+                return_: Ok(super::defaults::run_script_return()),
                 script: Err("no value supplied for script".to_string()),
             }
         }
@@ -9153,6 +9171,16 @@ pub mod builder {
             self.await_ = value
                 .try_into()
                 .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
+        pub fn return_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::ProcessReturnType>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.return_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for return_: {}", e));
             self
         }
         pub fn script<T>(mut self, value: T) -> Self
@@ -9173,6 +9201,7 @@ pub mod builder {
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
                 await_: value.await_?,
+                return_: value.return_?,
                 script: value.script?,
             })
         }
@@ -9181,6 +9210,7 @@ pub mod builder {
         fn from(value: super::RunScript) -> Self {
             Self {
                 await_: Ok(value.await_),
+                return_: Ok(value.return_),
                 script: Ok(value.script),
             }
         }
@@ -10877,6 +10907,9 @@ pub mod defaults {
         "item".to_string()
     }
     pub(super) fn run_container_return() -> super::ProcessReturnType {
+        super::ProcessReturnType::Stdout
+    }
+    pub(super) fn run_script_return() -> super::ProcessReturnType {
         super::ProcessReturnType::Stdout
     }
     pub(super) fn run_shell_return() -> super::ProcessReturnType {

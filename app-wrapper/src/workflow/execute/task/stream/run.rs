@@ -249,7 +249,7 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
                             let _ = event_tx.send(Err(workflow::errors::ErrorFactory::new()
                                 .bad_argument(
                                     "Failed to adapt run alias process output".to_string(),
-                                    None,
+                                    Some(position.clone()),
                                     Some(e.to_string()),
                                 )));
                             return;
@@ -262,7 +262,7 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
                     let _ = event_tx.send(Err(workflow::errors::ErrorFactory::new()
                         .service_unavailable(
                             "Failed to process streaming result".to_string(),
-                            None,
+                            Some(position.clone()),
                             Some(e.to_string()),
                         )));
                     return;
@@ -647,13 +647,17 @@ async fn prepare_streaming_job(
             (handle, output_adapter)
         }
 
-        // Script configuration is not supported for streaming
+        // run.script has no streaming output (the PYTHON_COMMAND runner does not
+        // implement run_stream), so it cannot run under useStreaming: true.
+        // run.script still works inside a streaming workflow when the task itself
+        // sets useStreaming: false (the default), which routes it to the
+        // non-streaming executor.
         workflow::RunTaskConfiguration::Script(_) => {
             let pos = task_context.position.read().await.as_error_instance();
             return Err(workflow::errors::ErrorFactory::new().not_implemented(
-                "RunStreamTaskExecutor does not support Script configurations".to_string(),
+                "run.script does not support useStreaming: true".to_string(),
                 Some(pos),
-                Some("Use RunTaskExecutor for Script configurations".to_string()),
+                Some("Set useStreaming: false (the default) on the script task.".to_string()),
             ));
         }
     };
