@@ -96,6 +96,7 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
             metadata: serde_json::Map::new(),
             timeout: None,
             run: RunTaskConfiguration::Worker(workflow::RunWorker {
+                await_: true,
                 worker: RunJobWorker {
                     name: worker_name.to_string(),
                     arguments: {
@@ -188,6 +189,105 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
     })
 }
 
+/// Test: streaming execution rejects `await: false` because it must collect a
+/// runner result to forward stream items. This guards the uniform rejection
+/// applied across every run.* instance under `useStreaming: true`.
+#[test]
+fn test_run_stream_task_executor_rejects_await_false() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+        let worker_handle = start_test_worker(app_module.clone()).await?;
+        let job_executors = Arc::new(JobExecutorWrapper::new(app_module.clone()));
+
+        let loader = WorkflowLoader::new_local_only();
+        let flow = loader
+            .load_workflow(
+                Some(&format!(
+                    "{}/../app-wrapper/test-files/ls-test.yaml",
+                    env!("CARGO_MANIFEST_DIR")
+                )),
+                None,
+                false,
+            )
+            .await?;
+
+        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+            &flow,
+            Arc::new(serde_json::json!({})),
+            Arc::new(serde_json::json!({})),
+            None,
+        )));
+        workflow_context.write().await.status = WorkflowStatus::Running;
+
+        let run_task = workflow::RunTask {
+            metadata: serde_json::Map::new(),
+            timeout: None,
+            run: RunTaskConfiguration::Runner(workflow::RunRunner {
+                await_: false,
+                runner: RunJobRunner {
+                    name: "COMMAND".to_string(),
+                    settings: serde_json::Map::new(),
+                    arguments: {
+                        let mut args = serde_json::Map::new();
+                        args.insert("command".to_string(), serde_json::json!("echo"));
+                        args.insert("args".to_string(), serde_json::json!(["hi"]));
+                        args
+                    },
+                    options: None,
+                    using: None,
+                },
+            }),
+            export: None,
+            if_: None,
+            checkpoint: false,
+            input: None,
+            output: None,
+            then: None,
+            use_streaming: true,
+        };
+
+        let executor = RunStreamTaskExecutor::new(
+            workflow_context.clone(),
+            Duration::from_secs(30),
+            Arc::new(NamedTimeouts::new()),
+            job_executors.clone(),
+            run_task,
+            Arc::new(HashMap::new()),
+        );
+
+        let task_context = TaskContext::new(
+            None,
+            Arc::new(serde_json::json!({})),
+            Arc::new(Mutex::new(Default::default())),
+        );
+
+        let cx = Arc::new(opentelemetry::Context::new());
+        let stream =
+            executor.execute_stream(cx, Arc::new("reject_await_false".to_string()), task_context);
+        futures::pin_mut!(stream);
+
+        let mut saw_error = false;
+        while let Some(event_result) = stream.next().await {
+            if let Err(e) = event_result {
+                let msg = format!("{e:?}");
+                assert!(
+                    msg.contains("run.await=false is not supported with streaming execution"),
+                    "unexpected error: {msg}"
+                );
+                saw_error = true;
+                break;
+            }
+        }
+
+        worker_handle.shutdown().await;
+        assert!(
+            saw_error,
+            "streaming with await:false must surface an error"
+        );
+        Ok(())
+    })
+}
+
 /// Test: RunStreamTaskExecutor executes Runner configuration with streaming
 #[test]
 fn test_run_stream_task_executor_runner_config() -> Result<()> {
@@ -222,6 +322,7 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
             metadata: serde_json::Map::new(),
             timeout: None,
             run: RunTaskConfiguration::Runner(workflow::RunRunner {
+                await_: true,
                 runner: RunJobRunner {
                     name: "COMMAND".to_string(),
                     settings: serde_json::Map::new(),
@@ -355,6 +456,7 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
             metadata: serde_json::Map::new(),
             timeout: None,
             run: RunTaskConfiguration::Worker(workflow::RunWorker {
+                await_: true,
                 worker: RunJobWorker {
                     name: worker_name.to_string(),
                     arguments: {

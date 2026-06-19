@@ -519,6 +519,132 @@ impl ::std::convert::TryFrom<::std::string::String> for CheckpointConfigStorage 
         value.parse()
     }
 }
+#[doc = "ContainerConfiguration"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"ContainerConfiguration\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"image\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"command\": {"]
+#[doc = "      \"title\": \"ContainerCommand\","]
+#[doc = "      \"default\": [],"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"type\": \"string\""]
+#[doc = "      }"]
+#[doc = "    },"]
+#[doc = "    \"entrypoint\": {"]
+#[doc = "      \"title\": \"ContainerEntrypoint\","]
+#[doc = "      \"default\": [],"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"type\": \"string\""]
+#[doc = "      }"]
+#[doc = "    },"]
+#[doc = "    \"env\": {"]
+#[doc = "      \"title\": \"ContainerEnvironment\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": {"]
+#[doc = "        \"type\": \"string\""]
+#[doc = "      }"]
+#[doc = "    },"]
+#[doc = "    \"image\": {"]
+#[doc = "      \"title\": \"ContainerImage\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"successExitCodes\": {"]
+#[doc = "      \"title\": \"ContainerSuccessExitCodes\","]
+#[doc = "      \"description\": \"Additional container process exit codes to treat as success. (jobworkerp extension)\","]
+#[doc = "      \"default\": [],"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"type\": \"integer\","]
+#[doc = "        \"format\": \"int32\""]
+#[doc = "      }"]
+#[doc = "    },"]
+#[doc = "    \"timeoutSec\": {"]
+#[doc = "      \"title\": \"ContainerTimeoutSec\","]
+#[doc = "      \"description\": \"Job timeout in seconds. (jobworkerp extension)\","]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"format\": \"uint64\""]
+#[doc = "    },"]
+#[doc = "    \"treatNonzeroAsError\": {"]
+#[doc = "      \"title\": \"ContainerTreatNonzeroAsError\","]
+#[doc = "      \"description\": \"Treat non-zero exit codes as task failure unless the code is listed in successExitCodes. (jobworkerp extension)\","]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"user\": {"]
+#[doc = "      \"title\": \"ContainerUser\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"workingDir\": {"]
+#[doc = "      \"title\": \"ContainerWorkingDirectory\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerConfiguration {
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub command: ::std::vec::Vec<::std::string::String>,
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub entrypoint: ::std::vec::Vec<::std::string::String>,
+    #[serde(
+        default,
+        skip_serializing_if = ":: std :: collections :: HashMap::is_empty"
+    )]
+    pub env: ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+    pub image: ::std::string::String,
+    #[doc = "Additional container process exit codes to treat as success. (jobworkerp extension)"]
+    #[serde(
+        rename = "successExitCodes",
+        default,
+        skip_serializing_if = "::std::vec::Vec::is_empty"
+    )]
+    pub success_exit_codes: ::std::vec::Vec<i32>,
+    #[doc = "Job timeout in seconds. (jobworkerp extension)"]
+    #[serde(
+        rename = "timeoutSec",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub timeout_sec: ::std::option::Option<u64>,
+    #[doc = "Treat non-zero exit codes as task failure unless the code is listed in successExitCodes. (jobworkerp extension)"]
+    #[serde(
+        rename = "treatNonzeroAsError",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub treat_nonzero_as_error: ::std::option::Option<bool>,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub user: ::std::option::Option<::std::string::String>,
+    #[serde(
+        rename = "workingDir",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub working_dir: ::std::option::Option<::std::string::String>,
+}
+impl ::std::convert::From<&ContainerConfiguration> for ContainerConfiguration {
+    fn from(value: &ContainerConfiguration) -> Self {
+        value.clone()
+    }
+}
+impl ContainerConfiguration {
+    pub fn builder() -> builder::ContainerConfiguration {
+        Default::default()
+    }
+}
 #[doc = "DoTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -2371,6 +2497,106 @@ impl ProcessResult {
         Default::default()
     }
 }
+#[doc = "Process output type to return."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"ProcessReturnType\","]
+#[doc = "  \"description\": \"Process output type to return.\","]
+#[doc = "  \"default\": \"stdout\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"stdout\","]
+#[doc = "    \"stderr\","]
+#[doc = "    \"code\","]
+#[doc = "    \"all\","]
+#[doc = "    \"none\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ProcessReturnType {
+    #[serde(rename = "stdout")]
+    Stdout,
+    #[serde(rename = "stderr")]
+    Stderr,
+    #[serde(rename = "code")]
+    Code,
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "none")]
+    None,
+}
+impl ::std::convert::From<&Self> for ProcessReturnType {
+    fn from(value: &ProcessReturnType) -> Self {
+        value.clone()
+    }
+}
+impl ::std::fmt::Display for ProcessReturnType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Stdout => write!(f, "stdout"),
+            Self::Stderr => write!(f, "stderr"),
+            Self::Code => write!(f, "code"),
+            Self::All => write!(f, "all"),
+            Self::None => write!(f, "none"),
+        }
+    }
+}
+impl ::std::str::FromStr for ProcessReturnType {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "stdout" => Ok(Self::Stdout),
+            "stderr" => Ok(Self::Stderr),
+            "code" => Ok(Self::Code),
+            "all" => Ok(Self::All),
+            "none" => Ok(Self::None),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ProcessReturnType {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ProcessReturnType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ProcessReturnType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::default::Default for ProcessReturnType {
+    fn default() -> Self {
+        ProcessReturnType::Stdout
+    }
+}
 #[doc = "Defines how jobs are queued and persisted. Values: NORMAL (default, in-memory only), WITH_BACKUP (in-memory with database backup), DB_ONLY (database only)."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -3091,6 +3317,67 @@ impl ReusableComponents {
         Default::default()
     }
 }
+#[doc = "Execute a container. Some optional fields are jobworkerp extensions."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"RunContainer\","]
+#[doc = "  \"description\": \"Execute a container. Some optional fields are jobworkerp extensions.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"container\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"await\": {"]
+#[doc = "      \"title\": \"AwaitProcessCompletion\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"container\": {"]
+#[doc = "      \"$ref\": \"#/$defs/containerConfiguration\""]
+#[doc = "    },"]
+#[doc = "    \"return\": {"]
+#[doc = "      \"title\": \"ProcessReturnType\","]
+#[doc = "      \"description\": \"Process output type to return.\","]
+#[doc = "      \"default\": \"stdout\","]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"stdout\","]
+#[doc = "        \"stderr\","]
+#[doc = "        \"code\","]
+#[doc = "        \"all\","]
+#[doc = "        \"none\""]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RunContainer {
+    #[doc = "Wait for process completion before continuing."]
+    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+    pub await_: bool,
+    pub container: ContainerConfiguration,
+    #[doc = "Process output type to return."]
+    #[serde(rename = "return", default = "defaults::run_container_return")]
+    pub return_: ProcessReturnType,
+}
+impl ::std::convert::From<&RunContainer> for RunContainer {
+    fn from(value: &RunContainer) -> Self {
+        value.clone()
+    }
+}
+impl RunContainer {
+    pub fn builder() -> builder::RunContainer {
+        Default::default()
+    }
+}
 #[doc = "Execute using a function configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -3104,6 +3391,12 @@ impl ReusableComponents {
 #[doc = "    \"function\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"await\": {"]
+#[doc = "      \"title\": \"AwaitProcessCompletion\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"function\": {"]
 #[doc = "      \"title\": \"RunJobFunction\","]
 #[doc = "      \"description\": \"Executes a job using a specified function(runner or worker).\","]
@@ -3178,6 +3471,9 @@ impl ReusableComponents {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunFunction {
+    #[doc = "Wait for process completion before continuing."]
+    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+    pub await_: bool,
     #[doc = "Executes a job using a specified function(runner or worker)."]
     pub function: RunJobFunction,
 }
@@ -3434,6 +3730,12 @@ impl RunJobWorker {
 #[doc = "    \"runner\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"await\": {"]
+#[doc = "      \"title\": \"AwaitProcessCompletion\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"runner\": {"]
 #[doc = "      \"title\": \"RunJobRunner\","]
 #[doc = "      \"description\": \"Executes a job using a specified runner.\","]
@@ -3478,6 +3780,9 @@ impl RunJobWorker {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunRunner {
+    #[doc = "Wait for process completion before continuing."]
+    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+    pub await_: bool,
     pub runner: RunJobRunner,
 }
 impl ::std::convert::From<&RunRunner> for RunRunner {
@@ -3490,19 +3795,38 @@ impl RunRunner {
         Default::default()
     }
 }
-#[doc = "Execute inline or external scripts (Serverless Workflow v1.0.0 compliant)"]
+#[doc = "Execute inline or external scripts. This is close to Serverless Workflow\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\nand return shapes the process result (stdout/stderr/code/all/none, default\nstdout). Unlike run.shell / run.container, run.script has no\ntreatNonzeroAsError / successExitCodes option: a non-zero exit always\nfails the task before return is applied, so return: code / all only\nobserve a successful exit (0).\n"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"RunScript\","]
-#[doc = "  \"description\": \"Execute inline or external scripts (Serverless Workflow v1.0.0 compliant)\","]
+#[doc = "  \"description\": \"Execute inline or external scripts. This is close to Serverless Workflow\\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\\nand return shapes the process result (stdout/stderr/code/all/none, default\\nstdout). Unlike run.shell / run.container, run.script has no\\ntreatNonzeroAsError / successExitCodes option: a non-zero exit always\\nfails the task before return is applied, so return: code / all only\\nobserve a successful exit (0).\\n\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"script\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"await\": {"]
+#[doc = "      \"title\": \"AwaitProcessCompletion\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"return\": {"]
+#[doc = "      \"title\": \"ProcessReturnType\","]
+#[doc = "      \"description\": \"Process output type to return.\","]
+#[doc = "      \"default\": \"stdout\","]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"stdout\","]
+#[doc = "        \"stderr\","]
+#[doc = "        \"code\","]
+#[doc = "        \"all\","]
+#[doc = "        \"none\""]
+#[doc = "      ]"]
+#[doc = "    },"]
 #[doc = "    \"script\": {"]
 #[doc = "      \"title\": \"ScriptConfiguration\","]
 #[doc = "      \"description\": \"Script execution configuration\","]
@@ -3563,6 +3887,12 @@ impl RunRunner {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunScript {
+    #[doc = "Wait for process completion before continuing."]
+    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+    pub await_: bool,
+    #[doc = "Process output type to return."]
+    #[serde(rename = "return", default = "defaults::run_script_return")]
+    pub return_: ProcessReturnType,
     pub script: ScriptConfiguration,
 }
 impl ::std::convert::From<&RunScript> for RunScript {
@@ -3572,6 +3902,67 @@ impl ::std::convert::From<&RunScript> for RunScript {
 }
 impl RunScript {
     pub fn builder() -> builder::RunScript {
+        Default::default()
+    }
+}
+#[doc = "Execute a shell command. Some optional fields are jobworkerp extensions."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"RunShell\","]
+#[doc = "  \"description\": \"Execute a shell command. Some optional fields are jobworkerp extensions.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"shell\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"await\": {"]
+#[doc = "      \"title\": \"AwaitProcessCompletion\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"return\": {"]
+#[doc = "      \"title\": \"ProcessReturnType\","]
+#[doc = "      \"description\": \"Process output type to return.\","]
+#[doc = "      \"default\": \"stdout\","]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"stdout\","]
+#[doc = "        \"stderr\","]
+#[doc = "        \"code\","]
+#[doc = "        \"all\","]
+#[doc = "        \"none\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"shell\": {"]
+#[doc = "      \"$ref\": \"#/$defs/shellConfiguration\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RunShell {
+    #[doc = "Wait for process completion before continuing."]
+    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+    pub await_: bool,
+    #[doc = "Process output type to return."]
+    #[serde(rename = "return", default = "defaults::run_shell_return")]
+    pub return_: ProcessReturnType,
+    pub shell: ShellConfiguration,
+}
+impl ::std::convert::From<&RunShell> for RunShell {
+    fn from(value: &RunShell) -> Self {
+        value.clone()
+    }
+}
+impl RunShell {
+    pub fn builder() -> builder::RunShell {
         Default::default()
     }
 }
@@ -3634,29 +4025,17 @@ impl RunScript {
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"$ref\": \"#/$defs/runScript\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"$ref\": \"#/$defs/runShell\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"$ref\": \"#/$defs/runContainer\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"$ref\": \"#/$defs/runWorkflow\""]
 #[doc = "        }"]
 #[doc = "      ],"]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"await\": {"]
-#[doc = "          \"title\": \"AwaitProcessCompletion\","]
-#[doc = "          \"description\": \"Wait for process completion before continuing.\","]
-#[doc = "          \"default\": true,"]
-#[doc = "          \"type\": \"boolean\""]
-#[doc = "        },"]
-#[doc = "        \"return\": {"]
-#[doc = "          \"title\": \"ProcessReturnType\","]
-#[doc = "          \"description\": \"Process output type to return.\","]
-#[doc = "          \"default\": \"stdout\","]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"enum\": ["]
-#[doc = "            \"stdout\","]
-#[doc = "            \"stderr\","]
-#[doc = "            \"code\","]
-#[doc = "            \"all\","]
-#[doc = "            \"none\""]
-#[doc = "          ]"]
-#[doc = "        }"]
-#[doc = "      },"]
 #[doc = "      \"unevaluatedProperties\": false"]
 #[doc = "    },"]
 #[doc = "    \"then\": {"]
@@ -3713,6 +4092,7 @@ pub struct RunTask {
     #[doc = "Task output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
+    #[doc = "Process execution configuration."]
     pub run: RunTaskConfiguration,
     #[doc = "Flow control directive executed after task completion."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -3754,29 +4134,17 @@ impl RunTask {
 #[doc = "    },"]
 #[doc = "    {"]
 #[doc = "      \"$ref\": \"#/$defs/runScript\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/runShell\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/runContainer\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/runWorkflow\""]
 #[doc = "    }"]
 #[doc = "  ],"]
-#[doc = "  \"properties\": {"]
-#[doc = "    \"await\": {"]
-#[doc = "      \"title\": \"AwaitProcessCompletion\","]
-#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
-#[doc = "      \"default\": true,"]
-#[doc = "      \"type\": \"boolean\""]
-#[doc = "    },"]
-#[doc = "    \"return\": {"]
-#[doc = "      \"title\": \"ProcessReturnType\","]
-#[doc = "      \"description\": \"Process output type to return.\","]
-#[doc = "      \"default\": \"stdout\","]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"enum\": ["]
-#[doc = "        \"stdout\","]
-#[doc = "        \"stderr\","]
-#[doc = "        \"code\","]
-#[doc = "        \"all\","]
-#[doc = "        \"none\""]
-#[doc = "      ]"]
-#[doc = "    }"]
-#[doc = "  },"]
 #[doc = "  \"unevaluatedProperties\": false"]
 #[doc = "}"]
 #[doc = r" ```"]
@@ -3788,6 +4156,9 @@ pub enum RunTaskConfiguration {
     Runner(RunRunner),
     Function(RunFunction),
     Script(RunScript),
+    Shell(RunShell),
+    Container(RunContainer),
+    Workflow(RunWorkflow),
 }
 impl ::std::convert::From<&Self> for RunTaskConfiguration {
     fn from(value: &RunTaskConfiguration) -> Self {
@@ -3814,6 +4185,21 @@ impl ::std::convert::From<RunScript> for RunTaskConfiguration {
         Self::Script(value)
     }
 }
+impl ::std::convert::From<RunShell> for RunTaskConfiguration {
+    fn from(value: RunShell) -> Self {
+        Self::Shell(value)
+    }
+}
+impl ::std::convert::From<RunContainer> for RunTaskConfiguration {
+    fn from(value: RunContainer) -> Self {
+        Self::Container(value)
+    }
+}
+impl ::std::convert::From<RunWorkflow> for RunTaskConfiguration {
+    fn from(value: RunWorkflow) -> Self {
+        Self::Workflow(value)
+    }
+}
 #[doc = "Execute using a worker configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -3827,6 +4213,12 @@ impl ::std::convert::From<RunScript> for RunTaskConfiguration {
 #[doc = "    \"worker\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"await\": {"]
+#[doc = "      \"title\": \"AwaitProcessCompletion\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"worker\": {"]
 #[doc = "      \"title\": \"RunJobWorker\","]
 #[doc = "      \"description\": \"Executes a job using a specified worker (configured runner with settings and options).\","]
@@ -3863,6 +4255,9 @@ impl ::std::convert::From<RunScript> for RunTaskConfiguration {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunWorker {
+    #[doc = "Wait for process completion before continuing."]
+    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+    pub await_: bool,
     pub worker: RunJobWorker,
 }
 impl ::std::convert::From<&RunWorker> for RunWorker {
@@ -3872,6 +4267,51 @@ impl ::std::convert::From<&RunWorker> for RunWorker {
 }
 impl RunWorker {
     pub fn builder() -> builder::RunWorker {
+        Default::default()
+    }
+}
+#[doc = "Execute a nested workflow using jobworkerp's source-based workflow extension."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"RunWorkflow\","]
+#[doc = "  \"description\": \"Execute a nested workflow using jobworkerp's source-based workflow extension.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"workflow\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"await\": {"]
+#[doc = "      \"title\": \"AwaitProcessCompletion\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
+#[doc = "      \"default\": true,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"workflow\": {"]
+#[doc = "      \"$ref\": \"#/$defs/workflowConfiguration\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RunWorkflow {
+    #[doc = "Wait for process completion before continuing."]
+    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+    pub await_: bool,
+    pub workflow: WorkflowConfiguration,
+}
+impl ::std::convert::From<&RunWorkflow> for RunWorkflow {
+    fn from(value: &RunWorkflow) -> Self {
+        value.clone()
+    }
+}
+impl RunWorkflow {
+    pub fn builder() -> builder::RunWorkflow {
         Default::default()
     }
 }
@@ -4157,6 +4597,111 @@ impl ::std::convert::From<&SetTask> for SetTask {
 impl SetTask {
     pub fn builder() -> builder::SetTask {
         Default::default()
+    }
+}
+#[doc = "Shell command configuration. A string is treated as the command."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"ShellConfiguration\","]
+#[doc = "  \"description\": \"Shell command configuration. A string is treated as the command.\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"title\": \"ShellCommandLine\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"title\": \"ShellCommand\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"command\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"args\": {"]
+#[doc = "          \"title\": \"ShellCommandArguments\","]
+#[doc = "          \"default\": [],"]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"type\": \"string\""]
+#[doc = "          }"]
+#[doc = "        },"]
+#[doc = "        \"command\": {"]
+#[doc = "          \"title\": \"ShellCommandName\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        \"successExitCodes\": {"]
+#[doc = "          \"title\": \"ShellSuccessExitCodes\","]
+#[doc = "          \"description\": \"Additional process exit codes to treat as success. (jobworkerp extension)\","]
+#[doc = "          \"default\": [],"]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"type\": \"integer\","]
+#[doc = "            \"format\": \"int32\""]
+#[doc = "          }"]
+#[doc = "        },"]
+#[doc = "        \"treatNonzeroAsError\": {"]
+#[doc = "          \"title\": \"ShellTreatNonzeroAsError\","]
+#[doc = "          \"description\": \"Treat non-zero exit codes as task failure unless the code is listed in successExitCodes. (jobworkerp extension)\","]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"withMemoryMonitoring\": {"]
+#[doc = "          \"title\": \"ShellMemoryMonitoring\","]
+#[doc = "          \"description\": \"Enable process memory observation. (jobworkerp extension)\","]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"workingDir\": {"]
+#[doc = "          \"title\": \"ShellWorkingDirectory\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum ShellConfiguration {
+    Variant0(::std::string::String),
+    Variant1 {
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        args: ::std::vec::Vec<::std::string::String>,
+        command: ::std::string::String,
+        #[doc = "Additional process exit codes to treat as success. (jobworkerp extension)"]
+        #[serde(
+            rename = "successExitCodes",
+            default,
+            skip_serializing_if = "::std::vec::Vec::is_empty"
+        )]
+        success_exit_codes: ::std::vec::Vec<i32>,
+        #[doc = "Treat non-zero exit codes as task failure unless the code is listed in successExitCodes. (jobworkerp extension)"]
+        #[serde(
+            rename = "treatNonzeroAsError",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        treat_nonzero_as_error: ::std::option::Option<bool>,
+        #[doc = "Enable process memory observation. (jobworkerp extension)"]
+        #[serde(
+            rename = "withMemoryMonitoring",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        with_memory_monitoring: ::std::option::Option<bool>,
+        #[serde(
+            rename = "workingDir",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        working_dir: ::std::option::Option<::std::string::String>,
+    },
+}
+impl ::std::convert::From<&Self> for ShellConfiguration {
+    fn from(value: &ShellConfiguration) -> Self {
+        value.clone()
     }
 }
 #[doc = "Case condition and action definition."]
@@ -5340,6 +5885,88 @@ impl WorkerOptions {
         Default::default()
     }
 }
+#[doc = "Nested workflow source. Parent workflow_context is inherited implicitly; workflowContext is not a DSL field. (jobworkerp extension)"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"WorkflowConfiguration\","]
+#[doc = "  \"description\": \"Nested workflow source. Parent workflow_context is inherited implicitly; workflowContext is not a DSL field. (jobworkerp extension)\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"required\": ["]
+#[doc = "        \"workflowData\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"required\": ["]
+#[doc = "        \"workflowUrl\""]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"executionId\": {"]
+#[doc = "      \"title\": \"WorkflowExecutionId\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"input\": {"]
+#[doc = "      \"title\": \"WorkflowInput\","]
+#[doc = "      \"description\": \"Input passed to the nested workflow. Non-string values are serialized as JSON.\""]
+#[doc = "    },"]
+#[doc = "    \"workflowData\": {"]
+#[doc = "      \"title\": \"WorkflowData\","]
+#[doc = "      \"description\": \"Inline nested workflow definition as JSON or YAML. (jobworkerp extension)\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"workflowUrl\": {"]
+#[doc = "      \"title\": \"WorkflowUrl\","]
+#[doc = "      \"description\": \"Nested workflow definition URL or path. (jobworkerp extension)\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum WorkflowConfiguration {
+    Variant0 {
+        #[serde(
+            rename = "executionId",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        execution_id: ::std::option::Option<::std::string::String>,
+        #[doc = "Input passed to the nested workflow. Non-string values are serialized as JSON."]
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        input: ::std::option::Option<::serde_json::Value>,
+        #[doc = "Inline nested workflow definition as JSON or YAML. (jobworkerp extension)"]
+        #[serde(rename = "workflowData")]
+        workflow_data: ::std::string::String,
+    },
+    Variant1 {
+        #[serde(
+            rename = "executionId",
+            default,
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        execution_id: ::std::option::Option<::std::string::String>,
+        #[doc = "Input passed to the nested workflow. Non-string values are serialized as JSON."]
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        input: ::std::option::Option<::serde_json::Value>,
+        #[doc = "Nested workflow definition URL or path. (jobworkerp extension)"]
+        #[serde(rename = "workflowUrl")]
+        workflow_url: ::std::string::String,
+    },
+}
+impl ::std::convert::From<&Self> for WorkflowConfiguration {
+    fn from(value: &WorkflowConfiguration) -> Self {
+        value.clone()
+    }
+}
 #[doc = "DSL version used by this workflow."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -6251,6 +6878,178 @@ pub mod builder {
             Self {
                 enabled: Ok(value.enabled),
                 storage: Ok(value.storage),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct ContainerConfiguration {
+        command:
+            ::std::result::Result<::std::vec::Vec<::std::string::String>, ::std::string::String>,
+        entrypoint:
+            ::std::result::Result<::std::vec::Vec<::std::string::String>, ::std::string::String>,
+        env: ::std::result::Result<
+            ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+            ::std::string::String,
+        >,
+        image: ::std::result::Result<::std::string::String, ::std::string::String>,
+        success_exit_codes: ::std::result::Result<::std::vec::Vec<i32>, ::std::string::String>,
+        timeout_sec: ::std::result::Result<::std::option::Option<u64>, ::std::string::String>,
+        treat_nonzero_as_error:
+            ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+        user: ::std::result::Result<
+            ::std::option::Option<::std::string::String>,
+            ::std::string::String,
+        >,
+        working_dir: ::std::result::Result<
+            ::std::option::Option<::std::string::String>,
+            ::std::string::String,
+        >,
+    }
+    impl ::std::default::Default for ContainerConfiguration {
+        fn default() -> Self {
+            Self {
+                command: Ok(Default::default()),
+                entrypoint: Ok(Default::default()),
+                env: Ok(Default::default()),
+                image: Err("no value supplied for image".to_string()),
+                success_exit_codes: Ok(Default::default()),
+                timeout_sec: Ok(Default::default()),
+                treat_nonzero_as_error: Ok(Default::default()),
+                user: Ok(Default::default()),
+                working_dir: Ok(Default::default()),
+            }
+        }
+    }
+    impl ContainerConfiguration {
+        pub fn command<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.command = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for command: {}", e));
+            self
+        }
+        pub fn entrypoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.entrypoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for entrypoint: {}", e));
+            self
+        }
+        pub fn env<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<
+                    ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+                >,
+            T::Error: ::std::fmt::Display,
+        {
+            self.env = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for env: {}", e));
+            self
+        }
+        pub fn image<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::string::String>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.image = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for image: {}", e));
+            self
+        }
+        pub fn success_exit_codes<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::vec::Vec<i32>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.success_exit_codes = value.try_into().map_err(|e| {
+                format!(
+                    "error converting supplied value for success_exit_codes: {}",
+                    e
+                )
+            });
+            self
+        }
+        pub fn timeout_sec<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<u64>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.timeout_sec = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for timeout_sec: {}", e));
+            self
+        }
+        pub fn treat_nonzero_as_error<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<bool>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.treat_nonzero_as_error = value.try_into().map_err(|e| {
+                format!(
+                    "error converting supplied value for treat_nonzero_as_error: {}",
+                    e
+                )
+            });
+            self
+        }
+        pub fn user<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.user = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for user: {}", e));
+            self
+        }
+        pub fn working_dir<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.working_dir = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for working_dir: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<ContainerConfiguration> for super::ContainerConfiguration {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: ContainerConfiguration,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                command: value.command?,
+                entrypoint: value.entrypoint?,
+                env: value.env?,
+                image: value.image?,
+                success_exit_codes: value.success_exit_codes?,
+                timeout_sec: value.timeout_sec?,
+                treat_nonzero_as_error: value.treat_nonzero_as_error?,
+                user: value.user?,
+                working_dir: value.working_dir?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::ContainerConfiguration> for ContainerConfiguration {
+        fn from(value: super::ContainerConfiguration) -> Self {
+            Self {
+                command: Ok(value.command),
+                entrypoint: Ok(value.entrypoint),
+                env: Ok(value.env),
+                image: Ok(value.image),
+                success_exit_codes: Ok(value.success_exit_codes),
+                timeout_sec: Ok(value.timeout_sec),
+                treat_nonzero_as_error: Ok(value.treat_nonzero_as_error),
+                user: Ok(value.user),
+                working_dir: Ok(value.working_dir),
             }
         }
     }
@@ -7985,17 +8784,97 @@ pub mod builder {
         }
     }
     #[derive(Clone, Debug)]
+    pub struct RunContainer {
+        await_: ::std::result::Result<bool, ::std::string::String>,
+        container: ::std::result::Result<super::ContainerConfiguration, ::std::string::String>,
+        return_: ::std::result::Result<super::ProcessReturnType, ::std::string::String>,
+    }
+    impl ::std::default::Default for RunContainer {
+        fn default() -> Self {
+            Self {
+                await_: Ok(super::defaults::default_bool::<true>()),
+                container: Err("no value supplied for container".to_string()),
+                return_: Ok(super::defaults::run_container_return()),
+            }
+        }
+    }
+    impl RunContainer {
+        pub fn await_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.await_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
+        pub fn container<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::ContainerConfiguration>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.container = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for container: {}", e));
+            self
+        }
+        pub fn return_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::ProcessReturnType>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.return_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for return_: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<RunContainer> for super::RunContainer {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: RunContainer,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                await_: value.await_?,
+                container: value.container?,
+                return_: value.return_?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::RunContainer> for RunContainer {
+        fn from(value: super::RunContainer) -> Self {
+            Self {
+                await_: Ok(value.await_),
+                container: Ok(value.container),
+                return_: Ok(value.return_),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
     pub struct RunFunction {
+        await_: ::std::result::Result<bool, ::std::string::String>,
         function: ::std::result::Result<super::RunJobFunction, ::std::string::String>,
     }
     impl ::std::default::Default for RunFunction {
         fn default() -> Self {
             Self {
+                await_: Ok(super::defaults::default_bool::<true>()),
                 function: Err("no value supplied for function".to_string()),
             }
         }
     }
     impl RunFunction {
+        pub fn await_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.await_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
         pub fn function<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<super::RunJobFunction>,
@@ -8013,6 +8892,7 @@ pub mod builder {
             value: RunFunction,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                await_: value.await_?,
                 function: value.function?,
             })
         }
@@ -8020,6 +8900,7 @@ pub mod builder {
     impl ::std::convert::From<super::RunFunction> for RunFunction {
         fn from(value: super::RunFunction) -> Self {
             Self {
+                await_: Ok(value.await_),
                 function: Ok(value.function),
             }
         }
@@ -8214,16 +9095,28 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct RunRunner {
+        await_: ::std::result::Result<bool, ::std::string::String>,
         runner: ::std::result::Result<super::RunJobRunner, ::std::string::String>,
     }
     impl ::std::default::Default for RunRunner {
         fn default() -> Self {
             Self {
+                await_: Ok(super::defaults::default_bool::<true>()),
                 runner: Err("no value supplied for runner".to_string()),
             }
         }
     }
     impl RunRunner {
+        pub fn await_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.await_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
         pub fn runner<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<super::RunJobRunner>,
@@ -8241,6 +9134,7 @@ pub mod builder {
             value: RunRunner,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                await_: value.await_?,
                 runner: value.runner?,
             })
         }
@@ -8248,22 +9142,47 @@ pub mod builder {
     impl ::std::convert::From<super::RunRunner> for RunRunner {
         fn from(value: super::RunRunner) -> Self {
             Self {
+                await_: Ok(value.await_),
                 runner: Ok(value.runner),
             }
         }
     }
     #[derive(Clone, Debug)]
     pub struct RunScript {
+        await_: ::std::result::Result<bool, ::std::string::String>,
+        return_: ::std::result::Result<super::ProcessReturnType, ::std::string::String>,
         script: ::std::result::Result<super::ScriptConfiguration, ::std::string::String>,
     }
     impl ::std::default::Default for RunScript {
         fn default() -> Self {
             Self {
+                await_: Ok(super::defaults::default_bool::<true>()),
+                return_: Ok(super::defaults::run_script_return()),
                 script: Err("no value supplied for script".to_string()),
             }
         }
     }
     impl RunScript {
+        pub fn await_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.await_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
+        pub fn return_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::ProcessReturnType>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.return_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for return_: {}", e));
+            self
+        }
         pub fn script<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<super::ScriptConfiguration>,
@@ -8281,6 +9200,8 @@ pub mod builder {
             value: RunScript,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                await_: value.await_?,
+                return_: value.return_?,
                 script: value.script?,
             })
         }
@@ -8288,7 +9209,75 @@ pub mod builder {
     impl ::std::convert::From<super::RunScript> for RunScript {
         fn from(value: super::RunScript) -> Self {
             Self {
+                await_: Ok(value.await_),
+                return_: Ok(value.return_),
                 script: Ok(value.script),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct RunShell {
+        await_: ::std::result::Result<bool, ::std::string::String>,
+        return_: ::std::result::Result<super::ProcessReturnType, ::std::string::String>,
+        shell: ::std::result::Result<super::ShellConfiguration, ::std::string::String>,
+    }
+    impl ::std::default::Default for RunShell {
+        fn default() -> Self {
+            Self {
+                await_: Ok(super::defaults::default_bool::<true>()),
+                return_: Ok(super::defaults::run_shell_return()),
+                shell: Err("no value supplied for shell".to_string()),
+            }
+        }
+    }
+    impl RunShell {
+        pub fn await_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.await_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
+        pub fn return_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::ProcessReturnType>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.return_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for return_: {}", e));
+            self
+        }
+        pub fn shell<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::ShellConfiguration>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.shell = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for shell: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<RunShell> for super::RunShell {
+        type Error = super::error::ConversionError;
+        fn try_from(value: RunShell) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                await_: value.await_?,
+                return_: value.return_?,
+                shell: value.shell?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::RunShell> for RunShell {
+        fn from(value: super::RunShell) -> Self {
+            Self {
+                await_: Ok(value.await_),
+                return_: Ok(value.return_),
+                shell: Ok(value.shell),
             }
         }
     }
@@ -8470,16 +9459,28 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct RunWorker {
+        await_: ::std::result::Result<bool, ::std::string::String>,
         worker: ::std::result::Result<super::RunJobWorker, ::std::string::String>,
     }
     impl ::std::default::Default for RunWorker {
         fn default() -> Self {
             Self {
+                await_: Ok(super::defaults::default_bool::<true>()),
                 worker: Err("no value supplied for worker".to_string()),
             }
         }
     }
     impl RunWorker {
+        pub fn await_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.await_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
         pub fn worker<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<super::RunJobWorker>,
@@ -8497,6 +9498,7 @@ pub mod builder {
             value: RunWorker,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                await_: value.await_?,
                 worker: value.worker?,
             })
         }
@@ -8504,7 +9506,62 @@ pub mod builder {
     impl ::std::convert::From<super::RunWorker> for RunWorker {
         fn from(value: super::RunWorker) -> Self {
             Self {
+                await_: Ok(value.await_),
                 worker: Ok(value.worker),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct RunWorkflow {
+        await_: ::std::result::Result<bool, ::std::string::String>,
+        workflow: ::std::result::Result<super::WorkflowConfiguration, ::std::string::String>,
+    }
+    impl ::std::default::Default for RunWorkflow {
+        fn default() -> Self {
+            Self {
+                await_: Ok(super::defaults::default_bool::<true>()),
+                workflow: Err("no value supplied for workflow".to_string()),
+            }
+        }
+    }
+    impl RunWorkflow {
+        pub fn await_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.await_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for await_: {}", e));
+            self
+        }
+        pub fn workflow<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::WorkflowConfiguration>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.workflow = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for workflow: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<RunWorkflow> for super::RunWorkflow {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: RunWorkflow,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                await_: value.await_?,
+                workflow: value.workflow?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::RunWorkflow> for RunWorkflow {
+        fn from(value: super::RunWorkflow) -> Self {
+            Self {
+                await_: Ok(value.await_),
+                workflow: Ok(value.workflow),
             }
         }
     }
@@ -9834,6 +10891,9 @@ pub mod builder {
 }
 #[doc = r" Generation of default values for serde."]
 pub mod defaults {
+    pub(super) fn default_bool<const V: bool>() -> bool {
+        V
+    }
     pub(super) fn call_http_output() -> super::HttpOutput {
         super::HttpOutput::Content
     }
@@ -9845,6 +10905,15 @@ pub mod defaults {
     }
     pub(super) fn for_task_configuration_each() -> ::std::string::String {
         "item".to_string()
+    }
+    pub(super) fn run_container_return() -> super::ProcessReturnType {
+        super::ProcessReturnType::Stdout
+    }
+    pub(super) fn run_script_return() -> super::ProcessReturnType {
+        super::ProcessReturnType::Stdout
+    }
+    pub(super) fn run_shell_return() -> super::ProcessReturnType {
+        super::ProcessReturnType::Stdout
     }
     pub(super) fn schema_variant0_format() -> ::std::string::String {
         "json".to_string()

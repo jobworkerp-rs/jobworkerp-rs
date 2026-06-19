@@ -15,8 +15,9 @@ use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use memory_utils::cache::moka::MokaCacheImpl;
 use proto::jobworkerp::data::{
-    JobId, JobResult, Priority, QueueType, ResponseType, ResultOutputItem, ResultStatus,
-    RetryPolicy, RetryType, RunnerData, RunnerId, StreamingType, Worker, WorkerData, WorkerId,
+    JobExecutionOverrides, JobId, JobResult, Priority, QueueType, ResponseType, ResultOutputItem,
+    ResultStatus, RetryPolicy, RetryType, RunnerData, RunnerId, StreamingType, Worker, WorkerData,
+    WorkerId,
 };
 use proto::{DEFAULT_METHOD_NAME, ProtobufHelper};
 use std::collections::HashMap;
@@ -255,6 +256,9 @@ pub trait UseJobExecutor:
         job_timeout_sec: u32,
         streaming_type: StreamingType,
         using: Option<String>, // using for MCP/Plugin runners
+        // Per-job overrides (e.g. response_type). Required for static workers
+        // whose persisted definition cannot be mutated per enqueue.
+        overrides: Option<JobExecutionOverrides>,
     ) -> impl std::future::Future<
         Output = Result<(
             JobId,
@@ -278,7 +282,7 @@ pub trait UseJobExecutor:
                         None,
                         streaming_type,
                         using,
-                        None,
+                        overrides,
                     )
                     .await
             } else {
@@ -296,7 +300,7 @@ pub trait UseJobExecutor:
                         streaming_type,
                         true,
                         using,
-                        None,
+                        overrides,
                     )
                     .await
             }
@@ -318,6 +322,9 @@ pub trait UseJobExecutor:
         job_timeout_sec: u32,
         streaming_type: StreamingType,
         using: Option<String>,
+        // Per-job overrides (e.g. response_type). Required for static workers
+        // whose persisted definition cannot be mutated per enqueue.
+        overrides: Option<JobExecutionOverrides>,
     ) -> impl std::future::Future<Output = Result<(JobId, ChannelJobResultFuture)>> + Send {
         async move {
             // Resolve to a concrete worker id (creating a temp worker if needed)
@@ -343,7 +350,7 @@ pub trait UseJobExecutor:
                     None,
                     streaming_type,
                     using,
-                    None,
+                    overrides,
                 )
                 .await
         }
@@ -429,6 +436,7 @@ pub trait UseJobExecutor:
                     job_timeout_sec,
                     streaming_type,
                     using, // Pass using parameter for MCP/Plugin runners
+                    None,
                 )
                 .await
             } else {
@@ -476,6 +484,7 @@ pub trait UseJobExecutor:
                         job_timeout_sec,
                         StreamingType::None, // no streaming
                         using.clone(),
+                        None,
                     )
                     .await?;
                 let output = res
@@ -549,6 +558,7 @@ pub trait UseJobExecutor:
                         job_timeout_sec,
                         streaming_type,
                         using, // Pass using parameter for MCP/Plugin workers
+                        None,
                     )
                     .await
                 } else {
@@ -624,6 +634,8 @@ pub trait UseJobExecutor:
         job_timeout_sec: u32,     // job timeout in seconds
         streaming_type: StreamingType, // streaming type for job
         using: Option<String>,    // using parameter for MCP/Plugin runners
+        // Per-job overrides (e.g. response_type) for the named (often static) worker.
+        overrides: Option<JobExecutionOverrides>,
     ) -> impl std::future::Future<Output = Result<NamedWorkerChannelJob>> + Send {
         async move {
             let (wid, worker_data, rid, rdata, job_args) = self
@@ -639,6 +651,7 @@ pub trait UseJobExecutor:
                     job_timeout_sec,
                     streaming_type,
                     using.clone(), // Pass using parameter for MCP/Plugin workers
+                    overrides,
                 )
                 .await?;
             Ok(NamedWorkerChannelJob {
@@ -676,6 +689,7 @@ pub trait UseJobExecutor:
                     job_timeout_sec,
                     streaming_type,
                     using.clone(), // Pass using parameter for MCP/Plugin workers
+                    None,
                 )
                 .await?;
             let Some(res) = res.1 else {
@@ -904,6 +918,7 @@ mod tests {
                 None,
                 30,
                 StreamingType::None,
+                None,
                 None,
             ),
         )

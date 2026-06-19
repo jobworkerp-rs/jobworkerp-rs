@@ -79,8 +79,10 @@ mv "$MERGED_FILE" "$TARGET_FILE"
 echo "✓ workflow.rs updated"
 echo
 
-# Cleanup temporary files
-rm -f "$HEADER_FILE"
+# Cleanup temporary files. $GENERATED_FILE is the typify intermediate; the
+# authoritative output is $TARGET_FILE, so the intermediate must not linger as
+# an untracked stale copy in the repo.
+rm -f "$HEADER_FILE" "$GENERATED_FILE"
 
 # Step 5: Verify build
 echo "Step 5: Verify build..."
@@ -108,7 +110,6 @@ echo "=== Schema update completed successfully! ==="
 echo
 echo "Summary:"
 echo "  - JSON schema: runner/schema/workflow.json"
-echo "  - Generated types: runner/schema/workflow.rs"
 echo "  - Final workflow.rs: infra/src/workflow/definition/workflow.rs"
 echo "  - Lines: $(wc -l < "$TARGET_FILE")"
 echo

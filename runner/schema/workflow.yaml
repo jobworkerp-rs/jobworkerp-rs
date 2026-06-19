@@ -399,29 +399,25 @@ $defs:
         title: RunTaskConfiguration
         description: Process execution configuration.
         unevaluatedProperties: false
-        properties:
-          await:
-            type: boolean
-            default: true
-            title: AwaitProcessCompletion
-            description: Wait for process completion before continuing.
-          return:
-            type: string
-            title: ProcessReturnType
-            description: Process output type to return.
-            enum: [stdout, stderr, code, all, none]
-            default: stdout
         oneOf:
           - $ref: "#/$defs/runWorker"
           - $ref: "#/$defs/runRunner"
           - $ref: "#/$defs/runFunction"
           - $ref: "#/$defs/runScript"
+          - $ref: "#/$defs/runShell"
+          - $ref: "#/$defs/runContainer"
+          - $ref: "#/$defs/runWorkflow"
   runRunner:
     type: object
     title: RunRunner
     description: Execute using a runner configuration.
     required: [runner]
     properties:
+      await: &awaitProcessCompletion
+        type: boolean
+        default: true
+        title: AwaitProcessCompletion
+        description: Wait for process completion before continuing.
       runner:
         type: object
         title: RunJobRunner
@@ -508,6 +504,7 @@ $defs:
     description: Execute using a worker configuration.
     required: [worker]
     properties:
+      await: *awaitProcessCompletion
       worker:
         type: object
         title: RunJobWorker
@@ -538,6 +535,7 @@ $defs:
     description: Execute using a function configuration.
     required: [function]
     properties:
+      await: *awaitProcessCompletion
       function:
         type: object
         title: RunJobFunction
@@ -598,9 +596,23 @@ $defs:
   runScript:
     type: object
     title: RunScript
-    description: Execute inline or external scripts (Serverless Workflow v1.0.0 compliant)
+    description: |
+      Execute inline or external scripts. This is close to Serverless Workflow
+      v1.0.0 run.script. await is supported (await: false runs fire-and-forget),
+      and return shapes the process result (stdout/stderr/code/all/none, default
+      stdout). Unlike run.shell / run.container, run.script has no
+      treatNonzeroAsError / successExitCodes option: a non-zero exit always
+      fails the task before return is applied, so return: code / all only
+      observe a successful exit (0).
     required: [script]
     properties:
+      await: *awaitProcessCompletion
+      return: &processReturnType
+        type: string
+        title: ProcessReturnType
+        description: Process output type to return.
+        enum: [stdout, stderr, code, all, none]
+        default: stdout
       script:
         type: object
         title: ScriptConfiguration
@@ -634,6 +646,149 @@ $defs:
         oneOf:
           - required: [code]
           - required: [source]
+    additionalProperties: false
+  runShell:
+    type: object
+    title: RunShell
+    description: Execute a shell command. Some optional fields are jobworkerp extensions.
+    required: [shell]
+    properties:
+      await: *awaitProcessCompletion
+      return: *processReturnType
+      shell:
+        $ref: "#/$defs/shellConfiguration"
+    additionalProperties: false
+  shellConfiguration:
+    title: ShellConfiguration
+    description: Shell command configuration. A string is treated as the command.
+    oneOf:
+      - type: string
+        title: ShellCommandLine
+      - type: object
+        title: ShellCommand
+        required: [command]
+        properties:
+          command:
+            type: string
+            title: ShellCommandName
+          args:
+            type: array
+            title: ShellCommandArguments
+            default: []
+            items:
+              type: string
+          workingDir:
+            type: string
+            title: ShellWorkingDirectory
+          withMemoryMonitoring:
+            type: boolean
+            title: ShellMemoryMonitoring
+            description: "Enable process memory observation. (jobworkerp extension)"
+          treatNonzeroAsError:
+            type: boolean
+            title: ShellTreatNonzeroAsError
+            description: "Treat non-zero exit codes as task failure unless the code is listed in successExitCodes. (jobworkerp extension)"
+          successExitCodes:
+            type: array
+            title: ShellSuccessExitCodes
+            description: "Additional process exit codes to treat as success. (jobworkerp extension)"
+            default: []
+            items:
+              type: integer
+              format: int32
+        additionalProperties: false
+  runContainer:
+    type: object
+    title: RunContainer
+    description: Execute a container. Some optional fields are jobworkerp extensions.
+    required: [container]
+    properties:
+      await: *awaitProcessCompletion
+      return: *processReturnType
+      container:
+        $ref: "#/$defs/containerConfiguration"
+    additionalProperties: false
+  containerConfiguration:
+    type: object
+    title: ContainerConfiguration
+    required: [image]
+    properties:
+      image:
+        type: string
+        title: ContainerImage
+      command:
+        type: array
+        title: ContainerCommand
+        default: []
+        items:
+          type: string
+      entrypoint:
+        type: array
+        title: ContainerEntrypoint
+        default: []
+        items:
+          type: string
+      env:
+        type: object
+        title: ContainerEnvironment
+        additionalProperties:
+          type: string
+      user:
+        type: string
+        title: ContainerUser
+      workingDir:
+        type: string
+        title: ContainerWorkingDirectory
+      timeoutSec:
+        type: integer
+        format: uint64
+        title: ContainerTimeoutSec
+        description: "Job timeout in seconds. (jobworkerp extension)"
+      treatNonzeroAsError:
+        type: boolean
+        title: ContainerTreatNonzeroAsError
+        description: "Treat non-zero exit codes as task failure unless the code is listed in successExitCodes. (jobworkerp extension)"
+      successExitCodes:
+        type: array
+        title: ContainerSuccessExitCodes
+        description: "Additional container process exit codes to treat as success. (jobworkerp extension)"
+        default: []
+        items:
+          type: integer
+          format: int32
+    additionalProperties: false
+  runWorkflow:
+    type: object
+    title: RunWorkflow
+    description: Execute a nested workflow using jobworkerp's source-based workflow extension.
+    required: [workflow]
+    properties:
+      await: *awaitProcessCompletion
+      workflow:
+        $ref: "#/$defs/workflowConfiguration"
+    additionalProperties: false
+  workflowConfiguration:
+    type: object
+    title: WorkflowConfiguration
+    description: "Nested workflow source. Parent workflow_context is inherited implicitly; workflowContext is not a DSL field. (jobworkerp extension)"
+    oneOf:
+      - required: [workflowData]
+      - required: [workflowUrl]
+    properties:
+      workflowData:
+        type: string
+        title: WorkflowData
+        description: "Inline nested workflow definition as JSON or YAML. (jobworkerp extension)"
+      workflowUrl:
+        type: string
+        title: WorkflowUrl
+        description: "Nested workflow definition URL or path. (jobworkerp extension)"
+      input:
+        title: WorkflowInput
+        description: Input passed to the nested workflow. Non-string values are serialized as JSON.
+      executionId:
+        type: string
+        title: WorkflowExecutionId
     additionalProperties: false
   setTask:
     type: object

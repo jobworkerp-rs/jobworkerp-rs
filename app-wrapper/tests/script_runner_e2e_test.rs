@@ -105,6 +105,17 @@ async fn execute_script_workflow(
     final_output.ok_or_else(|| anyhow::anyhow!("No output produced by workflow"))
 }
 
+/// Parse a script's stdout (the default `return: stdout`) as JSON.
+/// Per Serverless Workflow v1.0.0, `return: stdout` yields the raw stdout
+/// string, so tests whose scripts `print(json.dumps(...))` must parse it here.
+fn parse_script_json_output(output: &serde_json::Value) -> Result<serde_json::Value> {
+    let stdout = output
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("expected stdout string output, got {output:?}"))?;
+    serde_json::from_str(stdout)
+        .map_err(|e| anyhow::anyhow!("failed to parse script stdout as JSON: {e}; stdout={stdout}"))
+}
+
 /// Helper function to create test workflow JSON
 fn create_script_workflow(
     name: &str,
@@ -178,7 +189,8 @@ print(json.dumps({
         let workflow =
             create_script_workflow("base64-args-test", script_code, arguments, Some(metadata));
 
-        let result = execute_script_workflow(app, workflow, json!({"testInput": {}})).await?;
+        let raw = execute_script_workflow(app, workflow, json!({"testInput": {}})).await?;
+        let result = parse_script_json_output(&raw)?;
 
         println!("✅ Test 1 execution completed");
         println!("   - Output: {}", serde_json::to_string_pretty(&result)?);
@@ -230,7 +242,8 @@ Code example: print('hello')
 
         let workflow = create_script_workflow("injection-test", script_code, arguments, None);
 
-        let result = execute_script_workflow(app, workflow, json!({"testInput": {}})).await?;
+        let raw = execute_script_workflow(app, workflow, json!({"testInput": {}})).await?;
+        let result = parse_script_json_output(&raw)?;
 
         println!("✅ Test 2 execution completed");
         println!("   - Output: {}", serde_json::to_string_pretty(&result)?);
@@ -411,7 +424,8 @@ print(json.dumps({
             Some(metadata),
         );
 
-        let result = execute_script_workflow(app, workflow, json!({"testInput": {}})).await?;
+        let raw = execute_script_workflow(app, workflow, json!({"testInput": {}})).await?;
+        let result = parse_script_json_output(&raw)?;
 
         println!("✅ Test 5 execution completed");
         println!("   - Output: {}", serde_json::to_string_pretty(&result)?);

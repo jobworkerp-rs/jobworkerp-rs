@@ -306,23 +306,54 @@ The jobworkerp-rs workflow DSL adopts the logic construction aspects of the offi
 
 **Adopted (Flow Control & Logic Construction):**
 - Task definitions: `do`, `for`, `fork`, `switch`, `try`, `set`, `raise`, `wait`, `run` (with extensions)
-- `run` task: Adopts the same structure as the official `run.script` (language, code/source, arguments, environment)
+- `run` task: Adopts the same structure as the official `run.script` (language, code/source, arguments, environment), plus `run.shell`, `run.container`, and a jobworkerp-specific `run.workflow` source form
+- `call` task: Basic `call: http` support (method, endpoint, headers, query, body, output)
 - Runtime expressions: jq syntax (`${}`) for data transformation (plus Liquid template syntax (`$${}`) as a custom extension)
 - Flow control: Flow control via the `then` property (`continue`, `exit`, `end`, `wait` directives)
 - Input/output transformation: `input.from`, `output.as`, `export.as`
 
+`run.shell`, `run.container`, and `run.workflow` are not exact copies of the official task definitions:
+
+- `run.shell`: `withMemoryMonitoring`, `treatNonzeroAsError`, and `successExitCodes` are jobworkerp extensions. They affect monitoring and exit-code-to-task-failure handling.
+- `run.container`: `timeoutSec`, `treatNonzeroAsError`, and `successExitCodes` are jobworkerp extensions. They affect job timeout and exit-code-to-task-failure handling.
+- `await` is a common run option available on **every** `run.*` instance (`run.runner`, `run.function`, `run.worker`, `run.script`, `run.workflow`, `run.shell`, `run.container`). `await: false` enqueues the job fire-and-forget without waiting and continues with the current task input as the task output. The default is `await: true`. (Under `useStreaming: true`, `await: false` is rejected because streaming must collect a runner result.)
+- `return` is available on the process tasks `run.script`, `run.shell`, and `run.container` because those produce a process result `{code, stdout, stderr}`; runner / function / worker / workflow have runner-defined output types and reject `return`. `return` accepts `stdout`, `stderr`, `code`, `all`, and `none`; the default is `stdout` (the **raw stdout string**), and `return: all` produces `{code, stdout, stderr}`. For `run.script`, the default `stdout` returns the raw stdout text as-is — it is no longer auto-parsed as JSON, matching the Serverless Workflow v1.0.0 process-result contract. To consume structured output, have the script print JSON and parse the returned string, or use `return: all`.
+  - Exit-code handling differs between the process tasks. `run.shell` / `run.container` accept the `treatNonzeroAsError` and `successExitCodes` extensions and, by default, do **not** fail on a non-zero exit, so `return: code` and the `code` field of `return: all` can observe non-zero exit codes. `run.script` has no such option: a non-zero exit always fails the task before `return` is applied, so for scripts `return: code` / `return: all` only ever observe a successful exit (`0`).
+- `run.script`: streaming is not supported (the PYTHON_COMMAND runner has no streaming output), so a script task must run with `useStreaming: false` (the default). It still runs inside a streaming workflow when its own `useStreaming` is false.
+- `run.workflow`: `workflowData` / `workflowUrl` are jobworkerp extensions for specifying the nested workflow source. The official workflow process reference form is not implemented here. The parent workflow context is inherited implicitly; `workflowContext` is not a DSL field.
+
+Example:
+
+```yaml
+do:
+  - echo:
+      run:
+        shell:
+          command: echo
+          args: ["hello"]
+  - boxed:
+      run:
+        container:
+          image: alpine:3.20
+          command: ["echo", "hello"]
+  - child:
+      run:
+        workflow:
+          workflowUrl: file:///workflows/child.yaml
+          input:
+            value: 1
+```
+
 **Not Adopted:**
 - **Scheduling & event-driven triggers**: The official `schedule` (cron, interval), `listen`/`emit` (CloudEvents-based event waiting/emission) are not supported. Job scheduling is handled by jobworkerp-rs's [periodic job execution feature](operations.md)
-- **External service calls (call task)**: The official specification standardizes HTTP, gRPC, AsyncAPI, and OpenAPI protocols via the `call` task. In jobworkerp-rs, these are executed through `run` task's function/runner/worker using built-in Runners (HTTP_REQUEST, GRPC, etc.), MCP servers, or plugins
-- **run.container / run.shell**: The official container execution (`run.container`) and shell command execution (`run.shell`) are not supported. Equivalent functionality is available through the DOCKER runner and COMMAND runner via `run.function`/`run.runner`
-- **run.workflow**: The official nested workflow execution (`run.workflow`) is not supported. Use the WORKFLOW runner via `run.function`/`run.runner` instead
-- **await / return**: The `await` (completion waiting) and `return` (stdout/stderr/code/all/none) properties of the official `run` task exist in the schema definition but are not implemented in the execution code
+- **External service calls (call task)**: `call: http` is supported. `call: grpc`, AsyncAPI, OpenAPI, named function calls, endpoint-level authentication, and HTTP `output: raw` are not supported
+- **await / return scope**: `await` is supported on every `run.*` instance (`await: false` = fire-and-forget). `return` is available on the process tasks (script / shell / container); runner / function / worker / workflow reject it. Under `useStreaming: true`, `await: false` is rejected for all instances (and `run.script` itself does not support `useStreaming: true`).
 - **Authentication & secret management**: `use.authentications` and the `$secrets` variable are not supported. Authentication credentials are managed through Runner settings or environment variables
 - **Catalogs & extensions**: `use.catalogs` (external collections of reusable components), `use.extensions` (pre/post task processing injection), and `use.functions` (external function definitions) are not supported
 - **Lifecycle events**: CloudEvents-based workflow/task state change notifications are not supported. Instead, real-time monitoring is available via gRPC streaming
 
 **jobworkerp-rs-specific Extensions:**
-- `run.function` / `run.runner` / `run.worker`: Unified access to jobworkerp-rs's job execution platform from workflows (built-in Runners, MCP servers, plugins, etc.). These serve as replacements for the official `call` task, `run.container`, `run.shell`, and `run.workflow`
+- `run.function` / `run.runner` / `run.worker`: Unified access to jobworkerp-rs's job execution platform from workflows (built-in Runners, MCP servers, plugins, etc.)
 - `useStreaming` for streaming execution (progress monitoring for long-running tasks such as LLMs)
 - `checkpoint` for checkpoint and restart functionality
 - Liquid template syntax (`$${}`) for string templating
