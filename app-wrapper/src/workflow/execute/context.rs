@@ -52,6 +52,15 @@ pub struct WorkflowContext {
     /// per-task hot path, so we avoid the async lock's scheduling overhead.
     #[serde(skip)]
     pub running_job_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
+    /// Named authentication policies from `use.authentications`, for resolving
+    /// `authentication: { use: <name> }` references. `serde(skip)` so they never
+    /// leak into the serialized expression context or persisted checkpoints.
+    #[serde(skip)]
+    pub authentications: Arc<std::collections::HashMap<String, workflow::AuthenticationPolicy>>,
+    /// Secret names declared in `use.secrets`. Only these may be resolved from
+    /// the environment. Values are never stored here — only the declared names.
+    #[serde(skip)]
+    pub declared_secrets: Arc<HashSet<String>>,
 }
 impl WorkflowContext {
     pub fn new(
@@ -80,6 +89,20 @@ impl WorkflowContext {
                 .map(|o| Arc::new(Mutex::new(o.clone())))
                 .unwrap_or_else(|| Arc::new(Mutex::new(serde_json::Map::new()))),
             running_job_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            authentications: Arc::new(
+                workflow
+                    .use_
+                    .as_ref()
+                    .map(|c| c.authentications.clone())
+                    .unwrap_or_default(),
+            ),
+            declared_secrets: Arc::new(
+                workflow
+                    .use_
+                    .as_ref()
+                    .map(|c| c.secrets.iter().cloned().collect())
+                    .unwrap_or_default(),
+            ),
         }
     }
     // for test
@@ -101,6 +124,8 @@ impl WorkflowContext {
             checkpoint_position: None,
             context_variables: Arc::new(Mutex::new(serde_json::Map::new())),
             running_job_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            authentications: Arc::new(std::collections::HashMap::new()),
+            declared_secrets: Arc::new(HashSet::new()),
         }
     }
 

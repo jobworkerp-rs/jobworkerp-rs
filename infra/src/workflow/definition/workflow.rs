@@ -41,6 +41,206 @@ pub mod error {
         }
     }
 }
+#[doc = "Inline authentication policy. Property values may be literals or runtime expressions (`${ $secrets.<name> }`), or the scheme may reference a declared secret via `{ use: <name> }`."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"AuthenticationPolicy\","]
+#[doc = "  \"description\": \"Inline authentication policy. Property values may be literals or runtime expressions (`${ $secrets.<name> }`), or the scheme may reference a declared secret via `{ use: <name> }`.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"title\": \"BasicAuthenticationPolicy\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"basic\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"basic\": {"]
+#[doc = "          \"title\": \"BasicAuthentication\","]
+#[doc = "          \"oneOf\": ["]
+#[doc = "            {"]
+#[doc = "              \"title\": \"BasicAuthenticationProperties\","]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"password\","]
+#[doc = "                \"username\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"password\": {"]
+#[doc = "                  \"title\": \"BasicAuthenticationPassword\","]
+#[doc = "                  \"type\": \"string\""]
+#[doc = "                },"]
+#[doc = "                \"username\": {"]
+#[doc = "                  \"title\": \"BasicAuthenticationUsername\","]
+#[doc = "                  \"type\": \"string\""]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"unevaluatedProperties\": false"]
+#[doc = "            },"]
+#[doc = "            {"]
+#[doc = "              \"$ref\": \"#/$defs/secretBasedAuthenticationPolicy\""]
+#[doc = "            }"]
+#[doc = "          ]"]
+#[doc = "        }"]
+#[doc = "      }"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"title\": \"BearerAuthenticationPolicy\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"bearer\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"bearer\": {"]
+#[doc = "          \"title\": \"BearerAuthentication\","]
+#[doc = "          \"oneOf\": ["]
+#[doc = "            {"]
+#[doc = "              \"title\": \"BearerAuthenticationProperties\","]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"token\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"token\": {"]
+#[doc = "                  \"title\": \"BearerAuthenticationToken\","]
+#[doc = "                  \"type\": \"string\""]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"unevaluatedProperties\": false"]
+#[doc = "            },"]
+#[doc = "            {"]
+#[doc = "              \"$ref\": \"#/$defs/secretBasedAuthenticationPolicy\""]
+#[doc = "            }"]
+#[doc = "          ]"]
+#[doc = "        }"]
+#[doc = "      }"]
+#[doc = "    }"]
+#[doc = "  ],"]
+#[doc = "  \"unevaluatedProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+pub enum AuthenticationPolicy {
+    #[serde(rename = "basic")]
+    Basic(BasicAuthentication),
+    #[serde(rename = "bearer")]
+    Bearer(BearerAuthentication),
+}
+impl ::std::convert::From<&Self> for AuthenticationPolicy {
+    fn from(value: &AuthenticationPolicy) -> Self {
+        value.clone()
+    }
+}
+impl ::std::convert::From<BasicAuthentication> for AuthenticationPolicy {
+    fn from(value: BasicAuthentication) -> Self {
+        Self::Basic(value)
+    }
+}
+impl ::std::convert::From<BearerAuthentication> for AuthenticationPolicy {
+    fn from(value: BearerAuthentication) -> Self {
+        Self::Bearer(value)
+    }
+}
+#[doc = "BasicAuthentication"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"BasicAuthentication\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"title\": \"BasicAuthenticationProperties\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"password\","]
+#[doc = "        \"username\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"password\": {"]
+#[doc = "          \"title\": \"BasicAuthenticationPassword\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        \"username\": {"]
+#[doc = "          \"title\": \"BasicAuthenticationUsername\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"unevaluatedProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/secretBasedAuthenticationPolicy\""]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum BasicAuthentication {
+    BasicAuthenticationProperties {
+        password: ::std::string::String,
+        username: ::std::string::String,
+    },
+    SecretBasedAuthenticationPolicy(SecretBasedAuthenticationPolicy),
+}
+impl ::std::convert::From<&Self> for BasicAuthentication {
+    fn from(value: &BasicAuthentication) -> Self {
+        value.clone()
+    }
+}
+impl ::std::convert::From<SecretBasedAuthenticationPolicy> for BasicAuthentication {
+    fn from(value: SecretBasedAuthenticationPolicy) -> Self {
+        Self::SecretBasedAuthenticationPolicy(value)
+    }
+}
+#[doc = "BearerAuthentication"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"BearerAuthentication\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"title\": \"BearerAuthenticationProperties\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"token\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"token\": {"]
+#[doc = "          \"title\": \"BearerAuthenticationToken\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"unevaluatedProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/secretBasedAuthenticationPolicy\""]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum BearerAuthentication {
+    BearerAuthenticationProperties { token: ::std::string::String },
+    SecretBasedAuthenticationPolicy(SecretBasedAuthenticationPolicy),
+}
+impl ::std::convert::From<&Self> for BearerAuthentication {
+    fn from(value: &BearerAuthentication) -> Self {
+        value.clone()
+    }
+}
+impl ::std::convert::From<SecretBasedAuthenticationPolicy> for BearerAuthentication {
+    fn from(value: SecretBasedAuthenticationPolicy) -> Self {
+        Self::SecretBasedAuthenticationPolicy(value)
+    }
+}
 #[doc = "HTTP call parameters supported by the jobworkerp adapter."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -76,7 +276,27 @@ pub mod error {
 #[doc = "          \"properties\": {"]
 #[doc = "            \"authentication\": {"]
 #[doc = "              \"title\": \"HttpEndpointAuthentication\","]
-#[doc = "              \"description\": \"Accepted for validation but not executed in Phase 1.\""]
+#[doc = "              \"description\": \"Endpoint authentication. Inline bearer/basic policy, or a reference to a named policy declared under `use.authentications`.\","]
+#[doc = "              \"oneOf\": ["]
+#[doc = "                {"]
+#[doc = "                  \"$ref\": \"#/$defs/authenticationPolicy\""]
+#[doc = "                },"]
+#[doc = "                {"]
+#[doc = "                  \"title\": \"AuthenticationPolicyReference\","]
+#[doc = "                  \"type\": \"object\","]
+#[doc = "                  \"required\": ["]
+#[doc = "                    \"use\""]
+#[doc = "                  ],"]
+#[doc = "                  \"properties\": {"]
+#[doc = "                    \"use\": {"]
+#[doc = "                      \"title\": \"AuthenticationPolicyUse\","]
+#[doc = "                      \"description\": \"Name of a policy declared under use.authentications.\","]
+#[doc = "                      \"type\": \"string\""]
+#[doc = "                    }"]
+#[doc = "                  },"]
+#[doc = "                  \"unevaluatedProperties\": false"]
+#[doc = "                }"]
+#[doc = "              ]"]
 #[doc = "            },"]
 #[doc = "            \"uri\": {"]
 #[doc = "              \"title\": \"HttpEndpointObjectUri\","]
@@ -2054,7 +2274,27 @@ impl ForkTaskConfiguration {
 #[doc = "      \"properties\": {"]
 #[doc = "        \"authentication\": {"]
 #[doc = "          \"title\": \"HttpEndpointAuthentication\","]
-#[doc = "          \"description\": \"Accepted for validation but not executed in Phase 1.\""]
+#[doc = "          \"description\": \"Endpoint authentication. Inline bearer/basic policy, or a reference to a named policy declared under `use.authentications`.\","]
+#[doc = "          \"oneOf\": ["]
+#[doc = "            {"]
+#[doc = "              \"$ref\": \"#/$defs/authenticationPolicy\""]
+#[doc = "            },"]
+#[doc = "            {"]
+#[doc = "              \"title\": \"AuthenticationPolicyReference\","]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"use\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"use\": {"]
+#[doc = "                  \"title\": \"AuthenticationPolicyUse\","]
+#[doc = "                  \"description\": \"Name of a policy declared under use.authentications.\","]
+#[doc = "                  \"type\": \"string\""]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"unevaluatedProperties\": false"]
+#[doc = "            }"]
+#[doc = "          ]"]
 #[doc = "        },"]
 #[doc = "        \"uri\": {"]
 #[doc = "          \"title\": \"HttpEndpointObjectUri\","]
@@ -2072,15 +2312,66 @@ impl ForkTaskConfiguration {
 pub enum HttpEndpoint {
     Uri(::std::string::String),
     Object {
-        #[doc = "Accepted for validation but not executed in Phase 1."]
+        #[doc = "Endpoint authentication. Inline bearer/basic policy, or a reference to a named policy declared under `use.authentications`."]
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        authentication: ::std::option::Option<::serde_json::Value>,
+        authentication: ::std::option::Option<HttpEndpointAuthentication>,
         uri: ::std::string::String,
     },
 }
 impl ::std::convert::From<&Self> for HttpEndpoint {
     fn from(value: &HttpEndpoint) -> Self {
         value.clone()
+    }
+}
+#[doc = "Endpoint authentication. Inline bearer/basic policy, or a reference to a named policy declared under `use.authentications`."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"HttpEndpointAuthentication\","]
+#[doc = "  \"description\": \"Endpoint authentication. Inline bearer/basic policy, or a reference to a named policy declared under `use.authentications`.\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/authenticationPolicy\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"title\": \"AuthenticationPolicyReference\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"use\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"use\": {"]
+#[doc = "          \"title\": \"AuthenticationPolicyUse\","]
+#[doc = "          \"description\": \"Name of a policy declared under use.authentications.\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"unevaluatedProperties\": false"]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum HttpEndpointAuthentication {
+    Variant0(AuthenticationPolicy),
+    Variant1 {
+        #[doc = "Name of a policy declared under use.authentications."]
+        #[serde(rename = "use")]
+        use_: ::std::string::String,
+    },
+}
+impl ::std::convert::From<&Self> for HttpEndpointAuthentication {
+    fn from(value: &HttpEndpointAuthentication) -> Self {
+        value.clone()
+    }
+}
+impl ::std::convert::From<AuthenticationPolicy> for HttpEndpointAuthentication {
+    fn from(value: AuthenticationPolicy) -> Self {
+        Self::Variant0(value)
     }
 }
 #[doc = "HTTP output shape."]
@@ -3278,6 +3569,22 @@ impl RetryPolicy {
 #[doc = "  \"description\": \"Reusable workflow components.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"authentications\": {"]
+#[doc = "      \"title\": \"ReusableAuthentications\","]
+#[doc = "      \"description\": \"Named authentication policy definitions referenced via `authentication: { use: <name> }`.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": {"]
+#[doc = "        \"$ref\": \"#/$defs/authenticationPolicy\""]
+#[doc = "      }"]
+#[doc = "    },"]
+#[doc = "    \"secrets\": {"]
+#[doc = "      \"title\": \"ReusableSecrets\","]
+#[doc = "      \"description\": \"Declared secret names. Values are supplied at runtime via the `WORKFLOW_SECRET_<UPPER_SNAKE_NAME>` environment variable and are never written in the workflow definition. Only declared names may be referenced through `${ $secrets.<name> }`.\","]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"type\": \"string\""]
+#[doc = "      }"]
+#[doc = "    },"]
 #[doc = "    \"timeouts\": {"]
 #[doc = "      \"title\": \"ReusableTimeouts\","]
 #[doc = "      \"description\": \"Named timeout definitions.\","]
@@ -3293,6 +3600,15 @@ impl RetryPolicy {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct ReusableComponents {
+    #[doc = "Named authentication policy definitions referenced via `authentication: { use: <name> }`."]
+    #[serde(
+        default,
+        skip_serializing_if = ":: std :: collections :: HashMap::is_empty"
+    )]
+    pub authentications: ::std::collections::HashMap<::std::string::String, AuthenticationPolicy>,
+    #[doc = "Declared secret names. Values are supplied at runtime via the `WORKFLOW_SECRET_<UPPER_SNAKE_NAME>` environment variable and are never written in the workflow definition. Only declared names may be referenced through `${ $secrets.<name> }`."]
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub secrets: ::std::vec::Vec<::std::string::String>,
     #[doc = "Named timeout definitions."]
     #[serde(
         default,
@@ -3308,6 +3624,8 @@ impl ::std::convert::From<&ReusableComponents> for ReusableComponents {
 impl ::std::default::Default for ReusableComponents {
     fn default() -> Self {
         Self {
+            authentications: Default::default(),
+            secrets: Default::default(),
             timeouts: Default::default(),
         }
     }
@@ -4481,6 +4799,43 @@ pub enum ScriptConfiguration {
 impl ::std::convert::From<&Self> for ScriptConfiguration {
     fn from(value: &ScriptConfiguration) -> Self {
         value.clone()
+    }
+}
+#[doc = "Reference to a declared secret (under `use.secrets`). The runtime resolves the value from the `WORKFLOW_SECRET_<UPPER_SNAKE_NAME>` environment variable."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"SecretBasedAuthenticationPolicy\","]
+#[doc = "  \"description\": \"Reference to a declared secret (under `use.secrets`). The runtime resolves the value from the `WORKFLOW_SECRET_<UPPER_SNAKE_NAME>` environment variable.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"use\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"use\": {"]
+#[doc = "      \"title\": \"SecretBasedAuthenticationUse\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"unevaluatedProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+pub struct SecretBasedAuthenticationPolicy {
+    #[serde(rename = "use")]
+    pub use_: ::std::string::String,
+}
+impl ::std::convert::From<&SecretBasedAuthenticationPolicy> for SecretBasedAuthenticationPolicy {
+    fn from(value: &SecretBasedAuthenticationPolicy) -> Self {
+        value.clone()
+    }
+}
+impl SecretBasedAuthenticationPolicy {
+    pub fn builder() -> builder::SecretBasedAuthenticationPolicy {
+        Default::default()
     }
 }
 #[doc = "SetTask"]
@@ -8740,6 +9095,12 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct ReusableComponents {
+        authentications: ::std::result::Result<
+            ::std::collections::HashMap<::std::string::String, super::AuthenticationPolicy>,
+            ::std::string::String,
+        >,
+        secrets:
+            ::std::result::Result<::std::vec::Vec<::std::string::String>, ::std::string::String>,
         timeouts: ::std::result::Result<
             ::std::collections::HashMap<::std::string::String, super::Timeout>,
             ::std::string::String,
@@ -8748,11 +9109,35 @@ pub mod builder {
     impl ::std::default::Default for ReusableComponents {
         fn default() -> Self {
             Self {
+                authentications: Ok(Default::default()),
+                secrets: Ok(Default::default()),
                 timeouts: Ok(Default::default()),
             }
         }
     }
     impl ReusableComponents {
+        pub fn authentications<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<
+                    ::std::collections::HashMap<::std::string::String, super::AuthenticationPolicy>,
+                >,
+            T::Error: ::std::fmt::Display,
+        {
+            self.authentications = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for authentications: {}", e));
+            self
+        }
+        pub fn secrets<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.secrets = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for secrets: {}", e));
+            self
+        }
         pub fn timeouts<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<
@@ -8772,6 +9157,8 @@ pub mod builder {
             value: ReusableComponents,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                authentications: value.authentications?,
+                secrets: value.secrets?,
                 timeouts: value.timeouts?,
             })
         }
@@ -8779,6 +9166,8 @@ pub mod builder {
     impl ::std::convert::From<super::ReusableComponents> for ReusableComponents {
         fn from(value: super::ReusableComponents) -> Self {
             Self {
+                authentications: Ok(value.authentications),
+                secrets: Ok(value.secrets),
                 timeouts: Ok(value.timeouts),
             }
         }
@@ -9562,6 +9951,48 @@ pub mod builder {
             Self {
                 await_: Ok(value.await_),
                 workflow: Ok(value.workflow),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct SecretBasedAuthenticationPolicy {
+        use_: ::std::result::Result<::std::string::String, ::std::string::String>,
+    }
+    impl ::std::default::Default for SecretBasedAuthenticationPolicy {
+        fn default() -> Self {
+            Self {
+                use_: Err("no value supplied for use_".to_string()),
+            }
+        }
+    }
+    impl SecretBasedAuthenticationPolicy {
+        pub fn use_<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::string::String>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.use_ = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for use_: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<SecretBasedAuthenticationPolicy>
+        for super::SecretBasedAuthenticationPolicy
+    {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: SecretBasedAuthenticationPolicy,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self { use_: value.use_? })
+        }
+    }
+    impl ::std::convert::From<super::SecretBasedAuthenticationPolicy>
+        for SecretBasedAuthenticationPolicy
+    {
+        fn from(value: super::SecretBasedAuthenticationPolicy) -> Self {
+            Self {
+                use_: Ok(value.use_),
             }
         }
     }
