@@ -119,7 +119,12 @@ impl CallTaskExecutor {
         if let Some(policy) = inline {
             return Ok(policy.clone());
         }
-        let use_ref = use_ref.expect("authentication must be inline or a use reference");
+        let use_ref = use_ref.ok_or_else(|| {
+            Self::unsupported(
+                "authentication",
+                "authentication must be inline or a use reference".to_string(),
+            )
+        })?;
         let policy = named.get(use_ref).ok_or_else(|| {
             Self::unsupported(
                 "authentication",

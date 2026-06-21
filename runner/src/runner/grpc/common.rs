@@ -18,9 +18,9 @@ use tonic::{
 pub struct GrpcConnection {
     pub(crate) client: Option<tonic::client::Grpc<Channel>>,
     pub(crate) reflection_client: Option<GrpcReflectionClient>,
-    /// Reserved for future use: local proto file-based descriptor pool as fallback
-    /// when reflection is unavailable. Currently only set to None; used as fallback
-    /// path in get_input/output_message_descriptor().
+    /// Descriptor pool built from the settings `proto` source (if any), populated
+    /// in `create()`. `resolve_descriptor_pool()` returns this as the primary
+    /// source; the per-request args `proto` is only compiled when this is None.
     pub(crate) descriptor_pool: Option<Arc<DescriptorPool>>,
     pub(crate) max_message_size: Option<usize>,
     pub(crate) auth_token: Option<String>,
@@ -80,16 +80,8 @@ impl GrpcConnection {
         self.clear();
 
         let host = &settings.host;
-        let port = &settings.port;
-        let prtcl = if host.starts_with("http://") || host.starts_with("https://") {
-            ""
-        } else if settings.tls {
-            "https://"
-        } else {
-            "http://"
-        };
-
-        let mut endpoint = Endpoint::new(format!("{prtcl}{host}:{port}"))?;
+        let addr = Self::build_endpoint_addr(host, settings.port, settings.tls);
+        let mut endpoint = Endpoint::new(addr)?;
 
         if let Some(connection_timeout) = settings.connection_timeout {
             endpoint = endpoint.timeout(Duration::from_millis(connection_timeout as u64));
@@ -259,6 +251,28 @@ impl GrpcConnection {
         self.settings_as_json.or(*args_as_json).unwrap_or(false)
     }
 
+    /// Build the endpoint address from host/port/tls settings.
+    ///
+    /// A scheme already present on `host` is kept; otherwise `tls` selects
+    /// https/http. `port` is a non-optional proto3 field, so an omitted port
+    /// arrives as 0 (a valid, common case for `call.grpc` where the scheme's
+    /// default port should apply). Emitting `host:0` would make every such call
+    /// fail to connect, so a 0 port is left off and the endpoint default is used.
+    fn build_endpoint_addr(host: &str, port: u32, tls: bool) -> String {
+        let prtcl = if host.starts_with("http://") || host.starts_with("https://") {
+            ""
+        } else if tls {
+            "https://"
+        } else {
+            "http://"
+        };
+        if port == 0 {
+            format!("{prtcl}{host}")
+        } else {
+            format!("{prtcl}{host}:{port}")
+        }
+    }
+
     /// Strip http:// or https:// scheme prefix from a host string.
     fn strip_scheme(host: &str) -> String {
         host.strip_prefix("https://")
@@ -375,33 +389,39 @@ impl GrpcConnection {
         response_bytes: &[u8],
         descriptor_pool: Option<&DescriptorPool>,
     ) -> Result<String> {
-        if let Some(pool) = descriptor_pool {
-            let output_descriptor = self
-                .get_output_message_descriptor(method_path, Some(pool))
-                .await?;
-            let message =
-                ProtobufDescriptor::get_message_from_bytes(output_descriptor, response_bytes)?;
-            ProtobufDescriptor::message_to_json(&message)
-        } else if let Some(ref reflection_client) = self.reflection_client {
-            let output_descriptor = self
-                .get_output_message_descriptor(method_path, None)
-                .await?;
-            let message_name = output_descriptor.full_name();
+        let output_descriptor = self
+            .resolve_output_descriptor(method_path, descriptor_pool)
+            .await?;
+        Self::convert_response_bytes(&output_descriptor, response_bytes)
+    }
 
-            tracing::debug!(
-                "Converting response to JSON for method {} with output type {}",
-                method_path,
-                message_name
-            );
-
-            reflection_client
-                .parse_bytes_to_json(message_name, response_bytes)
+    /// Resolve the output `MessageDescriptor` for a method, from the descriptor
+    /// pool when available or via reflection otherwise. Callers converting many
+    /// responses for the same method (e.g. server streaming) should resolve once
+    /// and reuse the descriptor instead of re-resolving per response.
+    pub async fn resolve_output_descriptor(
+        &self,
+        method_path: &str,
+        descriptor_pool: Option<&DescriptorPool>,
+    ) -> Result<MessageDescriptor> {
+        if descriptor_pool.is_some() || self.reflection_client.is_some() {
+            self.get_output_message_descriptor(method_path, descriptor_pool)
                 .await
         } else {
             Err(anyhow!(
                 "no descriptor pool or reflection client available for JSON conversion"
             ))
         }
+    }
+
+    /// Decode protobuf response bytes into JSON using a pre-resolved descriptor.
+    pub fn convert_response_bytes(
+        output_descriptor: &MessageDescriptor,
+        response_bytes: &[u8],
+    ) -> Result<String> {
+        let message =
+            ProtobufDescriptor::get_message_from_bytes(output_descriptor.clone(), response_bytes)?;
+        ProtobufDescriptor::message_to_json(&message)
     }
 
     /// Whether a JSON<->protobuf conversion is possible: either a descriptor
@@ -650,6 +670,44 @@ service EchoService {
     #[test]
     fn test_strip_scheme_none() {
         assert_eq!(GrpcConnection::strip_scheme("example.com"), "example.com");
+    }
+
+    #[test]
+    fn build_endpoint_addr_with_explicit_port() {
+        assert_eq!(
+            GrpcConnection::build_endpoint_addr("example.com", 50051, false),
+            "http://example.com:50051"
+        );
+        assert_eq!(
+            GrpcConnection::build_endpoint_addr("example.com", 443, true),
+            "https://example.com:443"
+        );
+    }
+
+    #[test]
+    fn build_endpoint_addr_omits_zero_port() {
+        // An omitted `call.grpc` port arrives as proto3 default 0; the scheme's
+        // default port must be used instead of an unconnectable `host:0`.
+        assert_eq!(
+            GrpcConnection::build_endpoint_addr("example.com", 0, false),
+            "http://example.com"
+        );
+        assert_eq!(
+            GrpcConnection::build_endpoint_addr("example.com", 0, true),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn build_endpoint_addr_keeps_existing_scheme() {
+        assert_eq!(
+            GrpcConnection::build_endpoint_addr("https://example.com", 8443, false),
+            "https://example.com:8443"
+        );
+        assert_eq!(
+            GrpcConnection::build_endpoint_addr("http://example.com", 0, true),
+            "http://example.com"
+        );
     }
 
     #[test]
@@ -949,6 +1007,63 @@ service EchoService {
             .unwrap();
 
         assert_eq!(json, r#"{"responseText":"world"}"#);
+    }
+
+    #[tokio::test]
+    async fn resolve_output_descriptor_then_convert_bytes_matches_per_call_conversion() {
+        // Guards the streaming "resolve once, convert many" optimization: the
+        // output descriptor is resolved a single time and reused to decode each
+        // streamed body, and the result must equal the per-call convert path.
+        let conn = GrpcConnection::new();
+        let pool =
+            ProtobufDescriptor::build_protobuf_descriptor(&TEST_GRPC_PROTO.to_string()).unwrap();
+        let descriptor = pool
+            .get_message_by_name("example.EchoResponse")
+            .expect("EchoResponse descriptor");
+        let bodies: Vec<Vec<u8>> = ["one", "two", "three"]
+            .iter()
+            .map(|text| {
+                ProtobufDescriptor::json_to_message(
+                    descriptor.clone(),
+                    &format!(r#"{{"responseText":"{text}"}}"#),
+                    true,
+                )
+                .unwrap()
+            })
+            .collect();
+
+        let output_descriptor = conn
+            .resolve_output_descriptor("example.EchoService/Echo", Some(&pool))
+            .await
+            .unwrap();
+
+        let json_parts: Vec<String> = bodies
+            .iter()
+            .map(|body| GrpcConnection::convert_response_bytes(&output_descriptor, body).unwrap())
+            .collect();
+
+        assert_eq!(
+            json_parts,
+            vec![
+                r#"{"responseText":"one"}"#,
+                r#"{"responseText":"two"}"#,
+                r#"{"responseText":"three"}"#,
+            ]
+        );
+        // The aggregated form matches the streaming JSON-array body.
+        assert_eq!(
+            format!("[{}]", json_parts.join(",")),
+            r#"[{"responseText":"one"},{"responseText":"two"},{"responseText":"three"}]"#
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_output_descriptor_errors_without_pool_or_reflection() {
+        let conn = GrpcConnection::new();
+        let result = conn
+            .resolve_output_descriptor("example.EchoService/Echo", None)
+            .await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

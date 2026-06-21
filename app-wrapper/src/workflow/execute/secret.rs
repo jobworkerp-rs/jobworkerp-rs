@@ -407,13 +407,11 @@ pub(crate) fn authentication_header(
 }
 
 /// Extract a raw bearer token (without the `Bearer ` prefix) from a policy,
-/// resolving any `{ use: <name> }` secret reference. Used by the gRPC adapter
-/// where the runner sets `auth_token` and prepends `Bearer ` itself, so the
-/// adapter must supply the bare token to avoid a double `Bearer Bearer` prefix.
+/// resolving any `{ use: <name> }` secret reference, for callers that need the
+/// bare token rather than a full `Authorization` header value.
 ///
-/// Basic authentication is rejected: the gRPC runner's single `auth_token`
-/// field cannot represent `username:password` credentials. The value must not
-/// be logged.
+/// Basic authentication is rejected: a single bare token cannot represent
+/// `username:password` credentials. The value must not be logged.
 pub(crate) fn bearer_token_value(
     policy: &workflow::AuthenticationPolicy,
     declared_secrets: &std::collections::HashSet<String>,
