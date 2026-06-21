@@ -436,7 +436,13 @@ A multi-method runner supporting both unary and server streaming gRPC calls.
     "authorization": "Bearer token"
   },
   "timeout": 10000,
-  "as_json": true
+  "as_json": true,
+  "proto": {
+    "source": "https://example.com/protos/example.proto",
+    "fetch_headers": {
+      "authorization": "Bearer proto-token"
+    }
+  }
 }
 ```
 
@@ -446,7 +452,10 @@ The following fields can be set as defaults in runner settings. When set, they t
 - `method` (optional): Default gRPC method in "service/method" format. Useful when a worker always calls the same endpoint.
 - `metadata` (optional): Default request metadata as key-value pairs. Merged with args metadata; settings keys take priority over args keys with the same name.
 - `timeout` (optional): Default per-request timeout in milliseconds. This is distinct from `connection_timeout` which controls channel establishment.
-- `as_json` (optional): Default value for converting response to JSON using reflection.
+- `as_json` (optional): Default value for converting response to JSON. Requires either `use_reflection` or `proto`.
+- `proto` (optional): `.proto` definition used for JSON/protobuf conversion without reflection. `source` can be an `https://` URI, a `file://` URI, or inline proto text. `http://` is allowed only when `allow_insecure_http: true` is set. `fetch_headers` are sent when fetching over HTTP(S). `file://` sources are allowed only when `GRPC_PROTO_ALLOWED_DIR` is set to an allowed directory.
+
+When `proto` is set, the runner builds and caches a proto descriptor at worker load time or job execution time. The worker runtime must have `protoc` available. `proto` in runner settings takes priority over `proto` in job arguments.
 
 **Job Arguments (args_json) - Unary (using: "unary", default):**
 ```json
@@ -456,11 +465,14 @@ The following fields can be set as defaults in runner settings. When set, they t
   "metadata": {
     "authorization": "Bearer token"
   },
-  "timeout": 10000
+  "timeout": 10000,
+  "proto": {
+    "source": "syntax = \"proto3\"; package example.v1; ..."
+  }
 }
 ```
 
-- `method`, `metadata`, `timeout`, `as_json` are all optional when the corresponding field is set in runner settings. If both are set, the settings value takes priority.
+- `method`, `metadata`, `timeout`, `as_json`, `proto` are all optional when the corresponding field is set in runner settings. If both are set, the settings value takes priority.
 
 **Job Arguments (args_json) - Server Streaming (using: "streaming"):**
 ```json

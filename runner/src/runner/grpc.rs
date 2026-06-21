@@ -1,4 +1,5 @@
 pub mod common;
+pub mod proto_source;
 pub mod streaming;
 pub mod unary;
 
@@ -230,9 +231,14 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
         let result = async {
             let req = ProstMessageCodec::deserialize_message::<GrpcArgs>(args)?;
             let method = Self::resolve_method(using)?;
+            let descriptor_pool = self.connection.resolve_descriptor_pool(&req.proto).await?;
 
             match method {
-                METHOD_UNARY => self.connection.call_unary(&req, cancellation_token).await,
+                METHOD_UNARY => {
+                    self.connection
+                        .call_unary(&req, descriptor_pool.as_ref(), cancellation_token)
+                        .await
+                }
                 METHOD_STREAMING => {
                     let effective_grpc_method =
                         self.connection.resolve_effective_method(&req.method)?;
@@ -247,6 +253,7 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
                             &effective_metadata,
                             effective_timeout,
                             &req.request,
+                            descriptor_pool.as_ref(),
                             cancellation_token,
                         )
                         .await?;
@@ -258,17 +265,19 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
                         return Ok(data);
                     }
 
-                    // Build JSON body if reflection is available and as_json is requested
+                    // Build JSON body when as_json is requested and a descriptor
+                    // pool or reflection client is available for conversion.
                     let mut json_body = None;
-                    if as_json
-                        && self.connection.use_reflection
-                        && self.connection.reflection_client.is_some()
-                    {
+                    if as_json && self.connection.can_convert_json(descriptor_pool.as_ref()) {
                         let mut json_parts = Vec::new();
                         for body in &bodies {
                             match self
                                 .connection
-                                .convert_response_to_json(&effective_grpc_method, body)
+                                .convert_response_to_json(
+                                    &effective_grpc_method,
+                                    body,
+                                    descriptor_pool.as_ref(),
+                                )
                                 .await
                             {
                                 Ok(json_str) => json_parts.push(json_str),
@@ -306,6 +315,7 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
         let cancellation_token = self.get_cancellation_token().await;
         let req = ProstMessageCodec::deserialize_message::<GrpcArgs>(args)?;
         let method = Self::resolve_method(using)?;
+        let descriptor_pool = self.connection.resolve_descriptor_pool(&req.proto).await?;
 
         match method {
             METHOD_STREAMING => {
@@ -318,6 +328,7 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
                         &effective_metadata,
                         effective_timeout,
                         &req.request,
+                        descriptor_pool.as_ref(),
                         cancellation_token,
                     )
                     .await

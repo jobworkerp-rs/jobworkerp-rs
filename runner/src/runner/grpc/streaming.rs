@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
 use net_utils::grpc::RawBytesCodec;
+use prost_reflect::DescriptorPool;
 use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -18,6 +19,7 @@ impl GrpcConnection {
         metadata: &HashMap<String, String>,
         timeout: u32,
         request: &Option<grpc_args::Request>,
+        descriptor_pool: Option<&DescriptorPool>,
         cancellation_token: CancellationToken,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let mut client = self
@@ -44,7 +46,9 @@ impl GrpcConnection {
                 ))
             })?;
 
-            let request_bytes = self.prepare_request_bytes(method, request).await?;
+            let request_bytes = self
+                .prepare_request_bytes(method, request, descriptor_pool)
+                .await?;
             let request_len = request_bytes.len();
             let request = self.build_request(request_bytes, metadata);
 

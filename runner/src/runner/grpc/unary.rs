@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use net_utils::grpc::RawBytesCodec;
+use prost_reflect::DescriptorPool;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -13,6 +14,7 @@ impl GrpcConnection {
     pub async fn call_unary(
         &mut self,
         args: &GrpcArgs,
+        descriptor_pool: Option<&DescriptorPool>,
         cancellation_token: CancellationToken,
     ) -> Result<Vec<u8>> {
         let mut client = self
@@ -43,7 +45,9 @@ impl GrpcConnection {
                 ))
             })?;
 
-            let request_bytes = self.prepare_request_bytes(&method, &args.request).await?;
+            let request_bytes = self
+                .prepare_request_bytes(&method, &args.request, descriptor_pool)
+                .await?;
             let request_len = request_bytes.len();
             let request = self.build_request(request_bytes, &metadata);
 
@@ -86,11 +90,11 @@ impl GrpcConnection {
             Ok(response) => {
                 let metadata = GrpcConnection::metadata_map_to_hashmap(response.metadata());
                 let response_body = response.into_inner();
-                let response_data = if as_json
-                    && self.use_reflection
-                    && self.reflection_client.is_some()
-                {
-                    match self.convert_response_to_json(&method, &response_body).await {
+                let response_data = if as_json && self.can_convert_json(descriptor_pool) {
+                    match self
+                        .convert_response_to_json(&method, &response_body, descriptor_pool)
+                        .await
+                    {
                         Ok(json_str) => {
                             tracing::debug!("Converted response to JSON: {}", json_str);
                             Some(grpc_unary_result::ResponseData::JsonBody(json_str))

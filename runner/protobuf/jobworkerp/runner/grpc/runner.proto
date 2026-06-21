@@ -1,6 +1,22 @@
 syntax = "proto3";
 package jobworkerp.runner.grpc;
 
+// Proto descriptor source for JSON<->protobuf conversion without reflection.
+// Keep this structurally identical to GrpcArgsProtoSource in args.proto.
+message GrpcSettingsProtoSource {
+    // # Source
+    // Proto location: an https://, http://, file:// URI, or inline proto text.
+    string source = 1;
+
+    // # Fetch Headers
+    // HTTP headers sent when fetching source over HTTP(S).
+    map<string, string> fetch_headers = 2;
+
+    // # Allow Insecure HTTP
+    // Allow non-TLS http:// fetches. Defaults to false.
+    optional bool allow_insecure_http = 3;
+}
+
 // Configuration for gRPC runner connections (shared by unary and streaming methods)
 message GrpcRunnerSettings {
     // TLS configuration settings for secure connections
@@ -71,7 +87,12 @@ message GrpcRunnerSettings {
     optional uint32 timeout = 11;
 
     // # Default AsJson
-    // Default value for converting response to JSON using reflection.
+    // Default value for converting response to JSON using reflection or proto descriptor.
     // When set, this takes priority over as_json specified in GrpcArgs.
     optional bool as_json = 12;
+
+    // # Proto Source
+    // Descriptor source used instead of server reflection.
+    // When set, this takes priority over proto specified in GrpcArgs.
+    optional GrpcSettingsProtoSource proto = 13;
 }

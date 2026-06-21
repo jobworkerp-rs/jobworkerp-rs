@@ -113,6 +113,7 @@ fn create_grpc_settings(use_reflection: bool) -> Vec<u8> {
         metadata: HashMap::new(),
         timeout: None,
         as_json: None,
+        proto: None,
     };
     ProstMessageCodec::serialize_message(&settings).unwrap()
 }
@@ -130,6 +131,7 @@ fn create_grpc_job(
         metadata: HashMap::new(),
         timeout: Some(timeout),
         as_json: Some(as_json),
+        proto: None,
     };
     let args_bytes = ProstMessageCodec::serialize_message(&grpc_args).unwrap();
 
@@ -682,6 +684,7 @@ fn create_grpc_settings_with_defaults(
         metadata: HashMap::new(),
         timeout,
         as_json,
+        proto: None,
     };
     ProstMessageCodec::serialize_message(&settings).unwrap()
 }
@@ -725,6 +728,7 @@ async fn test_grpc_unary_with_settings_defaults() -> Result<()> {
         metadata: HashMap::new(),
         timeout: None,
         as_json: None,
+        proto: None,
     };
     let args_bytes = ProstMessageCodec::serialize_message(&grpc_args).unwrap();
 
@@ -793,6 +797,7 @@ async fn test_grpc_connection_failure() -> Result<()> {
         metadata: HashMap::new(),
         timeout: None,
         as_json: None,
+        proto: None,
     };
     let settings_bytes = ProstMessageCodec::serialize_message(&settings)?;
 
