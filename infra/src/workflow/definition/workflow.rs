@@ -241,6 +241,113 @@ impl ::std::convert::From<SecretBasedAuthenticationPolicy> for BearerAuthenticat
         Self::SecretBasedAuthenticationPolicy(value)
     }
 }
+#[doc = "gRPC unary call parameters supported by the jobworkerp adapter. The arguments map is sent as a JSON body resolved via server reflection."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"CallGrpc\","]
+#[doc = "  \"description\": \"gRPC unary call parameters supported by the jobworkerp adapter. The arguments map is sent as a JSON body resolved via server reflection.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"method\","]
+#[doc = "    \"service\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"arguments\": {"]
+#[doc = "      \"title\": \"GrpcArguments\","]
+#[doc = "      \"description\": \"Name/value mapping of the call arguments. Serialized to a JSON request body and converted to protobuf by the runner via reflection.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": true"]
+#[doc = "    },"]
+#[doc = "    \"method\": {"]
+#[doc = "      \"title\": \"GrpcMethod\","]
+#[doc = "      \"description\": \"Name of the gRPC method to invoke on the service.\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"proto\": {"]
+#[doc = "      \"title\": \"GrpcProto\","]
+#[doc = "      \"description\": \"Official proto resource reference. Accepted for validation but not executed by the jobworkerp adapter (reflection is used instead); rejected at execution time.\""]
+#[doc = "    },"]
+#[doc = "    \"service\": {"]
+#[doc = "      \"title\": \"GrpcService\","]
+#[doc = "      \"description\": \"gRPC service connection target.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"host\","]
+#[doc = "        \"name\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"authentication\": {"]
+#[doc = "          \"title\": \"GrpcServiceAuthentication\","]
+#[doc = "          \"description\": \"Service authentication. Inline bearer policy, or a reference to a named policy declared under `use.authentications`. Only bearer is supported; basic is rejected at execution time.\","]
+#[doc = "          \"oneOf\": ["]
+#[doc = "            {"]
+#[doc = "              \"$ref\": \"#/$defs/authenticationPolicy\""]
+#[doc = "            },"]
+#[doc = "            {"]
+#[doc = "              \"title\": \"AuthenticationPolicyReference\","]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"required\": ["]
+#[doc = "                \"use\""]
+#[doc = "              ],"]
+#[doc = "              \"properties\": {"]
+#[doc = "                \"use\": {"]
+#[doc = "                  \"title\": \"AuthenticationPolicyUse\","]
+#[doc = "                  \"description\": \"Name of a policy declared under use.authentications.\","]
+#[doc = "                  \"type\": \"string\""]
+#[doc = "                }"]
+#[doc = "              },"]
+#[doc = "              \"unevaluatedProperties\": false"]
+#[doc = "            }"]
+#[doc = "          ]"]
+#[doc = "        },"]
+#[doc = "        \"host\": {"]
+#[doc = "          \"title\": \"GrpcServiceHost\","]
+#[doc = "          \"description\": \"Hostname or IP of the gRPC server.\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        \"name\": {"]
+#[doc = "          \"title\": \"GrpcServiceName\","]
+#[doc = "          \"description\": \"Fully qualified gRPC service name (e.g. package.Service).\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        \"port\": {"]
+#[doc = "          \"title\": \"GrpcServicePort\","]
+#[doc = "          \"description\": \"Port of the gRPC server.\","]
+#[doc = "          \"type\": \"integer\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"unevaluatedProperties\": false"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"unevaluatedProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+pub struct CallGrpc {
+    #[doc = "Name/value mapping of the call arguments. Serialized to a JSON request body and converted to protobuf by the runner via reflection."]
+    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+    pub arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    #[doc = "Name of the gRPC method to invoke on the service."]
+    pub method: ::std::string::String,
+    #[doc = "Official proto resource reference. Accepted for validation but not executed by the jobworkerp adapter (reflection is used instead); rejected at execution time."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub proto: ::std::option::Option<::serde_json::Value>,
+    pub service: GrpcService,
+}
+impl ::std::convert::From<&CallGrpc> for CallGrpc {
+    fn from(value: &CallGrpc) -> Self {
+        value.clone()
+    }
+}
+impl CallGrpc {
+    pub fn builder() -> builder::CallGrpc {
+        Default::default()
+    }
+}
 #[doc = "HTTP call parameters supported by the jobworkerp adapter."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -389,10 +496,11 @@ impl CallHttp {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"call\": {"]
 #[doc = "      \"title\": \"CallTaskType\","]
-#[doc = "      \"description\": \"Phase 1 supports only the HTTP call type.\","]
+#[doc = "      \"description\": \"Supported call types (HTTP and gRPC unary).\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"enum\": ["]
-#[doc = "        \"http\""]
+#[doc = "        \"http\","]
+#[doc = "        \"grpc\""]
 #[doc = "      ]"]
 #[doc = "    },"]
 #[doc = "    \"checkpoint\": {"]
@@ -449,8 +557,15 @@ impl CallHttp {
 #[doc = "    },"]
 #[doc = "    \"with\": {"]
 #[doc = "      \"title\": \"CallTaskWith\","]
-#[doc = "      \"description\": \"HTTP call input.\","]
-#[doc = "      \"$ref\": \"#/$defs/callHttp\""]
+#[doc = "      \"description\": \"Call input. HTTP or gRPC parameters.\","]
+#[doc = "      \"oneOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"$ref\": \"#/$defs/callHttp\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"$ref\": \"#/$defs/callGrpc\""]
+#[doc = "        }"]
+#[doc = "      ]"]
 #[doc = "    }"]
 #[doc = "  }"]
 #[doc = "}"]
@@ -458,7 +573,7 @@ impl CallHttp {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct CallTask {
-    #[doc = "Phase 1 supports only the HTTP call type."]
+    #[doc = "Supported call types (HTTP and gRPC unary)."]
     pub call: CallTaskType,
     #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
@@ -487,8 +602,8 @@ pub struct CallTask {
     pub then: ::std::option::Option<FlowDirective>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub timeout: ::std::option::Option<TaskTimeout>,
-    #[doc = "HTTP call input."]
-    pub with: CallHttp,
+    #[doc = "Call input. HTTP or gRPC parameters."]
+    pub with: CallTaskWith,
 }
 impl ::std::convert::From<&CallTask> for CallTask {
     fn from(value: &CallTask) -> Self {
@@ -500,17 +615,18 @@ impl CallTask {
         Default::default()
     }
 }
-#[doc = "Phase 1 supports only the HTTP call type."]
+#[doc = "Supported call types (HTTP and gRPC unary)."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"CallTaskType\","]
-#[doc = "  \"description\": \"Phase 1 supports only the HTTP call type.\","]
+#[doc = "  \"description\": \"Supported call types (HTTP and gRPC unary).\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"enum\": ["]
-#[doc = "    \"http\""]
+#[doc = "    \"http\","]
+#[doc = "    \"grpc\""]
 #[doc = "  ]"]
 #[doc = "}"]
 #[doc = r" ```"]
@@ -530,6 +646,8 @@ impl CallTask {
 pub enum CallTaskType {
     #[serde(rename = "http")]
     Http,
+    #[serde(rename = "grpc")]
+    Grpc,
 }
 impl ::std::convert::From<&Self> for CallTaskType {
     fn from(value: &CallTaskType) -> Self {
@@ -540,6 +658,7 @@ impl ::std::fmt::Display for CallTaskType {
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         match *self {
             Self::Http => write!(f, "http"),
+            Self::Grpc => write!(f, "grpc"),
         }
     }
 }
@@ -548,6 +667,7 @@ impl ::std::str::FromStr for CallTaskType {
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         match value {
             "http" => Ok(Self::Http),
+            "grpc" => Ok(Self::Grpc),
             _ => Err("invalid value".into()),
         }
     }
@@ -572,6 +692,46 @@ impl ::std::convert::TryFrom<::std::string::String> for CallTaskType {
         value: ::std::string::String,
     ) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
+    }
+}
+#[doc = "Call input. HTTP or gRPC parameters."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"CallTaskWith\","]
+#[doc = "  \"description\": \"Call input. HTTP or gRPC parameters.\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/callHttp\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/callGrpc\""]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum CallTaskWith {
+    Http(CallHttp),
+    Grpc(CallGrpc),
+}
+impl ::std::convert::From<&Self> for CallTaskWith {
+    fn from(value: &CallTaskWith) -> Self {
+        value.clone()
+    }
+}
+impl ::std::convert::From<CallHttp> for CallTaskWith {
+    fn from(value: CallHttp) -> Self {
+        Self::Http(value)
+    }
+}
+impl ::std::convert::From<CallGrpc> for CallTaskWith {
+    fn from(value: CallGrpc) -> Self {
+        Self::Grpc(value)
     }
 }
 #[doc = "Static error filter configuration."]
@@ -2250,6 +2410,138 @@ impl ::std::convert::From<&ForkTaskConfiguration> for ForkTaskConfiguration {
 impl ForkTaskConfiguration {
     pub fn builder() -> builder::ForkTaskConfiguration {
         Default::default()
+    }
+}
+#[doc = "gRPC service connection target."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"GrpcService\","]
+#[doc = "  \"description\": \"gRPC service connection target.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"host\","]
+#[doc = "    \"name\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"authentication\": {"]
+#[doc = "      \"title\": \"GrpcServiceAuthentication\","]
+#[doc = "      \"description\": \"Service authentication. Inline bearer policy, or a reference to a named policy declared under `use.authentications`. Only bearer is supported; basic is rejected at execution time.\","]
+#[doc = "      \"oneOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"$ref\": \"#/$defs/authenticationPolicy\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"title\": \"AuthenticationPolicyReference\","]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"use\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"use\": {"]
+#[doc = "              \"title\": \"AuthenticationPolicyUse\","]
+#[doc = "              \"description\": \"Name of a policy declared under use.authentications.\","]
+#[doc = "              \"type\": \"string\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"unevaluatedProperties\": false"]
+#[doc = "        }"]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"host\": {"]
+#[doc = "      \"title\": \"GrpcServiceHost\","]
+#[doc = "      \"description\": \"Hostname or IP of the gRPC server.\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"name\": {"]
+#[doc = "      \"title\": \"GrpcServiceName\","]
+#[doc = "      \"description\": \"Fully qualified gRPC service name (e.g. package.Service).\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"port\": {"]
+#[doc = "      \"title\": \"GrpcServicePort\","]
+#[doc = "      \"description\": \"Port of the gRPC server.\","]
+#[doc = "      \"type\": \"integer\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"unevaluatedProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+pub struct GrpcService {
+    #[doc = "Service authentication. Inline bearer policy, or a reference to a named policy declared under `use.authentications`. Only bearer is supported; basic is rejected at execution time."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub authentication: ::std::option::Option<GrpcServiceAuthentication>,
+    #[doc = "Hostname or IP of the gRPC server."]
+    pub host: ::std::string::String,
+    #[doc = "Fully qualified gRPC service name (e.g. package.Service)."]
+    pub name: ::std::string::String,
+    #[doc = "Port of the gRPC server."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub port: ::std::option::Option<i64>,
+}
+impl ::std::convert::From<&GrpcService> for GrpcService {
+    fn from(value: &GrpcService) -> Self {
+        value.clone()
+    }
+}
+impl GrpcService {
+    pub fn builder() -> builder::GrpcService {
+        Default::default()
+    }
+}
+#[doc = "Service authentication. Inline bearer policy, or a reference to a named policy declared under `use.authentications`. Only bearer is supported; basic is rejected at execution time."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"GrpcServiceAuthentication\","]
+#[doc = "  \"description\": \"Service authentication. Inline bearer policy, or a reference to a named policy declared under `use.authentications`. Only bearer is supported; basic is rejected at execution time.\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/authenticationPolicy\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"title\": \"AuthenticationPolicyReference\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"use\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"use\": {"]
+#[doc = "          \"title\": \"AuthenticationPolicyUse\","]
+#[doc = "          \"description\": \"Name of a policy declared under use.authentications.\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"unevaluatedProperties\": false"]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum GrpcServiceAuthentication {
+    Variant0(AuthenticationPolicy),
+    Variant1 {
+        #[doc = "Name of a policy declared under use.authentications."]
+        #[serde(rename = "use")]
+        use_: ::std::string::String,
+    },
+}
+impl ::std::convert::From<&Self> for GrpcServiceAuthentication {
+    fn from(value: &GrpcServiceAuthentication) -> Self {
+        value.clone()
+    }
+}
+impl ::std::convert::From<AuthenticationPolicy> for GrpcServiceAuthentication {
+    fn from(value: AuthenticationPolicy) -> Self {
+        Self::Variant0(value)
     }
 }
 #[doc = "Literal endpoint URI or endpoint object."]
@@ -6827,6 +7119,94 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowVersion {
 #[doc = r" Types for composing complex structures."]
 pub mod builder {
     #[derive(Clone, Debug)]
+    pub struct CallGrpc {
+        arguments: ::std::result::Result<
+            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+            ::std::string::String,
+        >,
+        method: ::std::result::Result<::std::string::String, ::std::string::String>,
+        proto: ::std::result::Result<
+            ::std::option::Option<::serde_json::Value>,
+            ::std::string::String,
+        >,
+        service: ::std::result::Result<super::GrpcService, ::std::string::String>,
+    }
+    impl ::std::default::Default for CallGrpc {
+        fn default() -> Self {
+            Self {
+                arguments: Ok(Default::default()),
+                method: Err("no value supplied for method".to_string()),
+                proto: Ok(Default::default()),
+                service: Err("no value supplied for service".to_string()),
+            }
+        }
+    }
+    impl CallGrpc {
+        pub fn arguments<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<
+                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                >,
+            T::Error: ::std::fmt::Display,
+        {
+            self.arguments = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for arguments: {}", e));
+            self
+        }
+        pub fn method<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::string::String>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.method = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for method: {}", e));
+            self
+        }
+        pub fn proto<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<::serde_json::Value>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.proto = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for proto: {}", e));
+            self
+        }
+        pub fn service<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::GrpcService>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.service = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for service: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<CallGrpc> for super::CallGrpc {
+        type Error = super::error::ConversionError;
+        fn try_from(value: CallGrpc) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                arguments: value.arguments?,
+                method: value.method?,
+                proto: value.proto?,
+                service: value.service?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::CallGrpc> for CallGrpc {
+        fn from(value: super::CallGrpc) -> Self {
+            Self {
+                arguments: Ok(value.arguments),
+                method: Ok(value.method),
+                proto: Ok(value.proto),
+                service: Ok(value.service),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
     pub struct CallHttp {
         body: ::std::result::Result<
             ::std::option::Option<::serde_json::Value>,
@@ -6985,7 +7365,7 @@ pub mod builder {
         >,
         timeout:
             ::std::result::Result<::std::option::Option<super::TaskTimeout>, ::std::string::String>,
-        with: ::std::result::Result<super::CallHttp, ::std::string::String>,
+        with: ::std::result::Result<super::CallTaskWith, ::std::string::String>,
     }
     impl ::std::default::Default for CallTask {
         fn default() -> Self {
@@ -7098,7 +7478,7 @@ pub mod builder {
         }
         pub fn with<T>(mut self, value: T) -> Self
         where
-            T: ::std::convert::TryInto<super::CallHttp>,
+            T: ::std::convert::TryInto<super::CallTaskWith>,
             T::Error: ::std::fmt::Display,
         {
             self.with = value
@@ -8544,6 +8924,91 @@ pub mod builder {
             Self {
                 branches: Ok(value.branches),
                 compete: Ok(value.compete),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct GrpcService {
+        authentication: ::std::result::Result<
+            ::std::option::Option<super::GrpcServiceAuthentication>,
+            ::std::string::String,
+        >,
+        host: ::std::result::Result<::std::string::String, ::std::string::String>,
+        name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        port: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+    }
+    impl ::std::default::Default for GrpcService {
+        fn default() -> Self {
+            Self {
+                authentication: Ok(Default::default()),
+                host: Err("no value supplied for host".to_string()),
+                name: Err("no value supplied for name".to_string()),
+                port: Ok(Default::default()),
+            }
+        }
+    }
+    impl GrpcService {
+        pub fn authentication<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::GrpcServiceAuthentication>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.authentication = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for authentication: {}", e));
+            self
+        }
+        pub fn host<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::string::String>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.host = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for host: {}", e));
+            self
+        }
+        pub fn name<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::string::String>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.name = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for name: {}", e));
+            self
+        }
+        pub fn port<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<i64>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.port = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for port: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<GrpcService> for super::GrpcService {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: GrpcService,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                authentication: value.authentication?,
+                host: value.host?,
+                name: value.name?,
+                port: value.port?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::GrpcService> for GrpcService {
+        fn from(value: super::GrpcService) -> Self {
+            Self {
+                authentication: Ok(value.authentication),
+                host: Ok(value.host),
+                name: Ok(value.name),
+                port: Ok(value.port),
             }
         }
     }

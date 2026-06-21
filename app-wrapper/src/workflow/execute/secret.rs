@@ -406,6 +406,29 @@ pub(crate) fn authentication_header(
     Ok(("Authorization".to_string(), value))
 }
 
+/// Extract a raw bearer token (without the `Bearer ` prefix) from a policy,
+/// resolving any `{ use: <name> }` secret reference. Used by the gRPC adapter
+/// where the runner sets `auth_token` and prepends `Bearer ` itself, so the
+/// adapter must supply the bare token to avoid a double `Bearer Bearer` prefix.
+///
+/// Basic authentication is rejected: the gRPC runner's single `auth_token`
+/// field cannot represent `username:password` credentials. The value must not
+/// be logged.
+pub(crate) fn bearer_token_value(
+    policy: &workflow::AuthenticationPolicy,
+    declared_secrets: &std::collections::HashSet<String>,
+    getter: &impl Fn(&str) -> Option<String>,
+) -> Result<String> {
+    match policy {
+        workflow::AuthenticationPolicy::Bearer(bearer) => {
+            bearer_token(bearer, declared_secrets, getter)
+        }
+        workflow::AuthenticationPolicy::Basic(_) => Err(anyhow!(
+            "basic authentication is not supported for gRPC; use bearer"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +554,53 @@ mod tests {
         let value = authorization_value(&policy, &declared(&[]), &|_| None).unwrap();
 
         assert_eq!(value, "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
+    }
+
+    #[test]
+    fn bearer_token_value_returns_bare_token_without_prefix() {
+        // The gRPC runner prepends `Bearer ` itself, so the adapter must supply
+        // the bare token (no `Bearer ` prefix) to avoid double-prefixing.
+        let policy = workflow::AuthenticationPolicy::Bearer(
+            workflow::BearerAuthentication::BearerAuthenticationProperties {
+                token: "abc123".to_string(),
+            },
+        );
+
+        let value = bearer_token_value(&policy, &declared(&[]), &|_| None).unwrap();
+
+        assert_eq!(value, "abc123");
+    }
+
+    #[test]
+    fn bearer_token_value_resolves_use_secret_from_env() {
+        let policy = workflow::AuthenticationPolicy::Bearer(
+            workflow::BearerAuthentication::SecretBasedAuthenticationPolicy(
+                workflow::SecretBasedAuthenticationPolicy {
+                    use_: "API_TOKEN".parse().unwrap(),
+                },
+            ),
+        );
+
+        let value = bearer_token_value(&policy, &declared(&["API_TOKEN"]), &|k| {
+            (k == "WORKFLOW_SECRET_API_TOKEN").then(|| "env-token".to_string())
+        })
+        .unwrap();
+
+        assert_eq!(value, "env-token");
+    }
+
+    #[test]
+    fn bearer_token_value_rejects_basic_policy() {
+        let policy = workflow::AuthenticationPolicy::Basic(
+            workflow::BasicAuthentication::BasicAuthenticationProperties {
+                username: "admin".to_string(),
+                password: "s3cret".to_string(),
+            },
+        );
+
+        let err = bearer_token_value(&policy, &declared(&[]), &|_| None).unwrap_err();
+        assert!(err.to_string().contains("basic"));
+        // The password must never leak into the error.
+        assert!(!err.to_string().contains("s3cret"));
     }
 }

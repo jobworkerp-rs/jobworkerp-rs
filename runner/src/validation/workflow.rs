@@ -441,15 +441,97 @@ do:
         output: raw
 "#;
 
-    const CALL_GRPC_UNSUPPORTED: &str = r#"
+    const CALL_GRPC_MINIMAL: &str = r#"
 document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-grpc, version: "1.0.0" }
-input: { schema: { document: { type: object } } }
 do:
-  - fetch:
+  - greet:
       call: grpc
       with:
-        method: Get
-        endpoint: https://example.com
+        service:
+          name: helloworld.Greeter
+          host: localhost
+          port: 50051
+        method: SayHello
+        arguments:
+          name: world
+"#;
+
+    const CALL_GRPC_BEARER_INLINE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-grpc-bearer, version: "1.0.0" }
+do:
+  - greet:
+      call: grpc
+      with:
+        service:
+          name: helloworld.Greeter
+          host: localhost
+          port: 50051
+          authentication:
+            bearer:
+              token: my-token
+        method: SayHello
+"#;
+
+    const CALL_GRPC_BEARER_USE_SECRET: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-grpc-bearer-use, version: "1.0.0" }
+use:
+  secrets: [API_TOKEN]
+do:
+  - greet:
+      call: grpc
+      with:
+        service:
+          name: helloworld.Greeter
+          host: localhost
+          authentication:
+            bearer:
+              use: API_TOKEN
+        method: SayHello
+"#;
+
+    const CALL_GRPC_MISSING_SERVICE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-grpc-no-service, version: "1.0.0" }
+do:
+  - greet:
+      call: grpc
+      with:
+        method: SayHello
+"#;
+
+    const CALL_GRPC_MISSING_METHOD: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-grpc-no-method, version: "1.0.0" }
+do:
+  - greet:
+      call: grpc
+      with:
+        service:
+          name: helloworld.Greeter
+          host: localhost
+"#;
+
+    const CALL_GRPC_SERVICE_MISSING_HOST: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-grpc-no-host, version: "1.0.0" }
+do:
+  - greet:
+      call: grpc
+      with:
+        service:
+          name: helloworld.Greeter
+        method: SayHello
+"#;
+
+    const CALL_GRPC_UNKNOWN_FIELD: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-grpc-typo, version: "1.0.0" }
+do:
+  - greet:
+      call: grpc
+      with:
+        service:
+          name: helloworld.Greeter
+          host: localhost
+        method: SayHello
+        argments:
+          name: world
 "#;
 
     const RUN_SHELL_STRING: &str = r#"
@@ -898,8 +980,40 @@ do:
     }
 
     #[test]
-    fn call_grpc_is_rejected_in_phase_1() {
-        assert!(run_validate(CALL_GRPC_UNSUPPORTED).is_err());
+    fn call_grpc_minimal_passes() {
+        run_validate(CALL_GRPC_MINIMAL).unwrap();
+    }
+
+    #[test]
+    fn call_grpc_bearer_inline_passes() {
+        run_validate(CALL_GRPC_BEARER_INLINE).unwrap();
+    }
+
+    #[test]
+    fn call_grpc_bearer_use_secret_passes() {
+        run_validate(CALL_GRPC_BEARER_USE_SECRET).unwrap();
+    }
+
+    #[test]
+    fn call_grpc_missing_service_fails() {
+        assert!(run_validate(CALL_GRPC_MISSING_SERVICE).is_err());
+    }
+
+    #[test]
+    fn call_grpc_missing_method_fails() {
+        assert!(run_validate(CALL_GRPC_MISSING_METHOD).is_err());
+    }
+
+    #[test]
+    fn call_grpc_service_missing_host_fails() {
+        assert!(run_validate(CALL_GRPC_SERVICE_MISSING_HOST).is_err());
+    }
+
+    #[test]
+    fn call_grpc_unknown_field_fails() {
+        // A typo'd field (e.g. `argments`) must be rejected by validation rather
+        // than silently dropped.
+        assert!(run_validate(CALL_GRPC_UNKNOWN_FIELD).is_err());
     }
 
     #[test]

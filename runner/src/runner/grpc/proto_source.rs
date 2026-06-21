@@ -160,7 +160,8 @@ fn allowed_proto_dirs() -> Result<Vec<PathBuf>> {
     let value = value.to_string_lossy();
     value
         .split(':')
-        .filter(|entry| !entry.trim().is_empty())
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
         .map(|entry| {
             PathBuf::from(entry).canonicalize().with_context(|| {
                 format!("failed to canonicalize {GRPC_PROTO_ALLOWED_DIR}: {entry}")

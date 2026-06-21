@@ -6094,6 +6094,10 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-stream",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tonic-reflection",
  "tracing",
  "worker-app",
 ]
