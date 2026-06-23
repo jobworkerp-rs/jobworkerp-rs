@@ -1,23 +1,14 @@
 syntax = "proto3";
 package jobworkerp.runner.grpc;
 
-// Proto descriptor source for JSON<->protobuf conversion without reflection.
-// Keep this structurally identical to GrpcArgsProtoSource in args.proto.
-message GrpcSettingsProtoSource {
-    // # Source
-    // Proto location: an https://, http://, file:// URI, or inline proto text.
-    string source = 1;
-
-    // # Fetch Headers
-    // HTTP headers sent when fetching source over HTTP(S).
-    map<string, string> fetch_headers = 2;
-
-    // # Allow Insecure HTTP
-    // Allow non-TLS http:// fetches. Defaults to false.
-    optional bool allow_insecure_http = 3;
-}
-
-// Configuration for gRPC runner connections (shared by unary and streaming methods)
+// Configuration for gRPC runner connections (shared by unary and streaming methods).
+//
+// NOTE: This message MUST stay as the first top-level message in this file.
+// `app/src/app/job/execute.rs::parse_runner_settings_schema` resolves the runner
+// settings descriptor by taking `get_messages().first()` from the proto, so any
+// other message declared before this one would silently be picked instead,
+// causing user-provided settings to be discarded (regression introduced in
+// f3c2135d when GrpcSettingsProtoSource was added above this message).
 message GrpcRunnerSettings {
     // TLS configuration settings for secure connections
     message TlsConfig {
@@ -95,4 +86,20 @@ message GrpcRunnerSettings {
     // Descriptor source used instead of server reflection.
     // When set, this takes priority over proto specified in GrpcArgs.
     optional GrpcSettingsProtoSource proto = 13;
+}
+
+// Proto descriptor source for JSON<->protobuf conversion without reflection.
+// Keep this structurally identical to GrpcArgsProtoSource in args.proto.
+message GrpcSettingsProtoSource {
+    // # Source
+    // Proto location: an https://, http://, file:// URI, or inline proto text.
+    string source = 1;
+
+    // # Fetch Headers
+    // HTTP headers sent when fetching source over HTTP(S).
+    map<string, string> fetch_headers = 2;
+
+    // # Allow Insecure HTTP
+    // Allow non-TLS http:// fetches. Defaults to false.
+    optional bool allow_insecure_http = 3;
 }

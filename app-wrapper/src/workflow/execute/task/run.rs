@@ -771,7 +771,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         return Err(e);
                     }
                 };
-                tracing::debug!("transformed settings: {:#?}", &settings);
+                tracing::debug!("transformed settings: {:#?}", &transformed_settings);
 
                 let output = match self
                     .execute_by_jobworkerp(
