@@ -1,6 +1,8 @@
-use crate::jobworkerp::runner::grpc::{GrpcRunnerSettings, grpc_args};
-use anyhow::{Result, anyhow};
-use command_utils::protobuf::ProtobufDescriptor;
+use crate::jobworkerp::runner::grpc::{GrpcArgsProtoSource, GrpcRunnerSettings, grpc_args};
+use crate::runner::grpc::proto_source::{ProtoSourceRef, fetch_proto_source};
+use anyhow::{Context, Result, anyhow};
+use command_utils::protobuf::{ProtobufDescriptor, ProtobufDescriptorLoader};
+use memory_utils::cache::moka::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use net_utils::grpc::reflection::GrpcReflectionClient;
 use prost_reflect::{DescriptorPool, MessageDescriptor};
 use std::collections::HashMap;
@@ -16,9 +18,9 @@ use tonic::{
 pub struct GrpcConnection {
     pub(crate) client: Option<tonic::client::Grpc<Channel>>,
     pub(crate) reflection_client: Option<GrpcReflectionClient>,
-    /// Reserved for future use: local proto file-based descriptor pool as fallback
-    /// when reflection is unavailable. Currently only set to None; used as fallback
-    /// path in get_input/output_message_descriptor().
+    /// Descriptor pool built from the settings `proto` source (if any), populated
+    /// in `create()`. `resolve_descriptor_pool()` returns this as the primary
+    /// source; the per-request args `proto` is only compiled when this is None.
     pub(crate) descriptor_pool: Option<Arc<DescriptorPool>>,
     pub(crate) max_message_size: Option<usize>,
     pub(crate) auth_token: Option<String>,
@@ -31,9 +33,16 @@ pub struct GrpcConnection {
     pub(crate) settings_timeout: Option<u32>,
     /// Default as_json from settings (takes priority over args as_json)
     pub(crate) settings_as_json: Option<bool>,
+    proto_fetch_client: reqwest::Client,
+    descriptor_cache: MokaCacheImpl<Arc<String>, DescriptorPool>,
 }
 
 impl GrpcConnection {
+    const DESCRIPTOR_CACHE_CONFIG: MokaCacheConfig = MokaCacheConfig {
+        ttl: Some(Duration::from_secs(30 * 60)),
+        num_counters: 128,
+    };
+
     pub fn new() -> Self {
         Self {
             client: None,
@@ -46,6 +55,10 @@ impl GrpcConnection {
             settings_metadata: HashMap::new(),
             settings_timeout: None,
             settings_as_json: None,
+            proto_fetch_client: reqwest::Client::builder()
+                .build()
+                .expect("failed to build proto fetch HTTP client"),
+            descriptor_cache: MokaCacheImpl::new(&Self::DESCRIPTOR_CACHE_CONFIG),
         }
     }
 
@@ -67,16 +80,8 @@ impl GrpcConnection {
         self.clear();
 
         let host = &settings.host;
-        let port = &settings.port;
-        let prtcl = if host.starts_with("http://") || host.starts_with("https://") {
-            ""
-        } else if settings.tls {
-            "https://"
-        } else {
-            "http://"
-        };
-
-        let mut endpoint = Endpoint::new(format!("{prtcl}{host}:{port}"))?;
+        let addr = Self::build_endpoint_addr(host, settings.port, settings.tls);
+        let mut endpoint = Endpoint::new(addr)?;
 
         if let Some(connection_timeout) = settings.connection_timeout {
             endpoint = endpoint.timeout(Duration::from_millis(connection_timeout as u64));
@@ -132,7 +137,17 @@ impl GrpcConnection {
         self.settings_timeout = settings.timeout;
         self.settings_as_json = settings.as_json;
 
-        if self.use_reflection {
+        if let Some(proto_source) = &settings.proto {
+            let proto = fetch_proto_source(
+                &self.proto_fetch_client,
+                ProtoSourceRef::from_settings(proto_source),
+            )
+            .await?;
+            let pool = self.build_descriptor_pool(proto).await?;
+            self.descriptor_pool = Some(Arc::new(pool));
+        }
+
+        if self.use_reflection && settings.proto.is_none() {
             let reflection_channel = channel.clone();
             self.reflection_client = Some(
                 GrpcReflectionClient::connect(
@@ -166,6 +181,36 @@ impl GrpcConnection {
             self.use_reflection
         );
         Ok(())
+    }
+
+    pub(crate) async fn resolve_descriptor_pool(
+        &self,
+        args_proto: &Option<GrpcArgsProtoSource>,
+    ) -> Result<Option<DescriptorPool>> {
+        if let Some(pool) = &self.descriptor_pool {
+            return Ok(Some((**pool).clone()));
+        }
+
+        let Some(proto_source) = args_proto else {
+            return Ok(None);
+        };
+
+        let proto = fetch_proto_source(
+            &self.proto_fetch_client,
+            ProtoSourceRef::from_args(proto_source),
+        )
+        .await?;
+        Ok(Some(self.build_descriptor_pool(proto).await?))
+    }
+
+    async fn build_descriptor_pool(&self, proto: String) -> Result<DescriptorPool> {
+        let key = Arc::new(proto);
+        self.with_cache(&key, || async {
+            ProtobufDescriptor::build_protobuf_descriptor(&key).with_context(|| {
+                "failed to build gRPC proto descriptor; protoc may be missing or proto source is invalid"
+            })
+        })
+        .await
     }
 
     /// Resolve the effective gRPC method: settings_method takes priority over args_method.
@@ -206,6 +251,28 @@ impl GrpcConnection {
         self.settings_as_json.or(*args_as_json).unwrap_or(false)
     }
 
+    /// Build the endpoint address from host/port/tls settings.
+    ///
+    /// A scheme already present on `host` is kept; otherwise `tls` selects
+    /// https/http. `port` is a non-optional proto3 field, so an omitted port
+    /// arrives as 0 (a valid, common case for `call.grpc` where the scheme's
+    /// default port should apply). Emitting `host:0` would make every such call
+    /// fail to connect, so a 0 port is left off and the endpoint default is used.
+    fn build_endpoint_addr(host: &str, port: u32, tls: bool) -> String {
+        let prtcl = if host.starts_with("http://") || host.starts_with("https://") {
+            ""
+        } else if tls {
+            "https://"
+        } else {
+            "http://"
+        };
+        if port == 0 {
+            format!("{prtcl}{host}")
+        } else {
+            format!("{prtcl}{host}:{port}")
+        }
+    }
+
     /// Strip http:// or https:// scheme prefix from a host string.
     fn strip_scheme(host: &str) -> String {
         host.strip_prefix("https://")
@@ -230,6 +297,7 @@ impl GrpcConnection {
     async fn get_method_message_descriptor<F>(
         &self,
         method_path: &str,
+        descriptor_pool: Option<&DescriptorPool>,
         extractor: F,
     ) -> Result<MessageDescriptor>
     where
@@ -237,7 +305,20 @@ impl GrpcConnection {
     {
         let (service_name, method_name) = Self::parse_method_path(method_path)?;
 
-        if let Some(ref reflection_client) = self.reflection_client {
+        if let Some(pool) = descriptor_pool {
+            for service in pool.services() {
+                if service.full_name() == service_name
+                    && let Some(method) = service.methods().find(|m| m.name() == method_name)
+                {
+                    return Ok(extractor(&method));
+                }
+            }
+            Err(anyhow!(
+                "Method {} not found in service {}",
+                method_name,
+                service_name
+            ))
+        } else if let Some(ref reflection_client) = self.reflection_client {
             let pool = reflection_client
                 .get_service_with_dependencies(&service_name)
                 .await?;
@@ -252,19 +333,6 @@ impl GrpcConnection {
                 method_name,
                 service_name
             ))
-        } else if let Some(pool) = &self.descriptor_pool {
-            for service in pool.services() {
-                if service.full_name() == service_name
-                    && let Some(method) = service.methods().find(|m| m.name() == method_name)
-                {
-                    return Ok(extractor(&method));
-                }
-            }
-            Err(anyhow!(
-                "Method {} not found in service {}",
-                method_name,
-                service_name
-            ))
         } else {
             Err(anyhow!("No reflection client or descriptor pool available"))
         }
@@ -273,21 +341,30 @@ impl GrpcConnection {
     pub async fn get_output_message_descriptor(
         &self,
         method_path: &str,
+        descriptor_pool: Option<&DescriptorPool>,
     ) -> Result<MessageDescriptor> {
-        self.get_method_message_descriptor(method_path, |m| m.output())
+        self.get_method_message_descriptor(method_path, descriptor_pool, |m| m.output())
             .await
     }
 
     pub async fn get_input_message_descriptor(
         &self,
         method_path: &str,
+        descriptor_pool: Option<&DescriptorPool>,
     ) -> Result<MessageDescriptor> {
-        self.get_method_message_descriptor(method_path, |m| m.input())
+        self.get_method_message_descriptor(method_path, descriptor_pool, |m| m.input())
             .await
     }
 
-    pub async fn json_to_protobuf(&self, method_path: &str, json_str: &str) -> Result<Vec<u8>> {
-        let input_descriptor = self.get_input_message_descriptor(method_path).await?;
+    pub async fn json_to_protobuf(
+        &self,
+        method_path: &str,
+        json_str: &str,
+        descriptor_pool: Option<&DescriptorPool>,
+    ) -> Result<Vec<u8>> {
+        let input_descriptor = self
+            .get_input_message_descriptor(method_path, descriptor_pool)
+            .await?;
         tracing::debug!(
             "Input message descriptor for {}:\n json:{},\n descriptor: {:?}",
             method_path,
@@ -310,23 +387,49 @@ impl GrpcConnection {
         &self,
         method_path: &str,
         response_bytes: &[u8],
+        descriptor_pool: Option<&DescriptorPool>,
     ) -> Result<String> {
-        if let Some(ref reflection_client) = self.reflection_client {
-            let output_descriptor = self.get_output_message_descriptor(method_path).await?;
-            let message_name = output_descriptor.full_name();
+        let output_descriptor = self
+            .resolve_output_descriptor(method_path, descriptor_pool)
+            .await?;
+        Self::convert_response_bytes(&output_descriptor, response_bytes)
+    }
 
-            tracing::debug!(
-                "Converting response to JSON for method {} with output type {}",
-                method_path,
-                message_name
-            );
-
-            reflection_client
-                .parse_bytes_to_json(message_name, response_bytes)
+    /// Resolve the output `MessageDescriptor` for a method, from the descriptor
+    /// pool when available or via reflection otherwise. Callers converting many
+    /// responses for the same method (e.g. server streaming) should resolve once
+    /// and reuse the descriptor instead of re-resolving per response.
+    pub async fn resolve_output_descriptor(
+        &self,
+        method_path: &str,
+        descriptor_pool: Option<&DescriptorPool>,
+    ) -> Result<MessageDescriptor> {
+        if descriptor_pool.is_some() || self.reflection_client.is_some() {
+            self.get_output_message_descriptor(method_path, descriptor_pool)
                 .await
         } else {
-            Err(anyhow!("Reflection client not available"))
+            Err(anyhow!(
+                "no descriptor pool or reflection client available for JSON conversion"
+            ))
         }
+    }
+
+    /// Decode protobuf response bytes into JSON using a pre-resolved descriptor.
+    pub fn convert_response_bytes(
+        output_descriptor: &MessageDescriptor,
+        response_bytes: &[u8],
+    ) -> Result<String> {
+        let message =
+            ProtobufDescriptor::get_message_from_bytes(output_descriptor.clone(), response_bytes)?;
+        ProtobufDescriptor::message_to_json(&message)
+    }
+
+    /// Whether a JSON<->protobuf conversion is possible: either a descriptor
+    /// pool was resolved (settings/args proto) or a reflection client is
+    /// connected. `reflection_client` is only `Some` when reflection was
+    /// successfully initialized, so it already implies `use_reflection`.
+    pub(crate) fn can_convert_json(&self, descriptor_pool: Option<&DescriptorPool>) -> bool {
+        descriptor_pool.is_some() || self.reflection_client.is_some()
     }
 
     pub fn metadata_map_to_hashmap(
@@ -365,6 +468,7 @@ impl GrpcConnection {
         &self,
         method_path: &str,
         request: &Option<grpc_args::Request>,
+        descriptor_pool: Option<&DescriptorPool>,
     ) -> Result<Vec<u8>> {
         match request {
             Some(grpc_args::Request::Body(bytes)) => {
@@ -375,11 +479,12 @@ impl GrpcConnection {
                 Ok(bytes.clone())
             }
             Some(grpc_args::Request::JsonBody(json_str)) => {
-                if self.use_reflection && self.reflection_client.is_some() {
-                    self.json_to_protobuf(method_path, json_str).await
+                if self.can_convert_json(descriptor_pool) {
+                    self.json_to_protobuf(method_path, json_str, descriptor_pool)
+                        .await
                 } else {
                     Err(anyhow!(
-                        "json_body requires reflection to be enabled and available"
+                        "json_body requires reflection or proto descriptor to be available"
                     ))
                 }
             }
@@ -515,6 +620,12 @@ fn redact_sensitive_metadata(metadata: &HashMap<String, String>) -> HashMap<Stri
         .collect()
 }
 
+impl UseMokaCache<Arc<String>, DescriptorPool> for GrpcConnection {
+    fn cache(&self) -> &MokaCache<Arc<String>, DescriptorPool> {
+        self.descriptor_cache.cache()
+    }
+}
+
 impl Default for GrpcConnection {
     fn default() -> Self {
         Self::new()
@@ -524,6 +635,21 @@ impl Default for GrpcConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jobworkerp::runner::grpc::GrpcArgsProtoSource;
+    use memory_utils::cache::moka::UseMokaCache;
+
+    const TEST_GRPC_PROTO: &str = r#"syntax = "proto3";
+package example;
+message EchoRequest {
+  string request_text = 1;
+}
+message EchoResponse {
+  string response_text = 1;
+}
+service EchoService {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+}
+"#;
 
     #[test]
     fn test_strip_scheme_https() {
@@ -544,6 +670,44 @@ mod tests {
     #[test]
     fn test_strip_scheme_none() {
         assert_eq!(GrpcConnection::strip_scheme("example.com"), "example.com");
+    }
+
+    #[test]
+    fn build_endpoint_addr_with_explicit_port() {
+        assert_eq!(
+            GrpcConnection::build_endpoint_addr("example.com", 50051, false),
+            "http://example.com:50051"
+        );
+        assert_eq!(
+            GrpcConnection::build_endpoint_addr("example.com", 443, true),
+            "https://example.com:443"
+        );
+    }
+
+    #[test]
+    fn build_endpoint_addr_omits_zero_port() {
+        // An omitted `call.grpc` port arrives as proto3 default 0; the scheme's
+        // default port must be used instead of an unconnectable `host:0`.
+        assert_eq!(
+            GrpcConnection::build_endpoint_addr("example.com", 0, false),
+            "http://example.com"
+        );
+        assert_eq!(
+            GrpcConnection::build_endpoint_addr("example.com", 0, true),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn build_endpoint_addr_keeps_existing_scheme() {
+        assert_eq!(
+            GrpcConnection::build_endpoint_addr("https://example.com", 8443, false),
+            "https://example.com:8443"
+        );
+        assert_eq!(
+            GrpcConnection::build_endpoint_addr("http://example.com", 0, true),
+            "http://example.com"
+        );
     }
 
     #[test]
@@ -800,5 +964,144 @@ mod tests {
         assert_eq!(redacted.get("Token").unwrap(), "[REDACTED]");
         assert_eq!(redacted.get("Cookie").unwrap(), "[REDACTED]");
         assert_eq!(redacted.get("x-request-id").unwrap(), "req-123");
+    }
+
+    #[tokio::test]
+    async fn json_to_protobuf_uses_descriptor_pool_without_reflection() {
+        let conn = GrpcConnection::new();
+        let pool =
+            ProtobufDescriptor::build_protobuf_descriptor(&TEST_GRPC_PROTO.to_string()).unwrap();
+
+        let bytes = conn
+            .json_to_protobuf(
+                "example.EchoService/Echo",
+                r#"{"requestText":"hello"}"#,
+                Some(&pool),
+            )
+            .await
+            .unwrap();
+        let descriptor = pool
+            .get_message_by_name("example.EchoRequest")
+            .expect("EchoRequest descriptor");
+        let message = ProtobufDescriptor::get_message_from_bytes(descriptor, &bytes).unwrap();
+        let json = ProtobufDescriptor::message_to_json(&message).unwrap();
+
+        assert_eq!(json, r#"{"requestText":"hello"}"#);
+    }
+
+    #[tokio::test]
+    async fn convert_response_to_json_uses_descriptor_pool_without_reflection() {
+        let conn = GrpcConnection::new();
+        let pool =
+            ProtobufDescriptor::build_protobuf_descriptor(&TEST_GRPC_PROTO.to_string()).unwrap();
+        let descriptor = pool
+            .get_message_by_name("example.EchoResponse")
+            .expect("EchoResponse descriptor");
+        let response_bytes =
+            ProtobufDescriptor::json_to_message(descriptor, r#"{"responseText":"world"}"#, true)
+                .unwrap();
+
+        let json = conn
+            .convert_response_to_json("example.EchoService/Echo", &response_bytes, Some(&pool))
+            .await
+            .unwrap();
+
+        assert_eq!(json, r#"{"responseText":"world"}"#);
+    }
+
+    #[tokio::test]
+    async fn resolve_output_descriptor_then_convert_bytes_matches_per_call_conversion() {
+        // Guards the streaming "resolve once, convert many" optimization: the
+        // output descriptor is resolved a single time and reused to decode each
+        // streamed body, and the result must equal the per-call convert path.
+        let conn = GrpcConnection::new();
+        let pool =
+            ProtobufDescriptor::build_protobuf_descriptor(&TEST_GRPC_PROTO.to_string()).unwrap();
+        let descriptor = pool
+            .get_message_by_name("example.EchoResponse")
+            .expect("EchoResponse descriptor");
+        let bodies: Vec<Vec<u8>> = ["one", "two", "three"]
+            .iter()
+            .map(|text| {
+                ProtobufDescriptor::json_to_message(
+                    descriptor.clone(),
+                    &format!(r#"{{"responseText":"{text}"}}"#),
+                    true,
+                )
+                .unwrap()
+            })
+            .collect();
+
+        let output_descriptor = conn
+            .resolve_output_descriptor("example.EchoService/Echo", Some(&pool))
+            .await
+            .unwrap();
+
+        let json_parts: Vec<String> = bodies
+            .iter()
+            .map(|body| GrpcConnection::convert_response_bytes(&output_descriptor, body).unwrap())
+            .collect();
+
+        assert_eq!(
+            json_parts,
+            vec![
+                r#"{"responseText":"one"}"#,
+                r#"{"responseText":"two"}"#,
+                r#"{"responseText":"three"}"#,
+            ]
+        );
+        // The aggregated form matches the streaming JSON-array body.
+        assert_eq!(
+            format!("[{}]", json_parts.join(",")),
+            r#"[{"responseText":"one"},{"responseText":"two"},{"responseText":"three"}]"#
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_output_descriptor_errors_without_pool_or_reflection() {
+        let conn = GrpcConnection::new();
+        let result = conn
+            .resolve_output_descriptor("example.EchoService/Echo", None)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_descriptor_pool_prefers_settings_pool_over_args_proto() {
+        let mut conn = GrpcConnection::new();
+        let settings_pool =
+            ProtobufDescriptor::build_protobuf_descriptor(&TEST_GRPC_PROTO.to_string()).unwrap();
+        conn.descriptor_pool = Some(Arc::new(settings_pool.clone()));
+        let args_proto = Some(GrpcArgsProtoSource {
+            source: "invalid proto".to_string(),
+            fetch_headers: HashMap::new(),
+            allow_insecure_http: Some(false),
+        });
+
+        let resolved = conn
+            .resolve_descriptor_pool(&args_proto)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            resolved
+                .get_service_by_name("example.EchoService")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn build_descriptor_pool_caches_by_proto_content() {
+        let conn = GrpcConnection::new();
+        let proto = TEST_GRPC_PROTO.to_string();
+        let key = Arc::new(proto.clone());
+
+        assert!(conn.find_cache(&key).await.is_none());
+        let first = conn.build_descriptor_pool(proto.clone()).await.unwrap();
+        assert!(first.get_service_by_name("example.EchoService").is_some());
+        assert!(conn.find_cache(&key).await.is_some());
+        let second = conn.build_descriptor_pool(proto).await.unwrap();
+        assert!(second.get_service_by_name("example.EchoService").is_some());
     }
 }

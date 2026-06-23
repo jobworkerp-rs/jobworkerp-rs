@@ -1,6 +1,22 @@
 syntax = "proto3";
 package jobworkerp.runner.grpc;
 
+// Structurally identical to GrpcSettingsProtoSource in runner.proto.
+// The separate name avoids same-package message collisions.
+message GrpcArgsProtoSource {
+  // # Source
+  // Proto location: an https://, http://, file:// URI, or inline proto text.
+  string source = 1;
+
+  // # Fetch Headers
+  // HTTP headers sent when fetching source over HTTP(S).
+  map<string, string> fetch_headers = 2;
+
+  // # Allow Insecure HTTP
+  // Allow non-TLS http:// fetches. Defaults to false.
+  optional bool allow_insecure_http = 3;
+}
+
 // # GrpcArgs
 // Arguments for gRPC calls (shared by unary and streaming methods).
 // Encapsulates all necessary information to make a gRPC call.
@@ -33,7 +49,11 @@ message GrpcArgs {
   optional uint32 timeout = 5;
 
   // # AsJson
-  // When true, convert response body from binary protobuf to JSON using reflection.
+  // When true, convert response body from binary protobuf to JSON using reflection or proto descriptor.
   // Optional when GrpcRunnerSettings.as_json is set (settings takes priority).
   optional bool as_json = 6;
+
+  // # Proto Source
+  // Per-request descriptor source used when GrpcRunnerSettings.proto is unset.
+  optional GrpcArgsProtoSource proto = 7;
 }

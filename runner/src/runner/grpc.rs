@@ -1,4 +1,5 @@
 pub mod common;
+pub mod proto_source;
 pub mod streaming;
 pub mod unary;
 
@@ -230,9 +231,14 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
         let result = async {
             let req = ProstMessageCodec::deserialize_message::<GrpcArgs>(args)?;
             let method = Self::resolve_method(using)?;
+            let descriptor_pool = self.connection.resolve_descriptor_pool(&req.proto).await?;
 
             match method {
-                METHOD_UNARY => self.connection.call_unary(&req, cancellation_token).await,
+                METHOD_UNARY => {
+                    self.connection
+                        .call_unary(&req, descriptor_pool.as_ref(), cancellation_token)
+                        .await
+                }
                 METHOD_STREAMING => {
                     let effective_grpc_method =
                         self.connection.resolve_effective_method(&req.method)?;
@@ -247,6 +253,7 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
                             &effective_metadata,
                             effective_timeout,
                             &req.request,
+                            descriptor_pool.as_ref(),
                             cancellation_token,
                         )
                         .await?;
@@ -258,31 +265,49 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
                         return Ok(data);
                     }
 
-                    // Build JSON body if reflection is available and as_json is requested
+                    // Build JSON body when as_json is requested and a descriptor
+                    // pool or reflection client is available for conversion.
                     let mut json_body = None;
-                    if as_json
-                        && self.connection.use_reflection
-                        && self.connection.reflection_client.is_some()
-                    {
-                        let mut json_parts = Vec::new();
-                        for body in &bodies {
-                            match self
-                                .connection
-                                .convert_response_to_json(&effective_grpc_method, body)
-                                .await
-                            {
-                                Ok(json_str) => json_parts.push(json_str),
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to convert streaming response to JSON: {}",
-                                        e
-                                    );
-                                    break;
+                    if as_json && self.connection.can_convert_json(descriptor_pool.as_ref()) {
+                        // Resolve the output descriptor once: every streamed body
+                        // shares the same output type, so re-resolving per body
+                        // would re-scan the descriptor pool (or re-query reflection)
+                        // for each of the N responses.
+                        match self
+                            .connection
+                            .resolve_output_descriptor(
+                                &effective_grpc_method,
+                                descriptor_pool.as_ref(),
+                            )
+                            .await
+                        {
+                            Ok(output_descriptor) => {
+                                let mut json_parts = Vec::new();
+                                for body in &bodies {
+                                    match GrpcConnection::convert_response_bytes(
+                                        &output_descriptor,
+                                        body,
+                                    ) {
+                                        Ok(json_str) => json_parts.push(json_str),
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Failed to convert streaming response to JSON: {}",
+                                                e
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                                if json_parts.len() == bodies.len() {
+                                    json_body = Some(format!("[{}]", json_parts.join(",")));
                                 }
                             }
-                        }
-                        if json_parts.len() == bodies.len() {
-                            json_body = Some(format!("[{}]", json_parts.join(",")));
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to resolve output descriptor for streaming JSON conversion: {}",
+                                    e
+                                );
+                            }
                         }
                     }
 
@@ -306,6 +331,7 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
         let cancellation_token = self.get_cancellation_token().await;
         let req = ProstMessageCodec::deserialize_message::<GrpcArgs>(args)?;
         let method = Self::resolve_method(using)?;
+        let descriptor_pool = self.connection.resolve_descriptor_pool(&req.proto).await?;
 
         match method {
             METHOD_STREAMING => {
@@ -318,6 +344,7 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
                         &effective_metadata,
                         effective_timeout,
                         &req.request,
+                        descriptor_pool.as_ref(),
                         cancellation_token,
                     )
                     .await
@@ -454,5 +481,42 @@ mod tests {
         assert!(schemas.contains_key("unary"));
         assert!(schemas.contains_key("streaming"));
         assert_eq!(schemas.len(), 2);
+    }
+
+    #[test]
+    fn build_streaming_result_uses_json_body_when_present() {
+        // When as_json conversion succeeded, the aggregated JSON array is emitted
+        // as JsonBody and the raw bodies are dropped.
+        let json = r#"[{"responseText":"one"},{"responseText":"two"}]"#.to_string();
+        let result =
+            build_streaming_result(vec![vec![1, 2, 3]], HashMap::new(), Some(json.clone()));
+        match result.response_data {
+            Some(grpc_streaming_result::ResponseData::JsonBody(body)) => assert_eq!(body, json),
+            other => panic!("expected JsonBody, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_streaming_result_falls_back_to_bodies_when_no_json() {
+        // When conversion was skipped or partially failed (json_body == None), the
+        // raw protobuf bodies are returned instead.
+        let bodies = vec![vec![1, 2, 3], vec![4, 5, 6]];
+        let result = build_streaming_result(bodies.clone(), HashMap::new(), None);
+        match result.response_data {
+            Some(grpc_streaming_result::ResponseData::Bodies(StreamBodies { items })) => {
+                assert_eq!(items, bodies);
+            }
+            other => panic!("expected Bodies, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_streaming_result_extracts_grpc_status_and_message() {
+        let mut metadata = HashMap::new();
+        metadata.insert("grpc-status".to_string(), "5".to_string());
+        metadata.insert("grpc-message".to_string(), "not found".to_string());
+        let result = build_streaming_result(vec![], metadata, None);
+        assert_eq!(result.code, 5);
+        assert_eq!(result.message.as_deref(), Some("not found"));
     }
 }

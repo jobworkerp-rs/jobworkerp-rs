@@ -83,6 +83,8 @@ url = { workspace = true }
 tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
+rcgen = "0.14"
+tokio-rustls = "0.26"
 uuid = { workspace = true }
 # Self-reference so integration tests can access the test-utils gated module
 # (runner::test_common::mock), reusing the shared MockCancellationManager.
@@ -98,4 +100,3 @@ path = "benches/sink_throughput.rs"
 test = false
 bench = false
 required-features = []
-

@@ -1,6 +1,7 @@
 mod app_wrapper {
     mod auto_select_function_set_test;
     mod auto_select_genai_function_set_test;
+    mod call_grpc_workflow_integration_test;
     mod call_http_workflow_integration_test;
     mod nested_workflow_diagnostics_test;
     mod run_script_workflow_integration_test;

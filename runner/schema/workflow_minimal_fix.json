@@ -564,15 +564,23 @@
             "call": {
               "type": "string",
               "title": "CallTaskType",
-              "description": "Phase 1 supports only the HTTP call type.",
+              "description": "Supported call types (HTTP and gRPC unary).",
               "enum": [
-                "http"
+                "http",
+                "grpc"
               ]
             },
             "with": {
-              "$ref": "#/$defs/callHttp",
               "title": "CallTaskWith",
-              "description": "HTTP call input."
+              "description": "Call input. HTTP or gRPC parameters.",
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/callHttp"
+                },
+                {
+                  "$ref": "#/$defs/callGrpc"
+                }
+              ]
             }
           }
         }
@@ -670,6 +678,84 @@
         "redirect": {
           "title": "HttpRedirect",
           "description": "Accepted for validation but not executed in Phase 1."
+        }
+      }
+    },
+    "callGrpc": {
+      "type": "object",
+      "title": "CallGrpc",
+      "description": "gRPC unary call parameters supported by the jobworkerp adapter. The arguments map is sent as a JSON body resolved via server reflection.",
+      "required": [
+        "service",
+        "method"
+      ],
+      "unevaluatedProperties": false,
+      "properties": {
+        "proto": {
+          "title": "GrpcProto",
+          "description": "Official proto resource reference. Accepted for validation but not executed by the jobworkerp adapter (reflection is used instead); rejected at execution time."
+        },
+        "service": {
+          "type": "object",
+          "title": "GrpcService",
+          "description": "gRPC service connection target.",
+          "required": [
+            "name",
+            "host"
+          ],
+          "unevaluatedProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "title": "GrpcServiceName",
+              "description": "Fully qualified gRPC service name (e.g. package.Service)."
+            },
+            "host": {
+              "type": "string",
+              "title": "GrpcServiceHost",
+              "description": "Hostname or IP of the gRPC server."
+            },
+            "port": {
+              "type": "integer",
+              "title": "GrpcServicePort",
+              "description": "Port of the gRPC server."
+            },
+            "authentication": {
+              "title": "GrpcServiceAuthentication",
+              "description": "Service authentication. Inline bearer policy, or a reference to a named policy declared under use.authentications. Only bearer is supported; basic is rejected at execution time.",
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/authenticationPolicy"
+                },
+                {
+                  "title": "AuthenticationPolicyReference",
+                  "type": "object",
+                  "required": [
+                    "use"
+                  ],
+                  "unevaluatedProperties": false,
+                  "properties": {
+                    "use": {
+                      "type": "string",
+                      "title": "AuthenticationPolicyUse",
+                      "description": "Name of a policy declared under use.authentications."
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "method": {
+          "type": "string",
+          "title": "GrpcMethod",
+          "description": "Name of the gRPC method to invoke on the service."
+        },
+        "arguments": {
+          "type": "object",
+          "title": "GrpcArguments",
+          "description": "Name/value mapping of the call arguments. Serialized to a JSON request body and converted to protobuf by the runner via reflection.",
+          "additionalProperties": true
         }
       }
     },

@@ -373,7 +373,10 @@ pub trait UseJobExecutor:
                     .runner_settings_descriptor
                     .and_then(|d| d.get_messages().first().cloned());
                 let runner_settings = if let Some(ope_desc) = runner_settings_descriptor {
-                    tracing::debug!("runner settings schema exists: {:#?}", &runner_settings);
+                    tracing::debug!(
+                        "runner settings schema exists: {:#?}",
+                        runner_settings.as_ref().map(redact_sensitive_args)
+                    );
                     runner_settings
                         .map(|j| {
                             ProtobufDescriptor::json_value_to_message(ope_desc, &j, true, true)
@@ -889,16 +892,46 @@ const SENSITIVE_HEADER_KEYS: &[&str] = &[
     "set-cookie",
 ];
 
+/// Object field names whose string value carries a credential and must never be
+/// logged. Matched case-insensitively against object keys (the flat shape used
+/// by runner settings, e.g. the GRPC runner's `auth_token` resolved from a
+/// `WORKFLOW_SECRET_*`). Only string values are masked so that structural keys
+/// of the same name are left intact.
+const SENSITIVE_FLAT_KEYS: &[&str] = &[
+    "auth_token",
+    "token",
+    "access_token",
+    "refresh_token",
+    "password",
+    "secret",
+    "api_key",
+    "apikey",
+];
+
 /// Return a copy of `args` with credential-bearing values masked, for safe
-/// logging. Only `{key, value}` pairs whose `key` is a sensitive header name are
-/// redacted (e.g. a transformed `call.http`'s `Authorization` header derived
-/// from a `WORKFLOW_SECRET_*`); all other content is preserved so the log stays
-/// useful. Non-sensitive job args incur a clone only when debug logging is on.
+/// logging. Two shapes are redacted: `{key, value}` pairs whose `key` is a
+/// sensitive header name (e.g. a transformed `call.http`'s `Authorization`
+/// header derived from a `WORKFLOW_SECRET_*`), and flat object fields whose key
+/// is a sensitive credential name with a string value (e.g. the GRPC runner's
+/// `auth_token`). All other content is preserved so the log stays useful.
+/// Non-sensitive job args incur a clone only when debug logging is on.
 fn redact_sensitive_args(args: &serde_json::Value) -> serde_json::Value {
     match args {
         serde_json::Value::Object(map) => serde_json::Value::Object(
             map.iter()
-                .map(|(k, v)| (k.clone(), redact_sensitive_args(v)))
+                .map(|(k, v)| {
+                    // Mask a flat credential field (string value only, so that a
+                    // structural key of the same name is not corrupted).
+                    if matches!(v, serde_json::Value::String(_))
+                        && SENSITIVE_FLAT_KEYS
+                            .iter()
+                            .any(|s| k.eq_ignore_ascii_case(s))
+                    {
+                        (k.clone(), serde_json::Value::String(REDACTED.to_string()))
+                    } else {
+                        (k.clone(), redact_sensitive_args(v))
+                    }
+                })
                 .collect(),
         ),
         serde_json::Value::Array(items) => {
@@ -1050,5 +1083,57 @@ mod tests {
         let redacted = redact_sensitive_args(&args);
         assert_eq!(redacted["outer"]["headers"][0]["value"], REDACTED);
         assert!(!redacted.to_string().contains("session=abc"));
+    }
+
+    #[test]
+    fn redact_masks_flat_auth_token_in_runner_settings() {
+        // Shape of GRPC runner settings with a bearer secret resolved into a flat
+        // `auth_token` field.
+        let settings = serde_json::json!({
+            "host": "example.com",
+            "port": 50051,
+            "use_reflection": true,
+            "auth_token": "Bearer-or-bare-s3cret",
+        });
+        let redacted = redact_sensitive_args(&settings);
+        assert_eq!(redacted["auth_token"], REDACTED);
+        assert!(!redacted.to_string().contains("s3cret"));
+        // Non-sensitive fields are preserved.
+        assert_eq!(redacted["host"], "example.com");
+        assert_eq!(redacted["port"], 50051);
+        assert_eq!(redacted["use_reflection"], true);
+    }
+
+    #[test]
+    fn redact_masks_flat_credential_keys_case_insensitively() {
+        let settings = serde_json::json!({
+            "Password": "p@ss",
+            "API_KEY": "ak-123",
+            "nested": {"access_token": "at-456"},
+        });
+        let redacted = redact_sensitive_args(&settings);
+        assert_eq!(redacted["Password"], REDACTED);
+        assert_eq!(redacted["API_KEY"], REDACTED);
+        assert_eq!(redacted["nested"]["access_token"], REDACTED);
+        for leaked in ["p@ss", "ak-123", "at-456"] {
+            assert!(!redacted.to_string().contains(leaked));
+        }
+    }
+
+    #[test]
+    fn redact_does_not_corrupt_non_string_credential_keys() {
+        // A key named like a credential but holding structural (non-string) data
+        // must be recursed into, not blindly masked, so its contents remain
+        // inspectable while any nested credential strings are still masked.
+        let args = serde_json::json!({
+            "token": {"id": 7, "value": "nested-secret", "auth_token": "deep-s3cret"},
+        });
+        let redacted = redact_sensitive_args(&args);
+        // The object value is preserved as an object (not replaced by a string).
+        assert!(redacted["token"].is_object());
+        assert_eq!(redacted["token"]["id"], 7);
+        // A nested flat credential field is still masked.
+        assert_eq!(redacted["token"]["auth_token"], REDACTED);
+        assert!(!redacted.to_string().contains("deep-s3cret"));
     }
 }
