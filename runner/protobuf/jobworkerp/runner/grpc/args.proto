@@ -1,25 +1,15 @@
 syntax = "proto3";
 package jobworkerp.runner.grpc;
 
-// Structurally identical to GrpcSettingsProtoSource in runner.proto.
-// The separate name avoids same-package message collisions.
-message GrpcArgsProtoSource {
-  // # Source
-  // Proto location: an https://, http://, file:// URI, or inline proto text.
-  string source = 1;
-
-  // # Fetch Headers
-  // HTTP headers sent when fetching source over HTTP(S).
-  map<string, string> fetch_headers = 2;
-
-  // # Allow Insecure HTTP
-  // Allow non-TLS http:// fetches. Defaults to false.
-  optional bool allow_insecure_http = 3;
-}
-
 // # GrpcArgs
 // Arguments for gRPC calls (shared by unary and streaming methods).
 // Encapsulates all necessary information to make a gRPC call.
+//
+// NOTE: This message MUST stay as the first top-level message in this file.
+// `app/src/app/runner.rs::get_job_args_message_for_method` resolves the args
+// descriptor by taking `get_messages().first()` from the proto, so any other
+// message declared before this one would silently be picked instead, causing
+// user-provided arguments to be discarded.
 message GrpcArgs {
   // # Method
   // Full method name in format "service/method" that identifies the gRPC endpoint.
@@ -56,4 +46,20 @@ message GrpcArgs {
   // # Proto Source
   // Per-request descriptor source used when GrpcRunnerSettings.proto is unset.
   optional GrpcArgsProtoSource proto = 7;
+}
+
+// Structurally identical to GrpcSettingsProtoSource in runner.proto.
+// The separate name avoids same-package message collisions.
+message GrpcArgsProtoSource {
+  // # Source
+  // Proto location: an https://, http://, file:// URI, or inline proto text.
+  string source = 1;
+
+  // # Fetch Headers
+  // HTTP headers sent when fetching source over HTTP(S).
+  map<string, string> fetch_headers = 2;
+
+  // # Allow Insecure HTTP
+  // Allow non-TLS http:// fetches. Defaults to false.
+  optional bool allow_insecure_http = 3;
 }
