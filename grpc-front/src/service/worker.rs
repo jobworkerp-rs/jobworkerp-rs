@@ -151,40 +151,12 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig + UseWorkerConf
     }
 }
 
-pub trait ResponseProcessor: UseJobqueueAndCodec {
-    // replace internal values
-    fn process(&self, w: Worker) -> Worker {
-        if let Some(d) = w.data {
-            let dat = self.process_data(d);
-            Worker {
-                id: w.id,
-                data: Some(dat),
-            }
-        } else {
-            w
-        }
-    }
-    fn process_data(&self, dat: WorkerData) -> WorkerData {
-        if dat
-            .channel
-            .as_ref()
-            .is_some_and(|c| c.as_str() == Self::DEFAULT_CHANNEL_NAME)
-        {
-            let mut d = dat;
-            d.channel = None;
-            d
-        } else {
-            dat
-        }
-    }
-}
-
 #[tonic::async_trait]
 impl<
     T: WorkerGrpc
         + RequestValidator
-        + ResponseProcessor
         + UseWorkerConfig
+        + UseJobqueueAndCodec
         + Tracing
         + Send
         + Debug
@@ -257,9 +229,7 @@ impl<
         let _s = Self::trace_request("worker", "find", &request);
         let req = request.get_ref();
         match self.app().find(req).await {
-            Ok(res) => Ok(Response::new(OptionalWorkerResponse {
-                data: res.map(|w| self.process(w)),
-            })),
+            Ok(res) => Ok(Response::new(OptionalWorkerResponse { data: res })),
             Err(e) => Err(handle_error(&e)),
         }
     }
@@ -273,9 +243,7 @@ impl<
         let req = request.get_ref();
         // XXX use worker_map ?
         match self.app().find_by_name(&req.name).await {
-            Ok(res) => Ok(Response::new(OptionalWorkerResponse {
-                data: res.map(|w| self.process(w)),
-            })),
+            Ok(res) => Ok(Response::new(OptionalWorkerResponse { data: res })),
             Err(e) => Err(handle_error(&e)),
         }
     }
@@ -314,17 +282,11 @@ impl<
             )
             .await
         {
-            Ok(list) => {
-                let l = list
-                    .into_iter()
-                    .map(|w| self.process(w))
-                    .collect::<Vec<_>>();
-                Ok(Response::new(Box::pin(stream! {
-                    for s in l {
-                        yield Ok(s)
-                    }
-                })))
-            }
+            Ok(list) => Ok(Response::new(Box::pin(stream! {
+                for s in list {
+                    yield Ok(s)
+                }
+            }))),
             Err(e) => Err(handle_error(&e)),
         }
     }
@@ -561,7 +523,6 @@ impl UseWorkerConfig for WorkerGrpcImpl {
     }
 }
 impl RequestValidator for WorkerGrpcImpl {}
-impl ResponseProcessor for WorkerGrpcImpl {}
 
 #[cfg(test)]
 mod tests {

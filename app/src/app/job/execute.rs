@@ -10,7 +10,6 @@ use command_utils::cache_ok;
 use command_utils::protobuf::ProtobufDescriptor;
 use command_utils::util::scoped_cache::ScopedCache;
 use futures::stream::BoxStream;
-use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
 use infra::infra::runner::rows::RunnerWithSchema;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
@@ -181,7 +180,6 @@ pub trait UseJobExecutor:
                     let worker_data =
                         worker_data_with_expected_definition(existing_data, worker_data);
                     let wid = self.worker_app().upsert_by_name(&worker_data).await?;
-                    let worker_data = normalize_worker_data_after_upsert(worker_data);
                     return Ok(Worker {
                         id: Some(wid),
                         data: Some(worker_data),
@@ -196,7 +194,6 @@ pub trait UseJobExecutor:
             }
 
             let wid = self.worker_app().upsert_by_name(&worker_data).await?;
-            let worker_data = normalize_worker_data_after_upsert(worker_data);
             Ok(Worker {
                 id: Some(wid),
                 data: Some(worker_data),
@@ -928,13 +925,6 @@ fn worker_data_with_expected_definition(
     existing
 }
 
-fn normalize_worker_data_after_upsert(mut worker_data: WorkerData) -> WorkerData {
-    if worker_data.channel.is_none() {
-        worker_data.channel = Some(JobqueueAndCodec::DEFAULT_CHANNEL_NAME.to_string());
-    }
-    worker_data
-}
-
 /// Placeholder substituted for redacted sensitive values in logs.
 const REDACTED: &str = "***REDACTED***";
 
@@ -1322,7 +1312,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_or_create_worker_normalizes_default_channel_after_upsert() -> Result<()> {
+    async fn find_or_create_worker_keeps_none_channel_as_default() -> Result<()> {
         let app_module = Arc::new(create_rdb_chan_test_app(false, false).await?);
         let wrapper = JobExecutorWrapper::new(app_module.clone());
         let worker_name = "find-or-create-static-worker-default-channel";
@@ -1341,11 +1331,20 @@ mod tests {
             .await?;
 
         let worker_id = worker.id.expect("worker id should be returned");
+        // The domain represents the default channel as `None`; the executor no
+        // longer fills in the default name (that is the storage layer's concern).
         let data = worker.data.expect("worker data should be returned");
-        assert_eq!(
-            data.channel.as_deref(),
-            Some(JobqueueAndCodec::DEFAULT_CHANNEL_NAME)
-        );
+        assert_eq!(data.channel, None);
+
+        // The persisted worker also reads back as `None` (default) through the
+        // storage read boundary.
+        let stored = app_module
+            .worker_app
+            .find(&worker_id)
+            .await?
+            .and_then(|w| w.data)
+            .expect("stored worker should exist");
+        assert_eq!(stored.channel, None);
 
         app_module.worker_app.delete(&worker_id).await?;
         Ok(())

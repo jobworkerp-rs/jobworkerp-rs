@@ -1,3 +1,4 @@
+use crate::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
 use anyhow::Result;
 use proto::jobworkerp::data::{RetryPolicy, RunnerId, Worker, WorkerData, WorkerId};
 
@@ -48,7 +49,9 @@ impl WorkerRow {
                     basis: self.basis as f32, // XXX downcast
                 }),
                 periodic_interval: self.periodic_interval as u32,
-                channel: self.channel.clone(),
+                // Map the materialized default channel name back to `None` so the
+                // domain consistently represents the default channel as absence.
+                channel: JobqueueAndCodec::channel_from_storage(self.channel.as_ref()),
                 queue_type: self.queue_type,
                 response_type: self.response_type,
                 store_success: self.store_success,
