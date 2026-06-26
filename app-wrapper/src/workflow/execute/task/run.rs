@@ -15,7 +15,7 @@ use crate::workflow::{
 };
 use anyhow::Result;
 use app::app::{
-    job::execute::{JobExecutorWrapper, UseJobExecutor},
+    job::execute::{JobExecutorWrapper, UseJobExecutor, WorkerForEnqueue},
     runner::UseRunnerApp,
 };
 use command_utils::trace::Tracing;
@@ -216,21 +216,21 @@ impl RunTaskExecutor {
             .job_executor_wrapper
             .transform_job_args(&rid, &rdata, &job_args, using.as_deref())
             .await?;
-        let wid = if worker_data.use_static {
-            self.job_executor_wrapper
-                .find_or_create_worker(&worker_data)
-                .await?
-                .id
+        let worker = if worker_data.use_static {
+            WorkerForEnqueue::Existing(
+                self.job_executor_wrapper
+                    .find_or_create_worker(worker_data)
+                    .await?,
+            )
         } else {
-            None
+            WorkerForEnqueue::Temp(worker_data)
         };
 
         let (job_id, result_fut) = self
             .job_executor_wrapper
             .enqueue_with_worker_or_temp_channel(
                 Arc::new(metadata),
-                wid,
-                worker_data,
+                worker,
                 job_args,
                 None, // XXX no uniq_key,
                 timeout_sec,

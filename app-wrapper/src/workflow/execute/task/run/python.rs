@@ -16,7 +16,7 @@ use crate::workflow::{
 };
 use anyhow::{Context, Result, anyhow};
 use app::app::{
-    job::execute::{JobExecutorWrapper, UseJobExecutor},
+    job::execute::{JobExecutorWrapper, UseJobExecutor, WorkerForEnqueue},
     runner::UseRunnerApp,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -360,19 +360,17 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             broadcast_results: false,
         };
 
-        // Find or create worker for script execution
-        let worker_id = if worker_data.use_static {
-            bail_with_position!(
+        let worker = if worker_data.use_static {
+            WorkerForEnqueue::Existing(bail_with_position!(
                 task_context,
                 self.job_executor_wrapper
-                    .find_or_create_worker(&worker_data)
+                    .find_or_create_worker(worker_data)
                     .await,
                 service_unavailable,
                 "Failed to find or create worker"
-            )
-            .id
+            ))
         } else {
-            None
+            WorkerForEnqueue::Temp(worker_data)
         };
 
         // Enqueue job with protobuf binary arguments directly
@@ -381,8 +379,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             self.job_executor_wrapper
                 .enqueue_with_worker_or_temp(
                     self.metadata.clone(),
-                    worker_id,
-                    worker_data,
+                    worker,
                     args_bytes, // Use protobuf binary directly, not JSON
                     None,       // No unique key
                     self.task_timeout.as_secs() as u32,

@@ -10,6 +10,7 @@ use command_utils::cache_ok;
 use command_utils::protobuf::ProtobufDescriptor;
 use command_utils::util::scoped_cache::ScopedCache;
 use futures::stream::BoxStream;
+use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
 use infra::infra::runner::rows::RunnerWithSchema;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
@@ -104,6 +105,21 @@ pub struct NamedWorkerChannelJob {
     pub using: Option<String>,
 }
 
+pub enum WorkerForEnqueue {
+    Existing(Worker),
+    Temp(WorkerData),
+}
+
+impl WorkerForEnqueue {
+    /// Build an `Existing` variant from a resolved worker id and data.
+    pub fn existing(worker_id: WorkerId, worker_data: WorkerData) -> Self {
+        WorkerForEnqueue::Existing(Worker {
+            id: Some(worker_id),
+            data: Some(worker_data),
+        })
+    }
+}
+
 /// Trait for accessing RunnerSpecFactory
 pub trait UseRunnerSpecFactory {
     fn runner_spec_factory(&self) -> &Arc<RunnerSpecFactory>;
@@ -139,35 +155,30 @@ pub trait UseJobExecutor:
     }
     fn find_or_create_worker(
         &self,
-        worker_data: &WorkerData,
+        worker_data: WorkerData,
     ) -> impl std::future::Future<Output = Result<Worker>> + Send
     where
         Self: Send + Sync,
     {
         async move {
-            let worker = self
+            if let Some(worker) = self
                 .worker_app()
                 .find_by_name(worker_data.name.as_str())
-                .await?;
-
-            // if not found, create sentence embedding worker
-            let worker = if let Some(w) = worker {
-                w
+                .await?
+                && worker
+                    .data
+                    .as_ref()
+                    .is_some_and(|data| worker_data_matches_expected(data, &worker_data))
+            {
+                Ok(worker)
             } else {
-                tracing::debug!(
-                    "worker {} not found. create new worker: {:?}",
-                    &worker_data.name,
-                    &worker_data.runner_id
-                );
-                let wid = self.worker_app().create(worker_data).await?;
-                // wait for worker creation? (replica db)
-                // tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                Worker {
+                let wid = self.worker_app().upsert_by_name(&worker_data).await?;
+                let worker_data = normalize_worker_data_after_upsert(worker_data);
+                Ok(Worker {
                     id: Some(wid),
-                    data: Some(worker_data.to_owned()),
-                }
-            };
-            Ok(worker)
+                    data: Some(worker_data),
+                })
+            }
         }
     }
     fn create_worker_data_from(
@@ -249,8 +260,7 @@ pub trait UseJobExecutor:
     fn enqueue_with_worker_or_temp(
         &self,
         metadata: Arc<HashMap<String, String>>, // metadata for job
-        worker_id: Option<WorkerId>, // worker id (use if worker_id. if not exists, use default values)
-        worker_data: WorkerData,     // change name (add random postfix) if not static
+        worker: WorkerForEnqueue,
         job_args: Vec<u8>,
         uniq_key: Option<String>,
         job_timeout_sec: u32,
@@ -267,42 +277,44 @@ pub trait UseJobExecutor:
         )>,
     > + Send {
         async move {
-            if let Some(wid) = worker_id {
-                tracing::debug!("enqueue job with worker: {:?}", wid);
-                self.job_app()
-                    .enqueue_job(
-                        metadata.clone(),
-                        Some(&wid),
-                        None,
-                        job_args,
-                        uniq_key,
-                        0,
-                        Priority::Medium as i32,
-                        job_timeout_sec as u64 * 1000,
-                        None,
-                        streaming_type,
-                        using,
-                        overrides,
-                    )
-                    .await
-            } else {
-                tracing::debug!("enqueue job without worker");
-                self.job_app()
-                    .enqueue_job_with_temp_worker(
-                        metadata.clone(),
-                        worker_data,
-                        job_args,
-                        uniq_key,
-                        0,
-                        Priority::Medium as i32,
-                        job_timeout_sec as u64 * 1000,
-                        None,
-                        streaming_type,
-                        true,
-                        using,
-                        overrides,
-                    )
-                    .await
+            match worker {
+                WorkerForEnqueue::Existing(worker) => {
+                    tracing::debug!("enqueue job with worker: {:?}", worker.id);
+                    self.job_app()
+                        .enqueue_job_with_worker(
+                            metadata.clone(),
+                            worker,
+                            job_args,
+                            uniq_key,
+                            0,
+                            Priority::Medium as i32,
+                            job_timeout_sec as u64 * 1000,
+                            None,
+                            streaming_type,
+                            using,
+                            overrides,
+                        )
+                        .await
+                }
+                WorkerForEnqueue::Temp(worker_data) => {
+                    tracing::debug!("enqueue job without worker");
+                    self.job_app()
+                        .enqueue_job_with_temp_worker(
+                            metadata.clone(),
+                            worker_data,
+                            job_args,
+                            uniq_key,
+                            0,
+                            Priority::Medium as i32,
+                            job_timeout_sec as u64 * 1000,
+                            None,
+                            streaming_type,
+                            true,
+                            using,
+                            overrides,
+                        )
+                        .await
+                }
             }
         }
     }
@@ -315,8 +327,7 @@ pub trait UseJobExecutor:
     fn enqueue_with_worker_or_temp_channel(
         &self,
         metadata: Arc<HashMap<String, String>>,
-        worker_id: Option<WorkerId>,
-        worker_data: WorkerData,
+        worker: WorkerForEnqueue,
         job_args: Vec<u8>,
         uniq_key: Option<String>,
         job_timeout_sec: u32,
@@ -327,21 +338,27 @@ pub trait UseJobExecutor:
         overrides: Option<JobExecutionOverrides>,
     ) -> impl std::future::Future<Output = Result<(JobId, ChannelJobResultFuture)>> + Send {
         async move {
-            // Resolve to a concrete worker id (creating a temp worker if needed)
-            // so enqueue_job_with_channel returns the JobId before the wait.
-            // If the subsequent enqueue fails, the temp worker is left behind —
-            // the same best-effort trade-off as `enqueue_job_with_temp_worker`
-            // (temp workers carry a TTL and are reaped, so this is not a leak in
-            // the lasting sense).
-            let wid = match worker_id {
-                Some(wid) => wid,
-                None => self.worker_app().create_temp(worker_data, true).await?,
+            let worker = match worker {
+                WorkerForEnqueue::Existing(worker) => worker,
+                WorkerForEnqueue::Temp(worker_data) => {
+                    // If the subsequent enqueue fails, the temp worker is left
+                    // behind with the same best-effort trade-off as
+                    // `enqueue_job_with_temp_worker` (temp workers carry a TTL
+                    // and are reaped, so this is not a lasting leak).
+                    let wid = self
+                        .worker_app()
+                        .create_temp(worker_data.clone(), true)
+                        .await?;
+                    Worker {
+                        id: Some(wid),
+                        data: Some(worker_data),
+                    }
+                }
             };
             self.job_app()
                 .enqueue_job_with_channel(
                     metadata,
-                    Some(&wid),
-                    None,
+                    worker,
                     job_args,
                     uniq_key,
                     0,
@@ -425,15 +442,14 @@ pub trait UseJobExecutor:
                 let job_args = self
                     .transform_job_args(&rid, &rdata, &job_args, using.as_deref())
                     .await?;
-                let wid = if worker_data.use_static {
-                    self.find_or_create_worker(&worker_data).await?.id
+                let worker = if worker_data.use_static {
+                    WorkerForEnqueue::Existing(self.find_or_create_worker(worker_data).await?)
                 } else {
-                    None
+                    WorkerForEnqueue::Temp(worker_data)
                 };
                 self.enqueue_with_worker_or_temp(
                     metadata,
-                    wid,
-                    worker_data,
+                    worker,
                     job_args,
                     uniq_key,
                     job_timeout_sec,
@@ -472,16 +488,15 @@ pub trait UseJobExecutor:
                     .transform_job_args(&rid, &rdata, &job_args, using.as_deref())
                     .await?;
 
-                let wid = if worker_data.use_static {
-                    self.find_or_create_worker(&worker_data).await?.id
+                let worker = if worker_data.use_static {
+                    WorkerForEnqueue::Existing(self.find_or_create_worker(worker_data).await?)
                 } else {
-                    None
+                    WorkerForEnqueue::Temp(worker_data)
                 };
                 let (_jid, res, _stream) = self
                     .enqueue_with_worker_or_temp(
                         metadata,
-                        wid,
-                        worker_data,
+                        worker,
                         job_args,
                         uniq_key,
                         job_timeout_sec,
@@ -554,8 +569,7 @@ pub trait UseJobExecutor:
                         .await?;
                     self.enqueue_with_worker_or_temp(
                         metadata,
-                        Some(wid), // worker
-                        worker_data,
+                        WorkerForEnqueue::existing(wid, worker_data),
                         job_args,
                         uniq_key,
                         job_timeout_sec,
@@ -647,8 +661,7 @@ pub trait UseJobExecutor:
             let (job_id, result_fut) = self
                 .enqueue_with_worker_or_temp_channel(
                     metadata,
-                    Some(wid),
-                    worker_data,
+                    WorkerForEnqueue::existing(wid, worker_data),
                     job_args,
                     uniq_key,
                     job_timeout_sec,
@@ -685,8 +698,7 @@ pub trait UseJobExecutor:
             let res = self
                 .enqueue_with_worker_or_temp(
                     metadata,
-                    Some(wid),
-                    worker_data,
+                    WorkerForEnqueue::existing(wid, worker_data),
                     job_args,
                     uniq_key,
                     job_timeout_sec,
@@ -878,6 +890,55 @@ pub trait UseJobExecutor:
     }
 }
 
+fn worker_data_matches_expected(existing: &WorkerData, expected: &WorkerData) -> bool {
+    existing.name == expected.name
+        && existing.description == expected.description
+        && existing.runner_id == expected.runner_id
+        && existing.runner_settings == expected.runner_settings
+        && retry_policies_match(
+            existing.retry_policy.as_ref(),
+            expected.retry_policy.as_ref(),
+        )
+        && existing.periodic_interval == expected.periodic_interval
+        && worker_channels_match(existing.channel.as_deref(), expected.channel.as_deref())
+        && existing.queue_type == expected.queue_type
+        && existing.response_type == expected.response_type
+        && existing.store_success == expected.store_success
+        && existing.store_failure == expected.store_failure
+        && existing.use_static == expected.use_static
+        && existing.broadcast_results == expected.broadcast_results
+}
+
+fn normalize_worker_data_after_upsert(mut worker_data: WorkerData) -> WorkerData {
+    if worker_data.channel.is_none() {
+        worker_data.channel = Some(JobqueueAndCodec::DEFAULT_CHANNEL_NAME.to_string());
+    }
+    worker_data
+}
+
+fn worker_channels_match(existing: Option<&str>, expected: Option<&str>) -> bool {
+    fn normalize(channel: Option<&str>) -> &str {
+        channel.unwrap_or(JobqueueAndCodec::DEFAULT_CHANNEL_NAME)
+    }
+    normalize(existing) == normalize(expected)
+}
+
+fn retry_policies_match(existing: Option<&RetryPolicy>, expected: Option<&RetryPolicy>) -> bool {
+    normalize_retry_policy(existing) == normalize_retry_policy(expected)
+}
+
+fn normalize_retry_policy(policy: Option<&RetryPolicy>) -> Option<RetryPolicy> {
+    policy.filter(|p| !is_empty_retry_policy(p)).cloned()
+}
+
+fn is_empty_retry_policy(policy: &RetryPolicy) -> bool {
+    policy.r#type == 0
+        && policy.interval == 0
+        && policy.max_interval == 0
+        && policy.max_retry == 0
+        && (policy.basis - 2.0).abs() < f32::EPSILON
+}
+
 /// Placeholder substituted for redacted sensitive values in logs.
 const REDACTED: &str = "***REDACTED***";
 
@@ -969,6 +1030,7 @@ mod tests {
     use std::time::Duration;
 
     const COMMAND_RUNNER_ID: i64 = 1;
+    const HTTP_REQUEST_RUNNER_ID: i64 = 2;
 
     #[tokio::test]
     async fn test_enqueue_with_worker_name_channel_returns_job_id_before_result() -> Result<()> {
@@ -1026,6 +1088,157 @@ mod tests {
 
         app_module.job_app.delete_job(&child.job_id).await?;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_or_create_worker_updates_existing_static_worker_definition() -> Result<()> {
+        let app_module = Arc::new(create_rdb_chan_test_app(false, false).await?);
+        let wrapper = JobExecutorWrapper::new(app_module.clone());
+        let worker_name = "find-or-create-stale-static-worker";
+        let original_settings = b"old-settings".to_vec();
+        let expected_settings = Vec::new();
+
+        let original_id = app_module
+            .worker_app
+            .create(&WorkerData {
+                name: worker_name.to_string(),
+                description: "stale static worker".to_string(),
+                runner_id: Some(RunnerId {
+                    value: COMMAND_RUNNER_ID,
+                }),
+                runner_settings: original_settings,
+                use_static: true,
+                ..Default::default()
+            })
+            .await?;
+
+        let worker = wrapper
+            .find_or_create_worker(WorkerData {
+                name: worker_name.to_string(),
+                description: "refreshed static worker".to_string(),
+                runner_id: Some(RunnerId {
+                    value: HTTP_REQUEST_RUNNER_ID,
+                }),
+                runner_settings: expected_settings.clone(),
+                use_static: true,
+                ..Default::default()
+            })
+            .await?;
+
+        assert_eq!(worker.id, Some(original_id));
+        let data = worker.data.expect("worker data should be returned");
+        assert_eq!(
+            data.runner_id,
+            Some(RunnerId {
+                value: HTTP_REQUEST_RUNNER_ID
+            })
+        );
+        assert_eq!(data.runner_settings, expected_settings);
+        assert_eq!(data.description, "refreshed static worker");
+
+        app_module.worker_app.delete(&original_id).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_or_create_worker_updates_existing_static_worker_settings() -> Result<()> {
+        let app_module = Arc::new(create_rdb_chan_test_app(false, false).await?);
+        let wrapper = JobExecutorWrapper::new(app_module.clone());
+        let worker_name = "find-or-create-stale-static-worker-settings";
+        let expected_settings = b"updated-command-settings".to_vec();
+
+        let original_id = app_module
+            .worker_app
+            .create(&WorkerData {
+                name: worker_name.to_string(),
+                description: "stale static worker settings".to_string(),
+                runner_id: Some(RunnerId {
+                    value: COMMAND_RUNNER_ID,
+                }),
+                runner_settings: b"old-command-settings".to_vec(),
+                use_static: true,
+                ..Default::default()
+            })
+            .await?;
+
+        let worker = wrapper
+            .find_or_create_worker(WorkerData {
+                name: worker_name.to_string(),
+                description: "refreshed static worker settings".to_string(),
+                runner_id: Some(RunnerId {
+                    value: COMMAND_RUNNER_ID,
+                }),
+                runner_settings: expected_settings.clone(),
+                use_static: true,
+                ..Default::default()
+            })
+            .await?;
+
+        assert_eq!(worker.id, Some(original_id));
+        let data = worker.data.expect("worker data should be returned");
+        assert_eq!(data.runner_settings, expected_settings);
+        assert_eq!(data.description, "refreshed static worker settings");
+
+        app_module.worker_app.delete(&original_id).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_or_create_worker_normalizes_default_channel_after_upsert() -> Result<()> {
+        let app_module = Arc::new(create_rdb_chan_test_app(false, false).await?);
+        let wrapper = JobExecutorWrapper::new(app_module.clone());
+        let worker_name = "find-or-create-static-worker-default-channel";
+
+        let worker = wrapper
+            .find_or_create_worker(WorkerData {
+                name: worker_name.to_string(),
+                description: "static worker with default channel".to_string(),
+                runner_id: Some(RunnerId {
+                    value: COMMAND_RUNNER_ID,
+                }),
+                use_static: true,
+                channel: None,
+                ..Default::default()
+            })
+            .await?;
+
+        let worker_id = worker.id.expect("worker id should be returned");
+        let data = worker.data.expect("worker data should be returned");
+        assert_eq!(
+            data.channel.as_deref(),
+            Some(JobqueueAndCodec::DEFAULT_CHANNEL_NAME)
+        );
+
+        app_module.worker_app.delete(&worker_id).await?;
+        Ok(())
+    }
+
+    #[test]
+    fn worker_data_match_treats_db_empty_retry_policy_as_none() {
+        let expected = WorkerData {
+            name: "static-worker".to_string(),
+            description: "same".to_string(),
+            runner_id: Some(RunnerId {
+                value: COMMAND_RUNNER_ID,
+            }),
+            runner_settings: Vec::new(),
+            retry_policy: None,
+            use_static: true,
+            ..Default::default()
+        };
+        let existing = WorkerData {
+            retry_policy: Some(RetryPolicy {
+                r#type: 0,
+                interval: 0,
+                max_interval: 0,
+                max_retry: 0,
+                basis: 2.0,
+            }),
+            channel: Some(JobqueueAndCodec::DEFAULT_CHANNEL_NAME.to_string()),
+            ..expected.clone()
+        };
+
+        assert!(worker_data_matches_expected(&existing, &expected));
     }
 
     #[test]

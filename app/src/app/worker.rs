@@ -262,22 +262,41 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
         require_client_stream: Option<bool>,
         using: Option<&str>,
     ) -> Result<()> {
-        let runner_id = if let Some(Worker {
+        let worker_data = if let Some(Worker {
             id: _,
             data: Some(wd),
         }) = self.find(id).await?
         {
-            wd.runner_id.ok_or_else(|| {
-                anyhow::Error::from(JobWorkerError::InvalidParameter(format!(
-                    "worker does not have runner_id: id={}",
-                    &id.value
-                )))
-            })?
+            wd
         } else {
             return Err(
                 JobWorkerError::NotFound(format!("worker not found: id={}", &id.value)).into(),
             );
         };
+        self.check_worker_data_streaming(
+            id,
+            &worker_data,
+            request_streaming,
+            require_client_stream,
+            using,
+        )
+        .await
+    }
+
+    async fn check_worker_data_streaming(
+        &self,
+        id: &WorkerId,
+        worker_data: &WorkerData,
+        request_streaming: bool,
+        require_client_stream: Option<bool>,
+        using: Option<&str>,
+    ) -> Result<()> {
+        let runner_id = worker_data.runner_id.ok_or_else(|| {
+            anyhow::Error::from(JobWorkerError::InvalidParameter(format!(
+                "worker does not have runner_id: id={}",
+                &id.value
+            )))
+        })?;
         if let Some(RunnerWithSchema {
             id: _,
             data: Some(runner_data),

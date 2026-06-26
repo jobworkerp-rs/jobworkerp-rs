@@ -16,7 +16,7 @@ use crate::workflow::{
     },
 };
 use anyhow::Result;
-use app::app::job::execute::JobExecutorWrapper;
+use app::app::job::execute::{JobExecutorWrapper, WorkerForEnqueue};
 use command_utils::trace::Tracing;
 use futures::stream::BoxStream;
 use proto::jobworkerp::data::{
@@ -867,7 +867,7 @@ async fn start_worker_streaming_job_static(
         .map_err(|e| anyhow::anyhow!("Failed to find worker '{}': {:#?}", worker_name, e))?
         .ok_or_else(|| anyhow::anyhow!("Worker '{}' not found", worker_name))?;
 
-    let (_wid, worker_data) = match worker {
+    let (wid, worker_data) = match worker {
         Worker {
             id: Some(wid),
             data: Some(worker_data),
@@ -930,8 +930,7 @@ async fn start_worker_streaming_job_static(
     let (job_id, _job_result, _stream) = job_executor_wrapper
         .enqueue_with_worker_or_temp(
             metadata,
-            Some(_wid), // Use existing worker to preserve pooling (use_static)
-            worker_data,
+            WorkerForEnqueue::existing(wid, worker_data),
             job_args,
             None, // uniq_key
             timeout_sec,

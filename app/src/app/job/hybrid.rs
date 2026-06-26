@@ -232,9 +232,11 @@ impl HybridJobAppImpl {
         } = worker
         {
             // Check streaming output type only; client stream validation is the gRPC layer's responsibility
+            // The worker data is already resolved, so validate against it directly
+            // instead of re-fetching the worker from the store.
             let request_streaming = streaming_type != StreamingType::None;
             self.worker_app()
-                .check_worker_streaming(wid, request_streaming, None, using.as_deref())
+                .check_worker_data_streaming(wid, w, request_streaming, None, using.as_deref())
                 .await?;
 
             let resolved = resolve_job_params(w, overrides.as_ref());
@@ -583,6 +585,41 @@ impl HybridJobAppImpl {
 
 #[async_trait]
 impl JobApp for HybridJobAppImpl {
+    async fn enqueue_job_with_worker(
+        &self,
+        metadata: Arc<HashMap<String, String>>,
+        worker: Worker,
+        args: Vec<u8>,
+        uniq_key: Option<String>,
+        run_after_time: i64,
+        priority: i32,
+        timeout: u64,
+        reserved_job_id: Option<JobId>,
+        streaming_type: StreamingType,
+        using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
+    ) -> Result<(
+        JobId,
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )> {
+        HybridJobAppImpl::enqueue_job_with_worker(
+            self,
+            metadata,
+            &worker,
+            args,
+            uniq_key,
+            run_after_time,
+            priority,
+            timeout,
+            reserved_job_id,
+            streaming_type,
+            using,
+            overrides,
+        )
+        .await
+    }
+
     async fn enqueue_job_with_temp_worker<'a>(
         &'a self,
         meta: Arc<HashMap<String, String>>,
@@ -811,8 +848,7 @@ impl JobApp for HybridJobAppImpl {
     async fn enqueue_job_with_channel<'a>(
         &'a self,
         meta: Arc<HashMap<String, String>>,
-        worker_id: Option<&'a WorkerId>,
-        worker_name: Option<&'a String>,
+        worker: Worker,
         args: Vec<u8>,
         uniq_key: Option<String>,
         run_after_time: i64,
@@ -823,27 +859,19 @@ impl JobApp for HybridJobAppImpl {
         using: Option<String>,
         overrides: Option<JobExecutionOverrides>,
     ) -> Result<(JobId, super::ChannelJobResultFuture)> {
-        let worker_res = if let Some(id) = worker_id {
-            self.worker_app().find(id).await?
-        } else if let Some(name) = worker_name {
-            self.worker_app().find_by_name(name).await?
-        } else {
-            return Err(JobWorkerError::WorkerNotFound(
-                "worker_id or worker_name is required".to_string(),
-            )
-            .into());
-        };
-        let Some(Worker {
+        let Worker {
             id: Some(wid),
             data: Some(w),
-        }) = worker_res
+        } = worker
         else {
-            return Err(JobWorkerError::WorkerNotFound(format!("name: {:?}", &worker_name)).into());
+            return Err(
+                JobWorkerError::WorkerNotFound("worker id or data is missing".to_string()).into(),
+            );
         };
 
         let request_streaming = streaming_type != StreamingType::None;
         self.worker_app()
-            .check_worker_streaming(&wid, request_streaming, None, using.as_deref())
+            .check_worker_data_streaming(&wid, &w, request_streaming, None, using.as_deref())
             .await?;
         let resolved = resolve_job_params(&w, overrides.as_ref());
 
@@ -860,10 +888,12 @@ impl JobApp for HybridJobAppImpl {
 
         if !is_instant_direct_redis {
             let (job_id, result, stream) = self
-                .enqueue_job(
+                .enqueue_job_with_worker(
                     meta,
-                    Some(&wid),
-                    None,
+                    &Worker {
+                        id: Some(wid),
+                        data: Some(w),
+                    },
                     args,
                     uniq_key,
                     run_after_time,

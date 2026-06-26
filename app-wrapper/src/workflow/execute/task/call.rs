@@ -24,7 +24,7 @@ use crate::workflow::{
 };
 use anyhow::{Result, anyhow};
 use app::app::{
-    job::execute::{JobExecutorWrapper, UseJobExecutor},
+    job::execute::{JobExecutorWrapper, UseJobExecutor, WorkerForEnqueue},
     runner::UseRunnerApp,
 };
 use command_utils::trace::Tracing;
@@ -202,8 +202,7 @@ impl CallTaskExecutor {
             .job_executor_wrapper
             .enqueue_with_worker_or_temp_channel(
                 Arc::new(metadata),
-                None,
-                worker_data,
+                WorkerForEnqueue::Temp(worker_data),
                 job_args,
                 None,
                 timeout_sec,
