@@ -367,7 +367,6 @@ pub trait ChanJobDispatcher:
 
                 // Index RUNNING status in RDB (if enabled) with full metadata including start_time
                 if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
-                    let channel = wdat.channel.clone().unwrap_or_default();
                     let priority = jdat.priority;
                     let enqueue_time = jdat.enqueue_time;
                     let is_streamable = jdat.streaming_type != 0;
@@ -378,7 +377,7 @@ pub trait ChanJobDispatcher:
                             &jid,
                             &JobProcessingStatus::Running,
                             &wid,
-                            &channel,
+                            wdat.channel.as_deref(),
                             priority,
                             enqueue_time,
                             is_streamable,
@@ -410,7 +409,6 @@ pub trait ChanJobDispatcher:
 
             // Index RUNNING status in RDB (if enabled) with full metadata including start_time
             if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
-                let channel = wdat.channel.clone().unwrap_or_default();
                 let priority = jdat.priority;
                 let enqueue_time = jdat.enqueue_time;
                 let is_streamable = jdat.streaming_type != 0;
@@ -421,7 +419,7 @@ pub trait ChanJobDispatcher:
                         &jid,
                         &JobProcessingStatus::Running,
                         &wid,
-                        &channel,
+                        wdat.channel.as_deref(),
                         priority,
                         enqueue_time,
                         is_streamable,
@@ -439,7 +437,7 @@ pub trait ChanJobDispatcher:
         }
 
         // Save job metadata before run_job() consumes jdat
-        let channel_for_indexing = wdat.channel.clone().unwrap_or_default();
+        let channel_for_indexing = wdat.channel.clone();
         let priority_for_indexing = jdat.priority;
         let enqueue_time_for_indexing = jdat.enqueue_time;
         let is_streamable_for_indexing = jdat.streaming_type != 0;
@@ -473,7 +471,7 @@ pub trait ChanJobDispatcher:
                             &jid,
                             &JobProcessingStatus::WaitResult,
                             &wid,
-                            &channel_for_indexing,
+                            channel_for_indexing.as_deref(),
                             priority_for_indexing,
                             enqueue_time_for_indexing,
                             is_streamable_for_indexing,

@@ -323,7 +323,7 @@ pub trait RedisJobDispatcher:
                     if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
                         let job_id = jid;
                         let worker_id = wid;
-                        let channel = wdat.channel.clone().unwrap_or_default();
+                        let channel = wdat.channel.clone();
                         let priority = jdat.priority;
                         let enqueue_time = jdat.enqueue_time;
                         let is_streamable = jdat.streaming_type != 0;
@@ -334,7 +334,7 @@ pub trait RedisJobDispatcher:
                                     &job_id,
                                     &JobProcessingStatus::Running,
                                     &worker_id,
-                                    &channel,
+                                    channel.as_deref(),
                                     priority,
                                     enqueue_time,
                                     is_streamable,
@@ -375,7 +375,7 @@ pub trait RedisJobDispatcher:
             if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
                 let job_id = jid;
                 let worker_id = wid;
-                let channel = wdat.channel.clone().unwrap_or_default();
+                let channel = wdat.channel.clone();
                 let priority = jdat.priority;
                 let enqueue_time = jdat.enqueue_time;
                 let is_streamable = jdat.streaming_type != 0;
@@ -386,7 +386,7 @@ pub trait RedisJobDispatcher:
                             &job_id,
                             &JobProcessingStatus::Running,
                             &worker_id,
-                            &channel,
+                            channel.as_deref(),
                             priority,
                             enqueue_time,
                             is_streamable,
@@ -449,7 +449,7 @@ pub trait RedisJobDispatcher:
             if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
                 let job_id = jid;
                 let worker_id = wid;
-                let channel = wdat.channel.clone().unwrap_or_default();
+                let channel = wdat.channel.clone();
                 let priority = jdat_priority;
                 let enqueue_time = jdat_enqueue_time;
                 let is_streamable = jdat_request_streaming;
@@ -460,7 +460,7 @@ pub trait RedisJobDispatcher:
                             &job_id,
                             &JobProcessingStatus::WaitResult,
                             &worker_id,
-                            &channel,
+                            channel.as_deref(),
                             priority,
                             enqueue_time,
                             is_streamable,

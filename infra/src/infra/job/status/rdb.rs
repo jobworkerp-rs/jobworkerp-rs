@@ -1,3 +1,4 @@
+use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::Result;
 use command_utils::util::datetime;
 use infra_utils::infra::rdb::{RdbPool, UseRdbPool};
@@ -33,6 +34,9 @@ pub struct RdbJobProcessingStatusIndexRepository {
     config: Arc<JobStatusConfig>,
 }
 
+impl jobworkerp_base::codec::UseProstCodec for RdbJobProcessingStatusIndexRepository {}
+impl UseJobqueueAndCodec for RdbJobProcessingStatusIndexRepository {}
+
 impl RdbJobProcessingStatusIndexRepository {
     pub fn new(rdb_pool: Arc<RdbPool>, config: Arc<JobStatusConfig>) -> Self {
         Self { rdb_pool, config }
@@ -52,6 +56,9 @@ impl RdbJobProcessingStatusIndexRepository {
     /// Index job status to RDB (expected to be called asynchronously)
     ///
     /// # Arguments
+    /// - `channel`: the domain channel (`None` means the default channel); it is
+    ///   materialized to the storage channel name here so callers never need to
+    ///   know the default-channel name.
     /// - All fields are explicitly passed (not constrained by trait)
     ///
     /// # Returns
@@ -63,7 +70,7 @@ impl RdbJobProcessingStatusIndexRepository {
         job_id: &JobId,
         status: &JobProcessingStatus,
         worker_id: &WorkerId,
-        channel: &str,
+        channel: Option<&str>,
         priority: i32,
         enqueue_time: i64,
         is_streamable: bool,
@@ -73,6 +80,10 @@ impl RdbJobProcessingStatusIndexRepository {
         if !self.config.rdb_indexing_enabled {
             return Ok(());
         }
+
+        // The index column is NOT NULL and is searched by the materialized
+        // default channel name, so resolve the domain channel at this boundary.
+        let channel = channel.unwrap_or(Self::DEFAULT_CHANNEL_NAME);
 
         let now = datetime::now_millis();
         let mut conn = self.rdb_pool.acquire().await?;
@@ -750,7 +761,7 @@ mod tests {
                     &JobId { value: 1 },
                     &JobProcessingStatus::Pending,
                     &WorkerId { value: 1 },
-                    "test",
+                    Some("test"),
                     0,
                     datetime::now_millis(),
                     false,
@@ -784,7 +795,7 @@ mod tests {
                     &JobId { value: 100 },
                     &JobProcessingStatus::Pending,
                     &WorkerId { value: 1 },
-                    "test_channel",
+                    Some("test_channel"),
                     10,
                     datetime::now_millis(),
                     false,
@@ -889,7 +900,7 @@ mod tests {
                     &JobId { value: 300 },
                     &JobProcessingStatus::Running,
                     &WorkerId { value: 1 },
-                    "test_channel",
+                    Some("test_channel"),
                     10,
                     datetime::now_millis(),
                     false,
@@ -955,7 +966,7 @@ mod tests {
                     &JobId { value: 400 },
                     &JobProcessingStatus::Pending,
                     &WorkerId { value: 1 },
-                    "test_channel",
+                    Some("test_channel"),
                     10,
                     now,
                     false,
@@ -996,7 +1007,7 @@ mod tests {
                 &JobId { value: 500 },
                 &JobProcessingStatus::Pending,
                 &WorkerId { value: 1 },
-                "test_channel",
+                Some("test_channel"),
                 10,
                 datetime::now_millis(),
                 false,
@@ -1009,7 +1020,7 @@ mod tests {
                 &JobId { value: 501 },
                 &JobProcessingStatus::Pending,
                 &WorkerId { value: 1 },
-                "test_channel",
+                Some("test_channel"),
                 10,
                 datetime::now_millis(),
                 false,
@@ -1021,7 +1032,7 @@ mod tests {
                 &JobId { value: 501 },
                 &JobProcessingStatus::Running,
                 &WorkerId { value: 1 },
-                "test_channel",
+                Some("test_channel"),
                 10,
                 datetime::now_millis(),
                 false,
@@ -1069,7 +1080,7 @@ mod tests {
                 &JobId { value: 600 },
                 &JobProcessingStatus::Pending,
                 &WorkerId { value: 1 },
-                "test_channel",
+                Some("test_channel"),
                 10,
                 datetime::now_millis(),
                 false,
@@ -1081,7 +1092,7 @@ mod tests {
                 &JobId { value: 601 },
                 &JobProcessingStatus::Pending,
                 &WorkerId { value: 2 },
-                "test_channel",
+                Some("test_channel"),
                 10,
                 datetime::now_millis(),
                 false,
@@ -1124,7 +1135,7 @@ mod tests {
                 &job_id,
                 &JobProcessingStatus::Pending,
                 &worker_id,
-                "test_channel",
+                Some("test_channel"),
                 1,
                 100,
                 false,
@@ -1174,7 +1185,7 @@ mod tests {
                 &job_id,
                 &JobProcessingStatus::Pending,
                 &worker_id,
-                "test_channel",
+                Some("test_channel"),
                 1,
                 101,
                 false,
@@ -1233,7 +1244,7 @@ mod tests {
                 &job_id,
                 &JobProcessingStatus::Pending,
                 &worker_id,
-                "test_channel",
+                Some("test_channel"),
                 1,
                 200,
                 false,
@@ -1281,7 +1292,7 @@ mod tests {
                 &job_id,
                 &JobProcessingStatus::Pending,
                 &worker_id,
-                "test_channel",
+                Some("test_channel"),
                 1,
                 300,
                 false,
@@ -1333,7 +1344,7 @@ mod tests {
                 &job_id,
                 &JobProcessingStatus::Pending,
                 &worker_id,
-                "test_channel",
+                Some("test_channel"),
                 1,
                 400,
                 false,
@@ -1392,7 +1403,7 @@ mod tests {
                 &job_id,
                 &JobProcessingStatus::Pending,
                 &worker_id,
-                "test_channel",
+                Some("test_channel"),
                 1,
                 500,
                 false,
@@ -1488,7 +1499,7 @@ mod tests {
                 &job_id,
                 &JobProcessingStatus::Pending,
                 &WorkerId { value: 1 },
-                "test_channel",
+                Some("test_channel"),
                 1,
                 600,
                 false,
@@ -1499,7 +1510,7 @@ mod tests {
                 &job_id,
                 &JobProcessingStatus::Running,
                 &WorkerId { value: 1 },
-                "test_channel",
+                Some("test_channel"),
                 1,
                 600,
                 false,
