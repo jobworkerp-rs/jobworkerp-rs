@@ -436,8 +436,8 @@ pub trait ChanJobDispatcher:
             }
         }
 
-        // Save job metadata before run_job() consumes jdat
-        let channel_for_indexing = wdat.channel.clone();
+        // Save jdat-derived metadata before run_job() consumes jdat
+        // (wdat outlives the WaitResult index call below, so its channel is read inline).
         let priority_for_indexing = jdat.priority;
         let enqueue_time_for_indexing = jdat.enqueue_time;
         let is_streamable_for_indexing = jdat.streaming_type != 0;
@@ -471,7 +471,7 @@ pub trait ChanJobDispatcher:
                             &jid,
                             &JobProcessingStatus::WaitResult,
                             &wid,
-                            channel_for_indexing.as_deref(),
+                            wdat.channel.as_deref(),
                             priority_for_indexing,
                             enqueue_time_for_indexing,
                             is_streamable_for_indexing,
