@@ -38,7 +38,7 @@ use proto::calculate_direct_response_timeout_ms;
 use proto::jobworkerp::data::{
     Job, JobData, JobExecutionOverrides, JobId, JobProcessingStatus, JobResult, JobResultData,
     JobResultId, QueueType, ResponseType, ResultOutputItem, ResultStatus, RetryPolicy,
-    StreamingType, Trailer, WorkerData, WorkerId, result_output_item,
+    StreamingType, Trailer, Worker, WorkerData, WorkerId, result_output_item,
 };
 use std::{collections::HashMap, fmt, sync::Arc};
 
@@ -226,6 +226,26 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         Option<BoxStream<'static, ResultOutputItem>>,
     )>;
 
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_job_with_worker(
+        &self,
+        meta: Arc<HashMap<String, String>>,
+        worker: Worker,
+        arg: Vec<u8>,
+        uniq_key: Option<String>,
+        run_after_time: i64,
+        priority: i32,
+        timeout: u64,
+        reserved_job_id: Option<JobId>,
+        streaming_type: StreamingType,
+        using: Option<String>,
+        overrides: Option<JobExecutionOverrides>,
+    ) -> Result<(
+        JobId,
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )>;
+
     /// Enqueue a job and return its `JobId` eagerly, deferring the result wait
     /// to the returned future.
     ///
@@ -243,8 +263,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     async fn enqueue_job_with_channel<'a>(
         &'a self,
         meta: Arc<HashMap<String, String>>,
-        worker_id: Option<&'a WorkerId>,
-        worker_name: Option<&'a String>,
+        worker: Worker,
         arg: Vec<u8>,
         uniq_key: Option<String>,
         run_after_time: i64,
@@ -256,8 +275,6 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         overrides: Option<JobExecutionOverrides>,
     ) -> Result<(JobId, ChannelJobResultFuture)>;
 
-    // NOTE: Both rdb_chan.rs and hybrid.rs impl accept `worker: &Worker` (by reference).
-    // Keep signatures consistent when modifying.
     #[allow(clippy::too_many_arguments)]
     async fn enqueue_job_with_temp_worker<'a>(
         &'a self,

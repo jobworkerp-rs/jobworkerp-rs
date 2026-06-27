@@ -787,4 +787,61 @@ mod tests {
             Ok(())
         })
     }
+
+    // A worker stored with the default channel reads back as `channel: None`
+    // (the storage read boundary maps the default name to absence). The RDB
+    // dispatcher resolves the default channel to its literal name via
+    // `channel_concurrency_pair`, so `find_worker_ids_by_channel` must still
+    // match a `None`-channel worker against the default channel name; otherwise
+    // periodic / run_after / DbOnly jobs on the default channel never dispatch.
+    #[test]
+    fn find_worker_ids_by_channel_matches_default_channel_worker() -> Result<()> {
+        use infra::infra::job::rows::UseJobqueueAndCodec;
+        let default_channel = JobqueueAndCodec::DEFAULT_CHANNEL_NAME.to_string();
+
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_app(false).await?;
+            let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
+                name: "channelDispatchRunner".to_string(),
+            })?;
+
+            // Default-channel worker (channel omitted -> None in the domain).
+            let default_worker = WorkerData {
+                name: "default-channel-dispatch".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                channel: None,
+                ..Default::default()
+            };
+            // Custom-channel worker that must not be matched by the default name.
+            let custom_worker = WorkerData {
+                name: "custom-channel-dispatch".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                channel: Some("custom-dispatch-channel".to_string()),
+                ..Default::default()
+            };
+
+            let default_id = app.create(&default_worker).await?;
+            let custom_id = app.create(&custom_worker).await?;
+
+            // The dispatcher queries by the literal default channel name.
+            let default_ids = app.find_worker_ids_by_channel(&default_channel).await?;
+            assert!(
+                default_ids.contains(&default_id),
+                "default-channel worker must be dispatchable under the default channel name"
+            );
+            assert!(
+                !default_ids.contains(&custom_id),
+                "custom-channel worker must not match the default channel"
+            );
+
+            let custom_ids = app
+                .find_worker_ids_by_channel(&"custom-dispatch-channel".to_string())
+                .await?;
+            assert_eq!(custom_ids, vec![custom_id]);
+
+            Ok(())
+        })
+    }
 }

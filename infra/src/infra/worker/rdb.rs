@@ -95,12 +95,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(rp.map(|p| p.max_retry as i64).unwrap_or(0))
         .bind(rp.map(|p| p.basis).unwrap_or(2.0))
         .bind(worker.periodic_interval as i64)
-        .bind(
-            worker
-                .channel
-                .as_ref()
-                .unwrap_or(&Self::DEFAULT_CHANNEL_NAME.to_string()),
-        )
+        .bind(Self::channel_for_storage(worker.channel.as_ref()))
         .bind(worker.queue_type)
         .bind(worker.response_type)
         .bind(worker.store_success)
@@ -154,12 +149,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(rp.map(|p| p.max_retry as i64).unwrap_or(0))
         .bind(rp.map(|p| p.basis).unwrap_or(2.0))
         .bind(worker.periodic_interval as i64)
-        .bind(
-            worker
-                .channel
-                .as_ref()
-                .unwrap_or(&Self::DEFAULT_CHANNEL_NAME.to_string()),
-        )
+        .bind(Self::channel_for_storage(worker.channel.as_ref()))
         .bind(worker.queue_type)
         .bind(worker.response_type)
         .bind(worker.store_success)
@@ -208,12 +198,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(rp.map(|p| p.max_retry as i64).unwrap_or(0))
         .bind(rp.map(|p| p.basis).unwrap_or(2.0))
         .bind(worker.periodic_interval as i64)
-        .bind(
-            worker
-                .channel
-                .as_ref()
-                .unwrap_or(&Self::DEFAULT_CHANNEL_NAME.to_string()),
-        )
+        .bind(Self::channel_for_storage(worker.channel.as_ref()))
         .bind(worker.queue_type)
         .bind(worker.response_type)
         .bind(worker.store_success)
@@ -2274,6 +2259,61 @@ mod test {
         Ok(())
     }
 
+    /// A worker created with `channel: None` must persist the default channel
+    /// name to the DB column, but read back as `None` (the domain default).
+    async fn _test_channel_none_round_trips_as_default(pool: &'static RdbPool) -> Result<()> {
+        let repository = RdbWorkerRepositoryImpl::new(pool);
+        let db = repository.db_pool();
+
+        let data = WorkerData {
+            name: "channel_round_trip_worker".to_string(),
+            description: "channel round trip".to_string(),
+            runner_id: Some(RunnerId { value: 1 }),
+            runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
+                name: "settings".to_string(),
+            })?,
+            retry_policy: None,
+            periodic_interval: 0,
+            channel: None,
+            queue_type: QueueType::Normal as i32,
+            response_type: ResponseType::NoResult as i32,
+            store_success: false,
+            store_failure: false,
+            use_static: false,
+            broadcast_results: false,
+        };
+
+        let mut tx = db.begin().await.context("error in test")?;
+        let id = repository.create(&mut *tx, &data).await?;
+        tx.commit().await.context("error in test commit")?;
+
+        // Read boundary: the default channel is represented as `None` in the domain.
+        let found = repository.find(&id).await?.context("worker should exist")?;
+        assert_eq!(
+            found.data.and_then(|d| d.channel),
+            None,
+            "default channel must read back as None"
+        );
+
+        // Write boundary: the DB column stores the materialized default name, not NULL.
+        let stored_channel: Option<String> =
+            sqlx::query_scalar("SELECT channel FROM worker WHERE id = ?;")
+                .bind(id.value)
+                .fetch_one(db)
+                .await
+                .context("error reading stored channel")?;
+        assert_eq!(
+            stored_channel.as_deref(),
+            Some(JobqueueAndCodec::DEFAULT_CHANNEL_NAME),
+            "default channel must be materialized in storage"
+        );
+
+        let mut tx = db.begin().await.context("error in test")?;
+        repository.delete_tx(&mut *tx, &id).await?;
+        tx.commit().await.context("error in test delete commit")?;
+        Ok(())
+    }
+
     #[test]
     fn run_test() -> Result<()> {
         use infra_utils::infra::test::TEST_RUNTIME;
@@ -2298,6 +2338,7 @@ mod test {
             _test_find_list_by_sort(rdb_pool).await?;
             _test_find_list_by_combined_filters(rdb_pool).await?;
             _test_count_by_channel(rdb_pool).await?;
+            _test_channel_none_round_trips_as_default(rdb_pool).await?;
             _test_update_by_name(rdb_pool).await
         })
     }

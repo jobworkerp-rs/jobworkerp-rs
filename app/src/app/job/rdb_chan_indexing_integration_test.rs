@@ -121,7 +121,7 @@ mod rdb_chan_indexing_integration_tests {
                         &job_id,
                         &JobProcessingStatus::Running,
                         &worker_id,
-                        "test",
+                        Some("test"),
                         0,
                         0,
                         false,
@@ -267,6 +267,93 @@ mod rdb_chan_indexing_integration_tests {
             }
 
             tracing::info!("test_find_by_condition_with_rdb_index completed successfully");
+            Ok(())
+        })
+    }
+
+    // A default-channel worker reads back as `channel: None`, but its jobs must
+    // still be indexed under the materialized default channel name so that
+    // find_by_condition(DEFAULT_CHANNEL_NAME) matches them and the status detail
+    // exposes the default name instead of an empty string.
+    #[test]
+    fn find_by_condition_indexes_default_channel_by_name() -> Result<()> {
+        use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+
+        TEST_RUNTIME.block_on(async {
+            let app_module = create_rdb_chan_test_app(false, true).await?;
+            let app = &app_module.job_app;
+
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            )?;
+            // Default channel worker (channel omitted -> None in the domain).
+            let wd = WorkerData {
+                name: "default-channel-index-worker".to_string(),
+                description: "default channel".to_string(),
+                runner_id: Some(RunnerId { value: 1 }),
+                runner_settings,
+                channel: None,
+                response_type: ResponseType::NoResult as i32,
+                periodic_interval: 0,
+                retry_policy: None,
+                queue_type: QueueType::Normal as i32,
+                store_failure: false,
+                store_success: false,
+                use_static: false,
+                broadcast_results: false,
+            };
+
+            let worker_id = app_module.worker_app.create(&wd).await?;
+            let jargs =
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                })?;
+
+            let metadata = Arc::new(HashMap::new());
+            let (job_id, _, _) = app
+                .enqueue_job(
+                    metadata.clone(),
+                    Some(&worker_id),
+                    None,
+                    jargs.clone(),
+                    None,
+                    0,
+                    0,
+                    0,
+                    None,
+                    StreamingType::None,
+                    None,
+                    None,
+                )
+                .await?;
+
+            // Wait for async indexing
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            // The dispatcher / status API search by the literal default channel name.
+            let results = app
+                .find_by_condition(
+                    Some(JobProcessingStatus::Pending),
+                    None,
+                    Some(JobqueueAndCodec::DEFAULT_CHANNEL_NAME.to_string()),
+                    None,
+                    10,
+                    0,
+                    false,
+                )
+                .await?;
+
+            assert!(
+                results.iter().any(|d| d.job_id == job_id),
+                "default-channel job must be findable under the default channel name"
+            );
+            for detail in &results {
+                // The default channel must be materialized, not an empty string.
+                assert_eq!(detail.channel, JobqueueAndCodec::DEFAULT_CHANNEL_NAME);
+            }
+
             Ok(())
         })
     }
@@ -537,7 +624,7 @@ mod rdb_chan_indexing_integration_tests {
                         &job_id,
                         &JobProcessingStatus::Running,
                         &worker_id,
-                        "test_starttime",
+                        Some("test_starttime"),
                         5,
                         0,
                         false,

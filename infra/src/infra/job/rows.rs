@@ -57,6 +57,26 @@ pub trait UseJobqueueAndCodec: UseProstCodec {
     // worker pubsub channel name (for cache clear)
     const WORKER_PUBSUB_CHANNEL_NAME: &'static str = "__worker_pubsub_channel__";
 
+    // Convert a domain channel value into the form persisted in storage.
+    // The domain treats `None` as the default channel, but the storage column
+    // cannot represent that absence, so it is materialized as the default name.
+    fn channel_for_storage(channel: Option<&String>) -> String {
+        channel
+            .map(|c| c.as_str())
+            .unwrap_or(Self::DEFAULT_CHANNEL_NAME)
+            .to_string()
+    }
+
+    // Convert a stored channel value back into the domain form.
+    // The materialized default name maps back to `None` so the domain
+    // consistently uses `None` for the default channel.
+    fn channel_from_storage(stored: Option<&String>) -> Option<String> {
+        match stored {
+            Some(c) if c.as_str() == Self::DEFAULT_CHANNEL_NAME => None,
+            other => other.cloned(),
+        }
+    }
+
     // job queue channel name with channel name
     fn queue_channel_name(channel_name: impl Into<String>, p: Option<&i32>) -> String {
         format!("q{}:{}:", p.unwrap_or(&0), channel_name.into())
@@ -118,6 +138,31 @@ mod tests {
     use proto::jobworkerp::data::{
         JobResult, JobResultData, JobResultId, ResponseType, ResultOutput,
     };
+
+    #[test]
+    fn channel_for_storage_materializes_default_for_none() {
+        assert_eq!(
+            JobqueueAndCodec::channel_for_storage(None),
+            JobqueueAndCodec::DEFAULT_CHANNEL_NAME
+        );
+        let custom = "custom-channel".to_string();
+        assert_eq!(
+            JobqueueAndCodec::channel_for_storage(Some(&custom)),
+            "custom-channel"
+        );
+    }
+
+    #[test]
+    fn channel_from_storage_maps_default_back_to_none() {
+        let default = JobqueueAndCodec::DEFAULT_CHANNEL_NAME.to_string();
+        assert_eq!(JobqueueAndCodec::channel_from_storage(Some(&default)), None);
+        assert_eq!(JobqueueAndCodec::channel_from_storage(None), None);
+        let custom = "custom-channel".to_string();
+        assert_eq!(
+            JobqueueAndCodec::channel_from_storage(Some(&custom)),
+            Some("custom-channel".to_string())
+        );
+    }
 
     #[test]
     fn test_serialize_and_deserialize_job() {
