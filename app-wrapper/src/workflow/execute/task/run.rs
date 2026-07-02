@@ -226,36 +226,49 @@ impl RunTaskExecutor {
             WorkerForEnqueue::Temp(worker_data)
         };
 
-        let (job_id, result_fut) = self
-            .job_executor_wrapper
-            .enqueue_with_worker_or_temp_channel(
-                Arc::new(metadata),
-                worker,
-                job_args,
-                None, // XXX no uniq_key,
-                timeout_sec,
-                StreamingType::None,
-                using.clone(),
-                overrides,
+        if !await_completion {
+            let (result_fut, _guard) = super::enqueue_child_job(
+                &self.workflow_context,
+                &self.job_executor_wrapper,
+                self.job_executor_wrapper
+                    .enqueue_with_worker_or_temp_channel(
+                        Arc::new(metadata),
+                        worker,
+                        job_args,
+                        None, // XXX no uniq_key,
+                        timeout_sec,
+                        StreamingType::None,
+                        using.clone(),
+                        overrides,
+                    ),
+                super::ChildJobTracking::Untracked,
             )
             .await?;
-
-        if !await_completion {
             drop(result_fut);
             return Ok(output_when_not_awaiting.as_ref().clone());
         }
 
-        self.workflow_context
-            .read()
-            .await
-            .register_running_job(&job_id)
-            .await;
+        let (result_fut, running_job_guard) = super::enqueue_child_job(
+            &self.workflow_context,
+            &self.job_executor_wrapper,
+            self.job_executor_wrapper
+                .enqueue_with_worker_or_temp_channel(
+                    Arc::new(metadata),
+                    worker,
+                    job_args,
+                    None, // XXX no uniq_key,
+                    timeout_sec,
+                    StreamingType::None,
+                    using.clone(),
+                    overrides,
+                ),
+            super::ChildJobTracking::Tracked,
+        )
+        .await?;
         let wait_result = result_fut.await;
-        self.workflow_context
-            .read()
-            .await
-            .unregister_running_job(&job_id)
-            .await;
+        running_job_guard
+            .expect("tracked child jobs must return a running job guard")
+            .mark_completed();
 
         let (res, _stream) = wait_result?;
         let Some(res) = res else {
@@ -284,40 +297,63 @@ impl RunTaskExecutor {
         // referenced by name (an existing, possibly static, definition whose
         // persisted response_type we must not depend on), so the override is the
         // only reliable way to force fire-and-forget for this enqueue.
-        let child = self
-            .job_executor_wrapper
-            .enqueue_with_worker_name_channel(
-                metadata,
-                worker_name,
-                job_args,
-                None,
-                timeout_sec,
-                StreamingType::None,
-                using,
-                no_result_override_if(!await_completion),
-            )
-            .await?;
-
         // Fire-and-forget: the job is already enqueued, so dropping the result
         // future leaves it running while the workflow continues with the current
         // task input. We don't register it for cancellation because we are
         // intentionally not tracking its completion.
         if !await_completion {
+            let (child, _guard) = super::enqueue_child_job(
+                &self.workflow_context,
+                &self.job_executor_wrapper,
+                async {
+                    let child = self
+                        .job_executor_wrapper
+                        .enqueue_with_worker_name_channel(
+                            metadata,
+                            worker_name,
+                            job_args,
+                            None,
+                            timeout_sec,
+                            StreamingType::None,
+                            using,
+                            no_result_override_if(true),
+                        )
+                        .await?;
+                    Ok((child.job_id, child))
+                },
+                super::ChildJobTracking::Untracked,
+            )
+            .await?;
             drop(child.result_fut);
             return Ok(output_when_not_awaiting.as_ref().clone());
         }
 
-        self.workflow_context
-            .read()
-            .await
-            .register_running_job(&child.job_id)
-            .await;
+        let (child, running_job_guard) = super::enqueue_child_job(
+            &self.workflow_context,
+            &self.job_executor_wrapper,
+            async {
+                let child = self
+                    .job_executor_wrapper
+                    .enqueue_with_worker_name_channel(
+                        metadata,
+                        worker_name,
+                        job_args,
+                        None,
+                        timeout_sec,
+                        StreamingType::None,
+                        using,
+                        None,
+                    )
+                    .await?;
+                Ok((child.job_id, child))
+            },
+            super::ChildJobTracking::Tracked,
+        )
+        .await?;
         let wait_result = child.result_fut.await;
-        self.workflow_context
-            .read()
-            .await
-            .unregister_running_job(&child.job_id)
-            .await;
+        running_job_guard
+            .expect("tracked child jobs must return a running job guard")
+            .mark_completed();
 
         let (res, _stream) = wait_result?;
         let Some(res) = res else {

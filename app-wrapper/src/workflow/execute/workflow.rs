@@ -1334,12 +1334,11 @@ mod tests {
                 .upsert_status(&child, &JobProcessingStatus::Running)
                 .await
                 .unwrap();
-            executor
+            let child_guard = executor
                 .workflow_context
-                .write()
+                .read()
                 .await
-                .register_running_job(&child)
-                .await;
+                .guard_running_job(child);
             executor.workflow_context.write().await.status = WorkflowStatus::Running;
 
             // Sanity: the child is registered and Running before cancel().
@@ -1360,6 +1359,7 @@ mod tests {
             );
 
             executor.cancel().await;
+            child_guard.mark_completed();
 
             // Workflow status flips and the child job was actively cancelled.
             // For a Running job, cancel_job broadcasts cancellation and then

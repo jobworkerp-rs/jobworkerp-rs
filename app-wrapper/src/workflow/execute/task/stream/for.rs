@@ -69,6 +69,10 @@ impl ForTaskStreamExecutor {
         }
     }
 
+    async fn is_workflow_cancelled(&self) -> bool {
+        self.workflow_context.read().await.is_cancelled()
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn prepare_for_item(
         &self,
@@ -286,6 +290,10 @@ impl ForTaskStreamExecutor {
         let mut items_to_process = Vec::new();
 
         for (i, item) in items.iter().enumerate() {
+            if self.is_workflow_cancelled().await {
+                tracing::info!("for: workflow cancelled before preparing item {}", i);
+                break;
+            }
             match self
                 .prepare_for_item(item, i, item_name, index_name, task_context, while_, true)
                 .await
@@ -356,6 +364,11 @@ impl ForTaskStreamExecutor {
         // already decided to fault the workflow.
         if !prepare_error_pending {
             for (i, prepared_context, item_value) in items_to_process {
+                if self.is_workflow_cancelled().await {
+                    tracing::info!("for: workflow cancelled before spawning item {}", i);
+                    let _ = cancel_tx.send(true);
+                    break;
+                }
                 // Clone all resources needed for this task
                 let tx = tx.clone();
                 let do_task_clone = do_task.clone();
@@ -428,6 +441,13 @@ impl ForTaskStreamExecutor {
 
                 let mut result_count = 0;
                 loop {
+                    if workflow_context.read().await.is_cancelled() {
+                        tracing::info!(
+                            "Task {} stopped because workflow was cancelled",
+                            task_name_formatted
+                        );
+                        break;
+                    }
                     tokio::select! {
                         _ = cancel_rx_clone.changed() => {
                             tracing::info!("Task {} cancelled due to error in sibling task", task_name_formatted);
@@ -446,6 +466,14 @@ impl ForTaskStreamExecutor {
                                         result_count,
                                         elapsed_ms
                                     );
+
+                                    if workflow_context.read().await.is_cancelled() {
+                                        tracing::info!(
+                                            "Task {} dropping item result because workflow was cancelled",
+                                            task_name_formatted
+                                        );
+                                        break;
+                                    }
 
                                     // Unsupported `then: wait` is a structural DSL error, not
                                     // a per-item runtime failure, so it must NOT be swallowed
@@ -491,6 +519,13 @@ impl ForTaskStreamExecutor {
                                                 Err(e)
                                             }
                                             ForOnError::Continue => {
+                                                if workflow_context.read().await.is_cancelled() {
+                                                    tracing::info!(
+                                                        "Stopping parallel for-item {} because workflow was cancelled",
+                                                        i
+                                                    );
+                                                    break;
+                                                }
                                                 Self::record_error(&span, &e.to_string());
                                                 tracing::warn!(
                                                     "Continuing past error in parallel for-item {} due to onError=continue",
@@ -663,13 +698,21 @@ impl ForTaskStreamExecutor {
 
         let stream = Box::pin(async_stream::stream! {
             // Process each item completely before moving to the next (true sequential execution)
-            for (i, item) in items.iter().enumerate() {
+            'items: for (i, item) in items.iter().enumerate() {
+                if self.is_workflow_cancelled().await {
+                    tracing::info!("for: workflow cancelled before sequential item {}", i);
+                    break;
+                }
                 // Prepare each item individually and execute immediately
                 match self
                     .prepare_for_item(item, i, &item_name, &index_name, &task_context, &while_, false)
                     .await
                 {
                     Ok((prepared_context, while_cond)) => {
+                        if self.is_workflow_cancelled().await {
+                            tracing::info!("for: workflow cancelled after preparing sequential item {}", i);
+                            break;
+                        }
                         if !Self::eval_as_bool(&while_cond) {
                             tracing::debug!("for: while condition is false, skipping item {}", i);
                             break;
@@ -724,6 +767,13 @@ impl ForTaskStreamExecutor {
                         while let Some(result) = item_stream.next().await {
                             match result {
                                 Ok(event) => {
+                                    if self.is_workflow_cancelled().await {
+                                        tracing::info!(
+                                            "for: workflow cancelled while processing sequential item {}",
+                                            i
+                                        );
+                                        break 'items;
+                                    }
                                     // Check for unsupported Wait inside ForTask
                                     let wf_status = self.workflow_context.read().await.status.clone();
                                     if wf_status == WorkflowStatus::Waiting {
@@ -752,6 +802,14 @@ impl ForTaskStreamExecutor {
                                 Err(e) => {
                                     tracing::error!("Error executing task in sequential for loop: {:?}", e);
 
+                                    if self.is_workflow_cancelled().await {
+                                        tracing::info!(
+                                            "for: stopping sequential loop after cancellation error at item {}",
+                                            i
+                                        );
+                                        break 'items;
+                                    }
+
                                     match on_error {
                                         ForOnError::Continue => {
                                             // Surface the failed item as a TaskCompleted event carrying
@@ -777,6 +835,13 @@ impl ForTaskStreamExecutor {
 
                         // Check for Wait after stream ended (DoTaskStreamExecutor ends stream on wait)
                         let wf_status = self.workflow_context.read().await.status.clone();
+                        if wf_status == WorkflowStatus::Cancelled {
+                            tracing::info!(
+                                "for: workflow cancelled after sequential item {}",
+                                i
+                            );
+                            break;
+                        }
                         if wf_status == WorkflowStatus::Waiting {
                             tracing::error!(
                                 "Wait directive inside ForTask is not supported (detected after stream end): task={}",
@@ -906,6 +971,12 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                             Ok(mut stream) => {
                                 // Forward all results from the inner stream, regardless of success/error
                                 while let Some(result) = stream.next().await {
+                                    if this.is_workflow_cancelled().await {
+                                        tracing::info!(
+                                            "for: stop forwarding parallel results after workflow cancellation"
+                                        );
+                                        break;
+                                    }
                                     yield result;
                                 }
                             }
@@ -932,6 +1003,12 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                             Ok(mut stream) => {
                                 // Forward all results from the inner stream, regardless of success/error
                                 while let Some(result) = stream.next().await {
+                                    if this.is_workflow_cancelled().await {
+                                        tracing::info!(
+                                            "for: stop forwarding sequential results after workflow cancellation"
+                                        );
+                                        break;
+                                    }
                                     yield result;
                                 }
                             }
@@ -1913,6 +1990,107 @@ mod tests {
             // Should have fewer successfully processed items than continue mode (only item0, not item2&item3)
             // In break mode, we expect only item0 to succeed before error at item1
             assert!(processed_item_count <= 1, "Expected at most 1 processed item in break mode (only item0), got {}", processed_item_count);
+        });
+    }
+
+    #[test]
+    fn test_for_task_sequential_stops_when_workflow_is_cancelled() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "for-task-sequential-cancel-stop",
+                    "version": "1.0.0",
+                    "metadata": {}
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object",
+                            "properties": {
+                                "items": {"type": "array", "items": {"type": "string"}}
+                            }
+                        }
+                    }
+                },
+                "do": [
+                    {
+                        "process_items": {
+                            "for": {
+                                "in": "${.items}",
+                                "each": "item",
+                                "at": "index"
+                            },
+                            "onError": "continue",
+                            "do": [
+                                {
+                                    "record_first": {
+                                        "if": "${ $index == 0 }",
+                                        "set": { "processed_item": "${ $item }" }
+                                    }
+                                },
+                                {
+                                    "record_after_cancel": {
+                                        "if": "${ $index > 0 }",
+                                        "set": { "processed_after_cancel": "${ $item }" }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            });
+
+            let workflow =
+                Arc::new(serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap());
+            let input = Arc::new(serde_json::json!({"items": ["a", "b", "c"]}));
+            let context = Arc::new(serde_json::json!({}));
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+
+            let executor = WorkflowExecutor {
+                default_task_timeout_sec: 30,
+                job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
+                workflow: workflow.clone(),
+                workflow_context: workflow_context.clone(),
+                execution_id: None,
+                metadata: Arc::new(HashMap::new()),
+                checkpoint_repository: None,
+            };
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            tokio::pin!(workflow_stream);
+
+            let mut saw_first_item = false;
+            while let Some(result) = workflow_stream.next().await {
+                let context = result.unwrap();
+                if context.output_string().contains("processed_item") {
+                    saw_first_item = true;
+                    workflow_context.write().await.status = WorkflowStatus::Cancelled;
+                }
+            }
+
+            let final_context = workflow_context.read().await;
+            assert!(
+                saw_first_item,
+                "first iteration should run before cancellation"
+            );
+            assert_eq!(final_context.status, WorkflowStatus::Cancelled);
+            let output = final_context.output_string();
+            assert!(
+                !output.contains("processed_after_cancel"),
+                "sequential for must not process later items after cancellation; output={output}"
+            );
         });
     }
 

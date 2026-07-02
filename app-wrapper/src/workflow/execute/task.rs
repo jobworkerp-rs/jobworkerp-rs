@@ -27,6 +27,7 @@ use run::RunTaskExecutor;
 use set::SetTaskExecutor;
 use std::{
     collections::{BTreeMap, HashMap},
+    future::Future,
     sync::Arc,
     time::Duration,
 };
@@ -49,6 +50,53 @@ pub mod try_;
 type CheckPointRepo =
     Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>;
 pub type NamedTimeouts = HashMap<String, workflow::Timeout>;
+
+pub(crate) enum ChildJobTracking {
+    Tracked,
+    Untracked,
+}
+
+/// Run a child-job enqueue through the shared cancellation gate. Awaited
+/// children get a guard; fire-and-forget children only get the post-enqueue
+/// cancellation check.
+pub(crate) async fn enqueue_child_job<T, F>(
+    workflow_context: &RwLock<WorkflowContext>,
+    job_executor_wrapper: &JobExecutorWrapper,
+    enqueue: F,
+    tracking: ChildJobTracking,
+) -> Result<(T, Option<super::context::RunningJobGuard>)>
+where
+    F: Future<Output = Result<(super::context::JobId, T)>>,
+{
+    if workflow_context.read().await.is_cancelled() {
+        return Err(anyhow::anyhow!("Workflow was cancelled"));
+    }
+
+    let (job_id, payload) = enqueue.await?;
+    match tracking {
+        ChildJobTracking::Tracked => {
+            let ctx = workflow_context.read().await;
+            if ctx.is_cancelled() {
+                drop(ctx);
+                use app::app::job::UseJobApp;
+
+                job_executor_wrapper.job_app().delete_job(&job_id).await?;
+                return Err(anyhow::anyhow!("Workflow was cancelled"));
+            }
+            let guard = ctx.guard_running_job(job_id);
+            Ok((payload, Some(guard)))
+        }
+        ChildJobTracking::Untracked => {
+            if workflow_context.read().await.is_cancelled() {
+                use app::app::job::UseJobApp;
+
+                job_executor_wrapper.job_app().delete_job(&job_id).await?;
+                return Err(anyhow::anyhow!("Workflow was cancelled"));
+            }
+            Ok((payload, None))
+        }
+    }
+}
 
 pub(crate) fn resolve_timeout_duration(
     timeout: Option<&workflow::TaskTimeout>,
@@ -1313,10 +1361,11 @@ mod tests {
         RunTask, RunTaskConfiguration, SetTask, Task, TaskList, WorkflowName, WorkflowSchema,
         WorkflowVersion,
     };
-    use crate::workflow::execute::context::{JobId, JobResultId};
-    use app::module::test::create_hybrid_test_app;
+    use crate::workflow::execute::context::{JobId, JobResultId, WorkflowStatus};
+    use app::module::test::{create_hybrid_test_app, create_rdb_chan_test_app};
     use futures::StreamExt;
     use std::str::FromStr;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn create_workflow_with_run_task() -> WorkflowSchema {
         let task_map_list = {
@@ -1374,6 +1423,86 @@ mod tests {
             timeout: None,
             use_: None,
         }
+    }
+
+    #[test]
+    fn test_enqueue_child_job_skips_enqueue_when_workflow_cancelled() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_rdb_chan_test_app(false, false).await.unwrap());
+            let job_executor_wrapper = JobExecutorWrapper::new(app_module);
+            let workflow_context = RwLock::new(WorkflowContext::new_empty());
+            workflow_context.write().await.status = WorkflowStatus::Cancelled;
+            let polled = Arc::new(AtomicBool::new(false));
+
+            let result = super::enqueue_child_job(
+                &workflow_context,
+                &job_executor_wrapper,
+                {
+                    let polled = polled.clone();
+                    async move {
+                        polled.store(true, Ordering::SeqCst);
+                        Ok((JobId { value: 999 }, ()))
+                    }
+                },
+                super::ChildJobTracking::Untracked,
+            )
+            .await;
+
+            assert!(result.is_err());
+            assert!(
+                !polled.load(Ordering::SeqCst),
+                "cancelled workflows must not enqueue new child jobs"
+            );
+            assert!(
+                workflow_context
+                    .read()
+                    .await
+                    .snapshot_running_jobs()
+                    .await
+                    .is_empty()
+            );
+        });
+    }
+
+    #[test]
+    fn test_enqueue_child_job_untracked_cancels_when_cancelled_after_enqueue() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_rdb_chan_test_app(false, false).await.unwrap());
+            let job_executor_wrapper = JobExecutorWrapper::new(app_module);
+            let workflow_context = RwLock::new(WorkflowContext::new_empty());
+            let polled = Arc::new(AtomicBool::new(false));
+
+            let result = super::enqueue_child_job(
+                &workflow_context,
+                &job_executor_wrapper,
+                {
+                    let polled = polled.clone();
+                    let workflow_context = &workflow_context;
+                    async move {
+                        polled.store(true, Ordering::SeqCst);
+                        workflow_context.write().await.status = WorkflowStatus::Cancelled;
+                        Ok((JobId { value: 987_654 }, ()))
+                    }
+                },
+                super::ChildJobTracking::Untracked,
+            )
+            .await;
+
+            assert!(result.is_err());
+            assert!(
+                polled.load(Ordering::SeqCst),
+                "enqueue must run before the post-enqueue cancellation gate"
+            );
+            assert!(
+                workflow_context
+                    .read()
+                    .await
+                    .snapshot_running_jobs()
+                    .await
+                    .is_empty(),
+                "fire-and-forget jobs are not registered for result tracking"
+            );
+        });
     }
 
     fn create_workflow_with_set_task() -> WorkflowSchema {

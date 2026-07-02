@@ -340,8 +340,10 @@ ASALocalRun/
 
 *.bak
 *.old
-
+/bak
 node_modules
+
+/data
 
 # mdBook build output
 manual/en/book/
@@ -357,4 +359,13 @@ runner/schema/bak/
 spec-docs/
 
 mcp-settings.toml
+*.sqlite3
 
+.claude/
+
+/agent-app-public/
+/agent-app/
+/chat-workflow-app/
+/conductor/
+/memories/
+/workflows
