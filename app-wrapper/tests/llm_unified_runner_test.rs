@@ -51,6 +51,7 @@ fn create_ollama_settings() -> Vec<u8> {
                 },
             ),
         ),
+        embedding_chunking: None,
     };
     settings.encode_to_vec()
 }

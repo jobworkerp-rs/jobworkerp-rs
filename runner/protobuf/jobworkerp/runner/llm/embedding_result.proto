@@ -1,0 +1,33 @@
+syntax = "proto3";
+package jobworkerp.runner.llm;
+
+message LLMEmbeddingResult {
+  message Usage {
+    string model = 1;
+    optional uint32 prompt_tokens = 2;
+    optional uint32 total_tokens = 3;
+  }
+
+  message Embedding {
+    // The embedding vector.
+    repeated float vector = 1;
+    // 0-based index into the request `inputs` array this embedding derives from.
+    uint32 input_index = 2;
+    // For text chunks: half-open char range [begin_position, end_position)
+    // (Unicode scalar indices, NOT byte offsets) into the input text.
+    // For non-text (image/media): begin_position=input_index,
+    // end_position=input_index+1.
+    uint32 begin_position = 3;
+    uint32 end_position = 4;
+    // For text chunks: the exact substring covered. For non-text:
+    // label/identifier.
+    string content = 5;
+    // Dimensionality of `vector`.
+    uint32 dimensions = 6;
+  }
+
+  // One Embedding per text chunk / per non-text input, in input order then
+  // chunk order.
+  repeated Embedding embeddings = 1;
+  optional Usage usage = 2;
+}
