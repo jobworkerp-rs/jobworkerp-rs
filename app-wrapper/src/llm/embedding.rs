@@ -132,8 +132,14 @@ pub struct LLMEmbeddingRunnerImpl {
     backend: Option<Box<dyn EmbeddingBackend + Send + Sync>>,
     /// Model name from settings; overridable per-job via args.model.
     default_model: Option<String>,
-    /// settings.embedding_chunking resolved once at load.
+    /// settings.embedding_chunking resolved once on first embedding run.
     chunking_default: ResolvedChunkingConfig,
+    /// Raw settings captured at `load`, decoded on first embedding run. The
+    /// unified runner loads all three methods' runners, so a completion/chat
+    /// job must not pay embedding-only load costs (Ollama pull, HF tokenizer
+    /// download). Initialization is deferred until the embedding method is
+    /// actually invoked.
+    pending_settings: Option<Vec<u8>>,
     /// Loaded HF tokenizers keyed by source ("repo:<id>" / "file:<path>") so a
     /// tokenizer is fetched/parsed at most once across jobs and per-job
     /// chunking overrides that reuse the same source.
@@ -148,6 +154,7 @@ impl LLMEmbeddingRunnerImpl {
             backend: None,
             default_model: None,
             chunking_default: ResolvedChunkingConfig::default(),
+            pending_settings: None,
             tokenizer_cache: Arc::new(AsyncMutex::new(HashMap::new())),
             cancel_helper: None,
         }
@@ -162,6 +169,7 @@ impl LLMEmbeddingRunnerImpl {
             backend: None,
             default_model: None,
             chunking_default: ResolvedChunkingConfig::default(),
+            pending_settings: None,
             tokenizer_cache: Arc::new(AsyncMutex::new(HashMap::new())),
             cancel_helper: Some(cancel_helper),
         }
@@ -221,6 +229,46 @@ impl LLMEmbeddingRunnerImpl {
         let provider = Arc::new(provider);
         cache.insert(key, provider.clone());
         Ok(provider)
+    }
+
+    /// Initialize the backend and settings-level chunking default from the
+    /// settings captured at `load`, on first use. Idempotent: subsequent calls
+    /// are a no-op once the backend is set. This is where the embedding-only
+    /// side effects (Ollama model pull, HF tokenizer download) happen, so they
+    /// are paid only when an embedding job actually runs.
+    async fn ensure_initialized(&mut self) -> Result<()> {
+        if self.backend.is_some() {
+            return Ok(());
+        }
+        let settings = self
+            .pending_settings
+            .take()
+            .ok_or_else(|| anyhow!("embedding runner not loaded"))?;
+        let settings = LlmRunnerSettings::decode(&mut Cursor::new(settings))
+            .map_err(|e| anyhow!("decode error: {}", e))?;
+
+        // Resolve settings-level chunking default (used when args omit it),
+        // loading the HF tokenizer once here rather than per job.
+        let spec = resolve_chunking_spec(settings.embedding_chunking.as_ref())?;
+        self.chunking_default = self.build_chunking(&spec).await?;
+
+        match settings.settings {
+            Some(Settings::Ollama(s)) => {
+                self.default_model = Some(s.model.clone());
+                let svc = OllamaEmbeddingService::new(s).await?;
+                self.backend = Some(Box::new(svc));
+                tracing::info!("LLM(embedding) initialized(ollama)");
+                Ok(())
+            }
+            Some(Settings::Genai(s)) => {
+                self.default_model = Some(s.model.clone());
+                let svc = GenaiEmbeddingService::new(s).await?;
+                self.backend = Some(Box::new(svc));
+                tracing::info!("LLM(embedding) initialized(genai)");
+                Ok(())
+            }
+            _ => Err(anyhow!("model_settings is not set")),
+        }
     }
 
     /// Resolve the effective options (dimensions/truncate/embedding_type) from
@@ -291,31 +339,16 @@ impl RunnerSpec for LLMEmbeddingRunnerImpl {
 #[async_trait]
 impl RunnerTrait for LLMEmbeddingRunnerImpl {
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
-        let settings = LlmRunnerSettings::decode(&mut Cursor::new(settings))
-            .map_err(|e| anyhow!("decode error: {}", e))?;
-
-        // Resolve settings-level chunking default (used when args omit it),
-        // loading the HF tokenizer once here rather than per job.
-        let spec = resolve_chunking_spec(settings.embedding_chunking.as_ref())?;
-        self.chunking_default = self.build_chunking(&spec).await?;
-
-        match settings.settings {
-            Some(Settings::Ollama(s)) => {
-                self.default_model = Some(s.model.clone());
-                let svc = OllamaEmbeddingService::new(s).await?;
-                self.backend = Some(Box::new(svc));
-                tracing::info!("LLM(embedding) loaded(ollama)");
-                Ok(())
-            }
-            Some(Settings::Genai(s)) => {
-                self.default_model = Some(s.model.clone());
-                let svc = GenaiEmbeddingService::new(s).await?;
-                self.backend = Some(Box::new(svc));
-                tracing::info!("LLM(embedding) loaded(genai)");
-                Ok(())
-            }
-            _ => Err(anyhow!("model_settings is not set")),
-        }
+        // Defer the actual backend/tokenizer initialization to the first
+        // embedding run (see `pending_settings`): the unified LLM runner loads
+        // this alongside completion/chat, and a non-embedding job must not
+        // trigger an Ollama model pull or an HF tokenizer download.
+        self.pending_settings = Some(settings);
+        // Drop any previously initialized backend so a reload (redeploy with
+        // new settings) re-initializes from the new settings on next run.
+        self.backend = None;
+        self.default_model = None;
+        Ok(())
     }
 
     async fn run(
@@ -333,6 +366,12 @@ impl RunnerTrait for LLMEmbeddingRunnerImpl {
                 .into()),
                 metadata,
             );
+        }
+
+        // Lazily initialize the backend/tokenizer on first embedding run so
+        // completion/chat jobs never pay embedding-only load costs.
+        if let Err(e) = self.ensure_initialized().await {
+            return (Err(e), metadata);
         }
 
         let metadata_clone = metadata.clone();
