@@ -24,20 +24,27 @@ pub struct ChunkResult {
 
 /// Resolved (non-optional) chunking parameters. Built from the proto
 /// `ChunkingConfig` after applying defaults (see runner layer).
-#[derive(Debug, Clone, Copy)]
+///
+/// Not `Copy`: `TokenEstimationStrategy` may carry an `Arc` to a loaded
+/// tokenizer. `Clone` is cheap (an `Arc` refcount bump).
+#[derive(Debug, Clone)]
 pub struct ResolvedChunkingConfig {
     pub max_chunk_tokens: u32,
     pub min_chunk_tokens: u32,
-    /// Phase 1 only supports `CharacterEstimation`; other strategies are
-    /// resolved to an error before reaching here.
     pub token_estimation: TokenEstimationStrategy,
 }
 
-/// Token-length estimation strategy actually usable in this phase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Token-length estimation strategy.
+///
+/// `CharacterEstimation` needs no tokenizer (Phase 1). `HfTokenizer` carries a
+/// loaded provider so chunking can measure exact token counts (Phase 3). No
+/// `Copy`/`PartialEq` because it holds an `Arc<dyn tokenizer>`.
+#[derive(Debug, Clone)]
 pub enum TokenEstimationStrategy {
     /// ~4 chars/token, no tokenizer required (Phase 1).
     CharacterEstimation,
+    /// HuggingFace tokenizer with exact token counts (Phase 3).
+    HfTokenizer(std::sync::Arc<super::token_provider::hf::HfTokenProvider>),
 }
 
 impl Default for ResolvedChunkingConfig {
@@ -111,6 +118,15 @@ fn estimate_tokens(char_count: usize) -> usize {
     char_count.div_ceil(4)
 }
 
+/// A single chunk spanning the whole input (short-input fast path).
+fn whole_text_chunk(text: &str, total_chars: usize) -> ChunkResult {
+    ChunkResult {
+        content: text.to_string(),
+        char_start: 0,
+        char_end: total_chars,
+    }
+}
+
 /// Split `text` into chunks per `config`.
 ///
 /// Returns a single whole-text chunk when the input is short enough. `content`
@@ -131,31 +147,52 @@ pub fn chunk_text(text: &str, config: &ResolvedChunkingConfig) -> Result<Vec<Chu
     // fast path, and per-chunk content slicing below (avoids O(M*N) re-walks).
     let chars: Vec<char> = text.chars().collect();
     let total_chars = chars.len();
-
-    // Short-input fast path: one chunk spanning the whole text.
-    if estimate_tokens(total_chars) <= config.max_chunk_tokens as usize {
-        return Ok(vec![ChunkResult {
-            content: text.to_string(),
-            char_start: 0,
-            char_end: total_chars,
-        }]);
-    }
+    let max = config.max_chunk_tokens as usize;
 
     let hc_config = HierarchicalChunkingConfig {
-        max_chunk_tokens: config.max_chunk_tokens as usize,
+        max_chunk_tokens: max,
         min_chunk_tokens: config.min_chunk_tokens as usize,
-        ..HierarchicalChunkingConfig::for_embedding(config.max_chunk_tokens as usize)
+        ..HierarchicalChunkingConfig::for_embedding(max)
     };
 
-    let mut chunker = HierarchicalChunker::<NoopTokenProvider>::new_fallback(
-        hc_config,
-        FallbackStrategy::CharacterEstimation,
-    )
-    .map_err(|e| anyhow!("chunker init failed: {e}"))?;
-
-    let raw_chunks = chunker
-        .chunk_efficiently(text)
-        .map_err(|e| anyhow!("chunking failed: {e}"))?;
+    // Dispatch on the estimation strategy. CharacterEstimation uses the
+    // tokenizer-free fallback (Phase 1). HfTokenizer measures exact token
+    // counts via the loaded provider (Phase 3); its fast-path check must use
+    // the provider too, since the ~4 chars/token heuristic would misjudge.
+    let raw_chunks = match &config.token_estimation {
+        TokenEstimationStrategy::CharacterEstimation => {
+            if estimate_tokens(total_chars) <= max {
+                return Ok(vec![whole_text_chunk(text, total_chars)]);
+            }
+            let mut chunker = HierarchicalChunker::<NoopTokenProvider>::new_fallback(
+                hc_config,
+                FallbackStrategy::CharacterEstimation,
+            )
+            .map_err(|e| anyhow!("chunker init failed: {e}"))?;
+            chunker
+                .chunk_efficiently(text)
+                .map_err(|e| anyhow!("chunking failed: {e}"))?
+        }
+        TokenEstimationStrategy::HfTokenizer(provider) => {
+            let unified =
+                super::token_provider::EmbeddingTokenProvider::Hf(std::sync::Arc::clone(provider));
+            // Exact fast-path check using real token counts.
+            let count = TokenProvider::estimate_token_count(&unified, text)
+                .map_err(|e| anyhow!("token count failed: {e}"))?;
+            if count <= max {
+                return Ok(vec![whole_text_chunk(text, total_chars)]);
+            }
+            let mut chunker = HierarchicalChunker::new(
+                hc_config,
+                unified,
+                Some(FallbackStrategy::CharacterEstimation),
+            )
+            .map_err(|e| anyhow!("chunker init failed: {e}"))?;
+            chunker
+                .chunk_efficiently(text)
+                .map_err(|e| anyhow!("chunking failed: {e}"))?
+        }
+    };
 
     let mut out = Vec::with_capacity(raw_chunks.len());
     for c in raw_chunks {
@@ -259,6 +296,80 @@ mod tests {
                 .take(c.char_end - c.char_start)
                 .collect();
             assert_eq!(c.content, sliced);
+        }
+    }
+
+    // --- HF tokenizer (Phase 3) path -------------------------------------
+
+    /// A whitespace-splitting tokenizer that maps every whitespace-delimited
+    /// word to one token (unknowns → [UNK]); lets us drive the HF chunk_text
+    /// path offline with predictable token counts (~1 token per word).
+    fn hf_cfg(max: u32) -> ResolvedChunkingConfig {
+        use std::io::Write;
+        let json = serde_json::json!({
+            "version": "1.0",
+            "truncation": null,
+            "padding": null,
+            "added_tokens": [],
+            "normalizer": null,
+            "pre_tokenizer": { "type": "Whitespace" },
+            "post_processor": null,
+            "decoder": null,
+            "model": { "type": "WordLevel", "vocab": { "[UNK]": 0 }, "unk_token": "[UNK]" }
+        })
+        .to_string();
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(json.as_bytes()).unwrap();
+        f.flush().unwrap();
+        let provider =
+            super::super::token_provider::hf::HfTokenProvider::from_file(f.path()).unwrap();
+        ResolvedChunkingConfig {
+            max_chunk_tokens: max,
+            min_chunk_tokens: 0,
+            token_estimation: TokenEstimationStrategy::HfTokenizer(std::sync::Arc::new(provider)),
+        }
+    }
+
+    #[test]
+    fn test_hf_short_text_single_chunk() {
+        // "hello world" = 2 tokens; max 512 → single whole-text chunk.
+        let chunks = chunk_text("hello world", &hf_cfg(512)).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].content, "hello world");
+    }
+
+    #[test]
+    fn test_hf_long_text_multiple_chunks_content_contract() {
+        // ~200 words, tiny max → must split into multiple chunks whose content
+        // matches the char slice (HF path must preserve the char-offset
+        // contract just like CharacterEstimation).
+        let mut text = String::new();
+        for i in 0..200 {
+            text.push_str(&format!("word{i} "));
+        }
+        let chunks = chunk_text(&text, &hf_cfg(8)).unwrap();
+        assert!(chunks.len() > 1, "expected multiple chunks");
+        let all_chars: Vec<char> = text.chars().collect();
+        for c in &chunks {
+            let expected: String = all_chars[c.char_start..c.char_end].iter().collect();
+            assert_eq!(c.content, expected, "content must match char slice");
+            assert!(c.char_start < c.char_end);
+        }
+    }
+
+    #[test]
+    fn test_hf_japanese_not_corrupted() {
+        let mut text = String::new();
+        for _ in 0..100 {
+            text.push_str("これは テスト です 日本語 埋め込み ");
+        }
+        let chunks = chunk_text(&text, &hf_cfg(8)).unwrap();
+        assert!(chunks.len() > 1);
+        let all_chars: Vec<char> = text.chars().collect();
+        for c in &chunks {
+            assert!(c.char_end <= all_chars.len());
+            let expected: String = all_chars[c.char_start..c.char_end].iter().collect();
+            assert_eq!(c.content, expected);
         }
     }
 }

@@ -130,7 +130,7 @@ fn shrunk_config(config: &ResolvedChunkingConfig) -> Option<ResolvedChunkingConf
     }
     Some(ResolvedChunkingConfig {
         max_chunk_tokens: next,
-        ..*config
+        ..config.clone()
     })
 }
 
@@ -166,7 +166,7 @@ pub async fn embed_refs(
 
     // Whole-batch attempts with progressively shrunk chunking.
     let mut current_refs = refs;
-    let mut current_config = *config;
+    let mut current_config = config.clone();
     for attempt in 0..=MAX_WHOLE_RETRIES {
         let texts: Vec<String> = current_refs.iter().map(|r| r.content.clone()).collect();
         match backend.embed_batch(model, texts, opts).await {
@@ -222,7 +222,7 @@ async fn single_item_fallback(
 
     // Work queue so a too-long single ref can be replaced by its sub-chunks.
     let mut queue: std::collections::VecDeque<(ChunkRef, ResolvedChunkingConfig)> =
-        refs.into_iter().map(|r| (r, *config)).collect();
+        refs.into_iter().map(|r| (r, config.clone())).collect();
 
     while let Some((r, cfg)) = queue.pop_front() {
         match backend
@@ -253,7 +253,7 @@ async fn single_item_fallback(
                             return Err(too_long(&r));
                         }
                         for c in children.into_iter().rev() {
-                            queue.push_front((c, smaller));
+                            queue.push_front((c, smaller.clone()));
                         }
                     }
                     None => return Err(too_long(&r)),

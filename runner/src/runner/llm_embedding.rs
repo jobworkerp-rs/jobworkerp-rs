@@ -209,4 +209,21 @@ mod tests {
             "settings_schema must include the genai variant:\n{schema}"
         );
     }
+
+    #[test]
+    fn test_settings_schema_contains_hf_tokenizer_source_fields() {
+        // Phase 3: the HF tokenizer source fields (repo / file path) added to
+        // ChunkingConfig must surface in the generated settings schema so a
+        // client configuring HF_TOKENIZER estimation can discover them.
+        let spec = LLMEmbeddingRunnerSpecImpl::new();
+        let schema = RunnerSpec::settings_schema(&spec);
+        assert!(
+            schema.contains("tokenizer_hf_repo") || schema.contains("tokenizerHfRepo"),
+            "settings_schema must include tokenizer_hf_repo:\n{schema}"
+        );
+        assert!(
+            schema.contains("tokenizer_file_path") || schema.contains("tokenizerFilePath"),
+            "settings_schema must include tokenizer_file_path:\n{schema}"
+        );
+    }
 }

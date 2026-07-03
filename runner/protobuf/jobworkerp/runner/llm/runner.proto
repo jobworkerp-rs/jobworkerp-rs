@@ -42,6 +42,14 @@ message LLMRunnerSettings {
     optional uint32 min_chunk_tokens = 2;
     // Token-length estimation strategy. Default: CHARACTER_ESTIMATION.
     optional TokenEstimation token_estimation = 3;
+    // HuggingFace repo id whose tokenizer.json is used when token_estimation
+    // is HF_TOKENIZER (e.g. "nomic-ai/nomic-embed-text-v1.5"). Downloaded and
+    // cached via hf-hub. Ollama model names are NOT auto-mapped to HF repos;
+    // the caller specifies the repo explicitly.
+    optional string tokenizer_hf_repo = 4;
+    // Absolute path to a local tokenizer.json for HF_TOKENIZER. Takes
+    // precedence over tokenizer_hf_repo when both are set (offline use).
+    optional string tokenizer_file_path = 5;
   }
 
   enum TokenEstimation {

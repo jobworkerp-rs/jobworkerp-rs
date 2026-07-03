@@ -41,6 +41,12 @@ futures = { workspace = true }
 futures-util = { workspace = true }
 genai = "0.6.2"
 #genai = { git = "https://github.com/jeremychone/rust-genai", branch = "main" }
+# HF tokenizer source download for embedding chunking (Phase 3). rustls-tls
+# avoids a system OpenSSL dependency.
+hf-hub = { version = "0.5", default-features = false, features = [
+    "tokio",
+    "rustls-tls",
+] }
 indexmap = "2"
 itertools = { workspace = true }
 jsonschema = { workspace = true }
@@ -76,6 +82,8 @@ strum = { workspace = true }
 strum_macros = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+# HF tokenizer for exact token counting in embedding chunking (Phase 3).
+tokenizers = "0.22"
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }

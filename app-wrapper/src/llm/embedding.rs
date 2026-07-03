@@ -45,31 +45,71 @@ use chunking::{ResolvedChunkingConfig, TokenEstimationStrategy};
 use core::{build_chunk_refs, build_result, embed_refs};
 use genai::GenaiEmbeddingService;
 use ollama::OllamaEmbeddingService;
+use token_provider::hf::HfTokenProvider;
+use tokio::sync::Mutex as AsyncMutex;
 
-/// Resolve a proto `ChunkingConfig` into a fully-defaulted
-/// [`ResolvedChunkingConfig`]. Precedence is handled by the caller (args >
-/// settings > default); this only fills gaps and maps token estimation.
+/// Which token estimation the caller asked for, with any tokenizer source, but
+/// before the (possibly expensive, async) provider is loaded. Kept separate
+/// from [`ResolvedChunkingConfig`] so the proto→numbers mapping stays pure and
+/// synchronously testable; provider loading happens in [`LLMEmbeddingRunnerImpl::build_chunking`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StrategyKind {
+    Character,
+    /// HuggingFace tokenizer; exactly one source must be provided.
+    Hf {
+        repo: Option<String>,
+        file: Option<String>,
+    },
+}
+
+/// Pure (provider-unresolved) chunking parameters derived from proto.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChunkingSpec {
+    max_chunk_tokens: u32,
+    min_chunk_tokens: u32,
+    strategy: StrategyKind,
+}
+
+impl Default for ChunkingSpec {
+    fn default() -> Self {
+        let d = ResolvedChunkingConfig::default();
+        Self {
+            max_chunk_tokens: d.max_chunk_tokens,
+            min_chunk_tokens: d.min_chunk_tokens,
+            strategy: StrategyKind::Character,
+        }
+    }
+}
+
+/// Map a proto `ChunkingConfig` to a pure [`ChunkingSpec`] (no provider load).
 ///
-/// Phase 1 supports only `CharacterEstimation`; `TIKTOKEN`/`HF_TOKENIZER`
-/// return an error (staged in later phases).
-fn resolve_chunking(proto: Option<&ChunkingConfig>) -> Result<ResolvedChunkingConfig> {
-    let default = ResolvedChunkingConfig::default();
+/// Validates the numeric fields and the token-estimation selection. HF source
+/// presence is validated here; the actual tokenizer load is deferred to
+/// [`LLMEmbeddingRunnerImpl::build_chunking`]. `TIKTOKEN` is still unsupported
+/// (Phase 2).
+fn resolve_chunking_spec(proto: Option<&ChunkingConfig>) -> Result<ChunkingSpec> {
+    let default = ChunkingSpec::default();
     let Some(c) = proto else {
         return Ok(default);
     };
     // token_estimation: proto enum i32. 0=UNSPECIFIED (default), 1=CHARACTER,
     // 2=TIKTOKEN (Phase 2), 3=HF (Phase 3).
-    let token_estimation = match c.token_estimation.unwrap_or(0) {
-        0 | 1 => TokenEstimationStrategy::CharacterEstimation,
+    let strategy = match c.token_estimation.unwrap_or(0) {
+        0 | 1 => StrategyKind::Character,
         2 => {
             return Err(anyhow!(
                 "TIKTOKEN token estimation is not yet supported (Phase 2)"
             ));
         }
         3 => {
-            return Err(anyhow!(
-                "HF_TOKENIZER token estimation is not yet supported (Phase 3)"
-            ));
+            let repo = c.tokenizer_hf_repo.clone().filter(|s| !s.is_empty());
+            let file = c.tokenizer_file_path.clone().filter(|s| !s.is_empty());
+            if repo.is_none() && file.is_none() {
+                return Err(anyhow!(
+                    "HF_TOKENIZER requires tokenizer_hf_repo or tokenizer_file_path"
+                ));
+            }
+            StrategyKind::Hf { repo, file }
         }
         other => return Err(anyhow!("unknown token_estimation value {other}")),
     };
@@ -78,10 +118,10 @@ fn resolve_chunking(proto: Option<&ChunkingConfig>) -> Result<ResolvedChunkingCo
     if max_chunk_tokens == 0 {
         return Err(anyhow!("max_chunk_tokens must be > 0"));
     }
-    Ok(ResolvedChunkingConfig {
+    Ok(ChunkingSpec {
         max_chunk_tokens,
         min_chunk_tokens: min_chunk_tokens.min(max_chunk_tokens.saturating_sub(1)),
-        token_estimation,
+        strategy,
     })
 }
 
@@ -94,6 +134,10 @@ pub struct LLMEmbeddingRunnerImpl {
     default_model: Option<String>,
     /// settings.embedding_chunking resolved once at load.
     chunking_default: ResolvedChunkingConfig,
+    /// Loaded HF tokenizers keyed by source ("repo:<id>" / "file:<path>") so a
+    /// tokenizer is fetched/parsed at most once across jobs and per-job
+    /// chunking overrides that reuse the same source.
+    tokenizer_cache: Arc<AsyncMutex<HashMap<String, Arc<HfTokenProvider>>>>,
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
@@ -104,6 +148,7 @@ impl LLMEmbeddingRunnerImpl {
             backend: None,
             default_model: None,
             chunking_default: ResolvedChunkingConfig::default(),
+            tokenizer_cache: Arc::new(AsyncMutex::new(HashMap::new())),
             cancel_helper: None,
         }
     }
@@ -117,6 +162,7 @@ impl LLMEmbeddingRunnerImpl {
             backend: None,
             default_model: None,
             chunking_default: ResolvedChunkingConfig::default(),
+            tokenizer_cache: Arc::new(AsyncMutex::new(HashMap::new())),
             cancel_helper: Some(cancel_helper),
         }
     }
@@ -129,9 +175,58 @@ impl LLMEmbeddingRunnerImpl {
         }
     }
 
+    /// Load (or fetch from cache) an HF tokenizer for `spec`, returning a fully
+    /// resolved [`ResolvedChunkingConfig`]. `file` takes precedence over `repo`
+    /// when both are set. The download/parse happens at most once per source.
+    async fn build_chunking(&self, spec: &ChunkingSpec) -> Result<ResolvedChunkingConfig> {
+        let token_estimation = match &spec.strategy {
+            StrategyKind::Character => TokenEstimationStrategy::CharacterEstimation,
+            StrategyKind::Hf { repo, file } => {
+                let provider = self
+                    .load_hf_provider(repo.as_deref(), file.as_deref())
+                    .await?;
+                TokenEstimationStrategy::HfTokenizer(provider)
+            }
+        };
+        Ok(ResolvedChunkingConfig {
+            max_chunk_tokens: spec.max_chunk_tokens,
+            min_chunk_tokens: spec.min_chunk_tokens,
+            token_estimation,
+        })
+    }
+
+    /// Load an HF tokenizer, caching by source. `file` wins over `repo`.
+    async fn load_hf_provider(
+        &self,
+        repo: Option<&str>,
+        file: Option<&str>,
+    ) -> Result<Arc<HfTokenProvider>> {
+        // Cache key encodes the source so file and repo never collide.
+        let (key, is_file) = match (file, repo) {
+            (Some(f), _) => (format!("file:{f}"), true),
+            (None, Some(r)) => (format!("repo:{r}"), false),
+            (None, None) => return Err(anyhow!("HF tokenizer source missing")),
+        };
+
+        let mut cache = self.tokenizer_cache.lock().await;
+        if let Some(p) = cache.get(&key) {
+            return Ok(p.clone());
+        }
+        let provider = if is_file {
+            let path = file.unwrap();
+            HfTokenProvider::from_file(std::path::Path::new(path))?
+        } else {
+            HfTokenProvider::from_hf_repo(repo.unwrap()).await?
+        };
+        let provider = Arc::new(provider);
+        cache.insert(key, provider.clone());
+        Ok(provider)
+    }
+
     /// Resolve the effective options (dimensions/truncate/embedding_type) from
-    /// args, and the effective model (args.model > settings model).
-    fn resolve_run_params(
+    /// args, and the effective model (args.model > settings model). Async
+    /// because per-job chunking overrides may load an HF tokenizer.
+    async fn resolve_run_params(
         &self,
         args: &LlmEmbeddingArgs,
     ) -> Result<(String, ResolvedEmbeddingOptions, ResolvedChunkingConfig)> {
@@ -153,8 +248,11 @@ impl LLMEmbeddingRunnerImpl {
 
         // Chunking precedence: args.chunking > settings default.
         let chunking = match args.chunking.as_ref() {
-            Some(c) => resolve_chunking(Some(c))?,
-            None => self.chunking_default,
+            Some(c) => {
+                let spec = resolve_chunking_spec(Some(c))?;
+                self.build_chunking(&spec).await?
+            }
+            None => self.chunking_default.clone(),
         };
 
         Ok((model, opts, chunking))
@@ -196,8 +294,10 @@ impl RunnerTrait for LLMEmbeddingRunnerImpl {
         let settings = LlmRunnerSettings::decode(&mut Cursor::new(settings))
             .map_err(|e| anyhow!("decode error: {}", e))?;
 
-        // Resolve settings-level chunking default (used when args omit it).
-        self.chunking_default = resolve_chunking(settings.embedding_chunking.as_ref())?;
+        // Resolve settings-level chunking default (used when args omit it),
+        // loading the HF tokenizer once here rather than per job.
+        let spec = resolve_chunking_spec(settings.embedding_chunking.as_ref())?;
+        self.chunking_default = self.build_chunking(&spec).await?;
 
         match settings.settings {
             Some(Settings::Ollama(s)) => {
@@ -252,7 +352,7 @@ impl RunnerTrait for LLMEmbeddingRunnerImpl {
                 .as_ref()
                 .ok_or_else(|| anyhow!("embedding backend is not initialized"))?;
 
-            let (model, opts, chunking) = self.resolve_run_params(&args)?;
+            let (model, opts, chunking) = self.resolve_run_params(&args).await?;
 
             // Flatten inputs → chunk refs (absolute offsets).
             let refs = build_chunk_refs(&args, &chunking)?;
@@ -571,43 +671,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_resolve_chunking_defaults_and_precedence() {
-        // None → defaults.
-        let d = resolve_chunking(None).unwrap();
+    fn test_resolve_chunking_spec_defaults_and_precedence() {
+        // None → defaults (Character strategy).
+        let d = resolve_chunking_spec(None).unwrap();
         assert_eq!(d.max_chunk_tokens, 512);
+        assert_eq!(d.strategy, StrategyKind::Character);
 
         // Explicit values applied; min clamped below max.
         let c = ChunkingConfig {
             max_chunk_tokens: Some(100),
             min_chunk_tokens: Some(200),
             token_estimation: Some(1),
+            ..Default::default()
         };
-        let r = resolve_chunking(Some(&c)).unwrap();
+        let r = resolve_chunking_spec(Some(&c)).unwrap();
         assert_eq!(r.max_chunk_tokens, 100);
         assert!(r.min_chunk_tokens < r.max_chunk_tokens);
     }
 
     #[test]
-    fn test_resolve_chunking_staged_strategies_error() {
+    fn test_resolve_chunking_spec_tiktoken_still_unsupported() {
+        // Phase 2 not implemented yet: TIKTOKEN must still error.
         let tiktoken = ChunkingConfig {
             token_estimation: Some(2),
             ..Default::default()
         };
-        assert!(resolve_chunking(Some(&tiktoken)).is_err());
-        let hf = ChunkingConfig {
-            token_estimation: Some(3),
-            ..Default::default()
-        };
-        assert!(resolve_chunking(Some(&hf)).is_err());
+        assert!(resolve_chunking_spec(Some(&tiktoken)).is_err());
     }
 
     #[test]
-    fn test_resolve_chunking_zero_max_errors() {
-        let c = ChunkingConfig {
-            max_chunk_tokens: Some(0),
+    fn test_resolve_chunking_spec_hf_requires_source() {
+        // HF with no repo/file → explicit error.
+        let hf_no_src = ChunkingConfig {
+            token_estimation: Some(3),
             ..Default::default()
         };
-        assert!(resolve_chunking(Some(&c)).is_err());
+        assert!(resolve_chunking_spec(Some(&hf_no_src)).is_err());
+
+        // HF with a repo → Ok spec carrying the source (no load yet).
+        let hf = ChunkingConfig {
+            token_estimation: Some(3),
+            tokenizer_hf_repo: Some("nomic-ai/nomic-embed-text-v1.5".to_string()),
+            ..Default::default()
+        };
+        let spec = resolve_chunking_spec(Some(&hf)).unwrap();
+        assert_eq!(
+            spec.strategy,
+            StrategyKind::Hf {
+                repo: Some("nomic-ai/nomic-embed-text-v1.5".to_string()),
+                file: None
+            }
+        );
+    }
+
+    #[test]
+    fn test_resolve_chunking_spec_zero_max_errors() {
+        let c = ChunkingConfig {
+            max_chunk_tokens: Some(0),
+            token_estimation: Some(1),
+            ..Default::default()
+        };
+        assert!(resolve_chunking_spec(Some(&c)).is_err());
     }
 
     #[test]
