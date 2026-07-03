@@ -4,8 +4,6 @@
 //! `command_utils::text::chunking::TokenProvider` so the hierarchical chunker
 //! can measure and split text with real token counts:
 //!
-//! - [`offset`]: byte↔char span conversion shared by all byte-oriented
-//!   tokenizers.
 //! - [`hf`]: HuggingFace tokenizer (`tokenizers` + `hf-hub`), for Ollama models
 //!   (Phase 3).
 //! - `tiktoken`: OpenAI `cl100k_base`/`o200k_base` (Phase 2, added later).
@@ -16,7 +14,6 @@
 //! this one enum that implements `TokenProvider` once.
 
 pub mod hf;
-pub mod offset;
 
 /// Error type for all embedding token providers.
 ///
@@ -27,12 +24,6 @@ pub mod offset;
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 pub struct TokenProviderError(#[from] anyhow::Error);
-
-impl TokenProviderError {
-    pub fn msg(m: impl Into<String>) -> Self {
-        Self(anyhow::anyhow!(m.into()))
-    }
-}
 
 use std::sync::Arc;
 

@@ -2,9 +2,9 @@
 //!
 //! Wraps a `tokenizers::Tokenizer` and exposes it as a
 //! `command_utils::text::chunking::TokenProvider` so the hierarchical chunker
-//! can split embedding inputs by real token counts for Ollama models. The
-//! tokenizer's byte-oriented spans are converted to char spans via
-//! [`super::offset::CharByteMap`].
+//! can split embedding inputs by real token counts for Ollama models. Uses
+//! `encode_char_offsets` so token spans are already char (Unicode scalar)
+//! offsets, matching the chunker's contract.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -14,7 +14,6 @@ use command_utils::text::chunking::TokenProvider;
 use tokenizers::Tokenizer;
 
 use super::TokenProviderError;
-use super::offset::CharByteMap;
 
 /// One token with its char span into the original text.
 #[derive(Debug, Clone)]
@@ -87,9 +86,12 @@ impl HfTokenProvider {
             }
         }
 
+        // `encode_char_offsets` makes `get_offsets()` return char (Unicode
+        // scalar) spans directly, matching the chunker's contract — so no
+        // manual byte→char conversion is needed.
         let encoding = self
             .tokenizer
-            .encode(text, false)
+            .encode_char_offsets(text, false)
             .map_err(|e| anyhow!("tokenization failed: {e}"))?;
         let ids = encoding.get_ids();
         let offsets = encoding.get_offsets();
@@ -101,22 +103,15 @@ impl HfTokenProvider {
             ));
         }
 
-        let map = CharByteMap::new(text);
-        let mut tokens = Vec::with_capacity(ids.len());
-        for (&id, &(byte_start, byte_end)) in ids.iter().zip(offsets.iter()) {
-            // Special tokens (BOS/EOS) report (0, 0); pass them through as an
-            // empty span at the start instead of failing the byte→char lookup.
-            let (char_start, char_end) = if byte_start == 0 && byte_end == 0 {
-                (0, 0)
-            } else {
-                map.byte_range_to_char_range(byte_start, byte_end)?
-            };
-            tokens.push(TokenWithSpan {
+        let tokens = ids
+            .iter()
+            .zip(offsets.iter())
+            .map(|(&id, &(char_start, char_end))| TokenWithSpan {
                 id,
                 char_start,
                 char_end,
-            });
-        }
+            })
+            .collect();
 
         let out = Arc::new(TokenizationOutput { tokens });
         *self.memo.lock().unwrap() = Some((text.to_string(), out.clone()));
