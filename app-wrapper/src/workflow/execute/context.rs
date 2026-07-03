@@ -62,6 +62,54 @@ pub struct WorkflowContext {
     #[serde(skip)]
     pub declared_secrets: Arc<HashSet<String>>,
 }
+
+#[derive(Debug)]
+pub struct RunningJobGuard {
+    running_job_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
+    job_id: JobId,
+    active: bool,
+}
+
+impl RunningJobGuard {
+    fn new(running_job_ids: Arc<std::sync::Mutex<HashSet<i64>>>, job_id: JobId) -> Self {
+        running_job_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(job_id.value);
+        Self {
+            running_job_ids,
+            job_id,
+            active: true,
+        }
+    }
+
+    pub fn job_id(&self) -> JobId {
+        self.job_id
+    }
+
+    /// Mark the job as normally completed, unregistering it from the
+    /// in-flight set so a later cancellation does not target it.
+    pub fn mark_completed(mut self) {
+        self.unregister();
+    }
+
+    fn unregister(&mut self) {
+        if self.active {
+            self.running_job_ids
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.job_id.value);
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for RunningJobGuard {
+    fn drop(&mut self) {
+        self.unregister();
+    }
+}
+
 impl WorkflowContext {
     pub fn new(
         workflow: &workflow::WorkflowSchema,
@@ -129,27 +177,12 @@ impl WorkflowContext {
         }
     }
 
-    /// Register a child job as in-flight so cancellation can reach it later.
-    ///
-    /// `async` only for call-site symmetry with the rest of the context API; the
-    /// lock is a synchronous `std::sync::Mutex` held just for the `insert`, so no
-    /// guard is ever held across an await. On poison we recover the inner set
-    /// (a panicked task can't have corrupted a plain `HashSet`).
-    pub async fn register_running_job(&self, job_id: &JobId) {
-        self.running_job_ids
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(job_id.value);
+    pub fn guard_running_job(&self, job_id: JobId) -> RunningJobGuard {
+        RunningJobGuard::new(self.running_job_ids.clone(), job_id)
     }
 
-    /// Remove a child job from the in-flight set once it completes (whether it
-    /// succeeded or errored), so a later cancellation does not target a job
-    /// that already finished.
-    pub async fn unregister_running_job(&self, job_id: &JobId) {
-        self.running_job_ids
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&job_id.value);
+    pub fn is_cancelled(&self) -> bool {
+        self.status == WorkflowStatus::Cancelled
     }
 
     /// Snapshot the currently in-flight child job IDs. Used on cancellation to
@@ -946,30 +979,49 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_workflow_context_register_unregister_job_ids() {
+    async fn test_workflow_context_running_job_guards_share_snapshot() {
         let context = WorkflowContext::new_empty();
         let job1 = JobId { value: 101 };
         let job2 = JobId { value: 202 };
 
-        context.register_running_job(&job1).await;
-        context.register_running_job(&job2).await;
+        let guard1 = context.guard_running_job(job1);
+        let guard2 = context.guard_running_job(job2);
 
         let mut snapshot = context.snapshot_running_jobs().await;
         snapshot.sort_by_key(|j| j.value);
         assert_eq!(snapshot, vec![job1, job2]);
 
         // A clone of the context shares the same underlying set (Arc), so an
-        // unregister via the clone must be visible from the original. This
-        // mirrors how fork/for spawn clones of the context.
+        // active guard must be visible from both sides. This mirrors how
+        // fork/for spawn clones of the context.
         let cloned = context.clone();
-        cloned.unregister_running_job(&job1).await;
+        let mut cloned_snapshot = cloned.snapshot_running_jobs().await;
+        cloned_snapshot.sort_by_key(|j| j.value);
+        assert_eq!(cloned_snapshot, vec![job1, job2]);
 
+        guard1.mark_completed();
         let snapshot = context.snapshot_running_jobs().await;
         assert_eq!(snapshot, vec![job2]);
 
-        // Unregistering an unknown id is a no-op (idempotent cleanup).
-        context.unregister_running_job(&JobId { value: 999 }).await;
-        assert_eq!(context.snapshot_running_jobs().await, vec![job2]);
+        drop(guard2);
+        assert!(context.snapshot_running_jobs().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_running_job_guard_unregisters_on_drop() {
+        let context = WorkflowContext::new_empty();
+        let job = JobId { value: 333 };
+
+        {
+            let guard = context.guard_running_job(job);
+            assert_eq!(guard.job_id(), job);
+            assert_eq!(context.snapshot_running_jobs().await, vec![job]);
+        }
+
+        assert!(
+            context.snapshot_running_jobs().await.is_empty(),
+            "dropping a running job guard must unregister the child job"
+        );
     }
 
     #[tokio::test]

@@ -198,31 +198,27 @@ impl CallTaskExecutor {
             broadcast_results: true,
             ..Default::default()
         };
-        let (job_id, result_fut) = self
-            .job_executor_wrapper
-            .enqueue_with_worker_or_temp_channel(
-                Arc::new(metadata),
-                WorkerForEnqueue::Temp(worker_data),
-                job_args,
-                None,
-                timeout_sec,
-                StreamingType::None,
-                using.map(|u| u.to_string()),
-                None,
-            )
-            .await?;
-
-        self.workflow_context
-            .read()
-            .await
-            .register_running_job(&job_id)
-            .await;
+        let (result_fut, running_job_guard) = super::enqueue_child_job(
+            &self.workflow_context,
+            &self.job_executor_wrapper,
+            self.job_executor_wrapper
+                .enqueue_with_worker_or_temp_channel(
+                    Arc::new(metadata),
+                    WorkerForEnqueue::Temp(worker_data),
+                    job_args,
+                    None,
+                    timeout_sec,
+                    StreamingType::None,
+                    using.map(|u| u.to_string()),
+                    None,
+                ),
+            super::ChildJobTracking::Tracked,
+        )
+        .await?;
         let wait_result = result_fut.await;
-        self.workflow_context
-            .read()
-            .await
-            .unregister_running_job(&job_id)
-            .await;
+        running_job_guard
+            .expect("tracked child jobs must return a running job guard")
+            .mark_completed();
 
         let (res, _stream) = wait_result?;
         let Some(res) = res else {

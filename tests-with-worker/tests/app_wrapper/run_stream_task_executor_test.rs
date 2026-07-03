@@ -261,8 +261,9 @@ fn test_listen_stream_streaming_results() -> Result<()> {
 
         // Enqueue job
         let job_args = serde_json::json!({
-            "command": "echo",
-            "args": ["streaming", "output", "test"]
+            "command": "sh",
+            // Keep the worker from publishing before listen_result subscribes.
+            "args": ["-c", "sleep 1; echo streaming output test"]
         });
 
         eprintln!("Enqueuing job...");
