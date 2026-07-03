@@ -25,43 +25,30 @@ pub struct GenaiEmbeddingService {
 
 impl GenaiEmbeddingService {
     pub async fn new(settings: GenaiRunnerSettings) -> Result<Self> {
-        let model_name = settings.model.clone();
         let endpoint_url = settings.base_url.clone();
-        // Reuse the completion service's endpoint-normalization approach so
-        // custom base URLs resolve the same way for embedding.
+        // The resolver must respect the service target genai already built from
+        // the *request* model (embedding supports a per-job model override via
+        // LlmEmbeddingArgs.model), and only override the endpoint with a custom
+        // base URL. Re-resolving from settings.model here would silently ignore
+        // the override and send requests to the wrong provider/model.
         let target_resolver = ServiceTargetResolver::from_resolver_async_fn(
-            move |_: ServiceTarget| -> std::pin::Pin<
+            move |mut service_target: ServiceTarget| -> std::pin::Pin<
                 Box<
                     dyn std::future::Future<Output = Result<ServiceTarget, genai::resolver::Error>>
                         + Send,
                 >,
             > {
-                let model_name = model_name.clone();
                 let endpoint_url = endpoint_url.clone();
                 Box::pin(async move {
-                    let client = Client::default();
-                    let mut service_target = client
-                        .resolve_service_target(&model_name)
-                        .await
-                        .map_err(|e| {
-                            genai::resolver::Error::Custom(format!(
-                                "Failed to resolve service target from model={model_name} : {e:#?}"
-                            ))
-                        })?;
                     if let Some(url) = endpoint_url
                         && !url.is_empty()
                     {
-                        let mut u = url.parse::<url::Url>().map_err(|e| {
+                        let normalized = normalize_endpoint_url(&url).map_err(|e| {
                             genai::resolver::Error::Custom(format!(
                                 "Failed to parse endpoint URL={url} : {e:#?}"
                             ))
                         })?;
-                        if u.path().is_empty() || u.path() == "/" {
-                            u.set_path("/v1/");
-                        } else if !u.path().ends_with('/') {
-                            u.set_path(&format!("{}/", u.path()));
-                        }
-                        service_target.endpoint = Endpoint::from_owned(u.to_string());
+                        service_target.endpoint = Endpoint::from_owned(normalized);
                     }
                     Ok(service_target)
                 })
@@ -140,5 +127,53 @@ impl EmbeddingBackend for GenaiEmbeddingService {
             embeddings,
             usage: Some(usage),
         })
+    }
+}
+
+/// Normalize a custom base URL into a genai endpoint string: ensure it ends
+/// with a trailing-slash path (defaulting an empty/root path to `/v1/`) so the
+/// adapter appends request paths correctly.
+fn normalize_endpoint_url(url: &str) -> Result<String> {
+    let mut u = url.parse::<url::Url>()?;
+    if u.path().is_empty() || u.path() == "/" {
+        u.set_path("/v1/");
+    } else if !u.path().ends_with('/') {
+        u.set_path(&format!("{}/", u.path()));
+    }
+    Ok(u.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_endpoint_url_defaults_root_to_v1() {
+        assert_eq!(
+            normalize_endpoint_url("http://host:8080").unwrap(),
+            "http://host:8080/v1/"
+        );
+        assert_eq!(
+            normalize_endpoint_url("http://host:8080/").unwrap(),
+            "http://host:8080/v1/"
+        );
+    }
+
+    #[test]
+    fn test_normalize_endpoint_url_appends_trailing_slash() {
+        assert_eq!(
+            normalize_endpoint_url("http://host/custom/path").unwrap(),
+            "http://host/custom/path/"
+        );
+        // Already trailing-slashed → unchanged.
+        assert_eq!(
+            normalize_endpoint_url("http://host/custom/path/").unwrap(),
+            "http://host/custom/path/"
+        );
+    }
+
+    #[test]
+    fn test_normalize_endpoint_url_rejects_invalid() {
+        assert!(normalize_endpoint_url("not a url").is_err());
     }
 }
