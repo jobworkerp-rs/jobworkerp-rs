@@ -120,9 +120,11 @@ FunctionSetの定義・管理、およびAutoSelection（LLMによるFunctionSet
 | Ollama | `nomic-embed-text`, `mxbai-embed-large` | *(不要 — ローカル)* |
 | OpenAI (GenAI) | `text-embedding-3-small`, `text-embedding-3-large` | `OPENAI_API_KEY` |
 | Cohere (GenAI) | `embed-english-v3.0`, `embed-multilingual-v3.0` | `COHERE_API_KEY` |
-| Gemini (GenAI) | `text-embedding-004`, `gemini-embedding-001` | `GEMINI_API_KEY` |
+| Gemini (GenAI) | `gemini-embedding-001` | `GEMINI_API_KEY` |
 
 プロバイダー自動検出と環境変数の設定は completion/chat と共通です（[GenAIプロバイダーの設定方法](#genaiプロバイダーの設定方法)を参照）。
+
+> **注意:** プロバイダーはモデル名のプレフィックスから推測されるため、対象アダプターが認識できる名前を指定してください。Gemini の埋め込みには `gemini-*` プレフィックス（例: `gemini-embedding-001`）を使用します。`text-embedding-` で始まる名前（例: Gemini の `text-embedding-004`）は **OpenAI** アダプターにルーティングされ、`OPENAI_API_KEY` を使って Gemini に対しては失敗します。必要な場合は名前空間プレフィックス（例: `gemini::<model>`）でアダプターを強制してください。
 
 ### ジョブ引数（`job.args`）
 

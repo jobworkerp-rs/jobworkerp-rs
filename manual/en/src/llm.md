@@ -118,9 +118,11 @@ The `embedding` method generates embedding vectors. Set `using` to `"embedding"`
 | Ollama | `nomic-embed-text`, `mxbai-embed-large` | *(none — local)* |
 | OpenAI (GenAI) | `text-embedding-3-small`, `text-embedding-3-large` | `OPENAI_API_KEY` |
 | Cohere (GenAI) | `embed-english-v3.0`, `embed-multilingual-v3.0` | `COHERE_API_KEY` |
-| Gemini (GenAI) | `text-embedding-004`, `gemini-embedding-001` | `GEMINI_API_KEY` |
+| Gemini (GenAI) | `gemini-embedding-001` | `GEMINI_API_KEY` |
 
 Provider auto-detection and environment-variable setup are the same as for completion/chat (see [GenAI Provider Configuration](#genai-provider-configuration)).
+
+> **Note:** The provider is inferred from the model-name prefix, so use a name the target adapter recognizes. For Gemini embeddings use the `gemini-*` prefix (e.g. `gemini-embedding-001`). A name starting with `text-embedding-` (e.g. Gemini's `text-embedding-004`) is routed to the **OpenAI** adapter — it will use `OPENAI_API_KEY` and fail against Gemini. When needed, force an adapter with a namespace prefix (e.g. `gemini::<model>`).
 
 ### Job Arguments (`job.args`)
 
