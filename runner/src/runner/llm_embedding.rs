@@ -194,6 +194,19 @@ mod tests {
             "args_schema must describe chunking field:\n{}",
             method.args_schema
         );
+        // Embedding options passthrough (genai): encoding_format / user must
+        // surface so clients can discover them.
+        assert!(
+            method.args_schema.contains("encoding_format")
+                || method.args_schema.contains("encodingFormat"),
+            "args_schema must describe encoding_format option:\n{}",
+            method.args_schema
+        );
+        assert!(
+            method.args_schema.contains("user"),
+            "args_schema must describe user option:\n{}",
+            method.args_schema
+        );
     }
 
     #[test]

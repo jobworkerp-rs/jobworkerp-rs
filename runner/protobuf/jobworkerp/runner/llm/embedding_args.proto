@@ -20,6 +20,19 @@ message LLMEmbeddingArgs {
     // Purpose/type: "search_document"/"search_query" (Cohere) or
     // "RETRIEVAL_DOCUMENT"/"RETRIEVAL_QUERY" (Gemini). Ignored by Ollama.
     optional string embedding_type = 3;
+    // Output encoding format for the embedding vectors.
+    //   - GenAI (OpenAI: encoding_format, Cohere: embedding_types).
+    //   - Ollama: ignored.
+    // Only float-family values ("float"/"float32") are accepted; the vectors
+    // are always decoded to f32, so non-float encodings (base64/binary/int8/
+    // uint8/ubinary) are rejected with a warning and the provider default is
+    // used instead.
+    // Unset => provider default (float).
+    optional string encoding_format = 4;
+    // End-user identifier passed to providers that support abuse detection /
+    // rate management (OpenAI `user`). Ignored by Cohere/Gemini/Ollama.
+    // Unset => not sent.
+    optional string user = 5;
   }
 
   // Multimodal-ready content. Only `text` is currently supported; other

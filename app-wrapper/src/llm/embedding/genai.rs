@@ -98,6 +98,12 @@ impl EmbeddingBackend for GenaiEmbeddingService {
         if let Some(tr) = truncate_for_genai(&opts.truncate) {
             embed_opts = embed_opts.with_truncate(tr);
         }
+        if let Some(fmt) = &opts.encoding_format {
+            embed_opts = embed_opts.with_encoding_format(fmt);
+        }
+        if let Some(user) = &opts.user {
+            embed_opts = embed_opts.with_user(user);
+        }
 
         let resp = self
             .client

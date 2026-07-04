@@ -272,11 +272,7 @@ impl LLMEmbeddingRunnerImpl {
         let opts = args
             .options
             .as_ref()
-            .map(|o| ResolvedEmbeddingOptions {
-                dimensions: o.dimensions,
-                truncate: o.truncate.clone(),
-                embedding_type: o.embedding_type.clone(),
-            })
+            .map(resolve_options)
             .unwrap_or_default();
 
         // Chunking precedence: args.chunking > settings default.
@@ -483,6 +479,11 @@ pub struct ResolvedEmbeddingOptions {
     /// Provider-neutral truncation: "NONE" / "START" / "END".
     pub truncate: Option<String>,
     pub embedding_type: Option<String>,
+    /// Output encoding format, restricted to float-family values (the vectors
+    /// are always decoded to f32). Non-float requests are dropped upstream.
+    pub encoding_format: Option<String>,
+    /// End-user identifier (OpenAI `user`); ignored by other providers.
+    pub user: Option<String>,
 }
 
 /// One embedding vector returned by a backend, tagged with the input index it
@@ -601,6 +602,46 @@ pub fn truncate_for_genai(truncate: &Option<String>) -> Option<String> {
                 }
             }
         }
+    }
+}
+
+/// Normalize the requested embedding encoding format, accepting only
+/// float-family values.
+///
+/// The runner always decodes vectors to `f32`, so only "float"/"float32" are
+/// forwarded (canonicalized to "float", the value both OpenAI and Cohere
+/// expect). Non-float encodings (base64/binary/int8/uint8/ubinary) would either
+/// break the f32 decode (OpenAI base64) or be silently re-decoded by genai, so
+/// they are dropped with a warning and the provider default (float) is used.
+pub fn normalize_encoding_format(encoding_format: &Option<String>) -> Option<String> {
+    match encoding_format.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(s) => match s.to_ascii_lowercase().as_str() {
+            "float" | "float32" => Some("float".to_string()),
+            other => {
+                tracing::warn!(
+                    "unsupported embedding encoding_format '{other}'; only float is supported, using provider default"
+                );
+                None
+            }
+        },
+    }
+}
+
+/// Map proto `EmbeddingOptions` to the provider-neutral
+/// [`ResolvedEmbeddingOptions`], applying the value rules (float-only encoding,
+/// non-empty user). Pure so it can be unit-tested without a loaded runner.
+fn resolve_options(
+    o: &jobworkerp_runner::jobworkerp::runner::llm::llm_embedding_args::EmbeddingOptions,
+) -> ResolvedEmbeddingOptions {
+    ResolvedEmbeddingOptions {
+        dimensions: o.dimensions,
+        truncate: o.truncate.clone(),
+        embedding_type: o.embedding_type.clone(),
+        // Restrict to float-family; non-float encodings are dropped so the f32
+        // decode assumption holds (see normalize_encoding_format).
+        encoding_format: normalize_encoding_format(&o.encoding_format),
+        user: o.user.clone().filter(|s| !s.is_empty()),
     }
 }
 
@@ -840,6 +881,53 @@ mod tests {
             Some("START".to_string())
         );
         assert_eq!(truncate_for_genai(&Some("weird".to_string())), None);
+    }
+
+    #[test]
+    fn test_normalize_encoding_format() {
+        // Unset / empty / whitespace-only → None (provider default).
+        assert_eq!(normalize_encoding_format(&None), None);
+        assert_eq!(normalize_encoding_format(&Some(String::new())), None);
+        assert_eq!(normalize_encoding_format(&Some("  ".to_string())), None);
+        // Float family is accepted and canonicalized to "float".
+        assert_eq!(
+            normalize_encoding_format(&Some("float".to_string())),
+            Some("float".to_string())
+        );
+        assert_eq!(
+            normalize_encoding_format(&Some("FLOAT32".to_string())),
+            Some("float".to_string())
+        );
+        // Non-float encodings are dropped (would break the f32 decode).
+        assert_eq!(normalize_encoding_format(&Some("base64".to_string())), None);
+        assert_eq!(normalize_encoding_format(&Some("binary".to_string())), None);
+        assert_eq!(normalize_encoding_format(&Some("int8".to_string())), None);
+    }
+
+    #[test]
+    fn test_resolve_options_passthrough_encoding_and_user() {
+        // args.options.encoding_format / user must flow into
+        // ResolvedEmbeddingOptions with the float-only + empty-string rules.
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_embedding_args::EmbeddingOptions;
+        let resolved = resolve_options(&EmbeddingOptions {
+            dimensions: Some(256),
+            truncate: Some("END".to_string()),
+            embedding_type: Some("search_document".to_string()),
+            encoding_format: Some("float32".to_string()),
+            user: Some("user-42".to_string()),
+        });
+        assert_eq!(resolved.dimensions, Some(256));
+        assert_eq!(resolved.encoding_format, Some("float".to_string()));
+        assert_eq!(resolved.user, Some("user-42".to_string()));
+
+        // Empty user is dropped; non-float encoding is dropped.
+        let resolved2 = resolve_options(&EmbeddingOptions {
+            encoding_format: Some("base64".to_string()),
+            user: Some(String::new()),
+            ..Default::default()
+        });
+        assert_eq!(resolved2.encoding_format, None);
+        assert_eq!(resolved2.user, None);
     }
 
     #[test]
