@@ -56,6 +56,9 @@ Streamable HTTP transport, suitable for browser-based clients or HTTP proxy conn
 | `MCP_ADDR` | Bind address | `127.0.0.1:8000` |
 | `MCP_AUTH_ENABLED` | Enable Bearer authentication | `false` |
 | `MCP_AUTH_TOKENS` | Valid tokens, comma-separated | `demo-token` |
+| `MCP_ALLOWED_HOSTS` | Allowed `Host` header values, comma-separated (DNS rebinding protection). Use `*` to disable validation | `localhost,127.0.0.1,::1` |
+
+> **DNS rebinding protection**: rmcp 2.x validates the inbound `Host` header by default and only accepts loopback hosts. When deploying behind a reverse proxy or binding to a public interface, set `MCP_ALLOWED_HOSTS` to your actual hostnames (e.g. `example.com,example.com:8080`). `MCP_ALLOWED_HOSTS=*` disables validation entirely and is not recommended for public deployments.
 
 ### stdio (`mcp-stdio`)
 

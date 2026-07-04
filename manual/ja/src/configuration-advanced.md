@@ -90,6 +90,7 @@ LLMランナーで外部LLMサービスを利用する場合に設定します�
 
 | 環境変数名 | 説明 | デフォルト値 |
 |-----------|------|-------------|
-| TZ_OFFSET_HOURS | タイムゾーンオフセット（時間） | 9 |
+| TZ | IANAタイムゾーン名（例: `Asia/Tokyo`）。指定時は `TZ_OFFSET_HOURS` より優先。POSIX TZ形式は非対応 | なし |
+| TZ_OFFSET_HOURS | `TZ` 未指定または不正時に使うタイムゾーンオフセット（時間） | 0 |
 | MAX_FRAME_SIZE | gRPC最大フレームサイズ（バイト） | None（tonicデフォルト）。dot.envでは16777215を設定例として記載 |
 | WORKFLOW_HTTP_USER_AGENT | ワークフローHTTPリクエストのUser-Agent | simple-workflow/1.0 |

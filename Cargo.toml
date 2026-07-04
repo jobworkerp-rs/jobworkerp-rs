@@ -96,7 +96,7 @@ redis = { version = "1.0.2", features = [
     "cluster-async",
 ] }
 reqwest = "0.12"
-rmcp = { version = "0.15" }
+rmcp = { version = "2.1" }
 rs-snowflake = "0.6"
 rustls = { version = "0.23", default-features = false, features = [
     "ring",

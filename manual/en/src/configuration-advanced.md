@@ -90,6 +90,7 @@ Required when using external LLM services with the LLM runner.
 
 | Environment Variable | Description | Default |
 |---------------------|-------------|---------|
-| TZ_OFFSET_HOURS | Timezone offset (hours) | 9 |
+| TZ | IANA timezone name (for example, `Asia/Tokyo`). Takes precedence over `TZ_OFFSET_HOURS` when set. POSIX TZ strings are not supported | None |
+| TZ_OFFSET_HOURS | Timezone offset in hours used when `TZ` is unset or invalid | 0 |
 | MAX_FRAME_SIZE | gRPC max frame size (bytes) | None (tonic default). dot.env uses 16777215 as example |
 | WORKFLOW_HTTP_USER_AGENT | User-Agent for workflow HTTP requests | simple-workflow/1.0 |

@@ -95,6 +95,54 @@ async fn health_check() -> &'static str {
     "OK"
 }
 
+/// Resolved `MCP_ALLOWED_HOSTS` configuration for the Streamable HTTP server.
+///
+/// rmcp 2.x validates the inbound `Host` header to prevent DNS rebinding attacks and only
+/// allows loopback hosts by default. Non-loopback deployments (e.g. behind a reverse proxy or
+/// bound to a public interface) must declare their hostnames via `MCP_ALLOWED_HOSTS`
+/// (comma-separated). Setting it to `*` disables Host validation (NOT recommended).
+#[derive(Debug, PartialEq, Eq)]
+enum AllowedHostsSetting {
+    /// Keep rmcp's default (loopback-only) Host validation.
+    Default,
+    /// Disable Host validation entirely (`MCP_ALLOWED_HOSTS=*`).
+    Disabled,
+    /// Use the explicit list of allowed hosts.
+    List(Vec<String>),
+}
+
+impl AllowedHostsSetting {
+    /// Resolve the setting from the `MCP_ALLOWED_HOSTS` environment variable.
+    fn from_env() -> Self {
+        Self::parse(std::env::var("MCP_ALLOWED_HOSTS").ok().as_deref())
+    }
+
+    /// Parse the `MCP_ALLOWED_HOSTS` value.
+    ///
+    /// - `None` or empty/whitespace-only input keeps the default loopback-only validation.
+    /// - `*` disables validation.
+    /// - Otherwise, splits on commas and trims each entry, dropping empties.
+    fn parse(value: Option<&str>) -> Self {
+        let value = value.map(str::trim).unwrap_or("");
+        if value.is_empty() {
+            return Self::Default;
+        }
+        if value == "*" {
+            return Self::Disabled;
+        }
+        let allowed: Vec<String> = value
+            .split(',')
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty())
+            .collect();
+        if allowed.is_empty() {
+            Self::Default
+        } else {
+            Self::List(allowed)
+        }
+    }
+}
+
 /// Boot the MCP Server with Streamable HTTP transport.
 ///
 /// This creates an HTTP server using axum that:
@@ -117,18 +165,32 @@ where
     F: Fn() -> Result<McpHandler, std::io::Error> + Send + Sync + 'static,
 {
     let token_store = Arc::new(TokenStore::from_env());
+    let allowed_hosts = AllowedHostsSetting::from_env();
 
-    // Create MCP service with StreamableHttpService
-    // NOTE: Using stateful_mode=false as a workaround for rmcp session management issues.
-    // With stateful_mode=true (default), LocalSessionManager closes HTTP channels immediately
-    // after response, causing SSE reconnection failures ("Channel closed" errors).
+    // Create MCP service with StreamableHttpService.
+    //
+    // stateful_mode=false is a workaround for rmcp session management issues: with the
+    // default stateful_mode=true, LocalSessionManager closes HTTP channels immediately after
+    // the response, causing SSE reconnection failures ("Channel closed" errors).
     // Related issues:
     // - https://github.com/modelcontextprotocol/rust-sdk/issues/559
     // - https://github.com/modelcontextprotocol/rust-sdk/issues/572
-    let config = StreamableHttpServerConfig {
-        stateful_mode: false,
-        ..Default::default()
-    };
+    //
+    // StreamableHttpServerConfig is #[non_exhaustive]; start from Default and override fields.
+    let mut config = StreamableHttpServerConfig::default();
+    config.stateful_mode = false;
+    match allowed_hosts {
+        AllowedHostsSetting::Default => {}
+        AllowedHostsSetting::Disabled => {
+            tracing::warn!(
+                "MCP_ALLOWED_HOSTS=* disables Host header validation (DNS rebinding protection)"
+            );
+            config = config.disable_allowed_hosts();
+        }
+        AllowedHostsSetting::List(allowed) => {
+            config = config.with_allowed_hosts(allowed);
+        }
+    }
     let mcp_service: StreamableHttpService<McpHandler, LocalSessionManager> =
         StreamableHttpService::new(
             handler_factory,
@@ -197,6 +259,63 @@ mod tests {
         assert!(store.is_valid("token1"));
         assert!(store.is_valid("token2"));
         assert!(!store.is_valid("invalid"));
+    }
+
+    #[test]
+    fn test_parse_allowed_hosts_default_when_unset() {
+        assert_eq!(
+            AllowedHostsSetting::parse(None),
+            AllowedHostsSetting::Default
+        );
+    }
+
+    #[test]
+    fn test_parse_allowed_hosts_default_when_empty_or_whitespace() {
+        assert_eq!(
+            AllowedHostsSetting::parse(Some("")),
+            AllowedHostsSetting::Default
+        );
+        assert_eq!(
+            AllowedHostsSetting::parse(Some("   ")),
+            AllowedHostsSetting::Default
+        );
+        // Only separators/empty entries also fall back to default.
+        assert_eq!(
+            AllowedHostsSetting::parse(Some(", ,")),
+            AllowedHostsSetting::Default
+        );
+    }
+
+    #[test]
+    fn test_parse_allowed_hosts_wildcard_disables_validation() {
+        assert_eq!(
+            AllowedHostsSetting::parse(Some("*")),
+            AllowedHostsSetting::Disabled
+        );
+        assert_eq!(
+            AllowedHostsSetting::parse(Some("  *  ")),
+            AllowedHostsSetting::Disabled
+        );
+    }
+
+    #[test]
+    fn test_parse_allowed_hosts_list_is_trimmed() {
+        assert_eq!(
+            AllowedHostsSetting::parse(Some("example.com, example.com:8080 ,localhost")),
+            AllowedHostsSetting::List(vec![
+                "example.com".to_string(),
+                "example.com:8080".to_string(),
+                "localhost".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_allowed_hosts_single_host() {
+        assert_eq!(
+            AllowedHostsSetting::parse(Some("example.com")),
+            AllowedHostsSetting::List(vec!["example.com".to_string()])
+        );
     }
 
     #[test]
