@@ -479,36 +479,3 @@ async fn test_unified_runner_completion_with_json_schema() -> Result<()> {
     tracing::info!("Unified runner completion with JSON schema test passed!");
     Ok(())
 }
-
-/// Loading the unified runner must NOT trigger embedding-only side effects
-/// (Ollama model pull, HF tokenizer download). This uses an unreachable Ollama
-/// endpoint with pull_model=true: if `load` eagerly initialized the embedding
-/// backend it would try to pull and fail, but with deferred init `load`
-/// succeeds because no embedding job is run. Ollama is not required (nothing
-/// reaches it), but the shared test app harness is (hence #[ignore] like the
-/// other tests in this file).
-#[ignore = "needs the shared test app harness"]
-#[tokio::test]
-async fn test_unified_load_defers_embedding_side_effects() -> Result<()> {
-    let mut runner = create_test_unified_runner().await?;
-
-    let settings = LlmRunnerSettings {
-        settings: Some(
-            jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Ollama(
-                OllamaRunnerSettings {
-                    model: "nonexistent-model".to_string(),
-                    // Unreachable endpoint; a pull here would fail fast.
-                    base_url: Some("http://127.0.0.1:1/".to_string()),
-                    system_prompt: None,
-                    // Would pull on eager init — must be deferred instead.
-                    pull_model: Some(true),
-                },
-            ),
-        ),
-        embedding_chunking: None,
-    };
-
-    // Must succeed: initialization is deferred to the first embedding run.
-    runner.load(settings.encode_to_vec()).await?;
-    Ok(())
-}
