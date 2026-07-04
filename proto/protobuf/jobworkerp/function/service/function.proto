@@ -108,6 +108,11 @@ service FunctionService {
       returns (stream jobworkerp.function.data.FunctionSpecs);
   rpc FindListBySet(FindFunctionSetRequest)
       returns (stream jobworkerp.function.data.FunctionSpecs);
+
+  // Execute a Runner or Worker function.
+  //
+  // Requirements:
+  // - AUTH_TOKEN environment variable must match jobworkerp-auth metadata header (if set)
   rpc Call(FunctionCallRequest)
       returns (stream jobworkerp.function.data.FunctionResult);
 
@@ -117,9 +122,15 @@ service FunctionService {
   // Function search by function name
   rpc FindByName(FindFunctionByNameRequest) returns (OptionalFunctionSpecsResponse);
 
-  // Create a Worker from any Runner with detailed configuration
+  // Create a Worker from any Runner with detailed configuration.
+  //
+  // Requirements:
+  // - AUTH_TOKEN environment variable must match jobworkerp-auth metadata header (if set)
   rpc CreateWorker(CreateWorkerRequest) returns (CreateWorkerResponse);
 
-  // Upsert a Worker: create if not exists, update if name conflicts
+  // Upsert a Worker: create if not exists, update if name conflicts.
+  //
+  // Requirements:
+  // - AUTH_TOKEN environment variable must match jobworkerp-auth metadata header (if set)
   rpc UpsertWorker(CreateWorkerRequest) returns (CreateWorkerResponse);
 }

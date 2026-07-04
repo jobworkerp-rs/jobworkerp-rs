@@ -63,6 +63,14 @@ grpcurl -plaintext localhost:9000 list jobworkerp.service.RunnerService
 grpcurl -plaintext localhost:9000 describe jobworkerp.service.JobRequest
 ```
 
+If `AUTH_TOKEN` is set on the server, add the `jobworkerp-auth` metadata header to protected RPCs:
+
+```bash
+AUTH_HEADER=()
+AUTH_TOKEN='change-this-token'
+AUTH_HEADER=(-H "jobworkerp-auth: ${AUTH_TOKEN}")
+```
+
 ### 1. Fetch RunnerData and extract proto strings
 
 ```bash
@@ -142,7 +150,7 @@ grpcurl -plaintext -d "$(cat <<EOF
   "args": "${ARGS_B64}"
 }
 EOF
-)" localhost:9000 jobworkerp.service.JobService/Enqueue
+)" "${AUTH_HEADER[@]}" localhost:9000 jobworkerp.service.JobService/Enqueue
 ```
 
 For a Worker created with `responseType=DIRECT`, the response carries the result inline at `result.data.output.items` (Base64). Otherwise, retrieve it later via `JobResultService.FindListByJobId`.

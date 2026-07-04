@@ -63,6 +63,14 @@ grpcurl -plaintext localhost:9000 list jobworkerp.service.RunnerService
 grpcurl -plaintext localhost:9000 describe jobworkerp.service.JobRequest
 ```
 
+サーバーで `AUTH_TOKEN` を設定している場合、保護対象 RPC には `jobworkerp-auth` metadata header を付けます:
+
+```bash
+AUTH_HEADER=()
+AUTH_TOKEN='change-this-token'
+AUTH_HEADER=(-H "jobworkerp-auth: ${AUTH_TOKEN}")
+```
+
 ### 1. RunnerData を取得して proto 文字列を抜き出す
 
 ```bash
@@ -142,7 +150,7 @@ grpcurl -plaintext -d "$(cat <<EOF
   "args": "${ARGS_B64}"
 }
 EOF
-)" localhost:9000 jobworkerp.service.JobService/Enqueue
+)" "${AUTH_HEADER[@]}" localhost:9000 jobworkerp.service.JobService/Enqueue
 ```
 
 `responseType=DIRECT` で作った Worker なら、レスポンスの `result.data.output.items` (Base64) が直接返ります。それ以外は `JobResultService.FindListByJobId` で後から取得します。

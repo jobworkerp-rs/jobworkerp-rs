@@ -129,6 +129,8 @@ $ docker run -p 8080:8080 -p 9000:9000 -p 8000:8000 -p 8001:8001 \
   jobworkerp-all-in-one
 ```
 
+Set `AUTH_TOKEN` for deployments that expose gRPC. Protected gRPC requests must include the metadata header `jobworkerp-auth: <AUTH_TOKEN>`. **Do not set `AUTH_TOKEN` when using the Admin UI**: the bundled Admin UI client does not yet send this header, so protected calls (e.g. job enqueue) would fail with `Unauthenticated`. Leave `AUTH_TOKEN` unset until Admin UI support for the auth header is added.
+
 **Port configuration:**
 
 | Port | Service | Access URL |
@@ -373,6 +375,7 @@ Database schema:
 | | STORAGE_RESTORE_AT_STARTUP | Flag for restoring jobs after crashes | false |
 | **gRPC Settings** | GRPC_ADDR | gRPC server address:port | [::1]:9000 |
 | | USE_GRPC_WEB | Whether to use gRPC web on the gRPC server (boolean) | false |
+| | AUTH_TOKEN | Token required by protected gRPC RPCs via `jobworkerp-auth` metadata when set | - |
 | **MCP Settings** | MCP_CONFIG | Path to MCP server configuration file | mcp-settings.toml |
 | **Worker Instance Settings** | WORKER_INSTANCE_ENABLED | Enable/disable worker instance registration | true |
 | | WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC | Heartbeat interval | 30 |
