@@ -1,0 +1,98 @@
+//! Token providers for embedding chunking.
+//!
+//! Each backend-specific provider lives in its own submodule and implements
+//! `command_utils::text::chunking::TokenProvider` so the hierarchical chunker
+//! can measure and split text with real token counts:
+//!
+//! - [`hf`]: HuggingFace tokenizer (`tokenizers` + `hf-hub`), for Ollama models
+//!   (Phase 3).
+//! - [`tiktoken`]: OpenAI `cl100k_base`/`o200k_base` (Phase 2), for
+//!   text-embedding-3 / GPT-4o family models on GenAI/OpenAI backends.
+//!
+//! [`EmbeddingTokenProvider`] is the single unified provider the chunker is
+//! parameterized over: `TokenProvider` has an associated `Error` type and so
+//! cannot be used as `dyn`, so all concrete providers are dispatched through
+//! this one enum that implements `TokenProvider` once.
+
+pub mod hf;
+pub mod tiktoken;
+
+/// Error type for all embedding token providers.
+///
+/// `command_utils::text::chunking::TokenProvider` requires its associated
+/// `Error: std::error::Error + Send + Sync + 'static`, which `anyhow::Error`
+/// does not satisfy (it has no blanket `std::error::Error` impl). This thin
+/// wrapper carries an `anyhow::Error` while implementing `std::error::Error`.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct TokenProviderError(#[from] anyhow::Error);
+
+use std::sync::Arc;
+
+use command_utils::text::chunking::TokenProvider;
+use hf::HfTokenProvider;
+use tiktoken::TiktokenProvider;
+
+/// Unified token provider the hierarchical chunker is parameterized over.
+///
+/// `TokenProvider` cannot be used as a trait object (associated `Error` type),
+/// so every concrete provider is dispatched through this single enum, which
+/// implements `TokenProvider` once. New tokenizers add a variant here plus a
+/// match arm — the chunking call site stays generic over one type.
+#[derive(Debug, Clone)]
+pub enum EmbeddingTokenProvider {
+    /// HuggingFace tokenizer (Ollama models, Phase 3).
+    Hf(Arc<HfTokenProvider>),
+    /// tiktoken OpenAI BPE (text-embedding-3 / GPT-4o family, Phase 2).
+    Tiktoken(Arc<TiktokenProvider>),
+}
+
+impl TokenProvider for EmbeddingTokenProvider {
+    type Error = TokenProviderError;
+
+    fn tokenize(&self, text: &str) -> std::result::Result<Vec<u32>, Self::Error> {
+        match self {
+            Self::Hf(p) => p.tokenize(text),
+            Self::Tiktoken(p) => p.tokenize(text),
+        }
+    }
+
+    fn estimate_token_count(&self, text: &str) -> std::result::Result<usize, Self::Error> {
+        match self {
+            Self::Hf(p) => p.estimate_token_count(text),
+            Self::Tiktoken(p) => p.estimate_token_count(text),
+        }
+    }
+
+    fn token_to_char(
+        &self,
+        text: &str,
+        token_pos: usize,
+    ) -> std::result::Result<Option<usize>, Self::Error> {
+        match self {
+            Self::Hf(p) => p.token_to_char(text, token_pos),
+            Self::Tiktoken(p) => p.token_to_char(text, token_pos),
+        }
+    }
+
+    fn char_to_token(
+        &self,
+        text: &str,
+        char_pos: usize,
+    ) -> std::result::Result<Option<usize>, Self::Error> {
+        match self {
+            Self::Hf(p) => p.char_to_token(text, char_pos),
+            Self::Tiktoken(p) => p.char_to_token(text, char_pos),
+        }
+    }
+
+    fn get_token_spans(
+        &self,
+        text: &str,
+    ) -> std::result::Result<Option<Vec<(usize, usize)>>, Self::Error> {
+        match self {
+            Self::Hf(p) => p.get_token_spans(text),
+            Self::Tiktoken(p) => p.get_token_spans(text),
+        }
+    }
+}

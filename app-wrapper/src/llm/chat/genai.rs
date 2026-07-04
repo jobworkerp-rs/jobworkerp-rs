@@ -105,19 +105,14 @@ impl GenaiChatService {
                     if let Some(url) = endpoint_url
                         && !url.is_empty()
                     {
-                        let mut u = url.parse::<url::Url>().map_err(|e| {
-                            genai::resolver::Error::Custom(format!(
-                                "Failed to parse endpoint URL={} : {:#?}",
-                                &url, e
-                            ))
-                        })?;
-                        // Set the path to "/v1/" to match the GenAI API if it's empty
-                        if u.path() == "" || u.path() == "/" {
-                            u.set_path("/v1/");
-                        } else if !u.path().ends_with('/') {
-                            u.set_path(&format!("{}/", u.path()));
-                        }
-                        service_target.endpoint = Endpoint::from_owned(u.to_string());
+                        let normalized = crate::llm::common::normalize_genai_endpoint_url(&url)
+                            .map_err(|e| {
+                                genai::resolver::Error::Custom(format!(
+                                    "Failed to parse endpoint URL={} : {:#?}",
+                                    &url, e
+                                ))
+                            })?;
+                        service_target.endpoint = Endpoint::from_owned(normalized);
                         tracing::debug!(
                             "Genai LLM: resolved service target model: {:?}, endpoint: {:?}",
                             &service_target.model,

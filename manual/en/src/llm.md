@@ -19,6 +19,17 @@ Chat conversation with message history and tool calling support.
 - Tool calling via FunctionSets (see [Tool Calling](#tool-calling) below)
 - Streaming token generation supported (see [Streaming](streaming.md))
 
+### embedding
+
+Text embedding generation (vector representation of text).
+
+- Converts one or more text inputs into embedding vectors for semantic search, RAG, clustering, etc.
+- Long inputs are automatically split into chunks (see [Text Chunking](#text-chunking-embedding)); each chunk produces its own vector tagged with the source input index and character range
+- Batch input supported (multiple texts in one job)
+- Streaming is **not** supported for this method
+
+See [Embedding Usage](#embedding-usage) below for details.
+
 ## Supported LLM Providers
 
 - **Ollama**: Local LLM server with full tool calling support
@@ -96,13 +107,121 @@ Tools are organized by functionality using FunctionSets. Available built-in func
 
 For details on FunctionSet definition, management, and AutoSelection (automatic FunctionSet selection by LLM to reduce context usage), see [Function / FunctionSet](function.md).
 
+## Embedding Usage
+
+The `embedding` method generates embedding vectors. Set `using` to `"embedding"` at job execution time. The runner settings (provider / model) are shared with `completion`/`chat`; use an embedding-capable model.
+
+### Embedding-Capable Models
+
+| Provider | Example model | API key |
+|----------|---------------|---------|
+| Ollama | `nomic-embed-text`, `mxbai-embed-large` | *(none — local)* |
+| OpenAI (GenAI) | `text-embedding-3-small`, `text-embedding-3-large` | `OPENAI_API_KEY` |
+| Cohere (GenAI) | `embed-english-v3.0`, `embed-multilingual-v3.0` | `COHERE_API_KEY` |
+| Gemini (GenAI) | `gemini-embedding-001` | `GEMINI_API_KEY` |
+
+Provider auto-detection and environment-variable setup are the same as for completion/chat (see [GenAI Provider Configuration](#genai-provider-configuration)).
+
+> **Note:** The provider is inferred from the model-name prefix, so use a name the target adapter recognizes. For Gemini embeddings use the `gemini-*` prefix (e.g. `gemini-embedding-001`). A name starting with `text-embedding-` (e.g. Gemini's `text-embedding-004`) is routed to the **OpenAI** adapter — it will use `OPENAI_API_KEY` and fail against Gemini. When needed, force an adapter with a namespace prefix (e.g. `gemini::<model>`).
+
+### Job Arguments (`job.args`)
+
+| Field | Description |
+|-------|-------------|
+| `inputs` | Batch of inputs (at least one). Each input carries `text`. Image/media variants are reserved for future multimodal support and currently return an unsupported error. |
+| `model` | Optional per-job override of the settings model. |
+| `options` | Optional embedding options (see below). |
+| `chunking` | Optional per-job chunking override. When unset, uses the settings-level `embedding_chunking`. |
+
+#### `options`
+
+| Option | Description | Providers |
+|--------|-------------|-----------|
+| `dimensions` | Desired output dimensionality (if the model supports it). | GenAI (OpenAI/Cohere/Gemini), Ollama |
+| `truncate` | How to handle over-length input: `"NONE"` / `"START"` / `"END"`. GenAI (Cohere) forwards it as-is; Ollama maps it to a boolean (`NONE`→false, `START`/`END`→true; Ollama has no START/END distinction). Unset → provider default. | GenAI (Cohere), Ollama |
+| `embedding_type` | Purpose/type: `"search_document"`/`"search_query"` (Cohere) or `"RETRIEVAL_DOCUMENT"`/`"RETRIEVAL_QUERY"` (Gemini). Ignored by Ollama. | GenAI (Cohere/Gemini) |
+| `encoding_format` | Output vector encoding. Only float-family values (`"float"`/`"float32"`) are accepted — vectors are always decoded to `f32`, so non-float encodings (base64/binary/int8/…) are rejected with a warning and the provider default (float) is used. Ignored by Ollama. | GenAI (OpenAI/Cohere) |
+| `user` | End-user identifier for abuse detection / rate management (OpenAI `user`). Ignored by Cohere/Gemini/Ollama. | GenAI (OpenAI) |
+
+### Result (`LLMEmbeddingResult`)
+
+- `embeddings`: one entry per text chunk (or per non-text input), ordered by input index then chunk order. Each entry has:
+  - `vector`: the embedding (`repeated float`)
+  - `input_index`: 0-based index into the request `inputs`
+  - `begin_position` / `end_position`: half-open character range `[begin, end)` (Unicode scalar indices, not byte offsets) of the covered substring within the input text
+  - `content`: the exact substring covered by this chunk
+  - `dimensions`: length of `vector`
+- `usage` (optional): `model`, `prompt_tokens`, `total_tokens`. Ollama reports no token counts (only the model name); GenAI fills token fields when the provider returns usage. Token counts are summed across retry batches.
+
+### Text Chunking (embedding)
+
+Long inputs are split so each chunk stays within the model's context budget. Chunking is configured via `embedding_chunking` in the runner settings (default for all jobs) or `chunking` in `job.args` (per-job override).
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `max_chunk_tokens` | Upper bound on tokens per chunk (must be > 0). | 512 |
+| `min_chunk_tokens` | Lower bound used when merging small adjacent chunks (kept below `max_chunk_tokens`). | 0 |
+| `token_estimation` | How token length is estimated: `CHARACTER_ESTIMATION` (1, ~4 chars/token, no tokenizer), `TIKTOKEN` (2, OpenAI BPE), `HF_TOKENIZER` (3, HuggingFace). Unspecified → character estimation. | character estimation |
+| `tiktoken_encoding` | tiktoken encoding when `token_estimation = TIKTOKEN`: `"cl100k_base"` (text-embedding-3 / GPT-3.5/4) or `"o200k_base"` (GPT-4o). | `cl100k_base` |
+| `tokenizer_hf_repo` | HuggingFace repo id whose `tokenizer.json` is used when `token_estimation = HF_TOKENIZER` (e.g. `"nomic-ai/nomic-embed-text-v1.5"`). Downloaded/cached via hf-hub. Ollama model names are **not** auto-mapped to HF repos — specify the repo explicitly. | — |
+| `tokenizer_file_path` | Absolute path to a local `tokenizer.json` for `HF_TOKENIZER` (offline use). Takes precedence over `tokenizer_hf_repo`. | — |
+
+Notes:
+- **TIKTOKEN** gives exact token counts for OpenAI/GenAI models; char boundaries fall back to string search (character-estimation precision).
+- **HF_TOKENIZER** is intended for Ollama models where the matching HuggingFace tokenizer is known; it produces exact token counts and char spans. Private repos need `HF_TOKEN` in the environment (public repos need no key).
+- If a batch exceeds the model's context length at request time, the runner automatically shrinks `max_chunk_tokens` and re-chunks, then falls back to single-item requests.
+
+### Example (gRPC / jobworkerp-client)
+
+Worker settings (Ollama, embedding model):
+
+```json
+{
+  "ollama": {
+    "base_url": "http://localhost:11434",
+    "model": "nomic-embed-text"
+  },
+  "embedding_chunking": {
+    "max_chunk_tokens": 512,
+    "token_estimation": "HF_TOKENIZER",
+    "tokenizer_hf_repo": "nomic-ai/nomic-embed-text-v1.5"
+  }
+}
+```
+
+Job args (`using = "embedding"`):
+
+```json
+{
+  "inputs": [
+    { "text": "The quick brown fox jumps over the lazy dog." },
+    { "text": "jobworkerp-rs is a scalable job worker system." }
+  ],
+  "options": { "dimensions": 768 }
+}
+```
+
+OpenAI example (worker settings + args):
+
+```json
+{ "genai": { "model": "text-embedding-3-small" } }
+```
+
+```json
+{
+  "inputs": [{ "text": "Semantic search query." }],
+  "options": { "dimensions": 256, "encoding_format": "float", "user": "tenant-42" },
+  "chunking": { "max_chunk_tokens": 256, "token_estimation": "TIKTOKEN", "tiktoken_encoding": "cl100k_base" }
+}
+```
+
 ## Runner Settings
 
 | Field | Description |
 |-------|-------------|
-| `using` | Method to use: `"completion"` or `"chat"`. Specified via `JobRequest.using` at job execution time (not a Runner Settings field) |
-| worker.runner_settings | Model configuration (provider, model name, parameters) |
-| job.args | Prompts (completion) or messages (chat) |
+| `using` | Method to use: `"completion"`, `"chat"`, or `"embedding"`. Specified via `JobRequest.using` at job execution time (not a Runner Settings field) |
+| worker.runner_settings | Model configuration (provider, model name, parameters). For embedding, also `embedding_chunking` |
+| job.args | Prompts (completion), messages (chat), or inputs (embedding) |
 
 ## Related Documentation
 

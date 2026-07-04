@@ -283,11 +283,12 @@ mod test {
             .unwrap();
         assert_eq!(runner.name(), "LLM");
 
-        // Verify method_proto_map has both methods
+        // Verify method_proto_map has all three methods
         let methods = runner.method_proto_map();
         assert!(methods.contains_key("completion"));
         assert!(methods.contains_key("chat"));
-        assert_eq!(methods.len(), 2);
+        assert!(methods.contains_key("embedding"));
+        assert_eq!(methods.len(), 3);
     }
 
     #[tokio::test]

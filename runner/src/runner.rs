@@ -68,6 +68,7 @@ pub mod grpc;
 pub mod k8s_job;
 pub mod llm;
 pub mod llm_chat;
+pub mod llm_embedding;
 pub mod llm_unified;
 pub mod mcp;
 pub mod plugins;

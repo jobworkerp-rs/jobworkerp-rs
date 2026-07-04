@@ -31,10 +31,56 @@ message LLMRunnerSettings {
     optional string base_url = 3;
   }
 
+  // Hierarchical chunking parameters shared by settings default and per-job
+  // override. Defined here (nested) so embedding_args.proto references the
+  // single canonical type as LLMRunnerSettings.ChunkingConfig.
+  message ChunkingConfig {
+    // Upper bound on tokens per chunk. Must be > 0.
+    optional uint32 max_chunk_tokens = 1;
+    // Lower bound used when merging small adjacent chunks. Must be <
+    // max_chunk_tokens.
+    optional uint32 min_chunk_tokens = 2;
+    // Token-length estimation strategy. Default: CHARACTER_ESTIMATION.
+    optional TokenEstimation token_estimation = 3;
+    // HuggingFace repo id whose tokenizer.json is used when token_estimation
+    // is HF_TOKENIZER (e.g. "nomic-ai/nomic-embed-text-v1.5"). Downloaded and
+    // cached via hf-hub. Ollama model names are NOT auto-mapped to HF repos;
+    // the caller specifies the repo explicitly.
+    optional string tokenizer_hf_repo = 4;
+    // Absolute path to a local tokenizer.json for HF_TOKENIZER. Takes
+    // precedence over tokenizer_hf_repo when both are set (offline use).
+    optional string tokenizer_file_path = 5;
+    // tiktoken encoding name used when token_estimation is TIKTOKEN
+    // (e.g. "cl100k_base" for text-embedding-3, "o200k_base" for GPT-4o).
+    // Defaults to "cl100k_base" when unset.
+    optional string tiktoken_encoding = 6;
+  }
+
+  enum TokenEstimation {
+    TOKEN_ESTIMATION_UNSPECIFIED = 0;
+    // ~4 chars/token, no tokenizer required (Phase 1)
+    CHARACTER_ESTIMATION = 1;
+    // OpenAI cl100k_base via tiktoken-rs (Phase 2)
+    TIKTOKEN = 2;
+    // HuggingFace tokenizer (Phase 3, Ollama)
+    HF_TOKENIZER = 3;
+  }
+
+  // Seal the removed `local = 3` tag to prevent wire-compat issues from tag
+  // reuse (an old payload's bytes written as `local` must not be misdecoded).
+  reserved 3;
+  reserved "local";
+
   // runner settings
   oneof settings {
     OllamaRunnerSettings ollama = 1;
     GenaiRunnerSettings genai = 2;
     // local = 3 was removed (now provided via plugin_runner_mistral)
   }
+
+  // Default chunking config for the `embedding` method. Per-job override is
+  // possible via LLMEmbeddingArgs.chunking. When unset, defaults are derived
+  // from the model's context length hint or a safe default. Uses a new unused
+  // tag (10) because tag 3 is reserved above.
+  optional ChunkingConfig embedding_chunking = 10;
 }

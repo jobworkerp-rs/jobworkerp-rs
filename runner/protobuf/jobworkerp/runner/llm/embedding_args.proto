@@ -1,0 +1,76 @@
+syntax = "proto3";
+package jobworkerp.runner.llm;
+
+import "jobworkerp/runner/llm/runner.proto";  // LLMRunnerSettings.ChunkingConfig
+
+// LLMEmbeddingArgs must be the first message so descriptor parsing treats it as
+// the primary message (see proto/src/lib.rs parse_job_args_schema_descriptor).
+message LLMEmbeddingArgs {
+  message EmbeddingOptions {
+    // Desired dimensionality (if supported by provider/model).
+    optional uint32 dimensions = 1;
+    // Truncation strategy. Provider-neutral string; the runner maps it per
+    // provider. Accepts "NONE" / "START" / "END".
+    //   - GenAI (Cohere): forwarded as-is to EmbedOptions.truncate.
+    //   - Ollama: mapped to boolean `truncate` (NONE => false, START/END =>
+    //     true). Ollama has no START/END distinction; a warning is logged if
+    //     START is given.
+    // Unset => provider default.
+    optional string truncate = 2;
+    // Purpose/type: "search_document"/"search_query" (Cohere) or
+    // "RETRIEVAL_DOCUMENT"/"RETRIEVAL_QUERY" (Gemini). Ignored by Ollama.
+    optional string embedding_type = 3;
+    // Output encoding format for the embedding vectors.
+    //   - GenAI (OpenAI: encoding_format, Cohere: embedding_types).
+    //   - Ollama: ignored.
+    // Only float-family values ("float"/"float32") are accepted; the vectors
+    // are always decoded to f32, so non-float encodings (base64/binary/int8/
+    // uint8/ubinary) are rejected with a warning and the provider default is
+    // used instead.
+    // Unset => provider default (float).
+    optional string encoding_format = 4;
+    // End-user identifier passed to providers that support abuse detection /
+    // rate management (OpenAI `user`). Ignored by Cohere/Gemini/Ollama.
+    // Unset => not sent.
+    optional string user = 5;
+  }
+
+  // Multimodal-ready content. Only `text` is currently supported; other
+  // variants return an unsupported error until provider clients gain
+  // multimodal embedding support.
+  message EmbeddingContent {
+    message ImageSource {
+      string url = 1;
+      string base64 = 2;
+    }
+    message Image {
+      string content_type = 1;
+      ImageSource source = 2;
+    }
+    message MediaSource {
+      string url = 1;
+      string base64 = 2;
+    }
+    // audio/video (future)
+    message Media {
+      string content_type = 1;
+      MediaSource source = 2;
+    }
+
+    oneof content {
+      string text = 1;
+      Image image = 2;
+      Media media = 3;
+    }
+  }
+
+  // override runner settings default
+  optional string model = 1;
+  // batch input, at least one required
+  repeated EmbeddingContent inputs = 2;
+  optional EmbeddingOptions options = 3;
+  // Per-job chunking override. When unset, uses settings.embedding_chunking.
+  // Only applies to text content; non-text content is embedded as a single
+  // unit.
+  optional LLMRunnerSettings.ChunkingConfig chunking = 4;
+}

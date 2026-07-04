@@ -21,6 +21,17 @@ LLMランナーはマルチメソッドランナーとして、jobworkerp-rsを�
 - FunctionSetを使用したツール呼び出し（後述の[ツール呼び出し](#ツール呼び出し)を参照）
 - ストリーミングトークン生成をサポート（[ストリーミング](streaming.md)を参照）
 
+### embedding
+
+テキスト埋め込み生成（テキストのベクトル表現）。
+
+- 1つ以上のテキスト入力を埋め込みベクトルに変換（セマンティック検索、RAG、クラスタリング等に利用）
+- 長い入力は自動的にチャンク分割されます（後述の[テキストチャンキング](#テキストチャンキングembedding)を参照）。各チャンクは、元の入力インデックスと文字範囲が付与された個別のベクトルを生成します
+- バッチ入力対応（1ジョブで複数テキスト）
+- このメソッドはストリーミング**非対応**
+
+詳細は後述の[埋め込みの利用方法](#埋め込みの利用方法)を参照してください。
+
 ## 対応するLLMプロバイダー
 
 - **Ollama**: ローカルLLMサーバー、ツール呼び出し完全対応
@@ -98,13 +109,121 @@ chatメソッドでは、FunctionSetを指定することでLLMにツールを�
 
 FunctionSetの定義・管理、およびAutoSelection（LLMによるFunctionSetの自動選択でコンテキスト使用量を削減）の詳細は、[Function / FunctionSet](function.md)を参照してください。
 
+## 埋め込みの利用方法
+
+`embedding`メソッドは埋め込みベクトルを生成します。ジョブ実行時に`using`を`"embedding"`に設定します。ランナー設定（プロバイダー／モデル）は`completion`/`chat`と共通です。埋め込み対応モデルを指定してください。
+
+### 埋め込み対応モデル
+
+| プロバイダー | モデル例 | APIキー |
+|------------|---------|---------|
+| Ollama | `nomic-embed-text`, `mxbai-embed-large` | *(不要 — ローカル)* |
+| OpenAI (GenAI) | `text-embedding-3-small`, `text-embedding-3-large` | `OPENAI_API_KEY` |
+| Cohere (GenAI) | `embed-english-v3.0`, `embed-multilingual-v3.0` | `COHERE_API_KEY` |
+| Gemini (GenAI) | `gemini-embedding-001` | `GEMINI_API_KEY` |
+
+プロバイダー自動検出と環境変数の設定は completion/chat と共通です（[GenAIプロバイダーの設定方法](#genaiプロバイダーの設定方法)を参照）。
+
+> **注意:** プロバイダーはモデル名のプレフィックスから推測されるため、対象アダプターが認識できる名前を指定してください。Gemini の埋め込みには `gemini-*` プレフィックス（例: `gemini-embedding-001`）を使用します。`text-embedding-` で始まる名前（例: Gemini の `text-embedding-004`）は **OpenAI** アダプターにルーティングされ、`OPENAI_API_KEY` を使って Gemini に対しては失敗します。必要な場合は名前空間プレフィックス（例: `gemini::<model>`）でアダプターを強制してください。
+
+### ジョブ引数（`job.args`）
+
+| フィールド | 説明 |
+|-----------|------|
+| `inputs` | 入力バッチ（最低1つ）。各入力は`text`を持ちます。image/media バリアントは将来のマルチモーダル対応用に予約されており、現状は未対応エラーを返します。 |
+| `model` | 設定モデルのジョブ単位オーバーライド（任意）。 |
+| `options` | 埋め込みオプション（任意、下記参照）。 |
+| `chunking` | チャンキングのジョブ単位オーバーライド（任意）。未設定時は設定レベルの`embedding_chunking`を使用。 |
+
+#### `options`
+
+| オプション | 説明 | プロバイダー |
+|-----------|------|------------|
+| `dimensions` | 出力次元数（モデルが対応する場合）。 | GenAI (OpenAI/Cohere/Gemini), Ollama |
+| `truncate` | 長すぎる入力の扱い: `"NONE"` / `"START"` / `"END"`。GenAI (Cohere) はそのまま転送。Ollama はブール値にマッピング（`NONE`→false, `START`/`END`→true。Ollama には START/END の区別なし）。未設定 → プロバイダー既定。 | GenAI (Cohere), Ollama |
+| `embedding_type` | 用途/種別: `"search_document"`/`"search_query"` (Cohere) または `"RETRIEVAL_DOCUMENT"`/`"RETRIEVAL_QUERY"` (Gemini)。Ollama は無視。 | GenAI (Cohere/Gemini) |
+| `encoding_format` | 出力ベクトルのエンコーディング。float 系の値（`"float"`/`"float32"`）のみ受け付けます — ベクトルは常に`f32`にデコードされるため、非 float（base64/binary/int8/…）は警告を出して拒否され、プロバイダー既定（float）が使われます。Ollama は無視。 | GenAI (OpenAI/Cohere) |
+| `user` | 悪用検知・レート管理用のエンドユーザー識別子（OpenAI `user`）。Cohere/Gemini/Ollama は無視。 | GenAI (OpenAI) |
+
+### 結果（`LLMEmbeddingResult`）
+
+- `embeddings`: テキストチャンク（または非テキスト入力）ごとに1エントリ。入力インデックス順→チャンク順に並びます。各エントリは以下を持ちます:
+  - `vector`: 埋め込みベクトル（`repeated float`）
+  - `input_index`: リクエスト`inputs`への0起点インデックス
+  - `begin_position` / `end_position`: 入力テキスト内の対象部分文字列の半開区間の文字範囲`[begin, end)`（バイトオフセットではなく Unicode スカラーインデックス）
+  - `content`: このチャンクが対象とする部分文字列そのもの
+  - `dimensions`: `vector`の長さ
+- `usage`（任意）: `model`, `prompt_tokens`, `total_tokens`。Ollama はトークン数を返しません（モデル名のみ）。GenAI はプロバイダーが usage を返す場合にトークン欄を埋めます。トークン数はリトライバッチ間で合算されます。
+
+### テキストチャンキング（embedding）
+
+長い入力は各チャンクがモデルのコンテキスト予算内に収まるよう分割されます。チャンキングはランナー設定の`embedding_chunking`（全ジョブの既定）または`job.args`の`chunking`（ジョブ単位オーバーライド）で設定します。
+
+| フィールド | 説明 | 既定値 |
+|-----------|------|-------|
+| `max_chunk_tokens` | チャンクあたりのトークン数上限（> 0 必須）。 | 512 |
+| `min_chunk_tokens` | 小さな隣接チャンクをマージする際の下限（`max_chunk_tokens`未満に保たれる）。 | 0 |
+| `token_estimation` | トークン長の推定方法: `CHARACTER_ESTIMATION`（1、約4文字/トークン、トークナイザー不要）、`TIKTOKEN`（2、OpenAI BPE）、`HF_TOKENIZER`（3、HuggingFace）。未指定 → 文字数推定。 | 文字数推定 |
+| `tiktoken_encoding` | `token_estimation = TIKTOKEN`時の tiktoken エンコーディング: `"cl100k_base"`（text-embedding-3 / GPT-3.5/4）または`"o200k_base"`（GPT-4o）。 | `cl100k_base` |
+| `tokenizer_hf_repo` | `token_estimation = HF_TOKENIZER`時に`tokenizer.json`を取得する HuggingFace repo id（例: `"nomic-ai/nomic-embed-text-v1.5"`）。hf-hub 経由でダウンロード/キャッシュ。Ollama モデル名は HF repo に**自動マッピングされません** — repo を明示指定してください。 | — |
+| `tokenizer_file_path` | `HF_TOKENIZER`用のローカル`tokenizer.json`の絶対パス（オフライン用）。`tokenizer_hf_repo`より優先。 | — |
+
+補足:
+- **TIKTOKEN** は OpenAI/GenAI モデル向けに正確なトークン数を提供します。文字境界は文字列検索にフォールバックします（文字数推定と同等の精度）。
+- **HF_TOKENIZER** は対応する HuggingFace トークナイザーが判明している Ollama モデル向けです。正確なトークン数と文字範囲を生成します。private repo は環境に`HF_TOKEN`が必要です（public repo はキー不要）。
+- リクエスト時にバッチがモデルのコンテキスト長を超えた場合、ランナーは自動的に`max_chunk_tokens`を縮小して再チャンクし、最終的に単一アイテムずつのリクエストにフォールバックします。
+
+### 使用例（gRPC / jobworkerp-client）
+
+ワーカー設定（Ollama、埋め込みモデル）:
+
+```json
+{
+  "ollama": {
+    "base_url": "http://localhost:11434",
+    "model": "nomic-embed-text"
+  },
+  "embedding_chunking": {
+    "max_chunk_tokens": 512,
+    "token_estimation": "HF_TOKENIZER",
+    "tokenizer_hf_repo": "nomic-ai/nomic-embed-text-v1.5"
+  }
+}
+```
+
+ジョブ引数（`using = "embedding"`）:
+
+```json
+{
+  "inputs": [
+    { "text": "The quick brown fox jumps over the lazy dog." },
+    { "text": "jobworkerp-rs is a scalable job worker system." }
+  ],
+  "options": { "dimensions": 768 }
+}
+```
+
+OpenAI の例（ワーカー設定 + 引数）:
+
+```json
+{ "genai": { "model": "text-embedding-3-small" } }
+```
+
+```json
+{
+  "inputs": [{ "text": "Semantic search query." }],
+  "options": { "dimensions": 256, "encoding_format": "float", "user": "tenant-42" },
+  "chunking": { "max_chunk_tokens": 256, "token_estimation": "TIKTOKEN", "tiktoken_encoding": "cl100k_base" }
+}
+```
+
 ## ランナー設定
 
 | フィールド | 説明 |
 |-----------|------|
-| `using` | 使用するメソッド: `"completion"` または `"chat"`。ジョブ実行時に`JobRequest.using`で指定（Runner Settingsのフィールドではない） |
-| worker.runner_settings | モデル設定（プロバイダー、モデル名、パラメータ） |
-| job.args | プロンプト（completion）またはメッセージ（chat） |
+| `using` | 使用するメソッド: `"completion"`、`"chat"`、または`"embedding"`。ジョブ実行時に`JobRequest.using`で指定（Runner Settingsのフィールドではない） |
+| worker.runner_settings | モデル設定（プロバイダー、モデル名、パラメータ）。embedding では`embedding_chunking`も指定 |
+| job.args | プロンプト（completion）、メッセージ（chat）、または入力（embedding） |
 
 ## 関連ドキュメント
 
