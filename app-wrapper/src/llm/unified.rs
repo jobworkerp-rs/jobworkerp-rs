@@ -22,6 +22,47 @@ use proto::jobworkerp::data::{JobData, JobId, JobResult, ResultOutputItem};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use jobworkerp_runner::jobworkerp::runner::llm::LlmRunnerSettings;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings;
+use ollama_rs::Ollama;
+use prost::Message;
+use std::io::Cursor;
+
+const OLLAMA_DEFAULT_URL: &str = "http://localhost:11434";
+
+/// Pull the Ollama model once for the whole unified runner, then return
+/// settings bytes with `pull_model=false` so the per-method runners initialize
+/// their clients without re-pulling. Non-Ollama (GenAI) settings and
+/// already-disabled pulls pass through unchanged.
+async fn pull_ollama_model_once(settings: Vec<u8>) -> Result<Vec<u8>> {
+    let mut decoded = LlmRunnerSettings::decode(&mut Cursor::new(&settings))
+        .map_err(|e| anyhow!("decode error: {e}"))?;
+
+    let Some(Settings::Ollama(ollama)) = decoded.settings.as_mut() else {
+        // GenAI or unset: nothing to pull; leave bytes untouched.
+        return Ok(settings);
+    };
+    // Respect an explicit opt-out; default (None) pulls, matching prior behavior.
+    if ollama.pull_model == Some(false) {
+        return Ok(settings);
+    }
+
+    let base_url = ollama
+        .base_url
+        .clone()
+        .unwrap_or_else(|| OLLAMA_DEFAULT_URL.to_string());
+    let client = Ollama::try_new(base_url)?;
+    client
+        .pull_model(ollama.model.clone(), false)
+        .await
+        .map_err(|e| anyhow!("failed to pull model '{}': {e}", ollama.model))?;
+    tracing::info!("LLM(unified) pulled ollama model '{}' once", ollama.model);
+
+    // Disable per-runner pulls now that the model is present server-side.
+    ollama.pull_model = Some(false);
+    Ok(decoded.encode_to_vec())
+}
+
 /// Unified LLM Runner implementation that delegates to completion or chat runners
 pub struct LLMUnifiedRunnerImpl {
     completion_runner: LLMCompletionRunnerImpl,
@@ -106,8 +147,14 @@ impl RunnerSpec for LLMUnifiedRunnerImpl {
 #[async_trait]
 impl RunnerTrait for LLMUnifiedRunnerImpl {
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
-        // Load settings into all three runners (they share the same settings
-        // schema).
+        // The three method runners share one settings schema and one model.
+        // Each Ollama-backed runner used to pull the model in its own `load`,
+        // so loading the unified runner pulled the same model up to twice
+        // (completion + embedding). Pull once here as the shared load-time
+        // pre-download, then hand each runner settings with pull_model=false so
+        // none of them re-pull while still initializing their clients.
+        let settings = pull_ollama_model_once(settings).await?;
+
         self.completion_runner.load(settings.clone()).await?;
         self.chat_runner.load(settings.clone()).await?;
         self.embedding_runner.load(settings).await?;
@@ -203,6 +250,44 @@ mod tests {
         assert!(LLMUnifiedRunnerSpecImpl::resolve_method(Some("embedding")).is_ok());
         assert!(LLMUnifiedRunnerSpecImpl::resolve_method(None).is_err());
         assert!(LLMUnifiedRunnerSpecImpl::resolve_method(Some("unknown")).is_err());
+    }
+
+    use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::{
+        GenaiRunnerSettings, OllamaRunnerSettings,
+    };
+
+    #[tokio::test]
+    async fn test_pull_once_passthrough_for_genai() {
+        // GenAI settings have no model to pull; bytes must pass through
+        // unchanged (and no network access is attempted).
+        let settings = LlmRunnerSettings {
+            settings: Some(Settings::Genai(GenaiRunnerSettings {
+                model: "gpt-4o-mini".to_string(),
+                ..Default::default()
+            })),
+            embedding_chunking: None,
+        }
+        .encode_to_vec();
+        let out = pull_ollama_model_once(settings.clone()).await.unwrap();
+        assert_eq!(out, settings, "GenAI settings must be untouched");
+    }
+
+    #[tokio::test]
+    async fn test_pull_once_passthrough_when_pull_disabled() {
+        // pull_model=false must skip the pull entirely (no network) and leave
+        // the bytes unchanged.
+        let settings = LlmRunnerSettings {
+            settings: Some(Settings::Ollama(OllamaRunnerSettings {
+                model: "nomic-embed-text".to_string(),
+                base_url: Some("http://127.0.0.1:1/".to_string()),
+                system_prompt: None,
+                pull_model: Some(false),
+            })),
+            embedding_chunking: None,
+        }
+        .encode_to_vec();
+        let out = pull_ollama_model_once(settings.clone()).await.unwrap();
+        assert_eq!(out, settings, "pull_model=false must be untouched");
     }
 
     #[test]
