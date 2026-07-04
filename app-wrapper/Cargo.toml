@@ -82,6 +82,9 @@ strum = { workspace = true }
 strum_macros = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+# OpenAI BPE tokenizer for exact token counting in embedding chunking (Phase 2).
+# cl100k_base / o200k_base for text-embedding-3 / GPT-4o family models.
+tiktoken-rs = "0.12"
 # HF tokenizer for exact token counting in embedding chunking (Phase 3).
 tokenizers = "0.22"
 tokio = { workspace = true }

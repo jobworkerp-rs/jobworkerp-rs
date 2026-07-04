@@ -46,6 +46,7 @@ use core::{build_chunk_refs, build_result, embed_refs};
 use genai::GenaiEmbeddingService;
 use ollama::OllamaEmbeddingService;
 use token_provider::hf::HfTokenProvider;
+use token_provider::tiktoken::TiktokenProvider;
 use tokio::sync::Mutex as AsyncMutex;
 
 /// Which token estimation the caller asked for, with any tokenizer source, but
@@ -59,6 +60,11 @@ enum StrategyKind {
     Hf {
         repo: Option<String>,
         file: Option<String>,
+    },
+    /// tiktoken OpenAI BPE; `encoding` is a tiktoken encoding name
+    /// (e.g. "cl100k_base", "o200k_base").
+    Tiktoken {
+        encoding: String,
     },
 }
 
@@ -97,9 +103,14 @@ fn resolve_chunking_spec(proto: Option<&ChunkingConfig>) -> Result<ChunkingSpec>
     let strategy = match c.token_estimation.unwrap_or(0) {
         0 | 1 => StrategyKind::Character,
         2 => {
-            return Err(anyhow!(
-                "TIKTOKEN token estimation is not yet supported (Phase 2)"
-            ));
+            // tiktoken: default to cl100k_base (text-embedding-3 / GPT-3.5/4)
+            // when no encoding is given.
+            let encoding = c
+                .tiktoken_encoding
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| token_provider::tiktoken::DEFAULT_ENCODING.to_string());
+            StrategyKind::Tiktoken { encoding }
         }
         3 => {
             let repo = c.tokenizer_hf_repo.clone().filter(|s| !s.is_empty());
@@ -138,6 +149,9 @@ pub struct LLMEmbeddingRunnerImpl {
     /// tokenizer is fetched/parsed at most once across jobs and per-job
     /// chunking overrides that reuse the same source.
     tokenizer_cache: Arc<AsyncMutex<HashMap<String, Arc<HfTokenProvider>>>>,
+    /// Loaded tiktoken providers keyed by encoding name so a provider is
+    /// constructed at most once per encoding across jobs.
+    tiktoken_cache: Arc<AsyncMutex<HashMap<String, Arc<TiktokenProvider>>>>,
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
@@ -149,6 +163,7 @@ impl LLMEmbeddingRunnerImpl {
             default_model: None,
             chunking_default: ResolvedChunkingConfig::default(),
             tokenizer_cache: Arc::new(AsyncMutex::new(HashMap::new())),
+            tiktoken_cache: Arc::new(AsyncMutex::new(HashMap::new())),
             cancel_helper: None,
         }
     }
@@ -163,6 +178,7 @@ impl LLMEmbeddingRunnerImpl {
             default_model: None,
             chunking_default: ResolvedChunkingConfig::default(),
             tokenizer_cache: Arc::new(AsyncMutex::new(HashMap::new())),
+            tiktoken_cache: Arc::new(AsyncMutex::new(HashMap::new())),
             cancel_helper: Some(cancel_helper),
         }
     }
@@ -186,6 +202,10 @@ impl LLMEmbeddingRunnerImpl {
                     .load_hf_provider(repo.as_deref(), file.as_deref())
                     .await?;
                 TokenEstimationStrategy::HfTokenizer(provider)
+            }
+            StrategyKind::Tiktoken { encoding } => {
+                let provider = self.load_tiktoken_provider(encoding).await?;
+                TokenEstimationStrategy::Tiktoken(provider)
             }
         };
         Ok(ResolvedChunkingConfig {
@@ -220,6 +240,18 @@ impl LLMEmbeddingRunnerImpl {
         };
         let provider = Arc::new(provider);
         cache.insert(key, provider.clone());
+        Ok(provider)
+    }
+
+    /// Load a tiktoken provider for `encoding`, caching by encoding name so the
+    /// provider is constructed at most once per encoding.
+    async fn load_tiktoken_provider(&self, encoding: &str) -> Result<Arc<TiktokenProvider>> {
+        let mut cache = self.tiktoken_cache.lock().await;
+        if let Some(p) = cache.get(encoding) {
+            return Ok(p.clone());
+        }
+        let provider = Arc::new(TiktokenProvider::new(encoding)?);
+        cache.insert(encoding.to_string(), provider.clone());
         Ok(provider)
     }
 
@@ -690,13 +722,47 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_chunking_spec_tiktoken_still_unsupported() {
-        // Phase 2 not implemented yet: TIKTOKEN must still error.
+    fn test_resolve_chunking_spec_tiktoken_defaults_and_explicit_encoding() {
+        // Phase 2: TIKTOKEN with no encoding → defaults to cl100k_base.
         let tiktoken = ChunkingConfig {
             token_estimation: Some(2),
             ..Default::default()
         };
-        assert!(resolve_chunking_spec(Some(&tiktoken)).is_err());
+        let spec = resolve_chunking_spec(Some(&tiktoken)).unwrap();
+        assert_eq!(
+            spec.strategy,
+            StrategyKind::Tiktoken {
+                encoding: "cl100k_base".to_string()
+            }
+        );
+
+        // Explicit encoding is carried through (no provider load here).
+        let o200k = ChunkingConfig {
+            token_estimation: Some(2),
+            tiktoken_encoding: Some("o200k_base".to_string()),
+            ..Default::default()
+        };
+        let spec = resolve_chunking_spec(Some(&o200k)).unwrap();
+        assert_eq!(
+            spec.strategy,
+            StrategyKind::Tiktoken {
+                encoding: "o200k_base".to_string()
+            }
+        );
+
+        // Empty string is treated as unset → default encoding.
+        let empty = ChunkingConfig {
+            token_estimation: Some(2),
+            tiktoken_encoding: Some(String::new()),
+            ..Default::default()
+        };
+        let spec = resolve_chunking_spec(Some(&empty)).unwrap();
+        assert_eq!(
+            spec.strategy,
+            StrategyKind::Tiktoken {
+                encoding: "cl100k_base".to_string()
+            }
+        );
     }
 
     #[test]

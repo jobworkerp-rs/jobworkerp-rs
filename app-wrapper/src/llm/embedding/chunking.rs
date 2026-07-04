@@ -36,15 +36,17 @@ pub struct ResolvedChunkingConfig {
 
 /// Token-length estimation strategy.
 ///
-/// `CharacterEstimation` needs no tokenizer (Phase 1). `HfTokenizer` carries a
-/// loaded provider so chunking can measure exact token counts (Phase 3). No
-/// `Copy`/`PartialEq` because it holds an `Arc<dyn tokenizer>`.
+/// `CharacterEstimation` needs no tokenizer (Phase 1). `HfTokenizer`/`Tiktoken`
+/// carry a loaded provider so chunking can measure exact token counts (Phase
+/// 3 / Phase 2). No `Copy`/`PartialEq` because they hold an `Arc<...tokenizer>`.
 #[derive(Debug, Clone)]
 pub enum TokenEstimationStrategy {
     /// ~4 chars/token, no tokenizer required (Phase 1).
     CharacterEstimation,
     /// HuggingFace tokenizer with exact token counts (Phase 3).
     HfTokenizer(std::sync::Arc<super::token_provider::hf::HfTokenProvider>),
+    /// tiktoken OpenAI BPE with exact token counts (Phase 2).
+    Tiktoken(std::sync::Arc<super::token_provider::tiktoken::TiktokenProvider>),
 }
 
 impl Default for ResolvedChunkingConfig {
@@ -156,11 +158,24 @@ pub fn chunk_text(text: &str, config: &ResolvedChunkingConfig) -> Result<Vec<Chu
     };
 
     // Dispatch on the estimation strategy. CharacterEstimation uses the
-    // tokenizer-free fallback (Phase 1). HfTokenizer measures exact token
-    // counts via the loaded provider (Phase 3); its fast-path check must use
-    // the provider too, since the ~4 chars/token heuristic would misjudge.
-    let raw_chunks = match &config.token_estimation {
-        TokenEstimationStrategy::CharacterEstimation => {
+    // tokenizer-free fallback (Phase 1). HfTokenizer/Tiktoken measure exact
+    // token counts via the loaded provider (Phase 3 / Phase 2); their fast-path
+    // check must use the provider too, since the ~4 chars/token heuristic would
+    // misjudge. Both tokenizer strategies share the same provider-driven path,
+    // differing only in which unified provider they wrap.
+    use super::token_provider::EmbeddingTokenProvider;
+    let unified_provider = match &config.token_estimation {
+        TokenEstimationStrategy::CharacterEstimation => None,
+        TokenEstimationStrategy::HfTokenizer(p) => {
+            Some(EmbeddingTokenProvider::Hf(std::sync::Arc::clone(p)))
+        }
+        TokenEstimationStrategy::Tiktoken(p) => {
+            Some(EmbeddingTokenProvider::Tiktoken(std::sync::Arc::clone(p)))
+        }
+    };
+
+    let raw_chunks = match unified_provider {
+        None => {
             if estimate_tokens(total_chars) <= max {
                 return Ok(vec![whole_text_chunk(text, total_chars)]);
             }
@@ -173,18 +188,16 @@ pub fn chunk_text(text: &str, config: &ResolvedChunkingConfig) -> Result<Vec<Chu
                 .chunk_efficiently(text)
                 .map_err(|e| anyhow!("chunking failed: {e}"))?
         }
-        TokenEstimationStrategy::HfTokenizer(provider) => {
-            let unified =
-                super::token_provider::EmbeddingTokenProvider::Hf(std::sync::Arc::clone(provider));
+        Some(provider) => {
             // Exact fast-path check using real token counts.
-            let count = TokenProvider::estimate_token_count(&unified, text)
+            let count = TokenProvider::estimate_token_count(&provider, text)
                 .map_err(|e| anyhow!("token count failed: {e}"))?;
             if count <= max {
                 return Ok(vec![whole_text_chunk(text, total_chars)]);
             }
             let mut chunker = HierarchicalChunker::new(
                 hc_config,
-                unified,
+                provider,
                 Some(FallbackStrategy::CharacterEstimation),
             )
             .map_err(|e| anyhow!("chunker init failed: {e}"))?;
@@ -364,6 +377,63 @@ mod tests {
             text.push_str("これは テスト です 日本語 埋め込み ");
         }
         let chunks = chunk_text(&text, &hf_cfg(8)).unwrap();
+        assert!(chunks.len() > 1);
+        let all_chars: Vec<char> = text.chars().collect();
+        for c in &chunks {
+            assert!(c.char_end <= all_chars.len());
+            let expected: String = all_chars[c.char_start..c.char_end].iter().collect();
+            assert_eq!(c.content, expected);
+        }
+    }
+
+    // --- tiktoken (Phase 2) path -----------------------------------------
+
+    /// A config driving the tiktoken (cl100k_base) chunk_text path. tiktoken
+    /// needs no fixture (encoding tables ship with the crate).
+    fn tiktoken_cfg(max: u32) -> ResolvedChunkingConfig {
+        let provider =
+            super::super::token_provider::tiktoken::TiktokenProvider::new("cl100k_base").unwrap();
+        ResolvedChunkingConfig {
+            max_chunk_tokens: max,
+            min_chunk_tokens: 0,
+            token_estimation: TokenEstimationStrategy::Tiktoken(std::sync::Arc::new(provider)),
+        }
+    }
+
+    #[test]
+    fn test_tiktoken_short_text_single_chunk() {
+        // "hello world" = 2 tokens under cl100k_base; max 512 → single chunk.
+        let chunks = chunk_text("hello world", &tiktoken_cfg(512)).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].content, "hello world");
+    }
+
+    #[test]
+    fn test_tiktoken_long_text_multiple_chunks_content_contract() {
+        // tiktoken returns no char spans (get_token_spans == Ok(None)), so the
+        // chunker falls back to string search for char boundaries. The content
+        // contract (content == char slice) must still hold.
+        let mut text = String::new();
+        for i in 0..200 {
+            text.push_str(&format!("This is sentence number {i}. "));
+        }
+        let chunks = chunk_text(&text, &tiktoken_cfg(8)).unwrap();
+        assert!(chunks.len() > 1, "expected multiple chunks");
+        let all_chars: Vec<char> = text.chars().collect();
+        for c in &chunks {
+            let expected: String = all_chars[c.char_start..c.char_end].iter().collect();
+            assert_eq!(c.content, expected, "content must match char slice");
+            assert!(c.char_start < c.char_end);
+        }
+    }
+
+    #[test]
+    fn test_tiktoken_japanese_not_corrupted() {
+        let mut text = String::new();
+        for _ in 0..100 {
+            text.push_str("これはテスト文章です。日本語の埋め込みを確認します。");
+        }
+        let chunks = chunk_text(&text, &tiktoken_cfg(8)).unwrap();
         assert!(chunks.len() > 1);
         let all_chars: Vec<char> = text.chars().collect();
         for c in &chunks {

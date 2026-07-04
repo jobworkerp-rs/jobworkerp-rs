@@ -6,7 +6,8 @@
 //!
 //! - [`hf`]: HuggingFace tokenizer (`tokenizers` + `hf-hub`), for Ollama models
 //!   (Phase 3).
-//! - `tiktoken`: OpenAI `cl100k_base`/`o200k_base` (Phase 2, added later).
+//! - [`tiktoken`]: OpenAI `cl100k_base`/`o200k_base` (Phase 2), for
+//!   text-embedding-3 / GPT-4o family models on GenAI/OpenAI backends.
 //!
 //! [`EmbeddingTokenProvider`] is the single unified provider the chunker is
 //! parameterized over: `TokenProvider` has an associated `Error` type and so
@@ -14,6 +15,7 @@
 //! this one enum that implements `TokenProvider` once.
 
 pub mod hf;
+pub mod tiktoken;
 
 /// Error type for all embedding token providers.
 ///
@@ -29,6 +31,7 @@ use std::sync::Arc;
 
 use command_utils::text::chunking::TokenProvider;
 use hf::HfTokenProvider;
+use tiktoken::TiktokenProvider;
 
 /// Unified token provider the hierarchical chunker is parameterized over.
 ///
@@ -40,7 +43,8 @@ use hf::HfTokenProvider;
 pub enum EmbeddingTokenProvider {
     /// HuggingFace tokenizer (Ollama models, Phase 3).
     Hf(Arc<HfTokenProvider>),
-    // Tiktoken(Arc<tiktoken::TiktokenProvider>) is added in Phase 2.
+    /// tiktoken OpenAI BPE (text-embedding-3 / GPT-4o family, Phase 2).
+    Tiktoken(Arc<TiktokenProvider>),
 }
 
 impl TokenProvider for EmbeddingTokenProvider {
@@ -49,12 +53,14 @@ impl TokenProvider for EmbeddingTokenProvider {
     fn tokenize(&self, text: &str) -> std::result::Result<Vec<u32>, Self::Error> {
         match self {
             Self::Hf(p) => p.tokenize(text),
+            Self::Tiktoken(p) => p.tokenize(text),
         }
     }
 
     fn estimate_token_count(&self, text: &str) -> std::result::Result<usize, Self::Error> {
         match self {
             Self::Hf(p) => p.estimate_token_count(text),
+            Self::Tiktoken(p) => p.estimate_token_count(text),
         }
     }
 
@@ -65,6 +71,7 @@ impl TokenProvider for EmbeddingTokenProvider {
     ) -> std::result::Result<Option<usize>, Self::Error> {
         match self {
             Self::Hf(p) => p.token_to_char(text, token_pos),
+            Self::Tiktoken(p) => p.token_to_char(text, token_pos),
         }
     }
 
@@ -75,6 +82,7 @@ impl TokenProvider for EmbeddingTokenProvider {
     ) -> std::result::Result<Option<usize>, Self::Error> {
         match self {
             Self::Hf(p) => p.char_to_token(text, char_pos),
+            Self::Tiktoken(p) => p.char_to_token(text, char_pos),
         }
     }
 
@@ -84,6 +92,7 @@ impl TokenProvider for EmbeddingTokenProvider {
     ) -> std::result::Result<Option<Vec<(usize, usize)>>, Self::Error> {
         match self {
             Self::Hf(p) => p.get_token_spans(text),
+            Self::Tiktoken(p) => p.get_token_spans(text),
         }
     }
 }

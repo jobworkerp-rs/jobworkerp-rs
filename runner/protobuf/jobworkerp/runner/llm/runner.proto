@@ -50,6 +50,10 @@ message LLMRunnerSettings {
     // Absolute path to a local tokenizer.json for HF_TOKENIZER. Takes
     // precedence over tokenizer_hf_repo when both are set (offline use).
     optional string tokenizer_file_path = 5;
+    // tiktoken encoding name used when token_estimation is TIKTOKEN
+    // (e.g. "cl100k_base" for text-embedding-3, "o200k_base" for GPT-4o).
+    // Defaults to "cl100k_base" when unset.
+    optional string tiktoken_encoding = 6;
   }
 
   enum TokenEstimation {

@@ -226,4 +226,17 @@ mod tests {
             "settings_schema must include tokenizer_file_path:\n{schema}"
         );
     }
+
+    #[test]
+    fn test_settings_schema_contains_tiktoken_encoding_field() {
+        // Phase 2: the tiktoken encoding selector added to ChunkingConfig must
+        // surface in the generated settings schema so a client configuring
+        // TIKTOKEN estimation can discover it.
+        let spec = LLMEmbeddingRunnerSpecImpl::new();
+        let schema = RunnerSpec::settings_schema(&spec);
+        assert!(
+            schema.contains("tiktoken_encoding") || schema.contains("tiktokenEncoding"),
+            "settings_schema must include tiktoken_encoding:\n{schema}"
+        );
+    }
 }
