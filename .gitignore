@@ -362,6 +362,7 @@ mcp-settings.toml
 *.sqlite3
 
 .claude/
+.serena/
 
 /agent-app-public/
 /agent-app/
@@ -369,3 +370,6 @@ mcp-settings.toml
 /conductor/
 /memories/
 /workflows
+/memory-store
+/conductor-public
+
