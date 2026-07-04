@@ -975,6 +975,7 @@ dependencies = [
  "jaq-core",
  "jaq-json",
  "jaq-std",
+ "jiff",
  "liquid-core",
  "liquid-derive",
  "once_cell",
