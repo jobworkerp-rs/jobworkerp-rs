@@ -23,16 +23,16 @@ pub struct OllamaEmbeddingService {
 }
 
 impl OllamaEmbeddingService {
-    const URL_BASE: &'static str = "http://localhost:11434";
-
     pub async fn new(settings: OllamaRunnerSettings) -> Result<Self> {
-        let ollama = Ollama::try_new(settings.base_url.unwrap_or(Self::URL_BASE.to_string()))?;
         if settings.pull_model.unwrap_or(true) {
-            ollama
-                .pull_model(settings.model.clone(), false)
-                .await
-                .map_err(|e| anyhow!("failed to pull embedding model: {e}"))?;
+            crate::llm::common::pull_ollama_model(settings.base_url.as_deref(), &settings.model)
+                .await?;
         }
+        let ollama = Ollama::try_new(
+            settings
+                .base_url
+                .unwrap_or_else(|| crate::llm::common::OLLAMA_DEFAULT_URL.to_string()),
+        )?;
         Ok(Self {
             ollama: Arc::new(ollama),
             model: settings.model,

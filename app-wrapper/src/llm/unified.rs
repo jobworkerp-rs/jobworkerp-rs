@@ -22,13 +22,11 @@ use proto::jobworkerp::data::{JobData, JobId, JobResult, ResultOutputItem};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::llm::common::pull_ollama_model;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings;
-use ollama_rs::Ollama;
 use prost::Message;
 use std::io::Cursor;
-
-const OLLAMA_DEFAULT_URL: &str = "http://localhost:11434";
 
 /// Pull the Ollama model once for the whole unified runner, then return
 /// settings bytes with `pull_model=false` so the per-method runners initialize
@@ -47,15 +45,7 @@ async fn pull_ollama_model_once(settings: Vec<u8>) -> Result<Vec<u8>> {
         return Ok(settings);
     }
 
-    let base_url = ollama
-        .base_url
-        .clone()
-        .unwrap_or_else(|| OLLAMA_DEFAULT_URL.to_string());
-    let client = Ollama::try_new(base_url)?;
-    client
-        .pull_model(ollama.model.clone(), false)
-        .await
-        .map_err(|e| anyhow!("failed to pull model '{}': {e}", ollama.model))?;
+    pull_ollama_model(ollama.base_url.as_deref(), &ollama.model).await?;
     tracing::info!("LLM(unified) pulled ollama model '{}' once", ollama.model);
 
     // Disable per-runner pulls now that the model is present server-side.

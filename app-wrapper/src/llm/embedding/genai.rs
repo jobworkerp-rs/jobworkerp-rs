@@ -43,11 +43,12 @@ impl GenaiEmbeddingService {
                     if let Some(url) = endpoint_url
                         && !url.is_empty()
                     {
-                        let normalized = normalize_endpoint_url(&url).map_err(|e| {
-                            genai::resolver::Error::Custom(format!(
-                                "Failed to parse endpoint URL={url} : {e:#?}"
-                            ))
-                        })?;
+                        let normalized = crate::llm::common::normalize_genai_endpoint_url(&url)
+                            .map_err(|e| {
+                                genai::resolver::Error::Custom(format!(
+                                    "Failed to parse endpoint URL={url} : {e:#?}"
+                                ))
+                            })?;
                         service_target.endpoint = Endpoint::from_owned(normalized);
                     }
                     Ok(service_target)
@@ -127,53 +128,5 @@ impl EmbeddingBackend for GenaiEmbeddingService {
             embeddings,
             usage: Some(usage),
         })
-    }
-}
-
-/// Normalize a custom base URL into a genai endpoint string: ensure it ends
-/// with a trailing-slash path (defaulting an empty/root path to `/v1/`) so the
-/// adapter appends request paths correctly.
-fn normalize_endpoint_url(url: &str) -> Result<String> {
-    let mut u = url.parse::<url::Url>()?;
-    if u.path().is_empty() || u.path() == "/" {
-        u.set_path("/v1/");
-    } else if !u.path().ends_with('/') {
-        u.set_path(&format!("{}/", u.path()));
-    }
-    Ok(u.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_normalize_endpoint_url_defaults_root_to_v1() {
-        assert_eq!(
-            normalize_endpoint_url("http://host:8080").unwrap(),
-            "http://host:8080/v1/"
-        );
-        assert_eq!(
-            normalize_endpoint_url("http://host:8080/").unwrap(),
-            "http://host:8080/v1/"
-        );
-    }
-
-    #[test]
-    fn test_normalize_endpoint_url_appends_trailing_slash() {
-        assert_eq!(
-            normalize_endpoint_url("http://host/custom/path").unwrap(),
-            "http://host/custom/path/"
-        );
-        // Already trailing-slashed → unchanged.
-        assert_eq!(
-            normalize_endpoint_url("http://host/custom/path/").unwrap(),
-            "http://host/custom/path/"
-        );
-    }
-
-    #[test]
-    fn test_normalize_endpoint_url_rejects_invalid() {
-        assert!(normalize_endpoint_url("not a url").is_err());
     }
 }
