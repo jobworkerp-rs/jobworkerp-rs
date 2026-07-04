@@ -40,6 +40,7 @@ Database schema:
 | | STORAGE_RESTORE_AT_STARTUP | Flag for restoring jobs after crashes | false |
 | **gRPC Settings** | GRPC_ADDR | gRPC server address:port | 0.0.0.0:9000 |
 | | USE_GRPC_WEB | Whether to use gRPC web on the gRPC server (boolean) | false |
+| | AUTH_TOKEN | Token required by protected gRPC RPCs via `jobworkerp-auth` metadata when set | - |
 | **Feature Flags** | MCP_ENABLED | Enable MCP server mode (all-in-one mode only) | false |
 | | MCP_ADDR | MCP server bind address | 127.0.0.1:8000 |
 | | AG_UI_ENABLED | Enable AG-UI server (all-in-one mode only) | false |

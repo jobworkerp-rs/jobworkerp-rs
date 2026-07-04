@@ -48,7 +48,7 @@ pub fn process_metadata(
     Ok(other_metadata)
 }
 
-// XXX simple authentication for jobworkerp metadata (auhthentication env and header is same value)
+// XXX simple authentication for jobworkerp metadata (authentication env and header use the same value)
 const AUTH_TOKEN_ENV_KEY: &str = "AUTH_TOKEN";
 #[allow(clippy::result_large_err)]
 fn process_jobworkerp_metadata(
@@ -62,6 +62,6 @@ fn process_jobworkerp_metadata(
         } else {
             return Err(tonic::Status::unauthenticated("Missing auth token"));
         }
-    } // no env AUTH_TOKEN, skip authentication
+    } // no env AUTH_TOKEN, skip authentication for backward compatibility
     Ok(jobworkerp_metadata)
 }

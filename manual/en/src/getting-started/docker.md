@@ -41,6 +41,8 @@ $ docker run -p 8080:8080 -p 9000:9000 -p 8000:8000 -p 8001:8001 \
   jobworkerp-all-in-one
 ```
 
+Set `AUTH_TOKEN` for deployments that expose gRPC. Protected gRPC requests must include the metadata header `jobworkerp-auth: <AUTH_TOKEN>`. **Do not set `AUTH_TOKEN` when using the Admin UI**: the bundled Admin UI client does not yet send this header, so protected calls (e.g. job enqueue) would fail with `Unauthenticated`. Leave `AUTH_TOKEN` unset until Admin UI support for the auth header is added.
+
 ## Accessing After Launch
 
 Once the container is running, open [http://localhost:8080](http://localhost:8080) in your browser to access the Admin UI. The Admin UI provides a GUI for creating and managing Workers, submitting and monitoring jobs, and other operations.

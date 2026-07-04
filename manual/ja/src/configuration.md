@@ -42,6 +42,7 @@
 | | STORAGE_RESTORE_AT_STARTUP | クラッシュ後のジョブ復旧フラグ | false |
 | **GRPC設定** | GRPC_ADDR | grpcサーバアドレス:ポート | 0.0.0.0:9000 |
 | | USE_GRPC_WEB | grpcサーバでgRPC webを利用するか(boolean) | false |
+| | AUTH_TOKEN | 設定時、保護対象 gRPC RPC で `jobworkerp-auth` metadata として要求されるトークン | - |
 | **機能有効化** | MCP_ENABLED | MCPサーバーモードの有効化 (all-in-oneモード時) | false |
 | | MCP_ADDR | MCPサーバーバインドアドレス | 127.0.0.1:8000 |
 | | AG_UI_ENABLED | AG-UIサーバーの有効化 (all-in-oneモード時) | false |

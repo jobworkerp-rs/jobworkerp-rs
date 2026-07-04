@@ -41,6 +41,8 @@ $ docker run -p 8080:8080 -p 9000:9000 -p 8000:8000 -p 8001:8001 \
   jobworkerp-all-in-one
 ```
 
+gRPC を公開する環境では `AUTH_TOKEN` を設定してください。保護対象の gRPC リクエストでは metadata header として `jobworkerp-auth: <AUTH_TOKEN>` を送信します。**Admin UI を使う場合は `AUTH_TOKEN` を設定しないでください**: 同梱の Admin UI クライアントはこのヘッダをまだ送信しないため、保護対象の呼び出し（ジョブ投入など）が `Unauthenticated` で失敗します。Admin UI が認証ヘッダに対応するまでは `AUTH_TOKEN` を未設定のままにしてください。
+
 ## 起動後のアクセス
 
 コンテナ起動後、ブラウザで [http://localhost:8080](http://localhost:8080) にアクセスするとAdmin UI（管理画面）が利用できます。

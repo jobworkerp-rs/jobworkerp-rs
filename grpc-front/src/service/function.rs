@@ -261,6 +261,7 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         request: tonic::Request<FunctionCallRequest>,
     ) -> std::result::Result<tonic::Response<Self::CallStream>, tonic::Status> {
         let _s = Self::trace_request("function", "call", &request);
+        crate::service::process_metadata(request.metadata().clone())?;
         let req = request.into_inner();
         self.validate_function_call_request(&req)?;
 
@@ -419,6 +420,7 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         request: tonic::Request<CreateWorkerRequest>,
     ) -> Result<tonic::Response<CreateWorkerResponse>, tonic::Status> {
         let _s = Self::trace_request("function", "create_worker", &request);
+        crate::service::process_metadata(request.metadata().clone())?;
         let req = request.into_inner();
 
         self.validate_create_worker_request(&req)?;
@@ -457,6 +459,7 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         request: tonic::Request<CreateWorkerRequest>,
     ) -> Result<tonic::Response<CreateWorkerResponse>, tonic::Status> {
         let _s = Self::trace_request("function", "upsert_worker", &request);
+        crate::service::process_metadata(request.metadata().clone())?;
         let req = request.into_inner();
 
         self.validate_create_worker_request(&req)?;
@@ -515,6 +518,192 @@ impl FunctionRequestValidator for FunctionGrpcImpl {}
 
 // Implement tracing for FunctionGrpcImpl
 impl Tracing for FunctionGrpcImpl {}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    use crate::proto::jobworkerp::function::service::function_service_server::FunctionService;
+    use tokio::sync::Mutex;
+    use tonic::{Code, Status};
+
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+
+    struct AuthGuard {
+        previous: Option<String>,
+    }
+
+    impl AuthGuard {
+        fn set(value: Option<&str>) -> Self {
+            let previous = std::env::var("AUTH_TOKEN").ok();
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var("AUTH_TOKEN", value),
+                    None => std::env::remove_var("AUTH_TOKEN"),
+                }
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for AuthGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var("AUTH_TOKEN", value),
+                    None => std::env::remove_var("AUTH_TOKEN"),
+                }
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct AuthOnlyFunctionGrpc;
+
+    impl FunctionGrpc for AuthOnlyFunctionGrpc {
+        fn function_app(&self) -> &Arc<FunctionAppImpl> {
+            panic!("authentication should stop the request before app access")
+        }
+
+        fn function_set_app(&self) -> &Arc<FunctionSetAppImpl> {
+            panic!("authentication tests do not use function set app")
+        }
+    }
+
+    impl FunctionRequestValidator for AuthOnlyFunctionGrpc {}
+    impl Tracing for AuthOnlyFunctionGrpc {}
+
+    fn unauthenticated_request<T>(message: T) -> tonic::Request<T> {
+        tonic::Request::new(message)
+    }
+
+    fn request_with_auth<T>(message: T, token: &'static str) -> tonic::Request<T> {
+        let mut request = tonic::Request::new(message);
+        request.metadata_mut().insert(
+            "jobworkerp-auth",
+            tonic::metadata::MetadataValue::from_static(token),
+        );
+        request
+    }
+
+    fn status_from<T>(result: Result<T, Status>) -> Status {
+        match result {
+            Ok(_) => panic!("request unexpectedly succeeded"),
+            Err(status) => status,
+        }
+    }
+
+    #[tokio::test]
+    async fn call_rejects_missing_auth_when_auth_token_is_configured() {
+        let _lock = ENV_LOCK.lock().await;
+        let _auth = AuthGuard::set(Some("secret"));
+
+        let err = status_from(
+            AuthOnlyFunctionGrpc
+                .call(unauthenticated_request(FunctionCallRequest::default()))
+                .await,
+        );
+
+        assert_eq!(err.code(), Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn call_rejects_invalid_auth_when_auth_token_is_configured() {
+        let _lock = ENV_LOCK.lock().await;
+        let _auth = AuthGuard::set(Some("secret"));
+
+        let err = status_from(
+            AuthOnlyFunctionGrpc
+                .call(request_with_auth(FunctionCallRequest::default(), "wrong"))
+                .await,
+        );
+
+        assert_eq!(err.code(), Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn call_keeps_existing_compatibility_when_auth_token_is_unset() {
+        let _lock = ENV_LOCK.lock().await;
+        let _auth = AuthGuard::set(None);
+
+        let err = status_from(
+            AuthOnlyFunctionGrpc
+                .call(unauthenticated_request(FunctionCallRequest::default()))
+                .await,
+        );
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn call_accepts_valid_auth_and_reaches_validation() {
+        let _lock = ENV_LOCK.lock().await;
+        let _auth = AuthGuard::set(Some("secret"));
+
+        let err = status_from(
+            AuthOnlyFunctionGrpc
+                .call(request_with_auth(FunctionCallRequest::default(), "secret"))
+                .await,
+        );
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn create_worker_rejects_missing_auth_when_auth_token_is_configured() {
+        let _lock = ENV_LOCK.lock().await;
+        let _auth = AuthGuard::set(Some("secret"));
+
+        let err = status_from(
+            AuthOnlyFunctionGrpc
+                .create_worker(unauthenticated_request(CreateWorkerRequest::default()))
+                .await,
+        );
+
+        assert_eq!(err.code(), Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn create_worker_accepts_valid_auth_and_reaches_validation() {
+        let _lock = ENV_LOCK.lock().await;
+        let _auth = AuthGuard::set(Some("secret"));
+
+        let err = status_from(
+            AuthOnlyFunctionGrpc
+                .create_worker(request_with_auth(CreateWorkerRequest::default(), "secret"))
+                .await,
+        );
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn upsert_worker_rejects_missing_auth_when_auth_token_is_configured() {
+        let _lock = ENV_LOCK.lock().await;
+        let _auth = AuthGuard::set(Some("secret"));
+
+        let err = status_from(
+            AuthOnlyFunctionGrpc
+                .upsert_worker(unauthenticated_request(CreateWorkerRequest::default()))
+                .await,
+        );
+
+        assert_eq!(err.code(), Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn upsert_worker_accepts_valid_auth_and_reaches_validation() {
+        let _lock = ENV_LOCK.lock().await;
+        let _auth = AuthGuard::set(Some("secret"));
+
+        let err = status_from(
+            AuthOnlyFunctionGrpc
+                .upsert_worker(request_with_auth(CreateWorkerRequest::default(), "secret"))
+                .await,
+        );
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+    }
+}
 
 #[cfg(test)]
 mod tests {
