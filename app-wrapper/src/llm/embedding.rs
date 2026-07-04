@@ -613,18 +613,22 @@ pub fn truncate_for_genai(truncate: &Option<String>) -> Option<String> {
 /// expect). Non-float encodings (base64/binary/int8/uint8/ubinary) would either
 /// break the f32 decode (OpenAI base64) or be silently re-decoded by genai, so
 /// they are dropped with a warning and the provider default (float) is used.
-pub fn normalize_encoding_format(encoding_format: &Option<String>) -> Option<String> {
-    match encoding_format.as_deref().map(str::trim) {
-        None | Some("") => None,
-        Some(s) => match s.to_ascii_lowercase().as_str() {
-            "float" | "float32" => Some("float".to_string()),
-            other => {
-                tracing::warn!(
-                    "unsupported embedding encoding_format '{other}'; only float is supported, using provider default"
-                );
-                None
-            }
-        },
+///
+/// Applied once upstream in [`resolve_options`]; `ResolvedEmbeddingOptions`
+/// stores the already-normalized value, so backends must not re-normalize
+/// (unlike the provider-specific `truncate_*` helpers). Kept private for that
+/// reason.
+fn normalize_encoding_format(encoding_format: &Option<String>) -> Option<String> {
+    let trimmed = encoding_format.as_deref().map(str::trim).unwrap_or("");
+    match trimmed.to_ascii_lowercase().as_str() {
+        "" => None,
+        "float" | "float32" => Some("float".to_string()),
+        other => {
+            tracing::warn!(
+                "unsupported embedding encoding_format '{other}'; only float is supported, using provider default"
+            );
+            None
+        }
     }
 }
 

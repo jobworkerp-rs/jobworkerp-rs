@@ -123,9 +123,8 @@ pub fn map_response_to_refs(
 
 /// Shrink max_chunk_tokens for the next retry, or `None` if already at floor.
 fn shrunk_config(config: &ResolvedChunkingConfig) -> Option<ResolvedChunkingConfig> {
-    // Shrink toward min_chunk_tokens, but never below it (a chunk can't be
-    // smaller than the configured minimum).
     let next = (config.max_chunk_tokens * RETRY_SHRINK_NUM) / RETRY_SHRINK_DEN;
+    // Never shrink below the configured minimum chunk size.
     let next = next.max(config.min_chunk_tokens);
     if next < MIN_RETRY_MAX_TOKENS || next >= config.max_chunk_tokens {
         return None;
