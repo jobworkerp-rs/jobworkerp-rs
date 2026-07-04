@@ -123,13 +123,21 @@ pub fn map_response_to_refs(
 
 /// Shrink max_chunk_tokens for the next retry, or `None` if already at floor.
 fn shrunk_config(config: &ResolvedChunkingConfig) -> Option<ResolvedChunkingConfig> {
+    // Shrink toward min_chunk_tokens, but never below it (a chunk can't be
+    // smaller than the configured minimum).
     let next = (config.max_chunk_tokens * RETRY_SHRINK_NUM) / RETRY_SHRINK_DEN;
     let next = next.max(config.min_chunk_tokens);
     if next < MIN_RETRY_MAX_TOKENS || next >= config.max_chunk_tokens {
         return None;
     }
+    // Keep min < max after shrinking: a large min_chunk_tokens (e.g. min=400
+    // with max=512) would otherwise equal the shrunk max and make chunk_text's
+    // HierarchicalChunkingConfig::validate() reject the retry. Clamp min below
+    // the new max, mirroring resolve_chunking_spec's clamp at settings time.
+    let min = config.min_chunk_tokens.min(next.saturating_sub(1));
     Some(ResolvedChunkingConfig {
         max_chunk_tokens: next,
+        min_chunk_tokens: min,
         ..config.clone()
     })
 }
@@ -607,6 +615,42 @@ mod tests {
         )
         .await;
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_shrunk_config_keeps_min_below_max() {
+        // A large min_chunk_tokens (min=400 with max=512) is allowed at settings
+        // time (min < max). The first shrink halves max toward min (512→256, but
+        // floored at min=400). Without clamping min, the result would be
+        // max==min==400, which chunk_text's validate() rejects. The shrunk
+        // config must keep min < max so the retry can actually re-chunk.
+        let base = ResolvedChunkingConfig {
+            max_chunk_tokens: 512,
+            min_chunk_tokens: 400,
+            token_estimation: TokenEstimationStrategy::CharacterEstimation,
+        };
+        let shrunk = shrunk_config(&base).expect("should still shrink");
+        assert_eq!(shrunk.max_chunk_tokens, 400);
+        assert!(
+            shrunk.min_chunk_tokens < shrunk.max_chunk_tokens,
+            "min ({}) must stay below max ({})",
+            shrunk.min_chunk_tokens,
+            shrunk.max_chunk_tokens
+        );
+        // The shrunk config must be accepted by chunk_text (validate passes).
+        assert!(chunk_text("hello world foo bar baz", &shrunk).is_ok());
+    }
+
+    #[test]
+    fn test_shrunk_config_none_at_floor() {
+        // max==min==16: halving gives 8, floored at min=16, which is >= max, so
+        // no further useful shrink is possible → None (unchanged behavior).
+        let floor = ResolvedChunkingConfig {
+            max_chunk_tokens: 16,
+            min_chunk_tokens: 16,
+            token_estimation: TokenEstimationStrategy::CharacterEstimation,
+        };
+        assert!(shrunk_config(&floor).is_none());
     }
 
     #[test]
