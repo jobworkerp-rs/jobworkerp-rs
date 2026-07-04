@@ -25,6 +25,25 @@ use super::TokenProviderError;
 /// encoding used by `text-embedding-3-*` and GPT-3.5/4.
 pub const DEFAULT_ENCODING: &str = "cl100k_base";
 
+/// Resolve and validate a caller-supplied tiktoken encoding name.
+///
+/// An empty/unset name resolves to [`DEFAULT_ENCODING`]; a known name is
+/// returned as a `'static` normalized string; an unknown name errors. This is
+/// the single source of truth for "which encodings are supported", so the
+/// proto→spec mapping (`resolve_chunking_spec`) can validate the name
+/// synchronously — symmetric with the HF source-presence check — rather than
+/// deferring the error to provider construction.
+pub fn resolve_encoding(encoding: Option<&str>) -> Result<&'static str> {
+    match encoding.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(DEFAULT_ENCODING),
+        Some("cl100k_base") => Ok("cl100k_base"),
+        Some("o200k_base") => Ok("o200k_base"),
+        Some(other) => Err(anyhow!(
+            "unknown tiktoken encoding '{other}' (supported: cl100k_base, o200k_base)"
+        )),
+    }
+}
+
 /// tiktoken-backed [`TokenProvider`].
 ///
 /// The chunker calls `estimate_token_count` then `tokenize` on the same
@@ -46,16 +65,15 @@ impl std::fmt::Debug for TiktokenProvider {
 impl TiktokenProvider {
     /// Build a provider for the given tiktoken encoding name. Uses the crate's
     /// cached singletons so the (expensive) BPE table is built at most once per
-    /// encoding across the whole process. Unknown encodings error.
+    /// encoding across the whole process. Unknown encodings error (via
+    /// [`resolve_encoding`]); the caller is expected to pass an already-resolved
+    /// name from `resolve_encoding`, but re-resolving here keeps `new` safe on
+    /// its own.
     pub fn new(encoding: &str) -> Result<Self> {
-        let bpe = match encoding {
-            "cl100k_base" => tiktoken_rs::cl100k_base_singleton(),
+        let bpe = match resolve_encoding(Some(encoding))? {
             "o200k_base" => tiktoken_rs::o200k_base_singleton(),
-            other => {
-                return Err(anyhow!(
-                    "unknown tiktoken encoding '{other}' (supported: cl100k_base, o200k_base)"
-                ));
-            }
+            // DEFAULT_ENCODING ("cl100k_base") and any other resolved name.
+            _ => tiktoken_rs::cl100k_base_singleton(),
         };
         Ok(Self {
             bpe,
@@ -85,7 +103,7 @@ impl TokenProvider for TiktokenProvider {
     type Error = TokenProviderError;
 
     fn tokenize(&self, text: &str) -> std::result::Result<Vec<u32>, Self::Error> {
-        Ok((*self.tokenized(text)).clone())
+        Ok(self.tokenized(text).as_ref().clone())
     }
 
     fn estimate_token_count(&self, text: &str) -> std::result::Result<usize, Self::Error> {
@@ -143,6 +161,22 @@ mod tests {
     #[test]
     fn test_unknown_encoding_errors() {
         assert!(TiktokenProvider::new("not_a_real_encoding").is_err());
+    }
+
+    #[test]
+    fn test_resolve_encoding_defaults_and_validates() {
+        // Unset / empty / whitespace-only → default encoding.
+        assert_eq!(resolve_encoding(None).unwrap(), DEFAULT_ENCODING);
+        assert_eq!(resolve_encoding(Some("")).unwrap(), DEFAULT_ENCODING);
+        assert_eq!(resolve_encoding(Some("  ")).unwrap(), DEFAULT_ENCODING);
+        // Known names pass through.
+        assert_eq!(
+            resolve_encoding(Some("cl100k_base")).unwrap(),
+            "cl100k_base"
+        );
+        assert_eq!(resolve_encoding(Some("o200k_base")).unwrap(), "o200k_base");
+        // Unknown name errors here (synchronously), not at provider construction.
+        assert!(resolve_encoding(Some("bogus_encoding")).is_err());
     }
 
     #[test]

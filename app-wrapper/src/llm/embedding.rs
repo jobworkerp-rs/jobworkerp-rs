@@ -89,10 +89,11 @@ impl Default for ChunkingSpec {
 
 /// Map a proto `ChunkingConfig` to a pure [`ChunkingSpec`] (no provider load).
 ///
-/// Validates the numeric fields and the token-estimation selection. HF source
-/// presence is validated here; the actual tokenizer load is deferred to
-/// [`LLMEmbeddingRunnerImpl::build_chunking`]. `TIKTOKEN` is still unsupported
-/// (Phase 2).
+/// Validates the numeric fields and the token-estimation selection: HF source
+/// presence and the tiktoken encoding name are both checked here, so a bad
+/// chunking config fails synchronously at resolution rather than later during
+/// provider loading. The actual tokenizer load is deferred to
+/// [`LLMEmbeddingRunnerImpl::build_chunking`].
 fn resolve_chunking_spec(proto: Option<&ChunkingConfig>) -> Result<ChunkingSpec> {
     let default = ChunkingSpec::default();
     let Some(c) = proto else {
@@ -103,13 +104,13 @@ fn resolve_chunking_spec(proto: Option<&ChunkingConfig>) -> Result<ChunkingSpec>
     let strategy = match c.token_estimation.unwrap_or(0) {
         0 | 1 => StrategyKind::Character,
         2 => {
-            // tiktoken: default to cl100k_base (text-embedding-3 / GPT-3.5/4)
-            // when no encoding is given.
-            let encoding = c
-                .tiktoken_encoding
-                .clone()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| token_provider::tiktoken::DEFAULT_ENCODING.to_string());
+            // tiktoken: resolve+validate the encoding name here (symmetric with
+            // the HF source check below), so an unknown encoding fails at spec
+            // resolution rather than later at provider construction. Unset/empty
+            // resolves to the default (cl100k_base).
+            let encoding =
+                token_provider::tiktoken::resolve_encoding(c.tiktoken_encoding.as_deref())?
+                    .to_string();
             StrategyKind::Tiktoken { encoding }
         }
         3 => {
@@ -763,6 +764,15 @@ mod tests {
                 encoding: "cl100k_base".to_string()
             }
         );
+
+        // Unknown encoding fails at spec resolution (synchronous, no provider
+        // load) — symmetric with the HF source-presence check.
+        let bad = ChunkingConfig {
+            token_estimation: Some(2),
+            tiktoken_encoding: Some("not_a_real_encoding".to_string()),
+            ..Default::default()
+        };
+        assert!(resolve_chunking_spec(Some(&bad)).is_err());
     }
 
     #[test]
