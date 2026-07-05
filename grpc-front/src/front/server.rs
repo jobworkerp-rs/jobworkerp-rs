@@ -21,7 +21,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use app::module::AppModule;
 use command_utils::util::shutdown::ShutdownLock;
-use net_utils::grpc::enable_grpc_web;
+use grpc_utils::enable_grpc_web;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::transport::Server;

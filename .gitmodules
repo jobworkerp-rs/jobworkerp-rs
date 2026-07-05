@@ -7,12 +7,15 @@
 [submodule "modules/mcp-servers"]
 	path = modules/mcp-servers
 	url = https://github.com/modelcontextprotocol/servers.git
-[submodule "modules/net-utils"]
-	path = modules/net-utils
-	url = https://github.com/sutr-app/net-utils.git
 [submodule "modules/memory-utils"]
 	path = modules/memory-utils
 	url = https://github.com/sutr-app/memory-utils.git
 [submodule "admin-ui"]
 	path = admin-ui
 	url = https://github.com/jobworkerp-rs/admin-ui.git
+[submodule "modules/grpc-utils"]
+	path = modules/grpc-utils
+	url = https://github.com/sutr-app/grpc-utils.git
+[submodule "modules/web-utils"]
+	path = modules/web-utils
+	url = https://github.com/sutr-app/web-utils.git

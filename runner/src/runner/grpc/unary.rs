@@ -1,9 +1,9 @@
 use super::common::GrpcConnection;
 use crate::jobworkerp::runner::grpc::{GrpcArgs, GrpcUnaryResult, grpc_unary_result};
 use anyhow::{Result, anyhow};
+use grpc_utils::RawBytesCodec;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
-use net_utils::grpc::RawBytesCodec;
 use prost_reflect::DescriptorPool;
 use std::collections::HashMap;
 use std::time::Duration;
