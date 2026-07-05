@@ -62,7 +62,7 @@ clap = "4.5"
 #console-subscriber = { version = "0.3", features = ["parking_lot"] }
 chrono = "0.4"
 dashmap = "6"
-deadpool = { version = "0.12", features = ["rt_tokio_1"] }
+deadpool = { version = "0.13", features = ["rt_tokio_1"] }
 debug_stub_derive = "0.3"
 envy = "0.4"
 dotenvy = "0.15"
@@ -70,34 +70,41 @@ futures = { version = "0.3", default-features = false, features = ["alloc"] }
 futures-util = "0.3"
 hostname = "0.4"
 http = "1.4"
-itertools = "0.14"
+itertools = "0.15"
 jsonschema = "0.46"
 lazy_static = "1.4"
 libloading = "0.9"
 log = "0.4"
 moka = { version = "0.12", features = ["future"] }
-nix = { version = "0.30", features = ["signal"] }
+nix = { version = "0.31", features = ["signal"] }
 num_cpus = "1.0"
 num-derive = "0.4"
 num-traits = "0.2"
 once_cell = "1"
-opentelemetry = { version = "0.31" }
+opentelemetry = { version = "0.32" }
 pnet = "0.35"
 prost = "0.14"
 prost-types = "0.14"
 prost-reflect = { version = "0.16", features = ["serde"] }
-rand = "0.9"
+rand = "0.10"
 regex = "1.12"
 # NOTE: We don't use the "bb8" feature because redis-rs 1.0.2's built-in bb8 implementation
 # uses get_multiplexed_async_connection() with default response timeout, which causes
 # blocking operations like BLPOP to timeout immediately. Instead, we implement our own
 # ManageConnection to use get_multiplexed_async_connection_with_config() with response_timeout: None.
-redis = { version = "1.0.2", features = [
+redis = { version = "1.3", features = [
     "tokio-rustls-comp",
     "ahash",
     "cluster-async",
 ] }
-reqwest = "0.12"
+#reqwest = "0.13"
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "query",
+    "rustls",
+    "stream",
+] }
+
 rmcp = { version = "2.1" }
 rs-snowflake = "0.6"
 rustls = { version = "0.23", default-features = false, features = [
@@ -107,7 +114,7 @@ rustls = { version = "0.23", default-features = false, features = [
     "tls12",
 ] }
 schemars = { version = "1.2", features = ["chrono04"] }
-shlex = "1"
+shlex = "2"
 #schemars = { version = "0.8", features = ["chrono"] }
 serde = "1.0"
 serde_json = "1.0"
@@ -124,12 +131,12 @@ sqlx = { version = "0.9", features = [
     "mysql",
     "chrono",
 ] }
-stretto = "0.8"
-strum = "0.27"
-strum_macros = "0.27"
+stretto = { version = "0.9", features = ["tokio"] }
+strum = "0.28"
+strum_macros = "0.28"
 tempfile = "3"
 thiserror = "2"
-toml = { version = "0.9" }
+toml = { version = "1" }
 tonic = { version = "0.14", features = ["tls-ring", "tls-webpki-roots"] }
 tonic-prost-build = "0.14"
 tonic-prost = "0.14"
@@ -151,9 +158,12 @@ tracing-subscriber = { version = "0.3", features = [
     "env-filter",
     "json",
 ] }
-tracing-opentelemetry = { version = "0.32" }
+tracing-opentelemetry = { version = "0.33" }
 url = "2.5"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
+
+[patch."https://github.com/sutr-app/memory-utils.git"]
+memory-utils = { path = "modules/memory-utils" }
 
 [profile.release]
 # Tell `rustc` to optimize for small code size.

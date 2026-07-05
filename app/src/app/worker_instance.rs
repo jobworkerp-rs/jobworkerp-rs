@@ -1,7 +1,7 @@
 use infra::infra::worker_instance::WorkerInstanceRepository;
 use jobworkerp_base::WORKER_INSTANCE_CONFIG;
 use proto::jobworkerp::data::StorageType;
-use rand::Rng;
+use rand::RngExt;
 use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::time::{Duration, interval};

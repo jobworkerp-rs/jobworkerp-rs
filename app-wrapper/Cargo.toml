@@ -38,7 +38,7 @@ dotenvy = { workspace = true }
 envy = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-genai = "0.6.2"
+genai = "0.6.5"
 #genai = { git = "https://github.com/jeremychone/rust-genai", branch = "main" }
 # HF tokenizer source download for embedding chunking (Phase 3). rustls-tls
 # avoids a system OpenSSL dependency.
@@ -60,7 +60,7 @@ prost = { workspace = true }
 redis = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
-regress = "0.10"
+regress = "0.11"
 reqwest = { workspace = true }
 rmcp = { workspace = true }
 #features = [
@@ -85,7 +85,7 @@ thiserror = { workspace = true }
 # cl100k_base / o200k_base for text-embedding-3 / GPT-4o family models.
 tiktoken-rs = "0.12"
 # HF tokenizer for exact token counting in embedding chunking (Phase 3).
-tokenizers = "0.22"
+tokenizers = "0.23"
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
@@ -105,7 +105,7 @@ jobworkerp-runner = { path = "../runner", features = ["test-utils"] }
 # `tests/workflow_nested_cancellation_test.rs` drives a live deployment over
 # those clients, so reuse the generated code instead of regenerating it here.
 grpc-front = { path = "../grpc-front" }
-opentelemetry_sdk = { version = "0.31", features = ["testing"] }
+opentelemetry_sdk = { version = "0.32", features = ["testing"] }
 
 [features]
 default = []
