@@ -2,8 +2,8 @@ use crate::jobworkerp::runner::grpc::{GrpcArgsProtoSource, GrpcRunnerSettings, g
 use crate::runner::grpc::proto_source::{ProtoSourceRef, fetch_proto_source};
 use anyhow::{Context, Result, anyhow};
 use command_utils::protobuf::{ProtobufDescriptor, ProtobufDescriptorLoader};
+use grpc_utils::reflection::GrpcReflectionClient;
 use memory_utils::cache::moka::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
-use net_utils::grpc::reflection::GrpcReflectionClient;
 use prost_reflect::{DescriptorPool, MessageDescriptor};
 use std::collections::HashMap;
 use std::sync::Arc;

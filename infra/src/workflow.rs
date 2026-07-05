@@ -5,9 +5,9 @@ use std::sync::LazyLock;
 
 use anyhow::{Result, anyhow};
 use jobworkerp_runner::jobworkerp::runner::workflow_run_args::WorkflowSource;
-use net_utils::net::reqwest::{self, ReqwestClient};
 use serde::de::DeserializeOwned;
 use url::Url;
+use web_utils::reqwest::{self, ReqwestClient};
 
 // Submodule declarations (using parent.rs + parent/ directory structure, not mod.rs)
 pub mod definition;

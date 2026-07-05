@@ -43,7 +43,7 @@ pub fn load_worker_config() -> WorkerConfig {
 
 /// Create WorkflowLoader with default HTTP client configuration
 pub fn create_workflow_loader() -> Result<infra::workflow::WorkflowLoader> {
-    let http_client = net_utils::net::reqwest::ReqwestClient::new(
+    let http_client = web_utils::reqwest::ReqwestClient::new(
         Some(DEFAULT_USER_AGENT),
         Some(std::time::Duration::from_secs(30)), // 30s timeout
         Some(std::time::Duration::from_secs(10)), // 10s connect timeout
