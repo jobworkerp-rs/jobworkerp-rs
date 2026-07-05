@@ -47,6 +47,7 @@ HTTP transport を使用する MCP Server です。ブラウザベースのク�
 - `MCP_ADDR`: バインドアドレス（デフォルト: `127.0.0.1:8000`）
 - `MCP_AUTH_ENABLED`: Bearer 認証を有効化（デフォルト: `false`）
 - `MCP_AUTH_TOKENS`: 有効なトークン（カンマ区切り、デフォルト: `demo-token`）
+- `MCP_ALLOWED_HOSTS`: 許可する `Host` ヘッダー（カンマ区切り、DNS リバインディング対策。デフォルト: `localhost,127.0.0.1,::1`。`*` で検証を無効化）。リバースプロキシ経由やパブリックなインターフェースにバインドする場合はホスト名を設定してください。
 
 ### mcp-stdio
 

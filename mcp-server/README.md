@@ -47,6 +47,7 @@ Environment variables:
 - `MCP_ADDR`: Bind address (default: `127.0.0.1:8000`)
 - `MCP_AUTH_ENABLED`: Enable Bearer authentication (default: `false`)
 - `MCP_AUTH_TOKENS`: Valid tokens, comma-separated (default: `demo-token`)
+- `MCP_ALLOWED_HOSTS`: Allowed `Host` header values, comma-separated for DNS rebinding protection (default: `localhost,127.0.0.1,::1`; use `*` to disable validation). Set your hostnames when deploying behind a reverse proxy or on a public interface.
 
 ### mcp-stdio
 

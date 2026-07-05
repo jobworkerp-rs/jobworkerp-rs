@@ -60,17 +60,14 @@ impl McpHandler {
 
 impl ServerHandler for McpHandler {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::LATEST,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation::from_build_env(),
-            instructions: Some(
+        // ServerInfo (InitializeResult) is #[non_exhaustive] in rmcp 2.x; build via constructor.
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::LATEST)
+            .with_instructions(
                 "jobworkerp MCP Server - Asynchronous job processing with various runners. \
                  Available runners include COMMAND, HTTP_REQUEST, PYTHON_COMMAND, DOCKER, \
-                 LLM, WORKFLOW, GRPC, and custom plugins."
-                    .to_string(),
-            ),
-        }
+                 LLM, WORKFLOW, GRPC, and custom plugins.",
+            )
     }
 
     async fn list_tools(
@@ -171,7 +168,7 @@ impl ServerHandler for McpHandler {
                 })
             };
 
-            Ok(CallToolResult::success(vec![Content::json(
+            Ok(CallToolResult::success(vec![ContentBlock::json(
                 combined_output,
             )?]))
         } else {
@@ -183,7 +180,7 @@ impl ServerHandler for McpHandler {
                 .map_err(Self::map_error)?;
 
             // Convert the result to MCP CallToolResult
-            Ok(CallToolResult::success(vec![Content::json(result)?]))
+            Ok(CallToolResult::success(vec![ContentBlock::json(result)?]))
         }
     }
 
@@ -211,8 +208,9 @@ impl ServerHandler for McpHandler {
         // Log cancellation request for debugging/auditing
         // Note: Full job cancellation requires request_id to job_id mapping,
         // which is a future enhancement
+        // request_id is Option<NumberOrString> in rmcp 2.x, which is not Display; use Debug.
         tracing::info!(
-            request_id = %notification.request_id,
+            request_id = ?notification.request_id,
             reason = ?notification.reason,
             "MCP request cancelled"
         );

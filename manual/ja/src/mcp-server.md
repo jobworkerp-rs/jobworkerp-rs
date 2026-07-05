@@ -56,6 +56,9 @@ Streamable HTTP transport です。ブラウザベースのクライアントや
 | `MCP_ADDR` | バインドアドレス | `127.0.0.1:8000` |
 | `MCP_AUTH_ENABLED` | Bearer 認証を有効化 | `false` |
 | `MCP_AUTH_TOKENS` | 有効なトークン（カンマ区切り） | `demo-token` |
+| `MCP_ALLOWED_HOSTS` | 許可する `Host` ヘッダー（カンマ区切り）。DNS リバインディング対策。`*` で検証を無効化 | `localhost,127.0.0.1,::1` |
+
+> **DNS リバインディング対策**: rmcp 2.x はデフォルトで受信リクエストの `Host` ヘッダーを検証し、ループバックホストのみを許可します。リバースプロキシ経由やパブリックなインターフェースにバインドしてデプロイする場合は、`MCP_ALLOWED_HOSTS` に実際のホスト名（例: `example.com,example.com:8080`）を設定してください。`MCP_ALLOWED_HOSTS=*` は検証を完全に無効化するため、パブリック環境では推奨しません。
 
 ### stdio（`mcp-stdio`）
 

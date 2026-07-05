@@ -6,7 +6,7 @@ use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use rmcp::{
     ClientHandler, RoleClient, ServiceExt,
-    model::{CallToolRequestParams, CallToolResult, LoggingLevel, Tool},
+    model::{CallToolRequestParams, CallToolResult, Tool},
     service::{QuitReason, RunningService},
     transport::child_process::ConfigureCommandExt,
 };
@@ -65,30 +65,26 @@ impl McpServerProxy {
         let client = tokio::time::timeout(timeout_config.mcp_transport_start, async {
             let result: Result<RunningService<RoleClient, ()>> = match config {
                 McpServerTransportConfig::Sse { url, headers } => {
-                    let mut header_map = reqwest::header::HeaderMap::new();
-                    for (key, value) in headers {
-                        let header_name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
-                            .map_err(|e| {
-                            anyhow::anyhow!("Invalid header name '{}': {}", key, e)
-                        })?;
-                        let header_value =
-                            reqwest::header::HeaderValue::from_str(value).map_err(|e| {
-                                anyhow::anyhow!("Invalid header value for '{}': {}", key, e)
-                            })?;
-                        header_map.insert(header_name, header_value);
-                    }
-
-                    let reqwest_client = reqwest::Client::builder()
-                        .default_headers(header_map)
-                        .build()
-                        .map_err(|e| anyhow::anyhow!("Failed to create reqwest client: {}", e))?;
-
+                    // rmcp 2.x drives the transport with its own (internal) reqwest client, so we
+                    // pass custom headers through the transport config instead of building a client.
+                    // Header types come from the `http` crate, matching rmcp's config surface.
                     use rmcp::transport::streamable_http_client::{
                         StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
                     };
-                    let config = StreamableHttpClientTransportConfig::with_uri(url.as_str());
-                    let transport =
-                        StreamableHttpClientTransport::with_client(reqwest_client, config);
+
+                    let mut custom_headers = std::collections::HashMap::new();
+                    for (key, value) in headers {
+                        let header_name = http::HeaderName::from_bytes(key.as_bytes())
+                            .map_err(|e| anyhow::anyhow!("Invalid header name '{}': {}", key, e))?;
+                        let header_value = http::HeaderValue::from_str(value).map_err(|e| {
+                            anyhow::anyhow!("Invalid header value for '{}': {}", key, e)
+                        })?;
+                        custom_headers.insert(header_name, header_value);
+                    }
+
+                    let mut config = StreamableHttpClientTransportConfig::with_uri(url.as_str());
+                    config.custom_headers = custom_headers;
+                    let transport = StreamableHttpClientTransport::from_config(config);
                     // TODO use handler
                     ().serve(transport)
                         .await
@@ -140,25 +136,25 @@ impl McpServerProxy {
 
         Ok(tools)
     }
+    /// Build `CallToolRequestParams` from a tool name and JSON arguments.
+    /// Non-object args are treated as "no arguments".
+    fn build_call_params(tool_name: &str, args: serde_json::Value) -> CallToolRequestParams {
+        let mut params = CallToolRequestParams::new(Cow::Owned(tool_name.to_string()));
+        params.arguments = match args {
+            serde_json::Value::Object(map) => Some(map),
+            _ => None,
+        };
+        params
+    }
+
     pub async fn call_tool(
         &self,
         tool_name: &str,
         args: serde_json::Value,
     ) -> Result<CallToolResult> {
-        let arguments = match args {
-            serde_json::Value::Object(map) => Some(map),
-            _ => None,
-        };
-        tracing::debug!("calling tool: {tool_name}, args: {arguments:?}");
-        let call_result = self
-            .transport
-            .call_tool(CallToolRequestParams {
-                name: Cow::Owned(tool_name.to_string()),
-                arguments,
-                meta: None,
-                task: None,
-            })
-            .await?;
+        let params = Self::build_call_params(tool_name, args);
+        tracing::debug!("calling tool: {tool_name}, args: {:?}", params.arguments);
+        let call_result = self.transport.call_tool(params).await?;
         tracing::debug!("called tool: {tool_name}, result: {call_result:?}");
         Ok(call_result)
     }
@@ -170,20 +166,14 @@ impl McpServerProxy {
         args: serde_json::Value,
         cancellation_token: CancellationToken,
     ) -> Result<CallToolResult> {
-        let arguments = match args {
-            serde_json::Value::Object(map) => Some(map),
-            _ => None,
-        };
-
-        tracing::debug!("calling tool with cancellation: {tool_name}, args: {arguments:?}");
+        let params = Self::build_call_params(tool_name, args);
+        tracing::debug!(
+            "calling tool with cancellation: {tool_name}, args: {:?}",
+            params.arguments
+        );
 
         tokio::select! {
-            result = self.transport.call_tool(CallToolRequestParams {
-                name: Cow::Owned(tool_name.to_string()),
-                arguments,
-                meta: None,
-                task: None,
-            }) => {
+            result = self.transport.call_tool(params) => {
                 let call_result = result.map_err(|e| {
                     tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name, e);
                     anyhow!("MCP tool '{}' failed: {}", tool_name, e)
@@ -209,6 +199,11 @@ impl McpServerProxy {
                 QuitReason::JoinError(join_error) => {
                     tracing::error!("tokio thread Join error: {:?}", join_error);
                     Err(JobWorkerError::RuntimeError(format!("Join error: {join_error}")).into())
+                }
+                // QuitReason is #[non_exhaustive]; treat any future reason as a non-cancelled close
+                other => {
+                    tracing::warn!("MCP transport quit with unhandled reason: {:?}", other);
+                    Ok(false)
                 }
             },
             Err(_arc) => {
@@ -244,12 +239,15 @@ impl ClientHandler for McpServerProxy {
         }
     }
 
-    #[allow(clippy::manual_async_fn)]
+    // MCP logging is SEP-2577-deprecated in rmcp 2.x but still delivered by servers, so we keep
+    // handling these notifications for compatibility until the feature is fully removed.
+    #[allow(clippy::manual_async_fn, deprecated)]
     fn on_logging_message(
         &self,
         params: rmcp::model::LoggingMessageNotificationParam,
         _context: rmcp::service::NotificationContext<RoleClient>,
     ) -> impl std::prelude::rust_2024::Future<Output = ()> + Send + '_ {
+        use rmcp::model::LoggingLevel;
         async move {
             match params.level {
                 LoggingLevel::Emergency

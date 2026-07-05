@@ -32,6 +32,80 @@ pub mod integration_tests;
 pub mod proxy;
 pub mod schema_converter;
 
+/// Convert a single rmcp `ContentBlock` into the proto `mcp_server_result::Content`.
+///
+/// Returns `None` for content types not yet representable in the proto definition
+/// (Audio, ResourceLink) and for unknown future variants (`ContentBlock` is
+/// `#[non_exhaustive]`), logging why the content was dropped.
+fn map_content_block(content: rmcp::model::ContentBlock) -> Option<mcp_server_result::Content> {
+    match content {
+        rmcp::model::ContentBlock::Text(rmcp::model::TextContent { text, .. }) => {
+            Some(mcp_server_result::Content {
+                raw_content: Some(mcp_server_result::content::RawContent::Text(
+                    mcp_server_result::TextContent { text },
+                )),
+            })
+        }
+        rmcp::model::ContentBlock::Image(rmcp::model::ImageContent {
+            data, mime_type, ..
+        }) => Some(mcp_server_result::Content {
+            raw_content: Some(mcp_server_result::content::RawContent::Image(
+                mcp_server_result::ImageContent { data, mime_type },
+            )),
+        }),
+        rmcp::model::ContentBlock::Resource(rmcp::model::EmbeddedResource {
+            resource:
+                rmcp::model::ResourceContents::TextResourceContents {
+                    uri,
+                    mime_type,
+                    text,
+                    ..
+                },
+            ..
+        }) => Some(mcp_server_result::Content {
+            raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                mcp_server_result::EmbeddedResource {
+                    resource: Some(mcp_server_result::embedded_resource::Resource::Text(
+                        TextResourceContents {
+                            uri,
+                            mime_type,
+                            text,
+                        },
+                    )),
+                },
+            )),
+        }),
+        rmcp::model::ContentBlock::Resource(rmcp::model::EmbeddedResource {
+            resource:
+                rmcp::model::ResourceContents::BlobResourceContents {
+                    uri,
+                    mime_type,
+                    blob,
+                    ..
+                },
+            ..
+        }) => Some(mcp_server_result::Content {
+            raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                mcp_server_result::EmbeddedResource {
+                    resource: Some(mcp_server_result::embedded_resource::Resource::Blob(
+                        BlobResourceContents {
+                            uri,
+                            mime_type,
+                            blob,
+                        },
+                    )),
+                },
+            )),
+        }),
+        // These variants are not yet representable in the proto definition, or are
+        // unknown future variants (ContentBlock is #[non_exhaustive]).
+        other => {
+            tracing::warn!("Unsupported MCP content variant, dropping: {:?}", other);
+            None
+        }
+    }
+}
+
 /// Merge TextContent items by concatenating their text
 ///
 /// Strategy:
@@ -509,91 +583,8 @@ impl McpServerRunnerImpl {
                 contents.len() as i64,
             ));
             for content in contents {
-                match content.raw {
-                    rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text, .. }) => {
-                        mcp_contents.push(mcp_server_result::Content {
-                            raw_content: Some(mcp_server_result::content::RawContent::Text(
-                                mcp_server_result::TextContent { text },
-                            )),
-                        });
-                    }
-                    rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
-                        data,
-                        mime_type,
-                        ..
-                    }) => {
-                        mcp_contents.push(mcp_server_result::Content {
-                            raw_content: Some(mcp_server_result::content::RawContent::Image(
-                                mcp_server_result::ImageContent { data, mime_type },
-                            )),
-                        });
-                    }
-                    // wait for raw audio content of raw content
-                    // https://github.com/modelcontextprotocol/rust-sdk/blob/main/crates/rmcp/src/model/content.rs#L55
-                    rmcp::model::RawContent::Audio(_audio) => {
-                        // mcp_contents.push(mcp_server_result::Content {
-                        //     raw_content: Some(mcp_server_result::content::RawContent::Audio(
-                        //         mcp_server_result::AudioContent { data, mime_type },
-                        //     )),
-                        // });
-                        tracing::error!("Audio content not supported yet");
-                    }
-                    rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
-                        resource:
-                            rmcp::model::ResourceContents::TextResourceContents {
-                                uri,
-                                mime_type,
-                                text,
-                                ..
-                            },
-                        ..
-                    }) => {
-                        mcp_contents.push(mcp_server_result::Content {
-                            raw_content: Some(mcp_server_result::content::RawContent::Resource(
-                                mcp_server_result::EmbeddedResource {
-                                    resource: Some(
-                                        mcp_server_result::embedded_resource::Resource::Text(
-                                            TextResourceContents {
-                                                uri,
-                                                mime_type,
-                                                text,
-                                            },
-                                        ),
-                                    ),
-                                },
-                            )),
-                        });
-                    }
-                    rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
-                        resource:
-                            rmcp::model::ResourceContents::BlobResourceContents {
-                                uri,
-                                mime_type,
-                                blob,
-                                ..
-                            },
-                        ..
-                    }) => {
-                        mcp_contents.push(mcp_server_result::Content {
-                            raw_content: Some(mcp_server_result::content::RawContent::Resource(
-                                mcp_server_result::EmbeddedResource {
-                                    resource: Some(
-                                        mcp_server_result::embedded_resource::Resource::Blob(
-                                            BlobResourceContents {
-                                                uri,
-                                                mime_type,
-                                                blob,
-                                            },
-                                        ),
-                                    ),
-                                },
-                            )),
-                        });
-                    }
-                    rmcp::model::RawContent::ResourceLink(_) => {
-                        // ResourceLink is not supported in proto definition yet
-                        tracing::warn!("ResourceLink content not supported yet");
-                    }
+                if let Some(mapped) = map_content_block(content) {
+                    mcp_contents.push(mapped);
                 }
             }
 
@@ -661,68 +652,8 @@ impl McpServerRunnerImpl {
                     let mut mcp_contents = Vec::new();
                     let contents = res.content;
                     for content in contents {
-                        match content.raw {
-                            rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text, .. }) => {
-                                    mcp_contents.push(mcp_server_result::Content {
-                                        raw_content: Some(mcp_server_result::content::RawContent::Text(
-                                            mcp_server_result::TextContent { text },
-                                        )),
-                                    });
-                            }
-                            rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
-                                data,
-                                mime_type,
-                                ..
-                            }) => {
-                                    mcp_contents.push(mcp_server_result::Content {
-                                        raw_content: Some(mcp_server_result::content::RawContent::Image(
-                                            mcp_server_result::ImageContent { data, mime_type },
-                                        )),
-                                });
-                            }
-                            rmcp::model::RawContent::Audio(_audio) => {
-                                tracing::error!("Audio content not supported yet");
-                            }
-                            rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
-                                resource: rmcp::model::ResourceContents::TextResourceContents {
-                                    uri, mime_type, text, ..
-                                },
-                                ..
-                            }) => {
-                                    mcp_contents.push(mcp_server_result::Content {
-                                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
-                                            mcp_server_result::EmbeddedResource {
-                                                resource: Some(
-                                                    mcp_server_result::embedded_resource::Resource::Text(
-                                                        TextResourceContents { uri, mime_type, text },
-                                                    ),
-                                                ),
-                                            },
-                                        )),
-                                });
-                            }
-                            rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
-                                resource: rmcp::model::ResourceContents::BlobResourceContents {
-                                    uri, mime_type, blob, ..
-                                },
-                                ..
-                            }) => {
-                                    mcp_contents.push(mcp_server_result::Content {
-                                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
-                                            mcp_server_result::EmbeddedResource {
-                                                resource: Some(
-                                                    mcp_server_result::embedded_resource::Resource::Blob(
-                                                        BlobResourceContents { uri, mime_type, blob },
-                                                    ),
-                                                ),
-                                            },
-                                        )),
-                                });
-                            }
-                            rmcp::model::RawContent::ResourceLink(_) => {
-                                // ResourceLink is not supported in proto definition yet
-                                tracing::warn!("ResourceLink content not supported yet");
-                            }
+                        if let Some(mapped) = map_content_block(content) {
+                            mcp_contents.push(mapped);
                         }
                     }
 
