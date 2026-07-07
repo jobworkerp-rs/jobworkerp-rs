@@ -33,7 +33,7 @@ use proto::jobworkerp::data::{
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use stretto::AsyncCache;
+use stretto::TokioCache;
 
 #[derive(Clone)]
 pub struct RdbChanJobAppImpl {
@@ -43,7 +43,7 @@ pub struct RdbChanJobAppImpl {
     worker_app: Arc<dyn WorkerApp + 'static>,
     // Previous: memory_cache: MokaCacheImpl<Arc<String>, Job>,
     // UseMemoryCache implementation (Stretto-based)
-    memory_cache: AsyncCache<Arc<String>, Job>,
+    memory_cache: TokioCache<Arc<String>, Job>,
     key_lock: Arc<RwLockWithKey<Arc<String>>>,
     job_cache_ttl: Duration,
     job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
@@ -58,7 +58,7 @@ impl std::fmt::Debug for RdbChanJobAppImpl {
             .field("id_generator", &self.id_generator)
             .field("repositories", &self.repositories)
             .field("worker_app", &"Arc<dyn WorkerApp>")
-            .field("memory_cache", &"AsyncCache<Arc<String>, Job>")
+            .field("memory_cache", &"TokioCache<Arc<String>, Job>")
             .field("key_lock", &"Arc<RwLockWithKey<Arc<String>>>")
             .field("job_cache_ttl", &self.job_cache_ttl)
             .field(
@@ -1406,7 +1406,7 @@ impl JobCacheKeys for RdbChanJobAppImpl {}
 impl JobBuilder for RdbChanJobAppImpl {}
 
 impl UseMemoryCache<Arc<String>, Job> for RdbChanJobAppImpl {
-    fn cache(&self) -> &AsyncCache<Arc<String>, Job> {
+    fn cache(&self) -> &TokioCache<Arc<String>, Job> {
         &self.memory_cache
     }
 
