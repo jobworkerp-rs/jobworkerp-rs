@@ -443,21 +443,14 @@ impl RdbJobProcessingStatusIndexRepository {
              WHERE deleted_at IS NULL",
         );
 
-        if let Some(s) = status {
-            query_builder.push(" AND status = ").push_bind(s as i32);
-        }
-        if let Some(w) = worker_id {
-            query_builder.push(" AND worker_id = ").push_bind(w);
-        }
-        if let Some(ref c) = channel {
-            query_builder.push(" AND channel = ").push_bind(c);
-        }
-        if let Some(elapsed) = min_elapsed_time_ms {
-            let cutoff = now - elapsed;
-            query_builder
-                .push(" AND start_time IS NOT NULL AND start_time < ")
-                .push_bind(cutoff);
-        }
+        push_status_condition_filters(
+            &mut query_builder,
+            status,
+            worker_id,
+            channel.as_deref(),
+            min_elapsed_time_ms,
+            now,
+        );
 
         // ORDER BY
         let order = if descending { "DESC" } else { "ASC" };
@@ -491,6 +484,91 @@ impl RdbJobProcessingStatusIndexRepository {
                 updated_at: row.updated_at,
             })
             .collect())
+    }
+
+    /// Count active job statuses using the same predicates as FindByCondition.
+    ///
+    /// # Error
+    /// - When feature is disabled (`JOB_STATUS_RDB_INDEXING=false`): returns an error
+    ///   describing that advanced job status count is disabled.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn count_by_condition(
+        &self,
+        status: Option<JobProcessingStatus>,
+        worker_id: Option<i64>,
+        channel: Option<String>,
+        min_elapsed_time_ms: Option<i64>,
+        mode: JobProcessingStatusCountMode,
+    ) -> Result<JobProcessingStatusCountResult> {
+        if !self.config.rdb_indexing_enabled {
+            return Err(anyhow::anyhow!(
+                "Advanced job status count is disabled. \
+                 Enable JOB_STATUS_RDB_INDEXING=true to use this feature."
+            ));
+        }
+
+        let now = datetime::now_millis();
+        let mut conn = self.rdb_pool.acquire().await?;
+
+        match mode {
+            JobProcessingStatusCountMode::Total => {
+                let mut query_builder = sqlx::QueryBuilder::new(
+                    "SELECT COUNT(*) FROM job_processing_status WHERE deleted_at IS NULL",
+                );
+                push_status_condition_filters(
+                    &mut query_builder,
+                    status,
+                    worker_id,
+                    channel.as_deref(),
+                    min_elapsed_time_ms,
+                    now,
+                );
+
+                let total: i64 = query_builder
+                    .build_query_scalar()
+                    .fetch_one(&mut *conn)
+                    .await
+                    .map_err(JobWorkerError::DBError)?;
+
+                Ok(JobProcessingStatusCountResult {
+                    total,
+                    counts: Vec::new(),
+                })
+            }
+            JobProcessingStatusCountMode::GroupByStatus => {
+                let mut query_builder = sqlx::QueryBuilder::new(
+                    "SELECT status, COUNT(*) AS count \
+                     FROM job_processing_status \
+                     WHERE deleted_at IS NULL",
+                );
+                push_status_condition_filters(
+                    &mut query_builder,
+                    status,
+                    worker_id,
+                    channel.as_deref(),
+                    min_elapsed_time_ms,
+                    now,
+                );
+                query_builder.push(" GROUP BY status ORDER BY status ASC");
+
+                let rows: Vec<JobProcessingStatusCountRow> = query_builder
+                    .build_query_as()
+                    .fetch_all(&mut *conn)
+                    .await
+                    .map_err(JobWorkerError::DBError)?;
+                let counts: Vec<JobProcessingStatusCount> = rows
+                    .into_iter()
+                    .map(|row| JobProcessingStatusCount {
+                        status: JobProcessingStatus::try_from(row.status)
+                            .unwrap_or(JobProcessingStatus::Unknown),
+                        count: row.count,
+                    })
+                    .collect();
+                let total = counts.iter().map(|count| count.count).sum();
+
+                Ok(JobProcessingStatusCountResult { total, counts })
+            }
+        }
     }
 
     /// Bulk logical deletion of stale records (orphaned_only=false)
@@ -628,6 +706,33 @@ pub struct JobProcessingStatusDetail {
     pub updated_at: i64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JobProcessingStatusCountMode {
+    Total,
+    GroupByStatus,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JobProcessingStatusCount {
+    pub status: JobProcessingStatus,
+    pub count: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JobProcessingStatusCountResult {
+    pub total: i64,
+    pub counts: Vec<JobProcessingStatusCount>,
+}
+
+impl JobProcessingStatusCountResult {
+    pub fn count_for_status(&self, status: JobProcessingStatus) -> Option<i64> {
+        self.counts
+            .iter()
+            .find(|count| count.status == status)
+            .map(|count| count.count)
+    }
+}
+
 /// Row type for sqlx query mapping
 #[derive(Debug, sqlx::FromRow)]
 struct JobProcessingStatusDetailRow {
@@ -642,6 +747,37 @@ struct JobProcessingStatusDetailRow {
     is_streamable: bool,
     broadcast_results: bool,
     updated_at: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct JobProcessingStatusCountRow {
+    status: i32,
+    count: i64,
+}
+
+fn push_status_condition_filters(
+    query_builder: &mut sqlx::QueryBuilder<infra_utils::infra::rdb::Rdb>,
+    status: Option<JobProcessingStatus>,
+    worker_id: Option<i64>,
+    channel: Option<&str>,
+    min_elapsed_time_ms: Option<i64>,
+    now: i64,
+) {
+    if let Some(s) = status {
+        query_builder.push(" AND status = ").push_bind(s as i32);
+    }
+    if let Some(w) = worker_id {
+        query_builder.push(" AND worker_id = ").push_bind(w);
+    }
+    if let Some(c) = channel {
+        query_builder.push(" AND channel = ").push_bind(c);
+    }
+    if let Some(elapsed) = min_elapsed_time_ms {
+        let cutoff = now - elapsed;
+        query_builder
+            .push(" AND start_time IS NOT NULL AND start_time < ")
+            .push_bind(cutoff);
+    }
 }
 
 /// Compute cutoff timestamp in milliseconds from stale_threshold_hours.
@@ -1110,6 +1246,233 @@ mod tests {
             assert_eq!(results[0].worker_id, 1);
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_count_by_condition_total() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            insert_count_by_condition_fixture(&repo).await?;
+
+            let result = repo
+                .count_by_condition(
+                    None,
+                    None,
+                    Some("count_test".to_string()),
+                    None,
+                    JobProcessingStatusCountMode::Total,
+                )
+                .await?;
+
+            assert_eq!(result.total, 3);
+            assert!(result.counts.is_empty());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_count_by_condition_group_by_status() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            insert_count_by_condition_fixture(&repo).await?;
+
+            let result = repo
+                .count_by_condition(
+                    None,
+                    None,
+                    Some("count_test".to_string()),
+                    None,
+                    JobProcessingStatusCountMode::GroupByStatus,
+                )
+                .await?;
+
+            assert_eq!(result.total, 3);
+            assert_eq!(result.counts.len(), 2);
+            assert_eq!(
+                result.count_for_status(JobProcessingStatus::Pending),
+                Some(2)
+            );
+            assert_eq!(
+                result.count_for_status(JobProcessingStatus::Running),
+                Some(1)
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_count_by_condition_filters() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            insert_count_by_condition_fixture(&repo).await?;
+
+            let pending = repo
+                .count_by_condition(
+                    Some(JobProcessingStatus::Pending),
+                    None,
+                    Some("count_test".to_string()),
+                    None,
+                    JobProcessingStatusCountMode::Total,
+                )
+                .await?;
+            assert_eq!(pending.total, 2);
+
+            let worker_one = repo
+                .count_by_condition(
+                    None,
+                    Some(1),
+                    Some("count_test".to_string()),
+                    None,
+                    JobProcessingStatusCountMode::Total,
+                )
+                .await?;
+            assert_eq!(worker_one.total, 2);
+
+            let long_running = repo
+                .count_by_condition(
+                    None,
+                    None,
+                    Some("count_test".to_string()),
+                    Some(30_000),
+                    JobProcessingStatusCountMode::Total,
+                )
+                .await?;
+            assert_eq!(long_running.total, 1);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_count_by_condition_disabled() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: false,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let result = repo
+                .count_by_condition(None, None, None, None, JobProcessingStatusCountMode::Total)
+                .await;
+
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("disabled"));
+            Ok(())
+        })
+    }
+
+    async fn insert_count_by_condition_fixture(
+        repo: &RdbJobProcessingStatusIndexRepository,
+    ) -> Result<()> {
+        let now = datetime::now_millis();
+
+        repo.index_status(
+            &JobId { value: 700 },
+            &JobProcessingStatus::Pending,
+            &WorkerId { value: 1 },
+            Some("count_test"),
+            0,
+            now,
+            false,
+            false,
+        )
+        .await?;
+        repo.index_status(
+            &JobId { value: 701 },
+            &JobProcessingStatus::Pending,
+            &WorkerId { value: 1 },
+            Some("count_test"),
+            0,
+            now,
+            false,
+            false,
+        )
+        .await?;
+        repo.index_status(
+            &JobId { value: 702 },
+            &JobProcessingStatus::Pending,
+            &WorkerId { value: 2 },
+            Some("count_test"),
+            0,
+            now,
+            false,
+            false,
+        )
+        .await?;
+        repo.index_status(
+            &JobId { value: 702 },
+            &JobProcessingStatus::Running,
+            &WorkerId { value: 2 },
+            Some("count_test"),
+            0,
+            now,
+            false,
+            false,
+        )
+        .await?;
+        repo.index_status(
+            &JobId { value: 703 },
+            &JobProcessingStatus::Pending,
+            &WorkerId { value: 3 },
+            Some("count_test"),
+            0,
+            now,
+            false,
+            false,
+        )
+        .await?;
+
+        sqlx::query("UPDATE job_processing_status SET deleted_at = ? WHERE job_id = ?")
+            .bind(now)
+            .bind(703)
+            .execute(repo.rdb_pool().as_ref())
+            .await?;
+        sqlx::query("UPDATE job_processing_status SET start_time = ? WHERE job_id = ?")
+            .bind(now - 60_000)
+            .bind(702)
+            .execute(repo.rdb_pool().as_ref())
+            .await?;
+
+        Ok(())
     }
 
     #[test]

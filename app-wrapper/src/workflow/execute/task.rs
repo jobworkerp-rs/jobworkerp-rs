@@ -232,7 +232,7 @@ impl TaskExecutor {
                     // yield Err(Box::new(e));
                     Err(workflow::errors::ErrorFactory::new().service_unavailable(
                     format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}",
-                      execution_id.value, workflow_name, &pos.as_json_pointer()),
+                      execution_id.value, workflow_name, pos.as_json_pointer()),
                 Some(current_position.read().await.as_error_instance()),
                     Some(e.to_string()),
                 ))
@@ -635,7 +635,7 @@ impl TaskExecutor {
         {
             let m = format!(
                 "Failed to validate input schema: {:#?}\n{:#?}\n{:#?}",
-                schema, &task_context.raw_input, e
+                schema, task_context.raw_input, e
             );
             let pos = task_context.position.clone();
             pos.write().await.push("input".to_string());

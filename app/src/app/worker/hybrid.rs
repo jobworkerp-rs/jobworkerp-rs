@@ -290,7 +290,7 @@ impl WorkerApp for HybridWorkerAppImpl {
 
                 Ok(true)
             } else {
-                Err(JobWorkerError::NotFound(format!("worker not found: id={}", &id.value)).into())
+                Err(JobWorkerError::NotFound(format!("worker not found: id={}", id.value)).into())
             }
         } else {
             // empty data, only clear cache

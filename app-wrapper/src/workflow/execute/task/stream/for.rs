@@ -406,7 +406,7 @@ impl ForTaskStreamExecutor {
                     &mut span,
                     format!(
                         "for_parallel_task:{}_{}",
-                        &task_name_formatted, &item_name_clone
+                        task_name_formatted, item_name_clone
                     ),
                     &item_value,
                     i,

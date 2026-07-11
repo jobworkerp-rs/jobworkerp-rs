@@ -261,7 +261,7 @@ impl HybridJobAppImpl {
             if run_after_time > 0 && resolved.response_type == ResponseType::Direct as i32 {
                 return Err(JobWorkerError::InvalidParameter(format!(
                     "run_after_time must be 0 for worker response_type=Direct. job: {:?}",
-                    &job_data
+                    job_data
                 ))
                 .into());
             }
@@ -315,7 +315,7 @@ impl HybridJobAppImpl {
                     Ok((jid, None, None))
                 } else {
                     Err(
-                        JobWorkerError::RuntimeError(format!("cannot create record: {:?}", &job))
+                        JobWorkerError::RuntimeError(format!("cannot create record: {:?}", job))
                             .into(),
                     )
                 }
@@ -364,7 +364,7 @@ impl HybridJobAppImpl {
                         // storage error?
                         Err(JobWorkerError::RuntimeError(format!(
                             "cannot create record: {:?}",
-                            &job
+                            job
                         ))
                         .into())
                     }
@@ -748,7 +748,7 @@ impl JobApp for HybridJobAppImpl {
             if run_after_time > 0 && resolved.response_type == ResponseType::Direct as i32 {
                 return Err(JobWorkerError::InvalidParameter(format!(
                     "run_after_time must be 0 for worker response_type=Direct. job: {:?}",
-                    &job_data
+                    job_data
                 ))
                 .into());
             }
@@ -791,7 +791,7 @@ impl JobApp for HybridJobAppImpl {
                     Ok((jid, None, None))
                 } else {
                     Err(
-                        JobWorkerError::RuntimeError(format!("cannot create record: {:?}", &job))
+                        JobWorkerError::RuntimeError(format!("cannot create record: {:?}", job))
                             .into(),
                     )
                 }
@@ -829,7 +829,7 @@ impl JobApp for HybridJobAppImpl {
                         // storage error?
                         Err(JobWorkerError::RuntimeError(format!(
                             "cannot create record: {:?}",
-                            &job
+                            job
                         ))
                         .into())
                     }
@@ -840,7 +840,7 @@ impl JobApp for HybridJobAppImpl {
                 }
             }
         } else {
-            Err(JobWorkerError::WorkerNotFound(format!("name: {:?}", &worker_name)).into())
+            Err(JobWorkerError::WorkerNotFound(format!("name: {:?}", worker_name)).into())
         }
     }
 
@@ -1046,11 +1046,11 @@ impl JobApp for HybridJobAppImpl {
                     &data.worker_id,
                     &job,
                 );
-                Err(JobWorkerError::WorkerNotFound(format!("in re-enqueue job: {:?}", &job)).into())
+                Err(JobWorkerError::WorkerNotFound(format!("in re-enqueue job: {:?}", job)).into())
             }
         } else {
             tracing::error!("re-enqueue job: invalid job: {:?}", &job,);
-            Err(JobWorkerError::NotFound(format!("illegal re-enqueue job: {:?}", &job)).into())
+            Err(JobWorkerError::NotFound(format!("illegal re-enqueue job: {:?}", job)).into())
         }
     }
 
@@ -1409,6 +1409,29 @@ impl JobApp for HybridJobAppImpl {
         } else {
             Err(anyhow::anyhow!(
                 "Advanced job status search is disabled. \
+                 Enable JOB_STATUS_RDB_INDEXING=true to use this feature."
+            ))
+        }
+    }
+
+    async fn count_by_condition(
+        &self,
+        status: Option<JobProcessingStatus>,
+        worker_id: Option<i64>,
+        channel: Option<String>,
+        min_elapsed_time_ms: Option<i64>,
+        mode: infra::infra::job::status::rdb::JobProcessingStatusCountMode,
+    ) -> Result<infra::infra::job::status::rdb::JobProcessingStatusCountResult>
+    where
+        Self: Send + 'static,
+    {
+        if let Some(index_repo) = &self.job_status_index_repository {
+            index_repo
+                .count_by_condition(status, worker_id, channel, min_elapsed_time_ms, mode)
+                .await
+        } else {
+            Err(anyhow::anyhow!(
+                "Advanced job status count is disabled. \
                  Enable JOB_STATUS_RDB_INDEXING=true to use this feature."
             ))
         }

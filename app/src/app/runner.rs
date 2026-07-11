@@ -393,7 +393,7 @@ impl RunnerDataWithDescriptor {
                 .ok_or(
                     JobWorkerError::InvalidParameter(format!(
                         "illegal RunnerData: runner_settings message is not found from:\n {}",
-                        &self.runner_data.runner_settings_proto
+                        self.runner_data.runner_settings_proto
                     ))
                     .into(),
                 )
@@ -411,7 +411,7 @@ impl RunnerDataWithDescriptor {
                 .ok_or(
                     JobWorkerError::InvalidParameter(format!(
                         "illegal RunnerData: runner_settings message is not found from:\n {}",
-                        &self.runner_data.runner_settings_proto
+                        self.runner_data.runner_settings_proto
                     ))
                     .into(),
                 )

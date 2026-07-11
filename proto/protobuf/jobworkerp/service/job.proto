@@ -151,6 +151,44 @@ message JobProcessingStatusDetailResponse {
   int64 updated_at = 11;  // Last RDB update time (for detecting sync delay)
 }
 
+// Count mode for JobProcessingStatusService.CountByCondition.
+enum CountJobProcessingStatusMode {
+  // Count all rows matching the condition.
+  COUNT_JOB_PROCESSING_STATUS_MODE_TOTAL = 0;
+
+  // Count rows matching the condition grouped by processing status.
+  COUNT_JOB_PROCESSING_STATUS_MODE_GROUP_BY_STATUS = 1;
+}
+
+// Request for counting job processing statuses with the same predicates as FindByCondition.
+message CountJobProcessingStatusRequest {
+  // Status filter
+  optional jobworkerp.data.JobProcessingStatus status = 1;
+
+  // Worker ID filter
+  optional int64 worker_id = 2;
+
+  // Channel filter
+  optional string channel = 3;
+
+  // Long-running job filter (milliseconds)
+  optional int64 min_elapsed_time_ms = 4;
+
+  // Count mode. Default is TOTAL.
+  CountJobProcessingStatusMode mode = 5;
+}
+
+message JobProcessingStatusCount {
+  jobworkerp.data.JobProcessingStatus status = 1;
+  int64 count = 2;
+}
+
+message CountJobProcessingStatusResponse {
+  int64 total = 1;
+  repeated JobProcessingStatusCount counts = 2;
+  CountJobProcessingStatusMode mode = 3;
+}
+
 // Cleanup request message
 message CleanupRequest {
   // Optional: Override default retention hours (for testing purposes)
@@ -208,6 +246,11 @@ service JobProcessingStatusService {
   // Returns UNIMPLEMENTED error if JOB_STATUS_RDB_INDEXING=false
   rpc FindByCondition(FindJobProcessingStatusRequest)
       returns (stream JobProcessingStatusDetailResponse);
+
+  // Count active rows using the same RDB index predicates as FindByCondition.
+  // Returns UNIMPLEMENTED error if JOB_STATUS_RDB_INDEXING=false
+  rpc CountByCondition(CountJobProcessingStatusRequest)
+      returns (CountJobProcessingStatusResponse);
 
   // Cleanup logically deleted records from job_processing_status table
   //

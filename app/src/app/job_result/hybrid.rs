@@ -214,7 +214,7 @@ impl JobResultApp for HybridJobResultAppImpl {
             if !wd.broadcast_results {
                 return Err(JobWorkerError::InvalidParameter(format!(
                     "Cannot listen result not broadcast worker: {:?}",
-                    &wd
+                    wd
                 ))
                 .into());
             }
@@ -335,7 +335,7 @@ impl JobResultApp for HybridJobResultAppImpl {
         if !wd.broadcast_results {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "Cannot listen result not broadcast worker: {:?}",
-                &wd
+                wd
             ))
             .into());
         }

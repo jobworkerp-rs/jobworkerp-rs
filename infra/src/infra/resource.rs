@@ -64,13 +64,13 @@ static _REDIS_BLOCKING: tokio::sync::OnceCell<RedisPool> = tokio::sync::OnceCell
 
 pub async fn setup_redis_client(config: RedisConfig) -> redis::Client {
     redis::Client::open(config.url.clone())
-        .unwrap_or_else(|_| panic!("cannot open redis client: config={:?}", &config))
+        .unwrap_or_else(|_| panic!("cannot open redis client: config={:?}", config))
 }
 
 pub async fn setup_redis_client_by_env() -> redis::Client {
     let conf = load_redis_config_from_env().unwrap();
     redis::Client::open(conf.url.clone())
-        .unwrap_or_else(|_| panic!("cannot open redis client: config={:?}", &conf))
+        .unwrap_or_else(|_| panic!("cannot open redis client: config={:?}", conf))
 }
 
 // static _REDIS_CON: tokio::sync::OnceCell<redis::aio::Connection> =

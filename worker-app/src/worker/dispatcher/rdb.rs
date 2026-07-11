@@ -148,7 +148,7 @@ pub trait RdbJobDispatcher:
         if job.id.is_none() || job.data.is_none() {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "job data is strange: {:?}",
-                &job
+                job
             ))
             .into());
         }
@@ -163,7 +163,7 @@ pub trait RdbJobDispatcher:
         } else {
             tracing::error!("failed to get worker: {:?}", &job);
             return Err(
-                JobWorkerError::NotFound(format!("failed to get worker: {:?}", &job)).into(),
+                JobWorkerError::NotFound(format!("failed to get worker: {:?}", job)).into(),
             );
         };
         let rid = if let Some(id) = w.runner_id.as_ref() {
@@ -171,7 +171,7 @@ pub trait RdbJobDispatcher:
         } else {
             tracing::error!("failed to get runner_id: {:?}", &job);
             return Err(
-                JobWorkerError::NotFound(format!("failed to get runner_id: {:?}", &job)).into(),
+                JobWorkerError::NotFound(format!("failed to get runner_id: {:?}", job)).into(),
             );
         };
         let runner_data = if let Some(RunnerWithSchema {
@@ -182,7 +182,7 @@ pub trait RdbJobDispatcher:
         {
             runner_data.ok_or(JobWorkerError::NotFound(format!(
                 "runner data {:?} is not found.",
-                &rid
+                rid
             )))
         } else {
             tracing::error!(

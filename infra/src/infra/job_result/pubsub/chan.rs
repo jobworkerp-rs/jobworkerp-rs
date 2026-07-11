@@ -31,7 +31,7 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             .as_ref()
             .ok_or(JobWorkerError::InvalidParameter(format!(
                 "job_id not found: result_id={}",
-                &id.value
+                id.value
             )))?;
         tracing::debug!(
             "publish_result: job_id={}, result_id={}",
@@ -43,7 +43,7 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             .as_ref()
             .ok_or(JobWorkerError::InvalidParameter(format!(
                 "worker_id not found: job_id={}",
-                &jid.value
+                jid.value
             )))?;
         let job_result = JobResult {
             id: Some(*id),

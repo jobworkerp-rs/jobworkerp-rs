@@ -65,7 +65,7 @@ impl Manager for RunnerPoolManagerImpl {
             .await
             .ok_or(JobWorkerError::InvalidParameter(format!(
                 "runner not found: {:?}",
-                &self.runner_data.name
+                self.runner_data.name
             )))?;
         runner.load(self.worker.runner_settings.clone()).await?;
         tracing::debug!("runner created in pool: {}", runner.name());
@@ -122,7 +122,7 @@ impl RunnerFactoryWithPool {
         if !worker.use_static {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "worker must be static for runner pool: {:?}",
-                &worker
+                worker
             ))
             .into());
         }
@@ -135,8 +135,8 @@ impl RunnerFactoryWithPool {
             // must not be reached (run in not assigned channel, maybe bug? report to developer)
             Err(anyhow!(
                 "this channel {:?} is not configured in this worker: {:?}",
-                &worker.channel,
-                &worker
+                worker.channel,
+                worker
             ))
         }?;
         let config = PoolConfig::new(max_size as usize);

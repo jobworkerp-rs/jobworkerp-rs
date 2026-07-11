@@ -215,7 +215,7 @@ fn test_workflow_create_via_llm_function_call_streaming_fallback() -> Result<()>
         // Grab the last or only response to verify
         let response = collected_responses.last().unwrap();
         println!("✅ WORKFLOW.create LLM streaming fallback call successful");
-        println!("Response Output (Raw): {}", &response.output);
+        println!("Response Output (Raw): {}", response.output);
 
         let output_json: serde_json::Value =
             serde_json::from_str(&response.output).expect("Invalid JSON in FunctionResult output");

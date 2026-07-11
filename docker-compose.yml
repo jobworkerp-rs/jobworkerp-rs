@@ -4,7 +4,7 @@ services:
     platform: linux/amd64
     env_file:
       # Ensure that the variables in .env match your environment
-      - compose.env
+      - .env
     security_opt:
       - seccomp:unconfined
     cap_add:

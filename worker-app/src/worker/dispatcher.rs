@@ -349,7 +349,7 @@ impl JobDispatcherFactory {
             }
             (t, db, rd) => panic!(
                 "illegal storage type and repository: {:?}, {:?}, {:?}",
-                t, &db, &rd
+                t, db, rd
             ),
         }
     }

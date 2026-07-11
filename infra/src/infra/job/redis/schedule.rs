@@ -57,14 +57,14 @@ where
                 .as_ref()
                 .ok_or(JobWorkerError::InvalidParameter(format!(
                     "job id is empty?:{:?}",
-                    &job
+                    job
                 )))?;
             let run_after_time = job
                 .data
                 .as_ref()
                 .ok_or(JobWorkerError::InvalidParameter(format!(
                     "job data is empty?:{:?}",
-                    &job
+                    job
                 )))?
                 .run_after_time;
             if run_after_time == 0 {
@@ -102,7 +102,7 @@ where
                 .as_ref()
                 .ok_or(JobWorkerError::InvalidParameter(format!(
                     "job id is empty?:{:?}",
-                    &job
+                    job
                 )))?;
             self.redis_pool()
                 .get()

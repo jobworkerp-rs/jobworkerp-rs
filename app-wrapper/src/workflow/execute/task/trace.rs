@@ -80,7 +80,7 @@ pub trait TaskTracing: Tracing {
             KeyValue::new(ATTR_TASK_OUTPUT, json_attr(&result_task.output)),
             KeyValue::new(
                 ATTR_TASK_FLOW_DIRECTIVE,
-                format!("{:?}", &result_task.flow_directive),
+                format!("{:?}", result_task.flow_directive),
             ),
             KeyValue::new(ATTR_TASK_DURATION_MS, execution_duration_ms),
             KeyValue::new(ATTR_TASK_STATUS, "completed"),

@@ -54,7 +54,7 @@ impl TestPlugin {
         {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }
-        Ok(format!("end test arg={:?}", &data).into_bytes())
+        Ok(format!("end test arg={:?}", data).into_bytes())
     }
 }
 

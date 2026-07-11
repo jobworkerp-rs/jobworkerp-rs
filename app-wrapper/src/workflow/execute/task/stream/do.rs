@@ -180,7 +180,7 @@ impl DoTaskStreamExecutor {
                 let span = Self::start_child_otel_span(
                     &cx,
                     APP_WORKER_NAME,
-                    format!("do_task_{}:{}", &pos, &name),
+                    format!("do_task_{}:{}", pos, name),
                 );
                 let ccx = Arc::new(opentelemetry::Context::current_with_span(span));
                 let ccx_clone = ccx.clone();

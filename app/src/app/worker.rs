@@ -270,7 +270,7 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
             wd
         } else {
             return Err(
-                JobWorkerError::NotFound(format!("worker not found: id={}", &id.value)).into(),
+                JobWorkerError::NotFound(format!("worker not found: id={}", id.value)).into(),
             );
         };
         self.check_worker_data_streaming(
@@ -294,7 +294,7 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
         let runner_id = worker_data.runner_id.ok_or_else(|| {
             anyhow::Error::from(JobWorkerError::InvalidParameter(format!(
                 "worker does not have runner_id: id={}",
-                &id.value
+                id.value
             )))
         })?;
         if let Some(RunnerWithSchema {

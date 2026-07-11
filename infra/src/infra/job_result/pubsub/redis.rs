@@ -29,14 +29,14 @@ impl JobResultPublisher for RedisJobResultPubSubRepositoryImpl {
             .as_ref()
             .ok_or(JobWorkerError::InvalidParameter(format!(
                 "job_id not found: result_id={}",
-                &id.value
+                id.value
             )))?;
         let wid = data
             .worker_id
             .as_ref()
             .ok_or(JobWorkerError::InvalidParameter(format!(
                 "worker_id not found: job_id={}",
-                &jid.value
+                jid.value
             )))?;
         tracing::debug!(
             "publish_result: job_id={}, result_id={}",
@@ -133,7 +133,7 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                 _ = delay => {
                         return Err(JobWorkerError::TimeoutError(format!(
                             "subscribe timeout: job_id:{}",
-                            &job_id.value
+                            job_id.value
                         ))
                         .into());
                 }
@@ -167,7 +167,7 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                 Ok(Err(e)) => Err(e),
                 Err(_) => Err(JobWorkerError::RuntimeError(format!(
                     "subscribe timeout: job_id:{}",
-                    &job_id.value
+                    job_id.value
                 ))
                 .into()),
             }
