@@ -194,7 +194,7 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
                             eprintln!("   Worker Name: {}", data.worker_name);
                             if let Some(output) = &data.output {
                                 let output_str = String::from_utf8_lossy(&output.items);
-                                eprintln!("   Output (raw bytes): {:?}", &output.items);
+                                eprintln!("   Output (raw bytes): {:?}", output.items);
                                 eprintln!("   Output (string): {}", output_str);
                             } else {
                                 eprintln!("   Output: None");

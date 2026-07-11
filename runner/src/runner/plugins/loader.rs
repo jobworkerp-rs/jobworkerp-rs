@@ -383,7 +383,7 @@ impl PluginLoader for RunnerPluginLoader {
         {
             return Err(JobWorkerError::AlreadyExists(format!(
                 "plugin already loaded: {} ({})",
-                &name,
+                name,
                 path.display()
             ))
             .into());

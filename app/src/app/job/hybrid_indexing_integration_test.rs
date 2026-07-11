@@ -9,6 +9,7 @@ mod hybrid_indexing_integration_tests {
 
     use anyhow::Result;
     use infra::infra::job::status::JobProcessingStatusRepository;
+    use infra::infra::job::status::rdb::JobProcessingStatusCountMode;
     use infra_utils::infra::rdb::UseRdbPool;
     use infra_utils::infra::test::TEST_RUNTIME;
     use jobworkerp_base::codec::UseProstCodec;
@@ -431,6 +432,33 @@ mod hybrid_indexing_integration_tests {
                     "Found job"
                 );
             }
+
+            let total_count = app
+                .count_by_condition(
+                    Some(JobProcessingStatus::Pending),
+                    None,
+                    Some("test".to_string()),
+                    None,
+                    JobProcessingStatusCountMode::Total,
+                )
+                .await?;
+            assert_eq!(total_count.total, results.len() as i64);
+            assert!(total_count.counts.is_empty());
+
+            let grouped_count = app
+                .count_by_condition(
+                    Some(JobProcessingStatus::Pending),
+                    None,
+                    Some("test".to_string()),
+                    None,
+                    JobProcessingStatusCountMode::GroupByStatus,
+                )
+                .await?;
+            assert_eq!(grouped_count.total, results.len() as i64);
+            assert_eq!(
+                grouped_count.count_for_status(JobProcessingStatus::Pending),
+                Some(results.len() as i64)
+            );
 
             tracing::info!("test_find_by_condition_with_rdb_index_hybrid completed successfully");
             Ok(())

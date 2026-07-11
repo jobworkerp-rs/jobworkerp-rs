@@ -72,7 +72,7 @@ impl HelloPlugin {
         let data = arg.arg;
         println!(
             "========== [{}] HelloPlugin run: Hello! {}: {} ==========",
-            start, &data, id
+            start, data, id
         );
         tokio::time::sleep(Duration::from_secs(2)).await;
         println!(
@@ -82,7 +82,7 @@ impl HelloPlugin {
             id
         );
         Ok(HelloRunnerResult {
-            data: format!("SUCCESS: {} arg={}", id, &data),
+            data: format!("SUCCESS: {} arg={}", id, data),
         }
         .encode_to_vec())
     }
@@ -127,7 +127,7 @@ impl HelloPlugin {
             tokio::time::sleep(Duration::from_millis(10)).await;
             println!(
                 "========== [{}] HelloPlugin run_stream: Hello! {}: {} ==========",
-                start, &hello_name, id
+                start, hello_name, id
             );
             let result = format!("Hello {}!", hello_name);
             for c in result.chars() {

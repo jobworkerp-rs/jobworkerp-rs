@@ -1222,7 +1222,7 @@ async fn test_method_proto_map_multiple_tools() -> Result<()> {
 
     let tool_count = method_proto_map.len();
     eprintln!("✅ method_proto_map returned {} tools", tool_count);
-    eprintln!("✅ method_proto_map {:?}", &method_proto_map);
+    eprintln!("✅ method_proto_map {:?}", method_proto_map);
 
     assert!(
         tool_count >= 1,

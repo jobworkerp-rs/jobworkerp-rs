@@ -388,7 +388,7 @@ pub trait UseLoadUrlOrPath {
                         } else {
                             return Err(anyhow!(
                                 "Failed to load yaml: {}, status: {}",
-                                &url,
+                                url,
                                 res.status()
                             ));
                         }

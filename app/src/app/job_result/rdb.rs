@@ -69,14 +69,14 @@ impl RdbJobResultAppImpl {
         if !wd.broadcast_results {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "Cannot listen result not broadcast worker: {:?}",
-                &wd
+                wd
             ))
             .into());
         }
         if !(wd.store_failure && wd.store_success) {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "Cannot listen result stream for worker without store_success and store_failure: {:?}",
-                &wd
+                wd
             ))
             .into());
         }
@@ -306,7 +306,7 @@ impl JobResultApp for RdbJobResultAppImpl {
         if !wd.broadcast_results {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "Cannot listen result not broadcast worker: {:?}",
-                &wd
+                wd
             ))
             .into());
         }
@@ -334,7 +334,7 @@ impl JobResultApp for RdbJobResultAppImpl {
                         tracing::info!("listen_result: timeout");
                         return Err(JobWorkerError::TimeoutError(format!(
                             "listen timeout: job_id:{}",
-                            &job_id.value
+                            job_id.value
                         ))
                         .into());
                     } else {
@@ -362,7 +362,7 @@ impl JobResultApp for RdbJobResultAppImpl {
                         );
                         return Err(JobWorkerError::TimeoutError(format!(
                             "listen timeout: job_id:{}",
-                            &job_id.value
+                            job_id.value
                         ))
                         .into());
                     } else {

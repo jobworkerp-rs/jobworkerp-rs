@@ -384,6 +384,20 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     where
         Self: Send + 'static;
 
+    /// Count active job statuses using the same predicates as FindByCondition.
+    ///
+    /// Returns UNIMPLEMENTED error if JOB_STATUS_RDB_INDEXING=false
+    async fn count_by_condition(
+        &self,
+        status: Option<JobProcessingStatus>,
+        worker_id: Option<i64>,
+        channel: Option<String>,
+        min_elapsed_time_ms: Option<i64>,
+        mode: infra::infra::job::status::rdb::JobProcessingStatusCountMode,
+    ) -> Result<infra::infra::job::status::rdb::JobProcessingStatusCountResult>
+    where
+        Self: Send + 'static;
+
     /// Cleanup logically deleted job_processing_status records
     ///
     /// This method delegates to RdbJobProcessingStatusIndexRepository.cleanup_deleted_records()

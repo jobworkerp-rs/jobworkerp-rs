@@ -590,10 +590,11 @@ impl RunnerTrait for CommandRunnerImpl {
                     if !is_success {
                         return Err(JobWorkerError::RuntimeError(format!(
                             "Command '{}' exited with code {:?}. stderr: {}",
-                            &data.command,
+                            data.command,
                             exit_code_value,
                             result.stderr.as_deref().unwrap_or("")
-                        )).into());
+                        ))
+                        .into());
                     }
                 }
 
@@ -1032,11 +1033,11 @@ impl RunnerTrait for CommandRunnerImpl {
                             None => false, // signal terminated = error
                         };
                         if !is_success {
-                            Some(format!(
-                                "Command '{}' exited with code {:?}",
-                                &command_str,
-                                exit_code
-                            ))
+                                Some(format!(
+                                    "Command '{}' exited with code {:?}",
+                                    command_str,
+                                    exit_code
+                                ))
                         } else {
                             None
                         }

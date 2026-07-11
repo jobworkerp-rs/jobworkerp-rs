@@ -99,7 +99,7 @@ impl GenaiChatService {
                         .map_err(|e| {
                             genai::resolver::Error::Custom(format!(
                                 "Failed to resolve service target from model={} : {:#?}",
-                                &model_name, e
+                                model_name, e
                             ))
                         })?;
                     if let Some(url) = endpoint_url
@@ -109,7 +109,7 @@ impl GenaiChatService {
                             .map_err(|e| {
                                 genai::resolver::Error::Custom(format!(
                                     "Failed to parse endpoint URL={} : {:#?}",
-                                    &url, e
+                                    url, e
                                 ))
                             })?;
                         service_target.endpoint = Endpoint::from_owned(normalized);

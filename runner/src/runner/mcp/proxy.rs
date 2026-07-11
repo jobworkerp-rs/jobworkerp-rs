@@ -361,7 +361,7 @@ impl McpServerFactory {
     // boot up and connection test for all mcp servers
     pub async fn test_all(&self) -> Result<Vec<McpServerProxy>> {
         let mut mcp_clients = Vec::new();
-        for (_, client) in self.mcp_configs.read().await.iter() {
+        for client in self.mcp_configs.read().await.values() {
             match McpServerProxy::new(client).await {
                 Ok(s) => {
                     tracing::info!("MCP server {} can be connected", client.name);

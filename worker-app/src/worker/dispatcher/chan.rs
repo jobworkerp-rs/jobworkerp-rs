@@ -250,7 +250,7 @@ pub trait ChanJobDispatcher:
            (jid, jdat, metadata)
         } else {
             // Status cleanup is handled by process_deque_job based on error type
-            let mes = format!("job {:?} is incomplete data.", &job);
+            let mes = format!("job {:?} is incomplete data.", job);
             tracing::error!("{}", &mes);
             return Err(JobWorkerError::InvalidParameter(mes).into());
         };
@@ -286,7 +286,7 @@ pub trait ChanJobDispatcher:
         let runner_data = if let Some(RunnerWithSchema{id:_, data: runner_data,..}) =
              self.runner_app().find_runner(sid).await?
         {
-                runner_data.ok_or(JobWorkerError::NotFound(format!("runner data {:?} is not found.", &sid)))
+                runner_data.ok_or(JobWorkerError::NotFound(format!("runner data {:?} is not found.", sid)))
         } else {
             // Status cleanup is handled by process_deque_job based on error type
             let mes = format!(
@@ -397,7 +397,7 @@ pub trait ChanJobDispatcher:
                 tracing::warn!("failed to grab job from db: {:?}, {:?}", &jid, &jdat);
                 return Err(JobWorkerError::AlreadyExists(format!(
                     "already grabbed: {:?}, {:?}",
-                    &jid, &jdat
+                    jid, jdat
                 ))
                 .into());
             }

@@ -427,7 +427,7 @@ pub trait UseJobExecutor:
                 };
                 Ok(runner_settings)
             } else {
-                Err(anyhow::anyhow!("Illegal runner: {:#?}", &runner))
+                Err(anyhow::anyhow!("Illegal runner: {:#?}", runner))
             }
         }
     }
@@ -807,7 +807,7 @@ pub trait UseJobExecutor:
                 Ok(jdata
                     .output
                     .as_ref()
-                    .ok_or(anyhow!("job result output is empty: {:?}", &jdata))?
+                    .ok_or(anyhow!("job result output is empty: {:?}", jdata))?
                     .items
                     .to_owned())
             } else {

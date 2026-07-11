@@ -268,7 +268,7 @@ impl WorkflowExecutor {
 
                         yield Err(workflow::errors::ErrorFactory::new().service_unavailable(
                             format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}",
-                              execution_id.value, workflow_name, &pos.as_json_pointer()),
+                              execution_id.value, workflow_name, pos.as_json_pointer()),
                             Some(
                                 WorkflowPosition::new(vec![
                                     serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)

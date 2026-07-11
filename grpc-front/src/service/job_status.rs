@@ -79,9 +79,7 @@ impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static>
         }
         let req = request.get_ref();
 
-        let status = req
-            .status
-            .and_then(|s| proto::jobworkerp::data::JobProcessingStatus::try_from(s).ok());
+        let status = parse_optional_job_processing_status(req.status)?;
 
         match self
             .app()
@@ -114,6 +112,81 @@ impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static>
                     yield Ok(proto_response)
                 }
             }))),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
+
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(method = "count_by_condition")
+    )]
+    async fn count_by_condition(
+        &self,
+        request: tonic::Request<crate::proto::jobworkerp::service::CountJobProcessingStatusRequest>,
+    ) -> Result<
+        tonic::Response<crate::proto::jobworkerp::service::CountJobProcessingStatusResponse>,
+        tonic::Status,
+    > {
+        let _s = Self::trace_request("job_status", "count_by_condition", &request);
+        if !JOB_STATUS_CONFIG.rdb_indexing_enabled {
+            return Err(tonic::Status::unimplemented(concat!(
+                "Job processing status RDB indexing is disabled. ",
+                "Set JOB_STATUS_RDB_INDEXING=true to enable count_by_condition."
+            )));
+        }
+        let req = request.get_ref();
+        // Decode the wire integer via the generated proto enum (TryFrom<i32>) so the
+        // mapping stays in sync with the proto definition instead of hardcoding values.
+        let mode = match crate::proto::jobworkerp::service::CountJobProcessingStatusMode::try_from(
+            req.mode,
+        ) {
+            Ok(crate::proto::jobworkerp::service::CountJobProcessingStatusMode::Total) => {
+                infra::infra::job::status::rdb::JobProcessingStatusCountMode::Total
+            }
+            Ok(crate::proto::jobworkerp::service::CountJobProcessingStatusMode::GroupByStatus) => {
+                infra::infra::job::status::rdb::JobProcessingStatusCountMode::GroupByStatus
+            }
+            Err(_) => {
+                return Err(tonic::Status::invalid_argument(format!(
+                    "Invalid CountJobProcessingStatusMode: {}",
+                    req.mode
+                )));
+            }
+        };
+
+        let status = parse_optional_job_processing_status(req.status)?;
+
+        match self
+            .app()
+            .count_by_condition(
+                status,
+                req.worker_id,
+                req.channel.clone(),
+                req.min_elapsed_time_ms,
+                mode,
+            )
+            .await
+        {
+            Ok(result) => {
+                let counts = result
+                    .counts
+                    .into_iter()
+                    .map(
+                        |count| crate::proto::jobworkerp::service::JobProcessingStatusCount {
+                            status: count.status.into(),
+                            count: count.count,
+                        },
+                    )
+                    .collect();
+                Ok(Response::new(
+                    crate::proto::jobworkerp::service::CountJobProcessingStatusResponse {
+                        total: result.total,
+                        counts,
+                        mode: req.mode,
+                    },
+                ))
+            }
             Err(e) => Err(handle_error(&e)),
         }
     }
@@ -284,3 +357,45 @@ impl JobProcessingStatusGrpc for JobProcessingStatusGrpcImpl {
 
 // use tracing
 impl Tracing for JobProcessingStatusGrpcImpl {}
+
+fn parse_optional_job_processing_status(
+    status: Option<i32>,
+) -> Result<Option<proto::jobworkerp::data::JobProcessingStatus>, tonic::Status> {
+    status
+        .map(|s| {
+            proto::jobworkerp::data::JobProcessingStatus::try_from(s).map_err(|_| {
+                tonic::Status::invalid_argument(format!("Invalid JobProcessingStatus: {s}"))
+            })
+        })
+        .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tonic::Code;
+
+    #[test]
+    fn parse_optional_job_processing_status_accepts_unspecified_filter() {
+        assert_eq!(parse_optional_job_processing_status(None).unwrap(), None);
+    }
+
+    #[test]
+    fn parse_optional_job_processing_status_accepts_known_status() {
+        assert_eq!(
+            parse_optional_job_processing_status(Some(
+                proto::jobworkerp::data::JobProcessingStatus::Pending as i32
+            ))
+            .unwrap(),
+            Some(proto::jobworkerp::data::JobProcessingStatus::Pending)
+        );
+    }
+
+    #[test]
+    fn parse_optional_job_processing_status_rejects_unknown_status() {
+        let err = parse_optional_job_processing_status(Some(999)).unwrap_err();
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(err.message().contains("Invalid JobProcessingStatus"));
+    }
+}

@@ -207,7 +207,7 @@ pub trait RedisJobDispatcher:
             (jid, jdat, metadata)
         } else {
             // Status cleanup is handled by process_deque_job based on error type
-            let mes = format!("job {:?} is incomplete data.", &job.id);
+            let mes = format!("job {:?} is incomplete data.", job.id);
             tracing::error!("{}", &mes);
             return Err(JobWorkerError::InvalidParameter(mes).into());
         };
@@ -241,12 +241,12 @@ pub trait RedisJobDispatcher:
         {
             runner_data.ok_or(JobWorkerError::NotFound(format!(
                 "runner_data {:?} is not found.",
-                &sid
+                sid
             )))
         } else {
             Err(JobWorkerError::NotFound(format!(
                 "runner_data {:?} is not found.",
-                &sid
+                sid
             )))
         }?;
 
@@ -355,7 +355,7 @@ pub trait RedisJobDispatcher:
                     tracing::warn!("failed to grab job from db: {:?}, {:?}", &jid, &jdat);
                     return Err(JobWorkerError::AlreadyExists(format!(
                         "already grabbed: {:?}, {:?}",
-                        &jid, &jdat
+                        jid, jdat
                     ))
                     .into());
                 }
