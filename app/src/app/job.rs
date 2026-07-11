@@ -423,14 +423,16 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     ///   (`find_status()`). Each candidate is checked individually (N+1 queries),
     ///   so this mode may be slow if many stale records exist. Use an appropriate
     ///   `stale_threshold_hours` to keep the candidate set small.
+    ///   The gRPC request layer does not validate this threshold in orphaned-only
+    ///   mode, but this value is still used to filter purge candidates.
     ///
     /// # Limitations (documented for callers)
     /// - In Standalone mode, QueueType::NORMAL jobs are not persisted to RDB,
     ///   so `find_job()` cannot detect them. However, running/pending jobs will
     ///   have an in-memory processing status. After worker restart, both job and
     ///   status are lost, so they are correctly identified as orphans.
-    /// - Set `stale_threshold_hours` appropriately to avoid purging jobs that are
-    ///   still legitimately running.
+    /// - Set `stale_threshold_hours` appropriately in bulk mode to avoid purging
+    ///   jobs that are still legitimately running.
     async fn purge_stale_job_processing_status(
         &self,
         stale_threshold_hours: u64,

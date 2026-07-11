@@ -615,6 +615,7 @@ impl RdbJobProcessingStatusIndexRepository {
     /// Each returned id is then checked individually via `find_job()` + `find_status()` (N+1).
     /// This is acceptable because this RPC is intended for infrequent admin use and
     /// `stale_threshold_hours` typically limits the result set to a small number.
+    /// Use `0` only for orphaned-only emergency sweeps; it selects rows older than now.
     ///
     /// # Returns
     /// - `Ok((job_ids, cutoff_time))`: List of candidate job_ids and cutoff timestamp
@@ -622,7 +623,7 @@ impl RdbJobProcessingStatusIndexRepository {
         if !self.config.rdb_indexing_enabled {
             return Ok((vec![], 0));
         }
-        let (now, cutoff_millis) = compute_cutoff_millis(stale_threshold_hours)?;
+        let (now, cutoff_millis) = compute_orphan_candidate_cutoff_millis(stale_threshold_hours)?;
 
         let mut conn = self.rdb_pool.acquire().await?;
         let rows: Vec<(i64,)> = sqlx::query_as(
@@ -654,22 +655,8 @@ impl RdbJobProcessingStatusIndexRepository {
         }
 
         let retention_hours = retention_hours_override.unwrap_or(self.config.retention_hours);
-        let threshold_millis = retention_hours
-            .checked_mul(3600)
-            .and_then(|v| v.checked_mul(1000))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "retention_hours {} overflows millisecond conversion",
-                    retention_hours
-                )
-            })?;
-        let threshold_millis = i64::try_from(threshold_millis).map_err(|_| {
-            anyhow::anyhow!(
-                "retention_hours {} exceeds i64 range in milliseconds",
-                retention_hours
-            )
-        })?;
-        let cutoff_millis = datetime::now_millis().saturating_sub(threshold_millis);
+        let cutoff_millis =
+            cutoff_from_hours(datetime::now_millis(), retention_hours, "retention_hours")?;
 
         let mut conn = self.rdb_pool.acquire().await?;
         let result = sqlx::query(
@@ -791,23 +778,36 @@ fn compute_cutoff_millis(stale_threshold_hours: u64) -> Result<(i64, i64)> {
         ));
     }
     let now = datetime::now_millis();
-    let threshold_millis = stale_threshold_hours
+    let cutoff_millis = cutoff_from_hours(now, stale_threshold_hours, "stale_threshold_hours")?;
+    Ok((now, cutoff_millis))
+}
+
+/// Convert an hours duration into a `now - duration` cutoff in millis.
+///
+/// `field_name` is used only for error messages so callers report their own
+/// parameter name. Overflow during the millis conversion is a hard error.
+fn cutoff_from_hours(now: i64, hours: u64, field_name: &str) -> Result<i64> {
+    let threshold_millis = hours
         .checked_mul(3600)
         .and_then(|v| v.checked_mul(1000))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "stale_threshold_hours {} overflows millisecond conversion",
-                stale_threshold_hours
-            )
-        })?;
-    let threshold_millis_i64 = i64::try_from(threshold_millis).map_err(|_| {
-        anyhow::anyhow!(
-            "stale_threshold_hours {} exceeds i64 range in milliseconds",
-            stale_threshold_hours
-        )
-    })?;
-    let cutoff_millis = now.saturating_sub(threshold_millis_i64);
-    Ok((now, cutoff_millis))
+        .ok_or_else(|| anyhow::anyhow!("{field_name} {hours} overflows millisecond conversion"))?;
+    let threshold_millis_i64 = i64::try_from(threshold_millis)
+        .map_err(|_| anyhow::anyhow!("{field_name} {hours} exceeds i64 range in milliseconds"))?;
+    Ok(now.saturating_sub(threshold_millis_i64))
+}
+
+/// Compute cutoff for orphan-candidate search.
+///
+/// A zero threshold means "older than now" and is allowed only for orphaned-only
+/// checks, where each candidate is still verified against the authoritative
+/// job/status repositories before deletion.
+fn compute_orphan_candidate_cutoff_millis(stale_threshold_hours: u64) -> Result<(i64, i64)> {
+    if stale_threshold_hours == 0 {
+        let now = datetime::now_millis();
+        return Ok((now, now));
+    }
+
+    compute_cutoff_millis(stale_threshold_hours)
 }
 
 /// Trait for DI of RdbJobProcessingStatusIndexRepository (optional)
@@ -2145,6 +2145,76 @@ mod tests {
             assert!(ids.contains(&721));
             assert!(!ids.contains(&722));
             assert!(cutoff_time > 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_find_stale_job_ids_allows_zero_threshold() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            setup_job_table(pool).await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let now = datetime::now_millis();
+            let before_now = now - 1;
+            let after_now = now + 60_000;
+
+            for (job_id, updated_at) in [(730, before_now), (731, after_now)] {
+                sqlx::query(
+                    "INSERT INTO job_processing_status
+                     (job_id, status, worker_id, channel, priority, enqueue_time, version, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(job_id)
+                .bind(1)
+                .bind(1)
+                .bind("test")
+                .bind(0)
+                .bind(updated_at)
+                .bind(1)
+                .bind(updated_at)
+                .execute(pool)
+                .await?;
+            }
+
+            let (ids, cutoff_time) = repo.find_stale_job_ids(0).await?;
+
+            assert!(ids.contains(&730));
+            assert!(!ids.contains(&731));
+            assert!(cutoff_time >= now);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_purge_stale_records_rejects_zero_threshold() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            setup_job_table(pool).await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let result = repo.purge_stale_records(0).await;
+
+            assert!(result.is_err());
 
             Ok(())
         })

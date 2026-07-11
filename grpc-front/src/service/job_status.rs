@@ -280,19 +280,8 @@ impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static>
 
         let req = request.get_ref();
 
-        if req.stale_threshold_hours == 0 {
-            return Err(tonic::Status::invalid_argument(
-                "stale_threshold_hours must be greater than 0",
-            ));
-        }
-        // Cap at 1 year to prevent integer overflow in millis conversion
-        if req.stale_threshold_hours > 8760 {
-            return Err(tonic::Status::invalid_argument(
-                "stale_threshold_hours must be at most 8760 (1 year)",
-            ));
-        }
-
         let orphaned_only = req.orphaned_only.unwrap_or(false);
+        validate_purge_stale_jobs_request(req.stale_threshold_hours, orphaned_only)?;
 
         match self
             .app()
@@ -370,6 +359,30 @@ fn parse_optional_job_processing_status(
         .transpose()
 }
 
+fn validate_purge_stale_jobs_request(
+    stale_threshold_hours: u64,
+    orphaned_only: bool,
+) -> Result<(), tonic::Status> {
+    if orphaned_only {
+        return Ok(());
+    }
+
+    if stale_threshold_hours == 0 {
+        return Err(tonic::Status::invalid_argument(
+            "stale_threshold_hours must be greater than 0 when orphaned_only is false",
+        ));
+    }
+    // Cap at 1 year: an admin purge threshold beyond this is almost certainly a
+    // mistake, and it keeps the value well within the millis conversion range.
+    if stale_threshold_hours > 8760 {
+        return Err(tonic::Status::invalid_argument(
+            "stale_threshold_hours must be at most 8760 (1 year)",
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,5 +410,35 @@ mod tests {
 
         assert_eq!(err.code(), Code::InvalidArgument);
         assert!(err.message().contains("Invalid JobProcessingStatus"));
+    }
+
+    #[test]
+    fn validate_purge_stale_jobs_allows_zero_threshold_for_orphaned_only() {
+        let result = validate_purge_stale_jobs_request(0, true);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_purge_stale_jobs_rejects_zero_threshold_for_bulk_purge() {
+        let err = validate_purge_stale_jobs_request(0, false).unwrap_err();
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(err.message().contains("orphaned_only is false"));
+    }
+
+    #[test]
+    fn validate_purge_stale_jobs_allows_any_threshold_for_orphaned_only() {
+        assert!(validate_purge_stale_jobs_request(1, true).is_ok());
+        assert!(validate_purge_stale_jobs_request(8761, true).is_ok());
+        assert!(validate_purge_stale_jobs_request(u64::MAX, true).is_ok());
+    }
+
+    #[test]
+    fn validate_purge_stale_jobs_rejects_bulk_threshold_over_one_year() {
+        let err = validate_purge_stale_jobs_request(8761, false).unwrap_err();
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(err.message().contains("at most 8760"));
     }
 }
