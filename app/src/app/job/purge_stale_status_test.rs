@@ -209,6 +209,80 @@ mod purge_stale_status_tests {
     }
 
     #[test]
+    fn test_purge_stale_status_orphaned_only_allows_zero_threshold() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app_module = create_rdb_chan_test_app(true, true).await?;
+            let app = &app_module.job_app;
+            let repositories = app_module
+                .repositories
+                .rdb_module
+                .as_ref()
+                .expect("RDB module should exist");
+            let index_repo = repositories
+                .rdb_job_processing_status_index_repository
+                .as_ref()
+                .expect("RDB indexing should be enabled");
+
+            let worker_id = app_module
+                .worker_app
+                .create(&test_worker_data("purge_orphaned_zero_threshold"))
+                .await?;
+
+            let orphan_job_id = proto::jobworkerp::data::JobId { value: 999998 };
+            let now = chrono::Utc::now().timestamp_millis();
+            let before_now = now - 1;
+            let rdb_pool = index_repo.db_pool();
+            sqlx::query(
+                "INSERT INTO job_processing_status (job_id, worker_id, status, channel, priority, enqueue_time, pending_time, version, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(orphan_job_id.value)
+            .bind(worker_id.value)
+            .bind(JobProcessingStatus::Pending as i32)
+            .bind("default")
+            .bind(0)
+            .bind(before_now)
+            .bind(before_now)
+            .bind(1i64)
+            .bind(before_now)
+            .execute(rdb_pool)
+            .await?;
+
+            let (purged_count, cutoff) = app.purge_stale_job_processing_status(0, true).await?;
+
+            assert_eq!(purged_count, 1, "Should purge the orphan record");
+            assert!(cutoff >= now);
+
+            let deleted_at: Option<Option<i64>> =
+                sqlx::query_scalar("SELECT deleted_at FROM job_processing_status WHERE job_id = ?")
+                    .bind(orphan_job_id.value)
+                    .fetch_optional(rdb_pool)
+                    .await?;
+
+            assert!(
+                matches!(deleted_at, Some(Some(_))),
+                "Orphan record should be logically deleted"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_purge_stale_status_all_stale_rejects_zero_threshold() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app_module = create_rdb_chan_test_app(true, true).await?;
+            let app = &app_module.job_app;
+
+            let result = app.purge_stale_job_processing_status(0, false).await;
+
+            assert!(result.is_err());
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_purge_stale_status_orphaned_only_skips_active() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let app_module = create_rdb_chan_test_app(true, true).await?;
