@@ -1,0 +1,744 @@
+# Gitea PR Auto Review/Fix Workflow
+# Serverless Workflow DSL v1.0.0 based workflow for Local Code Agent Service.
+document:
+  dsl: "1.0.0-jobworkerp"
+  namespace: "local-code-agent"
+  name: "gitea-pr-auto-review-fix-workflow"
+  version: "1.0.0"
+  summary: >
+    Review a Gitea pull request with a coding agent, ask an LLM whether fixes
+    are required, let a coding agent fix valid findings, repeat up to
+    max_iterations, then run a refactor skill pass and push changes.
+
+input:
+  schema:
+    document:
+      type: object
+      properties:
+        owner:
+          type: string
+          description: "Repository owner"
+        repo:
+          type: string
+          description: "Repository name"
+        pull_number:
+          type: integer
+          description: "Pull request number (index)"
+        pr_data:
+          type: object
+          description: "Pull request data fetched by the trusted Gitea Action"
+        max_iterations:
+          type: integer
+          description: "Maximum review/fix loop count"
+          default: 10
+        custom_prompt:
+          type: string
+          description: "Optional extra review instructions"
+          default: ""
+        refactor_skill_path:
+          type: string
+          description: "Skill file used by the final refactor pass"
+          default: "/root/.codex/skills/refactor/SKILL.md"
+        language:
+          type: string
+          description: "Agent output language"
+          default: "ja"
+        agent_image:
+          type: string
+          description: "Docker image for the coding agent"
+        agent_config_volumes:
+          type: array
+          description: "Additional Docker volumes for the coding agent"
+          default: []
+          items:
+            type: string
+        agent_cmd:
+          type: string
+          description: "Shell command executed in the coding agent container"
+          default: "codex exec --dangerously-bypass-approvals-and-sandbox < /prompt/prompt.txt"
+        clone_base_path:
+          type: string
+          description: "Base directory for per-execution bare clones"
+          default: "/tmp/jobworkerp-clones"
+        worktree_base_path:
+          type: string
+          description: "Base directory for temporary worktrees"
+          default: "/tmp/jobworkerp-worktrees"
+        docker_channel:
+          type: string
+          description: "Channel used only for DOCKER runner tasks"
+          default: "docker"
+        gitea_clone_url_template:
+          type: string
+          description: "Clone URL template with {owner} and {repo}"
+          default: "https://gitea.sutr.app/{owner}/{repo}.git"
+        llm_base_url:
+          type: string
+          description: "Ollama base URL used by the LLM judge"
+          default: "http://localhost:11434"
+        llm_model:
+          type: string
+          description: "Ollama model used by the LLM judge"
+          default: "qwen3.6:27b"
+      required:
+        - owner
+        - repo
+        - pull_number
+        - pr_data
+
+do:
+  - initializeVariables:
+      set:
+        error: null
+        error_message: null
+        review_iteration: 0
+        review_outputs: []
+        fix_outputs: []
+        continue_review: true
+        forced_to_refactor: false
+        changed_by_refactor: false
+        pushed: false
+        prompt_temp_dir: ""
+        effective_clone_path: ""
+        language: "${$workflow.input.language // \"ja\"}"
+        agent_image: "${$workflow.input.agent_image // \"\"}"
+        agent_config_volumes: "${$workflow.input.agent_config_volumes // []}"
+        agent_cmd: "${$workflow.input.agent_cmd // \"codex exec --dangerously-bypass-approvals-and-sandbox < /prompt/prompt.txt\"}"
+        llm_base_url: "${$workflow.input.llm_base_url // \"http://localhost:11434\"}"
+        llm_model: "${$workflow.input.llm_model // \"qwen3.6:27b\"}"
+        docker_channel: "${$workflow.input.docker_channel // \"docker\"}"
+        effective_max_iterations: "${if (($workflow.input.max_iterations // 10) | tonumber) > 0 then (($workflow.input.max_iterations // 10) | tonumber) else 10 end}"
+        effective_clone_parent_path: >-
+          ${($workflow.input.clone_base_path // "/tmp/jobworkerp-clones") + "/" + $workflow.input.owner + "/" + $workflow.input.repo}
+        effective_worktree_path: >-
+          ${($workflow.input.worktree_base_path // "/tmp/jobworkerp-worktrees") + "/" + $workflow.input.owner + "/" + $workflow.input.repo + "/pr-" + ($workflow.input.pull_number | tostring) + "-" + (now | tostring | gsub("\\."; ""))}
+        effective_base_clone_url: >-
+          ${($workflow.input.gitea_clone_url_template // "https://gitea.sutr.app/{owner}/{repo}.git")
+            | split("{owner}") | join($workflow.input.owner)
+            | split("{repo}") | join($workflow.input.repo)}
+
+  - mainProcessWithErrorHandling:
+      try:
+        - extractPRFields:
+            set:
+              pr_title: "${$workflow.input.pr_data.title // \"\"}"
+              pr_body: "${$workflow.input.pr_data.body // \"\"}"
+              pr_head_branch: "${$workflow.input.pr_data.head[\"ref\"] // $workflow.input.pr_data.head_branch // \"\"}"
+              pr_base_branch: "${$workflow.input.pr_data.base[\"ref\"] // $workflow.input.pr_data.base_branch // \"main\"}"
+              pr_head_owner: "${$workflow.input.pr_data.head.repo.owner.login // $workflow.input.pr_data.head.repo.owner.username // $workflow.input.pr_data.head.repo.owner.name // $workflow.input.owner}"
+              pr_head_repo: "${$workflow.input.pr_data.head.repo.name // $workflow.input.repo}"
+              pr_head_repository_full_name: "${$workflow.input.pr_data.head.repo.full_name // \"\"}"
+
+        - rejectUntrustedHeadRepository:
+            if: "${$pr_head_repository_full_name != ($workflow.input.owner + \"/\" + $workflow.input.repo)}"
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "sh"
+                  args: ["-c", "exit 1"]
+                  treat_nonzero_as_error: true
+
+        - buildHeadCloneUrl:
+            set:
+              effective_head_clone_url: >-
+                ${$workflow.input.pr_data.head.repo.clone_url //
+                  (($workflow.input.gitea_clone_url_template // "https://gitea.sutr.app/{owner}/{repo}.git")
+                    | split("{owner}") | join($pr_head_owner)
+                    | split("{repo}") | join($pr_head_repo))}
+
+        - prepareCloneParentDir:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "sh"
+                  args: "${[\"-c\", \"mkdir -p '\" + $effective_clone_parent_path + \"'\"]}"
+                  treat_nonzero_as_error: true
+
+        - createExecutionClonePath:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "mktemp"
+                  args: "${[\"-d\", $effective_clone_parent_path + \"/pr-\" + ($workflow.input.pull_number | tostring) + \"-XXXXXX\"]}"
+                  treat_nonzero_as_error: true
+            export:
+              as:
+                effective_clone_path: "${.stdout | rtrimstr(\"\\n\")}"
+
+        - cloneForExecution:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: "${[\"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"clone\", \"--bare\", $effective_base_clone_url, $effective_clone_path]}"
+                  treat_nonzero_as_error: true
+
+        - fetchBaseLatest:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: "${[\"-C\", $effective_clone_path, \"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"fetch\", \"origin\", \"+refs/heads/\" + $pr_base_branch + \":refs/remotes/origin/\" + $pr_base_branch]}"
+                  treat_nonzero_as_error: true
+
+        - fetchHeadLatest:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: "${[\"-C\", $effective_clone_path, \"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"fetch\", $effective_head_clone_url, \"+refs/heads/\" + $pr_head_branch + \":refs/remotes/pr-head/\" + $pr_head_branch]}"
+                  treat_nonzero_as_error: true
+
+        - pruneStaleWorktrees:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: ["worktree", "prune"]
+                  working_dir: "${$effective_clone_path}"
+                  treat_nonzero_as_error: false
+
+        - createWorktreeDir:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "sh"
+                  args: "${[\"-c\", \"mkdir -p \\\"$(dirname '\" + $effective_worktree_path + \"')\\\"\"]}"
+                  treat_nonzero_as_error: true
+
+        - createWorktree:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: "${[\"worktree\", \"add\", \"--detach\", $effective_worktree_path, \"refs/remotes/pr-head/\" + $pr_head_branch]}"
+                  working_dir: "${$effective_clone_path}"
+                  treat_nonzero_as_error: true
+
+        - initSubmodules:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: ["submodule", "update", "--init", "--recursive"]
+                  working_dir: "${$effective_worktree_path}"
+                  treat_nonzero_as_error: false
+
+        - reviewFixLoop:
+            for:
+              in: "${[range(0; $effective_max_iterations)]}"
+              each: iteration
+            while: "${$continue_review == true}"
+            do:
+              - setIteration:
+                  set:
+                    review_iteration: "${$iteration + 1}"
+
+              - getDiffForReview:
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "git"
+                        args: "${[\"diff\", \"origin/\" + $pr_base_branch + \"...HEAD\"]}"
+                        working_dir: "${$effective_worktree_path}"
+                        treat_nonzero_as_error: true
+                  export:
+                    as:
+                      pr_diff: "${.stdout}"
+
+              - generateReviewPrompt:
+                  set:
+                    review_prompt: |
+                      $${
+                      Please review this pull request. This is review iteration {{ review_iteration }}.
+
+                      ## Pull Request #{{ workflow.input.pull_number }}: {{ pr_title }}
+
+                      Base branch: {{ pr_base_branch }}
+                      Head branch: {{ pr_head_branch }}
+
+                      ## Description
+                      {{ pr_body }}
+
+                      ## Diff
+                      ```diff
+                      {{ pr_diff }}
+                      ```
+
+                      {% if workflow.input.custom_prompt %}
+                      ## Additional Review Instructions
+                      {{ workflow.input.custom_prompt }}
+                      {% endif %}
+
+                      ## Instructions
+                      - Focus on bugs, correctness, security, data loss, concurrency, and missing tests.
+                      - Report only findings that should be acted on in this PR.
+                      - Include concrete file paths or code references where possible.
+                      - If there are no actionable findings, explicitly say that no action is required.
+                      {% if language == "ja" %}
+                      - Write the review in Japanese.
+                      {% endif %}
+                      }
+
+              - createReviewPromptDir:
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "mktemp"
+                        args: "${[\"-d\", $effective_worktree_path + \"/.jobworkerp-prompt-XXXXXX\"]}"
+                        treat_nonzero_as_error: true
+                  export:
+                    as:
+                      prompt_temp_dir: "${.stdout | rtrimstr(\"\\n\")}"
+
+              - writeReviewPromptFile:
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "sh"
+                        args: "${[\"-c\", \"echo '\" + ($review_prompt | encode_base64) + \"' | base64 -d > '\" + $prompt_temp_dir + \"/prompt.txt'\"]}"
+                        treat_nonzero_as_error: true
+
+              - runReviewAgent:
+                  run:
+                      runner:
+                        name: DOCKER
+                        options:
+                          channel: "${$docker_channel}"
+                        arguments:
+                          image: "${$agent_image}"
+                          volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $effective_clone_path + \":\" + $effective_clone_path + \":ro\", $prompt_temp_dir + \":/prompt:ro\"]}"
+                          working_dir: "/workspace"
+                          entrypoint: ["/bin/sh", "-c"]
+                          cmd: "${[$agent_cmd]}"
+                          timeout_sec: 1800
+                          treat_nonzero_as_error: true
+                  timeout:
+                    after:
+                      minutes: 30
+                  export:
+                    as:
+                      review_output: "${.stdout // \"\"}"
+
+              - cleanupReviewPromptDir:
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "rm"
+                        args: "${[\"-rf\", $prompt_temp_dir]}"
+                        treat_nonzero_as_error: false
+
+              - appendReviewOutput:
+                  set:
+                    review_outputs: "${$review_outputs + [{\"iteration\": $review_iteration, \"review\": $review_output}]}"
+
+              - judgeReview:
+                  run:
+                    function:
+                      runnerName: LLM
+                      using: chat
+                      settings:
+                        ollama:
+                          baseUrl: "${$llm_base_url}"
+                          model: "${$llm_model}"
+                          pullModel: false
+                      arguments:
+                        messages:
+                          - role: user
+                            content:
+                              text: |
+                                $${
+                                Decide whether the following code review contains actionable findings that should be fixed in this PR.
+
+                                Return only a JSON object with this shape:
+                                {"needs_fix":true|false,"reason":"short reason","fix_prompt":"concrete findings to pass to a coding agent"}
+
+                                Review:
+                                {{ review_output }}
+                                }
+                        system_prompt: |
+                          You are a strict reviewer triage assistant. Output valid JSON only.
+                        options:
+                          maxTokens: 4000
+                          temperature: 0
+                  export:
+                    as:
+                      judge_raw: "${.content.text // .text // .message.content.text // .message // .stdout // (. | tostring)}"
+
+              - parseReviewJudge:
+                  set:
+                    judge_json: "${try (($judge_raw | match(\"\\\\{[\\\\s\\\\S]*\\\\}\").string) | fromjson) catch {\"needs_fix\":true,\"reason\":\"LLM output was not parseable; send review to fixer for validation.\",\"fix_prompt\":\"\"}}"
+
+              - extractReviewJudgeDecision:
+                  set:
+                    needs_fix: "${$judge_json.needs_fix // true}"
+                    fix_prompt: "${if (($judge_json.fix_prompt // \"\") != \"\") then $judge_json.fix_prompt else $review_output end}"
+
+              - routeAfterJudge:
+                  switch:
+                    - fixRequired:
+                        when: "${$needs_fix == true}"
+                        then: "generateFixPrompt"
+                    - noFixRequired:
+                        then: "finishLoop"
+
+              - finishLoop:
+                  set:
+                    continue_review: false
+
+              - generateFixPrompt:
+                  set:
+                    fix_agent_prompt: |
+                      $${
+                      Please address the valid findings from review iteration {{ review_iteration }} for PR #{{ workflow.input.pull_number }}: {{ pr_title }}.
+
+                      ## Findings to validate and fix
+                      {{ fix_prompt }}
+
+                      ## Instructions
+                      - Validate each finding against the current code before editing.
+                      - Fix only valid findings that belong in this PR.
+                      - Add or update tests for every behavior change.
+                      - Run the relevant formatting, linting, and tests.
+                      - Commit the changes before finishing.
+                      - Stage only files you modified or created; do not use `git add -A` or `git add .`.
+                      {% if language == "ja" %}
+                      - Summarize your judgment and changes in Japanese.
+                      {% endif %}
+                      }
+
+              - createFixPromptDir:
+                  if: "${$needs_fix == true}"
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "mktemp"
+                        args: "${[\"-d\", $effective_worktree_path + \"/.jobworkerp-prompt-XXXXXX\"]}"
+                        treat_nonzero_as_error: true
+                  export:
+                    as:
+                      prompt_temp_dir: "${.stdout | rtrimstr(\"\\n\")}"
+
+              - writeFixPromptFile:
+                  if: "${$needs_fix == true}"
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "sh"
+                        args: "${[\"-c\", \"echo '\" + ($fix_agent_prompt | encode_base64) + \"' | base64 -d > '\" + $prompt_temp_dir + \"/prompt.txt'\"]}"
+                        treat_nonzero_as_error: true
+
+              - runFixAgent:
+                  if: "${$needs_fix == true}"
+                  run:
+                      runner:
+                        name: DOCKER
+                        options:
+                          channel: "${$docker_channel}"
+                        arguments:
+                          image: "${$agent_image}"
+                          volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $effective_clone_path + \":\" + $effective_clone_path, $prompt_temp_dir + \":/prompt:ro\"]}"
+                          working_dir: "/workspace"
+                          entrypoint: ["/bin/sh", "-c"]
+                          cmd: "${[$agent_cmd]}"
+                          timeout_sec: 3600
+                          treat_nonzero_as_error: true
+                  timeout:
+                    after:
+                      minutes: 60
+                  export:
+                    as:
+                      fix_output: "${.stdout // \"\"}"
+
+              - cleanupFixPromptDir:
+                  if: "${$needs_fix == true}"
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "rm"
+                        args: "${[\"-rf\", $prompt_temp_dir]}"
+                        treat_nonzero_as_error: false
+
+              - checkChangesAfterFix:
+                  if: "${$needs_fix == true}"
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "git"
+                        args: ["status", "--porcelain"]
+                        working_dir: "${$effective_worktree_path}"
+                        treat_nonzero_as_error: true
+                  export:
+                    as:
+                      post_fix_status: "${.stdout}"
+
+              - commitFallbackFixChanges:
+                  if: "${$needs_fix == true and ($post_fix_status // \"\") != \"\"}"
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "sh"
+                        args:
+                          - "-c"
+                          - "${\"git config user.email local-code-agent@localhost && git config user.name 'Local Code Agent' && git ls-files --modified --deleted --others --exclude-standard -z | xargs -0 -r git add -- && git diff --cached --quiet || git commit -m 'Fix review findings for PR #\" + ($workflow.input.pull_number | tostring) + \" iteration \" + ($review_iteration | tostring) + \"'\"}"
+                        working_dir: "${$effective_worktree_path}"
+                        treat_nonzero_as_error: true
+
+              - appendFixOutput:
+                  if: "${$needs_fix == true}"
+                  set:
+                    fix_outputs: "${$fix_outputs + [{\"iteration\": $review_iteration, \"fix\": $fix_output}]}"
+                    continue_review: true
+
+        - setForcedToRefactor:
+            if: "${$continue_review == true and $review_iteration >= $effective_max_iterations}"
+            set:
+              forced_to_refactor: true
+              continue_review: false
+
+        - checkCommittedChangesBeforeRefactor:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: "${[\"rev-list\", \"--count\", \"refs/remotes/pr-head/\" + $pr_head_branch + \"..HEAD\"]}"
+                  working_dir: "${$effective_worktree_path}"
+                  treat_nonzero_as_error: true
+            export:
+              as:
+                commits_before_refactor: "${.stdout | rtrimstr(\"\\n\") | tonumber}"
+
+        - generateRefactorPrompt:
+            if: "${$commits_before_refactor > 0}"
+            set:
+              refactor_prompt: |
+                $${
+                Run the Codex refactor skill for this repository after automated review fixes.
+
+                Skill file: {{ workflow.input.refactor_skill_path }}
+
+                ## Instructions
+                - Read and follow the skill file.
+                - Keep changes behavior-preserving unless a small cleanup is required by the review fix.
+                - Do not broaden the PR scope.
+                - Run relevant formatting, linting, and tests.
+                - Commit any refactor changes before finishing.
+                {% if language == "ja" %}
+                - Provide a concise Japanese summary.
+                {% endif %}
+                }
+
+        - createRefactorPromptDir:
+            if: "${$commits_before_refactor > 0}"
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "mktemp"
+                  args: "${[\"-d\", $effective_worktree_path + \"/.jobworkerp-prompt-XXXXXX\"]}"
+                  treat_nonzero_as_error: true
+            export:
+              as:
+                prompt_temp_dir: "${.stdout | rtrimstr(\"\\n\")}"
+
+        - writeRefactorPromptFile:
+            if: "${$commits_before_refactor > 0}"
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "sh"
+                  args: "${[\"-c\", \"echo '\" + ($refactor_prompt | encode_base64) + \"' | base64 -d > '\" + $prompt_temp_dir + \"/prompt.txt'\"]}"
+                  treat_nonzero_as_error: true
+
+        - runRefactorAgent:
+            if: "${$commits_before_refactor > 0}"
+            run:
+              runner:
+                name: DOCKER
+                options:
+                  channel: "${$docker_channel}"
+                arguments:
+                  image: "${$agent_image}"
+                  volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $effective_clone_path + \":\" + $effective_clone_path, $prompt_temp_dir + \":/prompt:ro\"]}"
+                  working_dir: "/workspace"
+                  entrypoint: ["/bin/sh", "-c"]
+                  cmd: "${[$agent_cmd]}"
+                  timeout_sec: 3600
+                  treat_nonzero_as_error: true
+            timeout:
+              after:
+                minutes: 60
+            export:
+              as:
+                refactor_output: "${.stdout // \"\"}"
+
+        - cleanupRefactorPromptDir:
+            if: "${$commits_before_refactor > 0}"
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "rm"
+                  args: "${[\"-rf\", $prompt_temp_dir]}"
+                  treat_nonzero_as_error: false
+
+        - checkChangesAfterRefactor:
+            if: "${$commits_before_refactor > 0}"
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: ["status", "--porcelain"]
+                  working_dir: "${$effective_worktree_path}"
+                  treat_nonzero_as_error: true
+            export:
+              as:
+                post_refactor_status: "${.stdout}"
+
+        - commitFallbackRefactorChanges:
+            if: "${($post_refactor_status // \"\") != \"\"}"
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "sh"
+                  args:
+                    - "-c"
+                    - "git config user.email local-code-agent@localhost && git config user.name 'Local Code Agent' && git ls-files --modified --deleted --others --exclude-standard -z | xargs -0 -r git add -- && git diff --cached --quiet || git commit -m 'Refactor after automated PR review fixes'"
+                  working_dir: "${$effective_worktree_path}"
+                  treat_nonzero_as_error: true
+
+        - checkPushNeeded:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: "${[\"rev-list\", \"--count\", \"refs/remotes/pr-head/\" + $pr_head_branch + \"..HEAD\"]}"
+                  working_dir: "${$effective_worktree_path}"
+                  treat_nonzero_as_error: true
+            export:
+              as:
+                commits_to_push: "${.stdout | rtrimstr(\"\\n\") | tonumber}"
+
+        - pushChanges:
+            if: "${$commits_to_push > 0}"
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: "${[\"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"push\", $effective_head_clone_url, \"HEAD:refs/heads/\" + $pr_head_branch]}"
+                  working_dir: "${$effective_worktree_path}"
+                  treat_nonzero_as_error: true
+
+        - setPushed:
+            if: "${$commits_to_push > 0}"
+            set:
+              pushed: true
+              changed_by_refactor: "${($post_refactor_status // \"\") != \"\"}"
+
+        - cleanup:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: "${[\"-C\", $effective_clone_path, \"worktree\", \"remove\", \"--force\", $effective_worktree_path]}"
+                  treat_nonzero_as_error: false
+
+        - cleanupClone:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "rm"
+                  args: "${[\"-rf\", $effective_clone_path]}"
+                  treat_nonzero_as_error: false
+
+        - setSuccessState:
+            set:
+              error: null
+
+      catch:
+        as: caught_error
+        do:
+          - cleanupOnError:
+              run:
+                runner:
+                  name: COMMAND
+                  arguments:
+                    command: "git"
+                    args: "${[\"-C\", $effective_clone_path, \"worktree\", \"remove\", \"--force\", $effective_worktree_path]}"
+                    treat_nonzero_as_error: false
+          - cleanupTempDirOnError:
+              if: "${($prompt_temp_dir // \"\") != \"\"}"
+              run:
+                runner:
+                  name: COMMAND
+                  arguments:
+                    command: "rm"
+                    args: "${[\"-rf\", $prompt_temp_dir]}"
+                    treat_nonzero_as_error: false
+          - cleanupCloneOnError:
+              if: "${($effective_clone_path // \"\") != \"\"}"
+              run:
+                runner:
+                  name: COMMAND
+                  arguments:
+                    command: "rm"
+                    args: "${[\"-rf\", $effective_clone_path]}"
+                    treat_nonzero_as_error: false
+          - setErrorState:
+              set:
+                error: "${$caught_error}"
+                error_message: "${$caught_error.detail // $caught_error.title // ($caught_error | tostring) // \"Unknown error\"}"
+
+output:
+  schema:
+    document:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: ["success", "failed"]
+        iterations:
+          type: integer
+        forced_to_refactor:
+          type: boolean
+        pushed:
+          type: boolean
+        error_message:
+          type: string
+      required:
+        - status
+  as:
+    status: "${if $error then \"failed\" else \"success\" end}"
+    iterations: "${$review_iteration}"
+    forced_to_refactor: "${$forced_to_refactor}"
+    pushed: "${$pushed}"
+    reviews: "${$review_outputs}"
+    fixes: "${$fix_outputs}"
+    error_message: "${$error_message // \"\"}"
