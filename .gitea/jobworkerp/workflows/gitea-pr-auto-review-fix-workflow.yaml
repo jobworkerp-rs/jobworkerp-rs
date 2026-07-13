@@ -8,7 +8,8 @@ document:
   summary: >
     Review a Gitea pull request with a coding agent, ask an LLM whether fixes
     are required, let a coding agent fix valid findings, repeat up to
-    max_iterations, then run a refactor skill pass and push changes.
+    max_iterations, then run a refactor skill pass and push changes. Each
+    coding-agent task may run for up to three hours.
 
 input:
   schema:
@@ -324,11 +325,11 @@ do:
                           working_dir: "/workspace"
                           entrypoint: ["/bin/sh", "-c"]
                           cmd: "${[$agent_cmd]}"
-                          timeout_sec: 1800
+                          timeout_sec: 10800
                           treat_nonzero_as_error: true
                   timeout:
                     after:
-                      minutes: 30
+                      minutes: 180
                   export:
                     as:
                       review_output: "${.stdout // \"\"}"

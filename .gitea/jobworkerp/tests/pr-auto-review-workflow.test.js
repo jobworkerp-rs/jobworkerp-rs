@@ -134,6 +134,14 @@ test('jobworkerp workflow contains the bounded review/fix/refactor flow', () => 
   assert.match(workflow, /pushChanges:/);
 });
 
+test('review agent allows a three-hour execution window', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const reviewAgent = workflow.match(/- runReviewAgent:\n([\s\S]*?)\n\s*- cleanupReviewPromptDir:/)?.[1] ?? '';
+
+  assert.match(reviewAgent, /timeout_sec: 10800/);
+  assert.match(reviewAgent, /timeout:\n\s+after:\n\s+minutes: 180/);
+});
+
 test('review judge prompt expands the actual review output', () => {
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
   const judgePrompt = workflow.match(/text: \|\n([\s\S]*?)\n\s*system_prompt:/)?.[1] ?? '';
