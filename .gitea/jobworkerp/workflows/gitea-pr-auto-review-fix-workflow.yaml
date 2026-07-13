@@ -65,10 +65,6 @@ input:
           type: string
           description: "Base directory for temporary worktrees"
           default: "/tmp/jobworkerp-worktrees"
-        docker_channel:
-          type: string
-          description: "Channel used only for DOCKER runner tasks"
-          default: "docker"
         gitea_clone_url_template:
           type: string
           description: "Clone URL template with {owner} and {repo}"
@@ -107,7 +103,6 @@ do:
         agent_cmd: "${$workflow.input.agent_cmd // \"codex exec --dangerously-bypass-approvals-and-sandbox < /prompt/prompt.txt\"}"
         llm_base_url: "${$workflow.input.llm_base_url // \"http://localhost:11434\"}"
         llm_model: "${$workflow.input.llm_model // \"qwen3.6:27b\"}"
-        docker_channel: "${$workflow.input.docker_channel // \"docker\"}"
         effective_max_iterations: "${if (($workflow.input.max_iterations // 10) | tonumber) > 0 then (($workflow.input.max_iterations // 10) | tonumber) else 10 end}"
         effective_clone_parent_path: >-
           ${($workflow.input.clone_base_path // "/tmp/jobworkerp-clones") + "/" + $workflow.input.owner + "/" + $workflow.input.repo}
@@ -318,7 +313,7 @@ do:
                       runner:
                         name: DOCKER
                         options:
-                          channel: "${$docker_channel}"
+                          channel: "docker"
                         arguments:
                           image: "${$agent_image}"
                           volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $effective_clone_path + \":\" + $effective_clone_path + \":ro\", $prompt_temp_dir + \":/prompt:ro\"]}"
@@ -451,7 +446,7 @@ do:
                       runner:
                         name: DOCKER
                         options:
-                          channel: "${$docker_channel}"
+                          channel: "docker"
                         arguments:
                           image: "${$agent_image}"
                           volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $effective_clone_path + \":\" + $effective_clone_path, $prompt_temp_dir + \":/prompt:ro\"]}"
@@ -578,7 +573,7 @@ do:
               runner:
                 name: DOCKER
                 options:
-                  channel: "${$docker_channel}"
+                  channel: "docker"
                 arguments:
                   image: "${$agent_image}"
                   volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $effective_clone_path + \":\" + $effective_clone_path, $prompt_temp_dir + \":/prompt:ro\"]}"

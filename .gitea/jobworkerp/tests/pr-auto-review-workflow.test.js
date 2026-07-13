@@ -45,15 +45,14 @@ test('Gitea Action uses a prebuilt client instead of requiring Cargo on the runn
   assert.match(workflow, /client-source-repository: ""/);
 });
 
-test('Gitea Action routes only Docker runner tasks to the configured Docker channel', () => {
+test('Gitea Action routes only Docker runner tasks to the docker channel', () => {
   const actionWorkflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
   const jobworkerpWorkflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
 
-  assert.match(actionWorkflow, /"docker_channel": "\$\{\{ vars\.JOBWORKERP_DOCKER_CHANNEL \|\| 'docker' \}\}"/);
-  assert.match(jobworkerpWorkflow, /docker_channel:/);
-  assert.match(jobworkerpWorkflow, /docker_channel: "\$\{\$workflow\.input\.docker_channel \/\/ \\"docker\\"\}"/);
+  assert.doesNotMatch(actionWorkflow, /docker_channel/);
+  assert.doesNotMatch(jobworkerpWorkflow, /docker_channel/);
   assert.equal((jobworkerpWorkflow.match(/name: DOCKER/g) ?? []).length, 3);
-  assert.equal((jobworkerpWorkflow.match(/channel: "\$\{\$docker_channel\}"/g) ?? []).length, 3);
+  assert.equal((jobworkerpWorkflow.match(/channel: "docker"/g) ?? []).length, 3);
 });
 
 test('Gitea Action ensures protoc is available before invoking the client', () => {
