@@ -86,6 +86,23 @@ test('Gitea Action runs privileged agents only for same-repository PRs', () => {
   );
 });
 
+test('Gitea Action auto-runs review only when a PR is opened or reopened', () => {
+  const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+
+  assert.match(workflow, /pull_request:\n\s+types:\n\s+- opened\n\s+- reopened/);
+  assert.doesNotMatch(workflow, /\n\s+- synchronize/);
+  assert.match(workflow, /workflow_dispatch:/);
+});
+
+test('CI runs for every push without waiting for a separate workflow', () => {
+  const workflow = readRepoFile('.gitea/workflows/ci.yaml');
+
+  assert.match(workflow, /on:\n\s+push:/);
+  assert.doesNotMatch(workflow, /pull_request:/);
+  assert.doesNotMatch(workflow, /workflow_run:/);
+  assert.doesNotMatch(workflow, /github\.event\.workflow_run|github\.event\.pull_request\.head\.ref/);
+});
+
 test('Gitea Action fails when the jobworkerp workflow reports failure', () => {
   const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
 
