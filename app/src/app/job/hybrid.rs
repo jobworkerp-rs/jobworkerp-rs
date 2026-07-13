@@ -1743,9 +1743,7 @@ pub mod tests {
             Arc::new(Plugins::new()),
             Arc::new(McpServerFactory::default()),
         );
-        runner_factory
-            .load_plugins_from("./target/debug,../target/debug,./target/release,../target/release")
-            .await;
+        runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
         let config_module = Arc::new(AppConfigModule {
             storage_config,
             worker_config,

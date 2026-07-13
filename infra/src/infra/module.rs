@@ -175,7 +175,25 @@ impl UseWorkerInstanceRepository for RedisRdbOptionalRepositoryModule {
 }
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test {
-    pub const TEST_PLUGIN_DIR: &str =
-        "./target/debug,../target/debug,../target/release,./target/release";
+    #[cfg(debug_assertions)]
+    pub const TEST_PLUGIN_DIR: &str = "./target/debug,../target/debug";
+    #[cfg(not(debug_assertions))]
+    pub const TEST_PLUGIN_DIR: &str = "./target/release,../target/release";
     // jobworkerp_runner::runner::factory::test::TEST_PLUGIN_DIR;
+
+    #[test]
+    fn test_plugin_directory_matches_build_profile() {
+        let expected_profile = if cfg!(debug_assertions) {
+            "target/debug"
+        } else {
+            "target/release"
+        };
+
+        assert!(
+            TEST_PLUGIN_DIR
+                .split(',')
+                .all(|path| path.ends_with(expected_profile)),
+            "test plugins must use only the current build profile: {TEST_PLUGIN_DIR}"
+        );
+    }
 }
