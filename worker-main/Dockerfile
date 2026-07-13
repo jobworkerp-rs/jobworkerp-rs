@@ -1,6 +1,6 @@
 FROM nvcr.io/nvidia/cuda:13.1.2-cudnn-runtime-ubuntu24.04
 
-RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y libssl3 libcurl4 protobuf-compiler libgomp1 docker.io docker-compose \
+RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y libcurl4 protobuf-compiler libgomp1 docker.io docker-compose \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 RUN adduser --system jobworkerp
@@ -17,4 +17,3 @@ COPY --chown=jobworkerp:daemon ./target/release/worker .
 USER jobworkerp
 
 CMD ["./worker"]
-
