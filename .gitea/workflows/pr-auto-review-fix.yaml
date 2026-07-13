@@ -102,7 +102,6 @@ jobs:
               "agent_image": "${{ vars.CODE_AGENT_IMAGE }}",
               "agent_config_volumes": ${{ vars.CODE_AGENT_CONFIG_VOLUMES || '[]' }},
               "agent_cmd": "${{ vars.CODE_AGENT_CMD || 'codex exec --dangerously-bypass-approvals-and-sandbox < /prompt/prompt.txt' }}",
-              "clone_base_path": "${{ vars.JOBWORKERP_CLONE_BASE_PATH || '/tmp/jobworkerp-clones' }}",
               "worktree_base_path": "${{ vars.JOBWORKERP_WORKTREE_BASE_PATH || '/tmp/jobworkerp-worktrees' }}",
               "gitea_clone_url_template": "${{ vars.GITEA_CLONE_URL_TEMPLATE || 'https://gitea.sutr.app/{owner}/{repo}.git' }}",
               "llm_base_url": "${{ vars.LLM_BASE_URL || 'http://localhost:11434' }}",

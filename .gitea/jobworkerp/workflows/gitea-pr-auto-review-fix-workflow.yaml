@@ -57,13 +57,9 @@ input:
           type: string
           description: "Shell command executed in the coding agent container"
           default: "codex exec --dangerously-bypass-approvals-and-sandbox < /prompt/prompt.txt"
-        clone_base_path:
-          type: string
-          description: "Base directory for per-execution bare clones"
-          default: "/tmp/jobworkerp-clones"
         worktree_base_path:
           type: string
-          description: "Base directory for temporary worktrees"
+          description: "Base directory for per-execution working clones"
           default: "/tmp/jobworkerp-worktrees"
         gitea_clone_url_template:
           type: string
@@ -96,7 +92,7 @@ do:
         changed_by_refactor: false
         pushed: false
         prompt_temp_dir: ""
-        effective_clone_path: ""
+        effective_worktree_path: ""
         language: "${$workflow.input.language // \"ja\"}"
         agent_image: "${$workflow.input.agent_image // \"\"}"
         agent_config_volumes: "${$workflow.input.agent_config_volumes // []}"
@@ -104,10 +100,8 @@ do:
         llm_base_url: "${$workflow.input.llm_base_url // \"http://localhost:11434\"}"
         llm_model: "${$workflow.input.llm_model // \"qwen3.6:27b\"}"
         effective_max_iterations: "${if (($workflow.input.max_iterations // 10) | tonumber) > 0 then (($workflow.input.max_iterations // 10) | tonumber) else 10 end}"
-        effective_clone_parent_path: >-
-          ${($workflow.input.clone_base_path // "/tmp/jobworkerp-clones") + "/" + $workflow.input.owner + "/" + $workflow.input.repo}
-        effective_worktree_path: >-
-          ${($workflow.input.worktree_base_path // "/tmp/jobworkerp-worktrees") + "/" + $workflow.input.owner + "/" + $workflow.input.repo + "/pr-" + ($workflow.input.pull_number | tostring) + "-" + (now | tostring | gsub("\\."; ""))}
+        effective_worktree_parent_path: >-
+          ${($workflow.input.worktree_base_path // "/tmp/jobworkerp-worktrees") + "/" + $workflow.input.owner + "/" + $workflow.input.repo}
         effective_base_clone_url: >-
           ${($workflow.input.gitea_clone_url_template // "https://gitea.sutr.app/{owner}/{repo}.git")
             | split("{owner}") | join($workflow.input.owner)
@@ -143,26 +137,26 @@ do:
                     | split("{owner}") | join($pr_head_owner)
                     | split("{repo}") | join($pr_head_repo))}
 
-        - prepareCloneParentDir:
+        - prepareWorktreeParentDir:
             run:
               runner:
                 name: COMMAND
                 arguments:
                   command: "sh"
-                  args: "${[\"-c\", \"mkdir -p '\" + $effective_clone_parent_path + \"'\"]}"
+                  args: "${[\"-c\", \"mkdir -p '\" + $effective_worktree_parent_path + \"'\"]}"
                   treat_nonzero_as_error: true
 
-        - createExecutionClonePath:
+        - createExecutionWorktreePath:
             run:
               runner:
                 name: COMMAND
                 arguments:
                   command: "mktemp"
-                  args: "${[\"-d\", $effective_clone_parent_path + \"/pr-\" + ($workflow.input.pull_number | tostring) + \"-XXXXXX\"]}"
+                  args: "${[\"-d\", $effective_worktree_parent_path + \"/pr-\" + ($workflow.input.pull_number | tostring) + \"-XXXXXX\"]}"
                   treat_nonzero_as_error: true
             export:
               as:
-                effective_clone_path: "${.stdout | rtrimstr(\"\\n\")}"
+                effective_worktree_path: "${.stdout | rtrimstr(\"\\n\")}"
 
         - cloneForExecution:
             run:
@@ -170,7 +164,7 @@ do:
                 name: COMMAND
                 arguments:
                   command: "git"
-                  args: "${[\"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"clone\", \"--bare\", $effective_base_clone_url, $effective_clone_path]}"
+                  args: "${[\"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"clone\", \"--no-checkout\", $effective_base_clone_url, $effective_worktree_path]}"
                   treat_nonzero_as_error: true
 
         - fetchBaseLatest:
@@ -179,7 +173,7 @@ do:
                 name: COMMAND
                 arguments:
                   command: "git"
-                  args: "${[\"-C\", $effective_clone_path, \"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"fetch\", \"origin\", \"+refs/heads/\" + $pr_base_branch + \":refs/remotes/origin/\" + $pr_base_branch]}"
+                  args: "${[\"-C\", $effective_worktree_path, \"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"fetch\", \"origin\", \"+refs/heads/\" + $pr_base_branch + \":refs/remotes/origin/\" + $pr_base_branch]}"
                   treat_nonzero_as_error: true
 
         - fetchHeadLatest:
@@ -188,36 +182,16 @@ do:
                 name: COMMAND
                 arguments:
                   command: "git"
-                  args: "${[\"-C\", $effective_clone_path, \"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"fetch\", $effective_head_clone_url, \"+refs/heads/\" + $pr_head_branch + \":refs/remotes/pr-head/\" + $pr_head_branch]}"
+                  args: "${[\"-C\", $effective_worktree_path, \"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"fetch\", $effective_head_clone_url, \"+refs/heads/\" + $pr_head_branch + \":refs/remotes/pr-head/\" + $pr_head_branch]}"
                   treat_nonzero_as_error: true
 
-        - pruneStaleWorktrees:
+        - checkoutPRHead:
             run:
               runner:
                 name: COMMAND
                 arguments:
                   command: "git"
-                  args: ["worktree", "prune"]
-                  working_dir: "${$effective_clone_path}"
-                  treat_nonzero_as_error: false
-
-        - createWorktreeDir:
-            run:
-              runner:
-                name: COMMAND
-                arguments:
-                  command: "sh"
-                  args: "${[\"-c\", \"mkdir -p \\\"$(dirname '\" + $effective_worktree_path + \"')\\\"\"]}"
-                  treat_nonzero_as_error: true
-
-        - createWorktree:
-            run:
-              runner:
-                name: COMMAND
-                arguments:
-                  command: "git"
-                  args: "${[\"worktree\", \"add\", \"--detach\", $effective_worktree_path, \"refs/remotes/pr-head/\" + $pr_head_branch]}"
-                  working_dir: "${$effective_clone_path}"
+                  args: "${[\"-C\", $effective_worktree_path, \"checkout\", \"--detach\", \"refs/remotes/pr-head/\" + $pr_head_branch]}"
                   treat_nonzero_as_error: true
 
         - initSubmodules:
@@ -316,7 +290,7 @@ do:
                           channel: "docker"
                         arguments:
                           image: "${$agent_image}"
-                          volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $effective_clone_path + \":\" + $effective_clone_path + \":ro\", $prompt_temp_dir + \":/prompt:ro\"]}"
+                          volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $prompt_temp_dir + \":/prompt:ro\"]}"
                           working_dir: "/workspace"
                           entrypoint: ["/bin/sh", "-c"]
                           cmd: "${[$agent_cmd]}"
@@ -449,7 +423,7 @@ do:
                           channel: "docker"
                         arguments:
                           image: "${$agent_image}"
-                          volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $effective_clone_path + \":\" + $effective_clone_path, $prompt_temp_dir + \":/prompt:ro\"]}"
+                          volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $prompt_temp_dir + \":/prompt:ro\"]}"
                           working_dir: "/workspace"
                           entrypoint: ["/bin/sh", "-c"]
                           cmd: "${[$agent_cmd]}"
@@ -576,7 +550,7 @@ do:
                   channel: "docker"
                 arguments:
                   image: "${$agent_image}"
-                  volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $effective_clone_path + \":\" + $effective_clone_path, $prompt_temp_dir + \":/prompt:ro\"]}"
+                  volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $prompt_temp_dir + \":/prompt:ro\"]}"
                   working_dir: "/workspace"
                   entrypoint: ["/bin/sh", "-c"]
                   cmd: "${[$agent_cmd]}"
@@ -656,22 +630,13 @@ do:
               pushed: true
               changed_by_refactor: "${($post_refactor_status // \"\") != \"\"}"
 
-        - cleanup:
-            run:
-              runner:
-                name: COMMAND
-                arguments:
-                  command: "git"
-                  args: "${[\"-C\", $effective_clone_path, \"worktree\", \"remove\", \"--force\", $effective_worktree_path]}"
-                  treat_nonzero_as_error: false
-
-        - cleanupClone:
+        - cleanupWorktree:
             run:
               runner:
                 name: COMMAND
                 arguments:
                   command: "rm"
-                  args: "${[\"-rf\", $effective_clone_path]}"
+                  args: "${[\"-rf\", $effective_worktree_path]}"
                   treat_nonzero_as_error: false
 
         - setSuccessState:
@@ -681,13 +646,14 @@ do:
       catch:
         as: caught_error
         do:
-          - cleanupOnError:
+          - cleanupWorktreeOnError:
+              if: "${($effective_worktree_path // \"\") != \"\"}"
               run:
                 runner:
                   name: COMMAND
                   arguments:
-                    command: "git"
-                    args: "${[\"-C\", $effective_clone_path, \"worktree\", \"remove\", \"--force\", $effective_worktree_path]}"
+                    command: "rm"
+                    args: "${[\"-rf\", $effective_worktree_path]}"
                     treat_nonzero_as_error: false
           - cleanupTempDirOnError:
               if: "${($prompt_temp_dir // \"\") != \"\"}"
@@ -697,15 +663,6 @@ do:
                   arguments:
                     command: "rm"
                     args: "${[\"-rf\", $prompt_temp_dir]}"
-                    treat_nonzero_as_error: false
-          - cleanupCloneOnError:
-              if: "${($effective_clone_path // \"\") != \"\"}"
-              run:
-                runner:
-                  name: COMMAND
-                  arguments:
-                    command: "rm"
-                    args: "${[\"-rf\", $effective_clone_path]}"
                     treat_nonzero_as_error: false
           - setErrorState:
               set:

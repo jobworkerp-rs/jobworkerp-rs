@@ -111,10 +111,11 @@ test('Gitea Action passes the write token through the protected workflow context
   assert.match(actionWorkflow, /GITEA_TOKEN: \$\{\{ secrets\.GITEA_TOKEN \}\}/);
   assert.match(actionWorkflow, /action-context: token/);
   assert.match(actionWorkflow, /action-token-env: GITEA_TOKEN/);
+  assert.doesNotMatch(actionWorkflow, /JOBWORKERP_CLONE_BASE_PATH|clone_base_path/);
   assert.match(jobworkerpWorkflow, /\$_secrets\.token/);
   assert.match(jobworkerpWorkflow, /http\.extraHeader=Authorization: Basic/);
-  assert.match(jobworkerpWorkflow, /\\"clone\\", \\"--bare\\", \$effective_base_clone_url/);
-  assert.match(jobworkerpWorkflow, /\\"-C\\", \$effective_clone_path, \\"-c\\", \\"http\.extraHeader=Authorization: Basic/);
+  assert.match(jobworkerpWorkflow, /\\"clone\\", \\"--no-checkout\\", \$effective_base_clone_url, \$effective_worktree_path/);
+  assert.match(jobworkerpWorkflow, /\\"-C\\", \$effective_worktree_path, \\"-c\\", \\"http\.extraHeader=Authorization: Basic/);
   assert.match(jobworkerpWorkflow, /\\"push\\", \$effective_head_clone_url/);
   assert.doesNotMatch(jobworkerpWorkflow, /authenticated_(base|head)_clone_url/);
   assert.doesNotMatch(jobworkerpWorkflow, /agent_.*token|token.*agent_/i);
@@ -179,7 +180,7 @@ test('jobworkerp workflow uses PR head repository for branch operations', () => 
 test('dependent PR clone fields are evaluated in separate set tasks', () => {
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
   const extractFields = workflow.match(/- extractPRFields:\n([\s\S]*?)\n\s*- buildHeadCloneUrl:/)?.[1] ?? '';
-  const buildCloneUrl = workflow.match(/- buildHeadCloneUrl:\n([\s\S]*?)\n\s*- prepareCloneParentDir:/)?.[1] ?? '';
+  const buildCloneUrl = workflow.match(/- buildHeadCloneUrl:\n([\s\S]*?)\n\s*- prepareWorktreeParentDir:/)?.[1] ?? '';
 
   assert.doesNotMatch(extractFields, /effective_head_clone_url:/);
   assert.match(buildCloneUrl, /effective_head_clone_url:/);
@@ -198,16 +199,19 @@ test('review judge fields are evaluated in separate set tasks', () => {
   assert.match(extractDecision, /fix_prompt:/);
 });
 
-test('each execution uses and removes its own bare clone', () => {
+test('each execution uses and removes its own independent clone', () => {
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
 
-  assert.match(workflow, /- createExecutionClonePath:/);
+  assert.match(workflow, /- createExecutionWorktreePath:/);
   assert.match(workflow, /command: "mktemp"/);
-  assert.match(workflow, /createExecutionClonePath:[\s\S]*?effective_clone_parent_path[\s\S]*?pull_number[\s\S]*?XXXXXX/);
+  assert.match(workflow, /createExecutionWorktreePath:[\s\S]*?effective_worktree_parent_path[\s\S]*?pull_number[\s\S]*?XXXXXX/);
   assert.doesNotMatch(workflow, /- checkBaseClone:/);
   assert.doesNotMatch(workflow, /- cloneIfNeeded:/);
-  assert.match(workflow, /- cleanupClone:\n[\s\S]*?command: "rm"[\s\S]*?\$effective_clone_path/);
-  assert.match(workflow, /- cleanupCloneOnError:\n[\s\S]*?command: "rm"[\s\S]*?\$effective_clone_path/);
+  assert.match(workflow, /cloneForExecution:[\s\S]*?\\"--no-checkout\\"[\s\S]*?\$effective_worktree_path/);
+  assert.doesNotMatch(workflow, /--bare/);
+  assert.doesNotMatch(workflow, /- createWorktree:/);
+  assert.match(workflow, /- cleanupWorktree:\n[\s\S]*?command: "rm"[\s\S]*?\$effective_worktree_path/);
+  assert.match(workflow, /- cleanupWorktreeOnError:\n[\s\S]*?command: "rm"[\s\S]*?\$effective_worktree_path/);
 });
 
 test('agent prompt directories are created in the shared worktree', () => {
@@ -221,7 +225,7 @@ test('cleanup variables are initialized before error handlers are parsed', () =>
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
   const initialization = workflow.match(/- initializeVariables:\n([\s\S]*?)\n\s*- mainProcessWithErrorHandling:/)?.[1] ?? '';
 
-  assert.match(initialization, /effective_clone_path: ""/);
+  assert.match(initialization, /effective_worktree_path: ""/);
 });
 
 test('workflow keeps the named try task form used by the workflow executor', () => {
@@ -233,10 +237,10 @@ test('workflow keeps the named try task form used by the workflow executor', () 
 
 test('error cleanup passes command arguments to the COMMAND runner', () => {
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
-  const cleanupCloneOnError = workflow.match(/- cleanupCloneOnError:\n([\s\S]*?)\n\s*- setErrorState:/)?.[1] ?? '';
+  const cleanupWorktreeOnError = workflow.match(/- cleanupWorktreeOnError:\n([\s\S]*?)\n\s*- setErrorState:/)?.[1] ?? '';
 
-  assert.match(cleanupCloneOnError, /runner:\n\s+name: COMMAND\n\s+arguments:/);
-  assert.match(cleanupCloneOnError, /args: "\$\{\[\\"-rf\\", \$effective_clone_path\]\}"/);
+  assert.match(cleanupWorktreeOnError, /runner:\n\s+name: COMMAND\n\s+arguments:/);
+  assert.match(cleanupWorktreeOnError, /args: "\$\{\[\\"-rf\\", \$effective_worktree_path\]\}"/);
 });
 
 test('workflow error output preserves the caught error detail', () => {
@@ -264,7 +268,7 @@ test('worktree checkout does not reuse PR head branch as a local branch', () => 
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
 
   assert.doesNotMatch(workflow, /\\"-B\\", \$pr_head_branch/);
-  assert.match(workflow, /\\"--detach\\", \$effective_worktree_path, \\"refs\/remotes\/pr-head\/\\" \+ \$pr_head_branch/);
+  assert.match(workflow, /checkout\\", \\"--detach\\", \\"refs\/remotes\/pr-head\//);
 });
 
 test('LLM settings come from workflow input without undefined context variables', () => {
