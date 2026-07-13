@@ -948,6 +948,25 @@ impl Tracing for JobGrpcImpl {}
 impl RequestValidator for JobGrpcImpl {}
 
 impl JobGrpcImpl {
+    // gRPC status messages and binary metadata are transported as HTTP/2
+    // headers/trailers. Keep failure details below common proxy header limits;
+    // otherwise proxies can reset the stream and hide the original error.
+    const MAX_GRPC_ERROR_OUTPUT_BYTES: usize = 4 * 1024;
+
+    fn truncate_grpc_error_output(output: &str) -> String {
+        const SUFFIX: &str = "\n... [truncated by jobworkerp grpc-front]";
+
+        if output.len() <= Self::MAX_GRPC_ERROR_OUTPUT_BYTES {
+            return output.to_string();
+        }
+
+        let mut end = Self::MAX_GRPC_ERROR_OUTPUT_BYTES.saturating_sub(SUFFIX.len());
+        while !output.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}{}", &output[..end], SUFFIX)
+    }
+
     /// Create appropriate gRPC error status from job result data with protobuf in trailers
     fn create_job_error_status(
         job_id: &proto::jobworkerp::data::JobId,
@@ -956,17 +975,22 @@ impl JobGrpcImpl {
         use prost::Message;
         use proto::jobworkerp::data::ResultStatus;
 
-        let job_result = proto::jobworkerp::data::JobResult {
-            id: Some(proto::jobworkerp::data::JobResultId { value: 0 }), // dummy id for error response
-            data: Some(result_data.clone()),
-            metadata: std::collections::HashMap::new(),
-        };
-
         let error_output = result_data
             .output
             .as_ref()
             .map(|o| String::from_utf8_lossy(&o.items))
             .unwrap_or_default();
+        let error_output = Self::truncate_grpc_error_output(&error_output);
+
+        let mut metadata_result_data = result_data.clone();
+        if let Some(output) = &mut metadata_result_data.output {
+            output.items = error_output.as_bytes().to_vec();
+        }
+        let job_result = proto::jobworkerp::data::JobResult {
+            id: Some(proto::jobworkerp::data::JobResultId { value: 0 }), // dummy id for error response
+            data: Some(metadata_result_data),
+            metadata: std::collections::HashMap::new(),
+        };
 
         // Map ResultStatus to appropriate gRPC status codes and messages
         let (code, message) = match ResultStatus::try_from(result_data.status) {
@@ -1097,6 +1121,43 @@ mod tests {
         assert!(v.validate_create(&req).is_ok());
         req.args = Vec::new();
         assert!(v.validate_create(&req).is_ok());
+    }
+
+    #[test]
+    fn test_create_job_error_status_bounds_large_error_metadata() {
+        use crate::proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
+        use prost::Message;
+
+        let prefix = "Workflow schema validation failed: Path: /do/1/mainProcessWithErrorHandling";
+        let large_error = format!("{prefix}\n{}", "invalid workflow data ".repeat(2_000));
+        let result_data = JobResultData {
+            status: ResultStatus::FatalError as i32,
+            output: Some(ResultOutput {
+                items: large_error.into_bytes(),
+            }),
+            ..Default::default()
+        };
+
+        let status = JobGrpcImpl::create_job_error_status(&JobId { value: 42 }, &result_data);
+
+        assert!(status.message().contains(prefix));
+        assert!(
+            status
+                .message()
+                .contains("[truncated by jobworkerp grpc-front]")
+        );
+        assert!(status.message().len() < 5 * 1024);
+
+        let metadata = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("job result metadata");
+        let decoded = JobResult::decode(metadata.to_bytes().unwrap()).unwrap();
+        let output = decoded.data.unwrap().output.unwrap().items;
+        assert!(output.starts_with(prefix.as_bytes()));
+        assert!(output.len() <= JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES);
     }
 
     #[test]

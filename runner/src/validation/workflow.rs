@@ -1163,4 +1163,12 @@ do:
 "#;
         run_validate(yaml).unwrap();
     }
+
+    #[test]
+    fn gitea_pr_auto_review_workflow_passes_schema_validation() {
+        let workflow = include_str!(
+            "../../../.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml"
+        );
+        run_validate(workflow).unwrap();
+    }
 }
