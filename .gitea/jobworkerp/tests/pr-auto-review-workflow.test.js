@@ -251,6 +251,8 @@ test('cleanup variables are initialized before error handlers are parsed', () =>
 
   assert.match(initialization, /effective_worktree_path: ""/);
   assert.match(initialization, /effective_worktree_root: ""/);
+  assert.match(initialization, /post_fix_status: ""/);
+  assert.match(initialization, /post_refactor_status: ""/);
 });
 
 test('workflow keeps the named try task form used by the workflow executor', () => {

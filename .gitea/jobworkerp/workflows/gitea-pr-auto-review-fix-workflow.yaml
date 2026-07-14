@@ -87,6 +87,8 @@ do:
         review_iteration: 0
         review_outputs: []
         fix_outputs: []
+        post_fix_status: ""
+        post_refactor_status: ""
         continue_review: true
         forced_to_refactor: false
         changed_by_refactor: false
