@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -7,6 +8,13 @@ const repoRoot = path.resolve(__dirname, '../../..');
 
 function readRepoFile(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
+}
+
+function readFileAtCommit(commit, relativePath) {
+  return execFileSync('git', ['show', `${commit}:${relativePath}`], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
 }
 
 test('Gitea PR workflow dispatches an immutable trusted jobworkerp workflow', () => {
@@ -20,11 +28,27 @@ test('Gitea PR workflow dispatches an immutable trusted jobworkerp workflow', ()
   assert.doesNotMatch(workflow, /actions\/checkout@v4/);
   assert.match(
     workflow,
-    /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/82776d1f47fe1a74c08e84f8ac7ab8de67d263cc\/\.gitea\/jobworkerp\/workflows\/gitea-pr-auto-review-fix-workflow\.yaml/,
+    /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/672fef180788fdae3f17dace919515062bace0c2\/\.gitea\/jobworkerp\/workflows\/gitea-pr-auto-review-fix-workflow\.yaml/,
   );
   assert.doesNotMatch(workflow, /raw\/branch\//);
   assert.doesNotMatch(workflow, /pr_head_branch/);
   assert.match(workflow, /"max_iterations": \$\{\{ github\.event\.inputs\.max_iterations \|\| '10' \}\}/);
+});
+
+test('pinned jobworkerp workflow revision initializes post-review status variables', () => {
+  const actionWorkflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const targetCommit = actionWorkflow.match(/target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/([0-9a-f]{40})\//)?.[1];
+
+  assert.ok(targetCommit, 'workflow target must contain an immutable commit SHA');
+
+  const targetWorkflow = readFileAtCommit(
+    targetCommit,
+    '.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml',
+  );
+  const initialization = targetWorkflow.match(/- initializeVariables:\n([\s\S]*?)\n\s*- mainProcessWithErrorHandling:/)?.[1] ?? '';
+
+  assert.match(initialization, /post_fix_status: ""/);
+  assert.match(initialization, /post_refactor_status: ""/);
 });
 
 test('Gitea Action does not load a workflow definition from a PR branch', () => {
