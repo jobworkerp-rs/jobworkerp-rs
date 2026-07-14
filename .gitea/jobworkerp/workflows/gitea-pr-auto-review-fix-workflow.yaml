@@ -683,6 +683,24 @@ do:
                   working_dir: "${$effective_worktree_path}"
                   treat_nonzero_as_error: true
 
+        - synchronizePRHeadBeforePush:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: "${[\"-C\", $effective_worktree_path, \"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"fetch\", $effective_head_clone_url, \"+refs/heads/\" + $pr_head_branch + \":refs/remotes/pr-head/\" + $pr_head_branch]}"
+                  treat_nonzero_as_error: true
+
+        - rebaseAgentCommitsOntoLatestPRHead:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: "${[\"-C\", $effective_worktree_path, \"rebase\", \"refs/remotes/pr-head/\" + $pr_head_branch]}"
+                  treat_nonzero_as_error: true
+
         - checkPushNeeded:
             run:
               runner:

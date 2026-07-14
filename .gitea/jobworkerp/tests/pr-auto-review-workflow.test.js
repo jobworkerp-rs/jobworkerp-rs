@@ -376,6 +376,19 @@ test('worktree checkout does not reuse PR head branch as a local branch', () => 
   assert.match(workflow, /checkout\\", \\"--detach\\", \\"refs\/remotes\/pr-head\//);
 });
 
+test('workflow rebases agent commits onto the latest PR head before pushing', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const syncBeforePush = workflow.match(/- synchronizePRHeadBeforePush:\n([\s\S]*?)\n\s*- checkPushNeeded:/)?.[1] ?? '';
+
+  assert.ok(syncBeforePush.includes('\\"fetch\\", $effective_head_clone_url'));
+  assert.ok(syncBeforePush.includes('\\"rebase\\", \\"refs/remotes/pr-head/\\" + $pr_head_branch'));
+  assert.ok(
+    workflow.indexOf('- synchronizePRHeadBeforePush:') < workflow.indexOf('- checkPushNeeded:'),
+    'the PR head must be synchronized before calculating commits to push',
+  );
+  assert.doesNotMatch(syncBeforePush, /--force|--force-with-lease/);
+});
+
 test('LLM settings come from workflow input without undefined context variables', () => {
   const actionWorkflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
   const jobworkerpWorkflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
