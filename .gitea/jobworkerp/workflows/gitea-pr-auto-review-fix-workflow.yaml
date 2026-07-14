@@ -92,6 +92,7 @@ do:
         changed_by_refactor: false
         pushed: false
         prompt_temp_dir: ""
+        effective_worktree_root: ""
         effective_worktree_path: ""
         language: "${$workflow.input.language // \"ja\"}"
         agent_image: "${$workflow.input.agent_image // \"\"}"
@@ -101,7 +102,7 @@ do:
         llm_model: "${$workflow.input.llm_model // \"qwen3.6:27b\"}"
         effective_max_iterations: "${if (($workflow.input.max_iterations // 10) | tonumber) > 0 then (($workflow.input.max_iterations // 10) | tonumber) else 10 end}"
         effective_worktree_parent_path: >-
-          ${($workflow.input.worktree_base_path // "/tmp/jobworkerp-worktrees") + "/" + $workflow.input.owner + "/" + $workflow.input.repo}
+          ${($workflow.input.worktree_base_path // "/tmp/jobworkerp-worktrees") + "/pr-auto-review-fix/" + $workflow.input.owner + "/" + $workflow.input.repo}
         effective_base_clone_url: >-
           ${($workflow.input.gitea_clone_url_template // "https://gitea.sutr.app/{owner}/{repo}.git")
             | split("{owner}") | join($workflow.input.owner)
@@ -156,7 +157,11 @@ do:
                   treat_nonzero_as_error: true
             export:
               as:
-                effective_worktree_path: "${.stdout | rtrimstr(\"\\n\")}"
+                effective_worktree_root: "${.stdout | rtrimstr(\"\\n\")}"
+
+        - setExecutionWorktreePath:
+            set:
+              effective_worktree_path: "${$effective_worktree_root + \"/repository\"}"
 
         - cloneForExecution:
             run:
@@ -351,11 +356,11 @@ do:
 
               - parseReviewJudge:
                   set:
-                    judge_json: "${try (($judge_raw | match(\"\\\\{[\\\\s\\\\S]*\\\\}\").string) | fromjson) catch {\"needs_fix\":true,\"reason\":\"LLM output was not parseable; send review to fixer for validation.\",\"fix_prompt\":\"\"}}"
+                    judge_json: "${try ($judge_raw | fromjson) catch null}"
 
               - extractReviewJudgeDecision:
                   set:
-                    needs_fix: "${$judge_json.needs_fix // true}"
+                    needs_fix: "${if $judge_json.needs_fix == false then false else true end}"
                     fix_prompt: "${if (($judge_json.fix_prompt // \"\") != \"\") then $judge_json.fix_prompt else $review_output end}"
 
               - routeAfterJudge:
@@ -636,7 +641,7 @@ do:
                 name: COMMAND
                 arguments:
                   command: "rm"
-                  args: "${[\"-rf\", $effective_worktree_path]}"
+                  args: "${[\"-rf\", $effective_worktree_root]}"
                   treat_nonzero_as_error: false
 
         - setSuccessState:
@@ -647,13 +652,13 @@ do:
         as: caught_error
         do:
           - cleanupWorktreeOnError:
-              if: "${($effective_worktree_path // \"\") != \"\"}"
+              if: "${($effective_worktree_root // \"\") != \"\"}"
               run:
                 runner:
                   name: COMMAND
                   arguments:
                     command: "rm"
-                    args: "${[\"-rf\", $effective_worktree_path]}"
+                    args: "${[\"-rf\", $effective_worktree_root]}"
                     treat_nonzero_as_error: false
           - cleanupTempDirOnError:
               if: "${($prompt_temp_dir // \"\") != \"\"}"

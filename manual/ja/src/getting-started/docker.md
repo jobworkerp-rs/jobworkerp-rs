@@ -46,6 +46,27 @@ gRPC を公開する環境では `AUTH_TOKEN` を設定してください。保�
 ## 起動後のアクセス
 
 コンテナ起動後、ブラウザで [http://localhost:8080](http://localhost:8080) にアクセスするとAdmin UI（管理画面）が利用できます。
+
+## 分離workerイメージのビルドとテスト公開
+
+`worker-main/Dockerfile` は Ubuntu 24.04 の builder stage 内で worker をビルドします。ホストで作成した `target/release/worker` はイメージに含まれません。
+
+1. MySQL 構成の worker イメージをビルドします。
+
+   ```shell
+   docker build -f worker-main/Dockerfile \
+     --build-arg CARGO_FEATURES=mysql \
+     -t gitea.sutr.app/jobworkerp-rs/worker:test-<commit-sha> .
+   ```
+
+2. Gitea Package Registry にログインしてテストタグを公開します。
+
+   ```shell
+   docker login gitea.sutr.app
+   docker push gitea.sutr.app/jobworkerp-rs/worker:test-<commit-sha>
+   ```
+
+3. デプロイ対象の worker image をこのタグへ更新し、worker の起動ログと job 実行を確認します。
 管理画面ではWorkerの作成・管理、ジョブの投入・監視などの操作をGUIで行えます。
 
 ### ポート構成

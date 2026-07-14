@@ -211,24 +211,32 @@ test('review judge fields are evaluated in separate set tasks', () => {
   const extractDecision = workflow.match(/- extractReviewJudgeDecision:\n([\s\S]*?)\n\s*- routeAfterJudge:/)?.[1] ?? '';
 
   assert.match(parseJudge, /judge_json:/);
+  assert.match(parseJudge, /\$judge_raw \| fromjson/);
+  assert.match(parseJudge, /catch null/);
+  assert.doesNotMatch(parseJudge, /match\(/);
   assert.doesNotMatch(parseJudge, /needs_fix:|fix_prompt:/);
-  assert.match(extractDecision, /needs_fix: "\$\{\$judge_json\.needs_fix \/\/ true\}"/);
+  assert.match(extractDecision, /needs_fix: "\$\{if \$judge_json\.needs_fix == false then false else true end\}"/);
   assert.match(extractDecision, /fix_prompt:/);
 });
 
 test('each execution uses and removes its own independent clone', () => {
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
 
+  assert.match(
+    workflow,
+    /effective_worktree_parent_path:[\s\S]*?worktree_base_path[\s\S]*?"\/pr-auto-review-fix\//,
+  );
   assert.match(workflow, /- createExecutionWorktreePath:/);
   assert.match(workflow, /command: "mktemp"/);
-  assert.match(workflow, /createExecutionWorktreePath:[\s\S]*?effective_worktree_parent_path[\s\S]*?pull_number[\s\S]*?XXXXXX/);
+  assert.match(workflow, /createExecutionWorktreePath:[\s\S]*?effective_worktree_parent_path[\s\S]*?pull_number[\s\S]*?XXXXXX[\s\S]*?effective_worktree_root/);
+  assert.match(workflow, /- setExecutionWorktreePath:[\s\S]*?effective_worktree_root[\s\S]*?repository/);
   assert.doesNotMatch(workflow, /- checkBaseClone:/);
   assert.doesNotMatch(workflow, /- cloneIfNeeded:/);
   assert.match(workflow, /cloneForExecution:[\s\S]*?\\"--no-checkout\\"[\s\S]*?\$effective_worktree_path/);
   assert.doesNotMatch(workflow, /--bare/);
   assert.doesNotMatch(workflow, /- createWorktree:/);
-  assert.match(workflow, /- cleanupWorktree:\n[\s\S]*?command: "rm"[\s\S]*?\$effective_worktree_path/);
-  assert.match(workflow, /- cleanupWorktreeOnError:\n[\s\S]*?command: "rm"[\s\S]*?\$effective_worktree_path/);
+  assert.match(workflow, /- cleanupWorktree:\n[\s\S]*?command: "rm"[\s\S]*?\$effective_worktree_root/);
+  assert.match(workflow, /- cleanupWorktreeOnError:\n[\s\S]*?command: "rm"[\s\S]*?\$effective_worktree_root/);
 });
 
 test('agent prompt directories are created in the shared worktree', () => {
@@ -243,6 +251,7 @@ test('cleanup variables are initialized before error handlers are parsed', () =>
   const initialization = workflow.match(/- initializeVariables:\n([\s\S]*?)\n\s*- mainProcessWithErrorHandling:/)?.[1] ?? '';
 
   assert.match(initialization, /effective_worktree_path: ""/);
+  assert.match(initialization, /effective_worktree_root: ""/);
 });
 
 test('workflow keeps the named try task form used by the workflow executor', () => {
@@ -257,7 +266,7 @@ test('error cleanup passes command arguments to the COMMAND runner', () => {
   const cleanupWorktreeOnError = workflow.match(/- cleanupWorktreeOnError:\n([\s\S]*?)\n\s*- setErrorState:/)?.[1] ?? '';
 
   assert.match(cleanupWorktreeOnError, /runner:\n\s+name: COMMAND\n\s+arguments:/);
-  assert.match(cleanupWorktreeOnError, /args: "\$\{\[\\"-rf\\", \$effective_worktree_path\]\}"/);
+  assert.match(cleanupWorktreeOnError, /args: "\$\{\[\\"-rf\\", \$effective_worktree_root\]\}"/);
 });
 
 test('workflow error output preserves the caught error detail', () => {
