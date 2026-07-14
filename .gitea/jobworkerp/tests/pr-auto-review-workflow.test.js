@@ -5,6 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '../../..');
+const pinnedWorkflowTargetPattern = /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/([0-9a-f]{40})\//;
 
 function readRepoFile(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
@@ -15,6 +16,13 @@ function readFileAtCommit(commit, relativePath) {
     cwd: repoRoot,
     encoding: 'utf8',
   });
+}
+
+function getPinnedWorkflowCommit(workflow) {
+  const targetCommit = workflow.match(pinnedWorkflowTargetPattern)?.[1];
+
+  assert.ok(targetCommit, 'workflow target must contain an immutable commit SHA');
+  return targetCommit;
 }
 
 test('Gitea PR workflow dispatches an immutable trusted jobworkerp workflow', () => {
@@ -37,9 +45,7 @@ test('Gitea PR workflow dispatches an immutable trusted jobworkerp workflow', ()
 
 test('pinned jobworkerp workflow revision initializes post-review status variables', () => {
   const actionWorkflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
-  const targetCommit = actionWorkflow.match(/target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/([0-9a-f]{40})\//)?.[1];
-
-  assert.ok(targetCommit, 'workflow target must contain an immutable commit SHA');
+  const targetCommit = getPinnedWorkflowCommit(actionWorkflow);
 
   const targetWorkflow = readFileAtCommit(
     targetCommit,
