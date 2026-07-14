@@ -22,7 +22,7 @@ jobworkerp-rs のクライアント API は大きく2系統あります。
 |---------------------------|------------------------------|
 | `WorkerData.runner_settings` | `RunnerData.runner_settings_proto` |
 | `JobRequest.args` | `RunnerData.method_proto_map.schemas[using].args_proto` |
-| `JobResultData.output.items` | `RunnerData.method_proto_map.schemas[using].result_proto` |
+| 成功時の `JobResultData.output.items` | `RunnerData.method_proto_map.schemas[using].result_proto` |
 | `ResultOutputItem.data` / `final_collected` (ストリーミング時) | 同上 `result_proto` |
 
 マルチメソッドな Runner (LLM, WORKFLOW, MCP, Plugin) では `JobRequest.using` で `method_proto_map.schemas` のキー (例: `"chat"`, `"run"`) を指定します。詳細は本ページ「マルチメソッドRunner と `using`」節を参照。
@@ -157,7 +157,13 @@ EOF
 
 ### 5. 結果を decode する
 
-`output.items` を Base64 デコードしたバイト列を、Step 1 で取得した `resultProto` でパースすれば構造化された JSON / オブジェクトに戻せます。
+成功結果の `output.items` を Base64 デコードしたバイト列は、Step 1 で取得した `resultProto` でパースすれば構造化された JSON / オブジェクトに戻せます。
+
+### 失敗時の診断メッセージ
+
+`ResultStatus` が `SUCCESS` 以外の場合、`output.items` は runner 固有の `resultProto` ではなく、UTF-8 の診断メッセージです。`x-job-result-bin` に載る失敗診断メッセージは HTTP/2 metadata の上限を守るため、UTF-8 エンコード後で最大 4 KiB です。超過時は文字境界で切り詰め、末尾に `\n[truncated]` を付加します。
+
+完全な失敗記録が必要な Worker では `store_failure=true` を設定し、返された Job ID を使って `JobResultService.FindListByJobId` から保存済み結果を取得してください。
 
 ## 言語別実装ガイド
 

@@ -239,7 +239,9 @@ pub trait RunnerTrait: RunnerSpec + Send + Sync {
     ///   - For MCP/Plugin: Required for multi-tool runners, auto-selected for single-tool
     ///
     /// # Returns
-    /// Tuple of (Result<output_bytes>, updated_metadata)
+    /// Tuple of (Result<output_bytes>, updated_metadata). Successful output bytes
+    /// must encode the method's `result_proto`. Errors are converted by the worker
+    /// into UTF-8 diagnostic messages and are not encoded with `result_proto`.
     async fn run(
         &mut self,
         arg: &[u8],

@@ -955,11 +955,26 @@ impl JobGrpcImpl {
     const MAX_GRPC_ERROR_HEADER_BYTES: usize = 8 * 1024;
     const MAX_GRPC_ERROR_OUTPUT_BYTES: usize = 4 * 1024;
     const GRPC_HEADER_ENTRY_OVERHEAD_BYTES: usize = 32;
+    const GRPC_ERROR_TRUNCATED_SUFFIX: &str = "\n[truncated]";
+    const INVALID_ERROR_MESSAGE: &str =
+        "Job execution failed; diagnostic message was not valid UTF-8";
 
-    fn truncate_grpc_error_output(output: &[u8]) -> Vec<u8> {
-        // ResultOutput.items is protobuf bytes, not UTF-8 text. Preserve the
-        // original byte sequence so clients can decode binary runner output.
-        output[..output.len().min(Self::MAX_GRPC_ERROR_OUTPUT_BYTES)].to_vec()
+    fn truncate_grpc_error_message(message: &str) -> Vec<u8> {
+        // Failure output is a UTF-8 diagnostic message. Truncate only at a
+        // character boundary so the trailer always remains displayable text.
+        if message.len() <= Self::MAX_GRPC_ERROR_OUTPUT_BYTES {
+            return message.as_bytes().to_vec();
+        }
+
+        let mut end = Self::MAX_GRPC_ERROR_OUTPUT_BYTES - Self::GRPC_ERROR_TRUNCATED_SUFFIX.len();
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+
+        let mut truncated = Vec::with_capacity(Self::MAX_GRPC_ERROR_OUTPUT_BYTES);
+        truncated.extend_from_slice(&message.as_bytes()[..end]);
+        truncated.extend_from_slice(Self::GRPC_ERROR_TRUNCATED_SUFFIX.as_bytes());
+        truncated
     }
 
     fn encoded_binary_metadata_len(value_len: usize) -> usize {
@@ -995,8 +1010,10 @@ impl JobGrpcImpl {
         proto::jobworkerp::data::JobResultData {
             status: result_data.status,
             output: result_data.output.as_ref().map(|output| {
+                let message =
+                    std::str::from_utf8(&output.items).unwrap_or(Self::INVALID_ERROR_MESSAGE);
                 proto::jobworkerp::data::ResultOutput {
-                    items: Self::truncate_grpc_error_output(&output.items),
+                    items: Self::truncate_grpc_error_message(message),
                 }
             }),
             ..Default::default()
@@ -1185,13 +1202,16 @@ mod tests {
     }
 
     #[test]
-    fn test_create_job_error_status_preserves_non_utf8_output_bytes() {
+    fn test_create_job_error_status_preserves_short_utf8_message() {
         use crate::proto::jobworkerp::data::{
             JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
         };
         use prost::Message;
 
-        let output = vec![0xff, 0xfe, 0x00, b'e', b'r', b'r', 0x80];
+        let output =
+            "workflow validation failed: \u{8a73}\u{5b9a}\u{306f}\u{7121}\u{52b9}\u{3067}\u{3059}"
+                .as_bytes()
+                .to_vec();
         let result_data = JobResultData {
             status: ResultStatus::FatalError as i32,
             output: Some(ResultOutput {
@@ -1211,19 +1231,17 @@ mod tests {
     }
 
     #[test]
-    fn test_create_job_error_status_truncates_output_as_raw_bytes() {
+    fn test_create_job_error_status_preserves_message_at_byte_limit() {
         use crate::proto::jobworkerp::data::{
             JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
         };
         use prost::Message;
 
-        let output: Vec<u8> = (0..(JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES + 32))
-            .map(|index| (index % 256) as u8)
-            .collect();
+        let output = "x".repeat(JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES);
         let result_data = JobResultData {
             status: ResultStatus::FatalError as i32,
             output: Some(ResultOutput {
-                items: output.clone(),
+                items: output.as_bytes().to_vec(),
             }),
             ..Default::default()
         };
@@ -1237,7 +1255,68 @@ mod tests {
 
         assert_eq!(
             decoded.data.unwrap().output.unwrap().items,
-            output[..JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES]
+            output.as_bytes()
+        );
+    }
+
+    #[test]
+    fn test_create_job_error_status_truncates_utf8_message_at_character_boundary() {
+        use crate::proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
+        use prost::Message;
+
+        let output = "\u{8a73}\u{5b9a}\u{30a8}\u{30e9}\u{30fc}"
+            .repeat(JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES);
+        let result_data = JobResultData {
+            status: ResultStatus::FatalError as i32,
+            output: Some(ResultOutput {
+                items: output.as_bytes().to_vec(),
+            }),
+            ..Default::default()
+        };
+
+        let status = JobGrpcImpl::create_job_error_status(&JobId { value: 42 }, &result_data);
+        let metadata = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("job result metadata");
+        let decoded = JobResult::decode(metadata.to_bytes().unwrap()).unwrap();
+
+        let message = String::from_utf8(decoded.data.unwrap().output.unwrap().items)
+            .expect("error metadata must remain valid UTF-8");
+        assert!(message.ends_with("\n[truncated]"));
+        assert!(message.len() <= JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES);
+
+        let prefix = message.strip_suffix("\n[truncated]").unwrap();
+        assert!(output.starts_with(prefix));
+    }
+
+    #[test]
+    fn test_create_job_error_status_uses_fallback_for_invalid_utf8_message() {
+        use crate::proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
+        use prost::Message;
+
+        let result_data = JobResultData {
+            status: ResultStatus::FatalError as i32,
+            output: Some(ResultOutput {
+                items: vec![0xff, 0xfe, 0x80],
+            }),
+            ..Default::default()
+        };
+
+        let status = JobGrpcImpl::create_job_error_status(&JobId { value: 42 }, &result_data);
+        let metadata = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("job result metadata");
+        let decoded = JobResult::decode(metadata.to_bytes().unwrap()).unwrap();
+
+        assert_eq!(
+            decoded.data.unwrap().output.unwrap().items,
+            b"Job execution failed; diagnostic message was not valid UTF-8"
         );
     }
 
