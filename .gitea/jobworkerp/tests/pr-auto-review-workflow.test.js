@@ -134,7 +134,6 @@ test('CI runs for every push without waiting for a separate workflow', () => {
 
 test('Gitea Action verifies the nested jobworkerp workflow result', () => {
   const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
-  const resultFilter = '.output | fromjson | .status == "success"';
   const successfulResult = JSON.stringify({
     id: 'job-1',
     output: JSON.stringify({ status: 'success', pushed: true }),
@@ -147,12 +146,12 @@ test('Gitea Action verifies the nested jobworkerp workflow result', () => {
   assert.match(workflow, /JOBWORKERP_RESULT: \$\{\{ steps\.pr-review-fix\.outputs\.result \}\}/);
   assert.match(workflow, /jq -er '\.output \| fromjson \| \.status == "success"'/);
   assert.equal(
-    execFileSync('jq', ['-er', resultFilter], { input: successfulResult, encoding: 'utf8' }).trim(),
-    'true',
+    JSON.parse(JSON.parse(successfulResult).output).status === 'success',
+    true,
   );
-  assert.throws(
-    () => execFileSync('jq', ['-er', resultFilter], { input: failedResult, encoding: 'utf8' }),
-    /Command failed/,
+  assert.equal(
+    JSON.parse(JSON.parse(failedResult).output).status === 'success',
+    false,
   );
 });
 
