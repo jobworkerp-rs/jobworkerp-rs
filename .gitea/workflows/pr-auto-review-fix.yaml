@@ -70,7 +70,7 @@ jobs:
         with:
           host: ${{ secrets.JOBWORKERP_HOST }}
           channel: ${{ vars.JOBWORKERP_CHANNEL || 'workflow_base' }}
-          target: https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs/raw/commit/ef110f9e153060c82785c260b4a850554f04b203/.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml
+          target: https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs/raw/commit/da274b588afc118f65ded60bda90e67d6b54d9cb/.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml
           target-type: workflow-url
           action-context: token
           action-token-env: GITEA_TOKEN
