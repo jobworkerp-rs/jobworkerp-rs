@@ -752,6 +752,10 @@ do:
                 error: "${$caught_error}"
                 error_message: "${$caught_error.detail // $caught_error.title // ($caught_error | tostring) // \"Unknown error\"}"
 
+      timeout:
+        after:
+          hours: 6
+
 output:
   schema:
     document:

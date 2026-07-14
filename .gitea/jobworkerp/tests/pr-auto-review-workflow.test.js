@@ -165,10 +165,13 @@ test('Gitea Action verifies the nested jobworkerp workflow result', () => {
   assert.throws(() => workflowStatus(faultedResult), /Task 'ROOT' timed out after 21600s/);
 });
 
-test('jobworkerp workflow has a six-hour root timeout', () => {
+test('jobworkerp workflow has six-hour root and main process timeouts', () => {
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
 
   assert.match(workflow, /timeout:\n\s+after:\n\s+hours: 6\n\ndo:/);
+  const mainProcess = workflow.match(/- mainProcessWithErrorHandling:\n([\s\S]*?)\noutput:/)?.[1] ?? '';
+
+  assert.match(mainProcess, /catch:[\s\S]*?\n\s+timeout:\n\s+after:\n\s+hours: 6/);
 });
 
 test('prompt files are written in bounded base64 chunks', () => {
