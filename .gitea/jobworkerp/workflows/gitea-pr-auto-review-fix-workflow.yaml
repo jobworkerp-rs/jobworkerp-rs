@@ -65,6 +65,10 @@ input:
           type: string
           description: "Clone URL template with {owner} and {repo}"
           default: "https://gitea.sutr.app/{owner}/{repo}.git"
+        gitea_api_url:
+          type: string
+          description: "Gitea API base URL used to post PR result comments"
+          default: "https://gitea.sutr.app/api/v1"
         llm_base_url:
           type: string
           description: "Ollama base URL used by the LLM judge"
@@ -97,8 +101,15 @@ do:
         forced_to_refactor: false
         changed_by_refactor: false
         pushed: false
-        has_agent_created_commits: false
+        has_review_changes: false
         commits_to_push: 0
+        comment_post_failures: []
+        fix_head_before: ""
+        fix_head_after: ""
+        fix_changed: false
+        fix_commits_to_push: 0
+        refactor_head_before: ""
+        refactor_head_after: ""
         prompt_temp_dir: ""
         effective_worktree_root: ""
         effective_worktree_path: ""
@@ -108,6 +119,7 @@ do:
         agent_cmd: "${$workflow.input.agent_cmd // \"codex exec --dangerously-bypass-approvals-and-sandbox < /prompt/prompt.txt\"}"
         llm_base_url: "${$workflow.input.llm_base_url // \"http://localhost:11434\"}"
         llm_model: "${$workflow.input.llm_model // \"qwen3.6:27b\"}"
+        gitea_api_url: "${$workflow.input.gitea_api_url // \"https://gitea.sutr.app/api/v1\"}"
         effective_max_iterations: "${if (($workflow.input.max_iterations // 10) | tonumber) > 0 then (($workflow.input.max_iterations // 10) | tonumber) else 10 end}"
         effective_worktree_parent_path: >-
           ${($workflow.input.worktree_base_path // "/tmp/jobworkerp-worktrees") + "/pr-auto-review-fix/" + $workflow.input.owner + "/" + $workflow.input.repo}
@@ -265,7 +277,8 @@ do:
                       {% endif %}
 
                       ## Instructions
-                      - Focus on bugs, correctness, security, data loss, concurrency, and missing tests.
+                      - Focus on bugs, correctness, security, data loss, concurrency, missing tests, performance, resource usage, and algorithmic complexity.
+                      - Report performance findings only when you can provide evidence, expected impact, and a reproduction condition or workload.
                       - Report only findings that should be acted on in this PR.
                       - Include concrete file paths or code references where possible.
                       - If there are no actionable findings, explicitly say that no action is required.
@@ -421,6 +434,13 @@ do:
                       - Run the relevant formatting, linting, and tests.
                       - Commit the changes before finishing.
                       - Stage only files you modified or created; do not use `git add -A` or `git add .`.
+                      - End your response with a concise Japanese PR comment summary between these exact markers:
+                        <!-- PR-AUTO-REVIEW-SUMMARY:START -->
+                        ## 判断
+                        ## 変更内容
+                        ## テスト
+                        ## 変更なしの場合の理由
+                        <!-- PR-AUTO-REVIEW-SUMMARY:END -->
                       {% if language == "ja" %}
                       - Summarize your judgment and changes in Japanese.
                       {% endif %}
@@ -474,6 +494,20 @@ do:
                               args: "${[\"-c\", \"printf '%s' \\\"$1\\\" | base64 -d >> \\\"$2\\\"\", \"sh\", $prompt_chunk, $prompt_temp_dir + \"/prompt.txt\"]}"
                               treat_nonzero_as_error: true
 
+              - recordFixHeadBeforeAgent:
+                  if: "${$needs_fix == true}"
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "git"
+                        args: ["rev-parse", "HEAD"]
+                        working_dir: "${$effective_worktree_path}"
+                        treat_nonzero_as_error: true
+                  export:
+                    as:
+                      fix_head_before: "${.stdout | rtrimstr(\"\\n\")}"
+
               - runFixAgent:
                   if: "${$needs_fix == true}"
                   run:
@@ -487,11 +521,11 @@ do:
                           working_dir: "/workspace"
                           entrypoint: ["/bin/sh", "-c"]
                           cmd: "${[$agent_cmd]}"
-                          timeout_sec: 3600
+                          timeout_sec: 10800
                           treat_nonzero_as_error: true
                   timeout:
                     after:
-                      minutes: 60
+                      minutes: 180
                   export:
                     as:
                       fix_output: "${.stdout // \"\"}"
@@ -539,31 +573,114 @@ do:
                     fix_outputs: "${$fix_outputs + [{\"iteration\": $review_iteration, \"fix\": $fix_output}]}"
                     continue_review: true
 
+              - recordFixHeadAfterAgent:
+                  if: "${$needs_fix == true}"
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "git"
+                        args: ["rev-parse", "HEAD"]
+                        working_dir: "${$effective_worktree_path}"
+                        treat_nonzero_as_error: true
+                  export:
+                    as:
+                      fix_head_after: "${.stdout | rtrimstr(\"\\n\")}"
+
+              - determineFixChange:
+                  set:
+                    fix_changed: "${$needs_fix == true and $fix_head_before != $fix_head_after}"
+
+              - recordReviewChange:
+                  if: "${$fix_changed == true}"
+                  set:
+                    has_review_changes: true
+
+              - synchronizePRHeadBeforeFixPush:
+                  if: "${$fix_changed == true}"
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "git"
+                        args: "${[\"-C\", $effective_worktree_path, \"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"fetch\", $effective_head_clone_url, \"+refs/heads/\" + $pr_head_branch + \":refs/remotes/pr-head/\" + $pr_head_branch]}"
+                        treat_nonzero_as_error: true
+
+              - rebaseFixCommitsOntoLatestPRHead:
+                  if: "${$fix_changed == true}"
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "git"
+                        args: "${[\"-C\", $effective_worktree_path, \"rebase\", \"refs/remotes/pr-head/\" + $pr_head_branch]}"
+                        treat_nonzero_as_error: true
+
+              - checkFixPushNeeded:
+                  if: "${$fix_changed == true}"
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "git"
+                        args: "${[\"rev-list\", \"--count\", \"refs/remotes/pr-head/\" + $pr_head_branch + \"..HEAD\"]}"
+                        working_dir: "${$effective_worktree_path}"
+                        treat_nonzero_as_error: true
+                  export:
+                    as:
+                      fix_commits_to_push: "${.stdout | rtrimstr(\"\\n\") | tonumber}"
+
+              - pushFixChanges:
+                  if: "${$fix_changed == true and $fix_commits_to_push > 0}"
+                  run:
+                    runner:
+                      name: COMMAND
+                      arguments:
+                        command: "git"
+                        args: "${[\"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"push\", $effective_head_clone_url, \"HEAD:refs/heads/\" + $pr_head_branch]}"
+                        working_dir: "${$effective_worktree_path}"
+                        treat_nonzero_as_error: true
+
+              - setFixPushed:
+                  if: "${$fix_changed == true and $fix_commits_to_push > 0}"
+                  set:
+                    pushed: true
+
+              - setFixCommentSummary:
+                  set:
+                    fix_comment_summary: "${if $needs_fix == true then (try ($fix_output | split(\"<!-- PR-AUTO-REVIEW-SUMMARY:START -->\") | .[1] | split(\"<!-- PR-AUTO-REVIEW-SUMMARY:END -->\") | .[0] | ltrimstr(\"\\n\") | rtrimstr(\"\\n\")) catch \"定型サマリーを取得できませんでした。詳細は実行ログを参照してください。\") else \"## 判断\\n有効な対応項目はありませんでした。\\n\\n## 変更内容\\nコード変更はありません。\\n\\n## テスト\\n実行不要です。\\n\\n## 変更なしの場合の理由\\nレビューで修正すべき指摘がありませんでした。\" end}"
+
+              - buildFixCommentPayload:
+                  set:
+                    fix_comment_payload: "${{\"body\": (\"## 自動レビュー対応（ターン \" + ($review_iteration | tostring) + \"）\\n\\n\" + $fix_comment_summary)} | tojson}"
+
+              - postFixResultComment:
+                  call: http
+                  with:
+                    method: POST
+                    endpoint: "${$gitea_api_url + \"/repos/\" + $workflow.input.owner + \"/\" + $workflow.input.repo + \"/issues/\" + ($workflow.input.pull_number | tostring) + \"/comments\"}"
+                    headers:
+                      Authorization: "${\"token \" + $_secrets.token}"
+                      Content-Type: "application/json"
+                    body: "${$fix_comment_payload}"
+                    output: response
+                  export:
+                    as:
+                      fix_comment_http_status: "${.statusCode // 0}"
+
+              - recordFixCommentFailure:
+                  if: "${$fix_comment_http_status != 201}"
+                  set:
+                    comment_post_failures: "${$comment_post_failures + [{\"phase\": \"fix\", \"iteration\": $review_iteration, \"http_status\": $fix_comment_http_status}]}"
+
         - setForcedToRefactor:
             if: "${$continue_review == true and $review_iteration >= $effective_max_iterations}"
             set:
               forced_to_refactor: true
               continue_review: false
 
-        - checkCommittedChangesBeforeRefactor:
-            run:
-              runner:
-                name: COMMAND
-                arguments:
-                  command: "git"
-                  args: "${[\"rev-list\", \"--count\", \"refs/remotes/pr-head/\" + $pr_head_branch + \"..HEAD\"]}"
-                  working_dir: "${$effective_worktree_path}"
-                  treat_nonzero_as_error: true
-            export:
-              as:
-                commits_before_refactor: "${.stdout | rtrimstr(\"\\n\") | tonumber}"
-
-        - recordAgentCreatedCommits:
-            set:
-              has_agent_created_commits: "${$commits_before_refactor > 0}"
-
         - generateRefactorPrompt:
-            if: "${$commits_before_refactor > 0}"
+            if: "${$has_review_changes == true}"
             set:
               refactor_prompt: |
                 $${
@@ -577,13 +694,20 @@ do:
                 - Do not broaden the PR scope.
                 - Run relevant formatting, linting, and tests.
                 - Commit any refactor changes before finishing.
+                - End your response with a concise Japanese PR comment summary between these exact markers:
+                  <!-- PR-AUTO-REVIEW-SUMMARY:START -->
+                  ## 判断
+                  ## 変更内容
+                  ## テスト
+                  ## 変更なしの場合の理由
+                  <!-- PR-AUTO-REVIEW-SUMMARY:END -->
                 {% if language == "ja" %}
                 - Provide a concise Japanese summary.
                 {% endif %}
                 }
 
         - createRefactorPromptDir:
-            if: "${$commits_before_refactor > 0}"
+            if: "${$has_review_changes == true}"
             run:
               runner:
                 name: COMMAND
@@ -596,17 +720,17 @@ do:
                 prompt_temp_dir: "${.stdout | rtrimstr(\"\\n\")}"
 
         - encodeRefactorPrompt:
-            if: "${$commits_before_refactor > 0}"
+            if: "${$has_review_changes == true}"
             set:
               refactor_prompt_base64: "${$refactor_prompt | encode_base64}"
 
         - splitRefactorPrompt:
-            if: "${$commits_before_refactor > 0}"
+            if: "${$has_review_changes == true}"
             set:
               refactor_prompt_chunks: "${$refactor_prompt_base64 | [range(0; length; 32768) as $offset | .[$offset:$offset + 32768]]}"
 
         - createRefactorPromptFile:
-            if: "${$commits_before_refactor > 0}"
+            if: "${$has_review_changes == true}"
             run:
               runner:
                 name: COMMAND
@@ -616,7 +740,7 @@ do:
                   treat_nonzero_as_error: true
 
         - writeRefactorPromptChunks:
-            if: "${$commits_before_refactor > 0}"
+            if: "${$has_review_changes == true}"
             for:
               in: "${$refactor_prompt_chunks}"
               each: prompt_chunk
@@ -630,8 +754,22 @@ do:
                         args: "${[\"-c\", \"printf '%s' \\\"$1\\\" | base64 -d >> \\\"$2\\\"\", \"sh\", $prompt_chunk, $prompt_temp_dir + \"/prompt.txt\"]}"
                         treat_nonzero_as_error: true
 
+        - recordRefactorHeadBeforeAgent:
+            if: "${$has_review_changes == true}"
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: ["rev-parse", "HEAD"]
+                  working_dir: "${$effective_worktree_path}"
+                  treat_nonzero_as_error: true
+            export:
+              as:
+                refactor_head_before: "${.stdout | rtrimstr(\"\\n\")}"
+
         - runRefactorAgent:
-            if: "${$commits_before_refactor > 0}"
+            if: "${$has_review_changes == true}"
             run:
               runner:
                 name: DOCKER
@@ -649,11 +787,11 @@ do:
               after:
                 minutes: 60
             export:
-              as:
-                refactor_output: "${.stdout // \"\"}"
+                  as:
+                    refactor_output: "${.stdout // \"\"}"
 
         - cleanupRefactorPromptDir:
-            if: "${$commits_before_refactor > 0}"
+            if: "${$has_review_changes == true}"
             run:
               runner:
                 name: COMMAND
@@ -663,7 +801,7 @@ do:
                   treat_nonzero_as_error: false
 
         - checkChangesAfterRefactor:
-            if: "${$commits_before_refactor > 0}"
+            if: "${$has_review_changes == true}"
             run:
               runner:
                 name: COMMAND
@@ -689,8 +827,27 @@ do:
                   working_dir: "${$effective_worktree_path}"
                   treat_nonzero_as_error: true
 
-        - synchronizePRHeadBeforePush:
-            if: "${$has_agent_created_commits == true}"
+        - recordRefactorHeadAfterAgent:
+            if: "${$has_review_changes == true}"
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "git"
+                  args: ["rev-parse", "HEAD"]
+                  working_dir: "${$effective_worktree_path}"
+                  treat_nonzero_as_error: true
+            export:
+              as:
+                refactor_head_after: "${.stdout | rtrimstr(\"\\n\")}"
+
+        - determineRefactorChange:
+            if: "${$has_review_changes == true}"
+            set:
+              changed_by_refactor: "${$refactor_head_before != $refactor_head_after}"
+
+        - synchronizePRHeadBeforeRefactorPush:
+            if: "${$changed_by_refactor == true}"
             run:
               runner:
                 name: COMMAND
@@ -699,8 +856,8 @@ do:
                   args: "${[\"-C\", $effective_worktree_path, \"-c\", \"http.extraHeader=Authorization: Basic \" + ((\"oauth2:\" + $_secrets.token) | @base64), \"fetch\", $effective_head_clone_url, \"+refs/heads/\" + $pr_head_branch + \":refs/remotes/pr-head/\" + $pr_head_branch]}"
                   treat_nonzero_as_error: true
 
-        - rebaseAgentCommitsOntoLatestPRHead:
-            if: "${$has_agent_created_commits == true}"
+        - rebaseRefactorCommitsOntoLatestPRHead:
+            if: "${$changed_by_refactor == true}"
             run:
               runner:
                 name: COMMAND
@@ -709,8 +866,8 @@ do:
                   args: "${[\"-C\", $effective_worktree_path, \"rebase\", \"refs/remotes/pr-head/\" + $pr_head_branch]}"
                   treat_nonzero_as_error: true
 
-        - checkPushNeeded:
-            if: "${$has_agent_created_commits == true}"
+        - checkRefactorPushNeeded:
+            if: "${$changed_by_refactor == true}"
             run:
               runner:
                 name: COMMAND
@@ -723,8 +880,8 @@ do:
               as:
                 commits_to_push: "${.stdout | rtrimstr(\"\\n\") | tonumber}"
 
-        - pushChanges:
-            if: "${$commits_to_push > 0}"
+        - pushRefactorChanges:
+            if: "${$changed_by_refactor == true and $commits_to_push > 0}"
             run:
               runner:
                 name: COMMAND
@@ -734,11 +891,40 @@ do:
                   working_dir: "${$effective_worktree_path}"
                   treat_nonzero_as_error: true
 
+        - setRefactorCommentSummary:
+            if: "${$has_review_changes == true}"
+            set:
+              refactor_comment_summary: "${try ($refactor_output | split(\"<!-- PR-AUTO-REVIEW-SUMMARY:START -->\") | .[1] | split(\"<!-- PR-AUTO-REVIEW-SUMMARY:END -->\") | .[0] | ltrimstr(\"\\n\") | rtrimstr(\"\\n\")) catch \"定型サマリーを取得できませんでした。詳細は実行ログを参照してください。\"}"
+
+        - buildRefactorCommentPayload:
+            if: "${$has_review_changes == true}"
+            set:
+              refactor_comment_payload: "${{\"body\": (\"## 最終リファクタリング結果\\n\\n\" + $refactor_comment_summary)} | tojson}"
+
+        - postRefactorResultComment:
+            if: "${$has_review_changes == true}"
+            call: http
+            with:
+              method: POST
+              endpoint: "${$gitea_api_url + \"/repos/\" + $workflow.input.owner + \"/\" + $workflow.input.repo + \"/issues/\" + ($workflow.input.pull_number | tostring) + \"/comments\"}"
+              headers:
+                Authorization: "${\"token \" + $_secrets.token}"
+                Content-Type: "application/json"
+              body: "${$refactor_comment_payload}"
+              output: response
+            export:
+              as:
+                refactor_comment_http_status: "${.statusCode // 0}"
+
+        - recordRefactorCommentFailure:
+            if: "${$has_review_changes == true and $refactor_comment_http_status != 201}"
+            set:
+              comment_post_failures: "${$comment_post_failures + [{\"phase\": \"refactor\", \"http_status\": $refactor_comment_http_status}]}"
+
         - setPushed:
-            if: "${$commits_to_push > 0}"
+            if: "${$has_review_changes == true}"
             set:
               pushed: true
-              changed_by_refactor: "${($post_refactor_status // \"\") != \"\"}"
 
         - cleanupWorktree:
             run:
@@ -799,6 +985,8 @@ output:
           type: boolean
         error_message:
           type: string
+        comment_post_failures:
+          type: array
       required:
         - status
   as:
@@ -808,4 +996,5 @@ output:
     pushed: "${$pushed}"
     reviews: "${$review_outputs}"
     fixes: "${$fix_outputs}"
+    comment_post_failures: "${$comment_post_failures}"
     error_message: "${$error_message // \"\"}"

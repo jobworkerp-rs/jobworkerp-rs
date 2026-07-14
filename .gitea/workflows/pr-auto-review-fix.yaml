@@ -21,6 +21,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
   pull-requests: read
 
 jobs:
@@ -70,7 +71,7 @@ jobs:
         with:
           host: ${{ secrets.JOBWORKERP_HOST }}
           channel: ${{ vars.JOBWORKERP_CHANNEL || 'workflow_base' }}
-          target: https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs/raw/commit/30e04297363f5c070573d7c2ffd60398b473ab76/.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml
+          target: https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs/raw/commit/3a3d05f1d3a348b9872959bd25536e67a3adac6d/.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml
           target-type: workflow-url
           action-context: token
           action-token-env: GITEA_TOKEN
@@ -92,6 +93,7 @@ jobs:
               "agent_cmd": "${{ vars.CODE_AGENT_CMD || 'codex exec --dangerously-bypass-approvals-and-sandbox < /prompt/prompt.txt' }}",
               "worktree_base_path": "${{ vars.JOBWORKERP_WORKTREE_BASE_PATH || '/tmp/jobworkerp-worktrees' }}",
               "gitea_clone_url_template": "${{ vars.GITEA_CLONE_URL_TEMPLATE || 'https://gitea.sutr.app/{owner}/{repo}.git' }}",
+              "gitea_api_url": "${{ vars.GITEA_API_URL || 'https://gitea.sutr.app/api/v1' }}",
               "llm_base_url": "${{ vars.LLM_BASE_URL || 'http://localhost:11434' }}",
               "llm_model": "${{ vars.LLM_MODEL || 'qwen3.6:27b' }}"
             }
