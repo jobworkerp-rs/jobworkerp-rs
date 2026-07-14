@@ -101,4 +101,10 @@ jobs:
           JOBWORKERP_RESULT: ${{ steps.pr-review-fix.outputs.result }}
         run: |
           printf '%s\n' "$JOBWORKERP_RESULT"
-          printf '%s' "$JOBWORKERP_RESULT" | jq -er '.output | fromjson | .status == "success"'
+          printf '%s' "$JOBWORKERP_RESULT" | jq -er '
+            if (.output | type) == "string" then
+              (.output | fromjson | .status == "success")
+            else
+              error(.errorMessage // "jobworkerp action returned no workflow result")
+            end
+          '

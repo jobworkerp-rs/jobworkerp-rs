@@ -79,6 +79,10 @@ input:
         - pull_number
         - pr_data
 
+timeout:
+  after:
+    hours: 6
+
 do:
   - initializeVariables:
       set:

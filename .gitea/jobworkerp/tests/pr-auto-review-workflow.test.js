@@ -142,17 +142,32 @@ test('Gitea Action verifies the nested jobworkerp workflow result', () => {
     id: 'job-2',
     output: JSON.stringify({ status: 'failed', error_message: 'agent failed' }),
   });
+  const faultedResult = JSON.stringify({
+    id: 'error',
+    status: 'Faulted',
+    errorMessage: "Task 'ROOT' timed out after 21600s",
+  });
+  const workflowStatus = (result) => {
+    const parsed = JSON.parse(result);
+
+    if (typeof parsed.output !== 'string') {
+      throw new Error(parsed.errorMessage ?? 'jobworkerp action returned no workflow result');
+    }
+    return JSON.parse(parsed.output).status;
+  };
 
   assert.match(workflow, /JOBWORKERP_RESULT: \$\{\{ steps\.pr-review-fix\.outputs\.result \}\}/);
-  assert.match(workflow, /jq -er '\.output \| fromjson \| \.status == "success"'/);
-  assert.equal(
-    JSON.parse(JSON.parse(successfulResult).output).status === 'success',
-    true,
-  );
-  assert.equal(
-    JSON.parse(JSON.parse(failedResult).output).status === 'success',
-    false,
-  );
+  assert.match(workflow, /if \(\.output \| type\) == "string" then/);
+  assert.match(workflow, /error\(\.errorMessage \/\/ "jobworkerp action returned no workflow result"\)/);
+  assert.equal(workflowStatus(successfulResult), 'success');
+  assert.equal(workflowStatus(failedResult), 'failed');
+  assert.throws(() => workflowStatus(faultedResult), /Task 'ROOT' timed out after 21600s/);
+});
+
+test('jobworkerp workflow has a six-hour root timeout', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+
+  assert.match(workflow, /timeout:\n\s+after:\n\s+hours: 6\n\ndo:/);
 });
 
 test('workflow rejects fork PRs before cloning, including manual dispatches', () => {
