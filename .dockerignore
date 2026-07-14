@@ -3,6 +3,8 @@
 !Cargo.toml
 !.cargo/
 !.cargo/**
+!admin-ui/
+!admin-ui/**
 !ag-ui-front/
 !ag-ui-front/**
 !app/
@@ -11,6 +13,8 @@
 !app-wrapper/**
 !base/
 !base/**
+!docker/
+!docker/**
 !grpc-front/
 !grpc-front/**
 !infra/
@@ -33,5 +37,6 @@
 !worker-main/**
 !target/
 !target/release/
+!target/release/all-in-one
 !target/release/grpc-front
 !target/release/mcp-http
