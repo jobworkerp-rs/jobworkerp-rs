@@ -8,7 +8,7 @@ use crate::proto::jobworkerp::service::{
     OptionalJobResponse, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
-use app::app::job::JobApp;
+use app::app::job::{ChannelJobResultFuture, JobApp};
 use app::module::AppModule;
 use async_stream::stream;
 use command_utils::trace::Tracing;
@@ -17,7 +17,7 @@ use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::result_output_item;
-use proto::jobworkerp::data::{Job, JobId, JobProcessingStatus, StreamingType};
+use proto::jobworkerp::data::{Job, JobId, JobProcessingStatus, JobResult, StreamingType};
 use std::fmt::Debug;
 use std::sync::Arc;
 use tonic::Response;
@@ -67,6 +67,84 @@ fn wrap_result_output_stream(
         }
     }
     .boxed()
+}
+
+/// Defer Direct-response completion until after the gRPC headers have been
+/// sent. The JobId is therefore available to a client while the job runs.
+type DeferredResult = anyhow::Result<(
+    Option<JobResult>,
+    Option<BoxStream<'static, ResultOutputItem>>,
+)>;
+type DeferredResultHandle = tokio::task::JoinHandle<DeferredResult>;
+
+fn deferred_result_output_stream(
+    job_id: JobId,
+    result_handle: DeferredResultHandle,
+    method_name: &'static str,
+) -> BoxStream<'static, Result<ResultOutputItem, tonic::Status>> {
+    stream! {
+        match result_handle.await {
+            Ok(Ok((result, stream))) => {
+                if let Some(result_data) = result.as_ref().and_then(|result| result.data.as_ref())
+                    && result_data.status != proto::jobworkerp::data::ResultStatus::Success as i32
+                {
+                    tracing::warn!(
+                        "gRPC {}: job {} completed with status {}",
+                        method_name,
+                        job_id.value,
+                        result_data.status
+                    );
+                    yield Err(JobGrpcImpl::create_job_error_status(&job_id, result_data));
+                    return;
+                }
+
+                if let Some(stream) = stream {
+                    let mut stream = wrap_result_output_stream(stream, method_name);
+                    while let Some(item) = stream.next().await {
+                        let done = item
+                            .as_ref()
+                            .ok()
+                            .is_some_and(|output| matches!(output.item, Some(result_output_item::Item::End(_))));
+                        yield item;
+                        if done {
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(Err(error)) => {
+                tracing::warn!("gRPC {}: result wait failed for job {}: {:?}", method_name, job_id.value, error);
+                yield Err(handle_error(&error));
+            }
+            Err(error) => {
+                tracing::error!("gRPC {}: result wait task panicked for job {}: {:?}", method_name, job_id.value, error);
+                yield Err(tonic::Status::internal("result wait task panicked"));
+            }
+        }
+    }
+    .boxed()
+}
+
+async fn start_deferred_result_output_stream(
+    job_id: JobId,
+    result_fut: ChannelJobResultFuture,
+    method_name: &'static str,
+) -> BoxStream<'static, Result<ResultOutputItem, tonic::Status>> {
+    // A stream is lazy, so waiting to poll it would let a fast worker publish
+    // output before Redis/chan pubsub has a subscriber.
+    let result_handle = tokio::spawn(result_fut);
+    tokio::task::yield_now().await;
+    deferred_result_output_stream(job_id, result_handle, method_name)
+}
+
+fn response_with_job_id<S>(job_id: JobId, stream: S) -> Response<S> {
+    let job_id_header = job_id.encode_to_vec();
+    let mut response = Response::new(stream);
+    response.metadata_mut().insert_bin(
+        super::JOB_ID_HEADER_NAME,
+        MetadataValue::from_bytes(job_id_header.as_slice()),
+    );
+    response
 }
 
 pub trait JobGrpc {
@@ -283,7 +361,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         let metadata = Arc::new(super::process_metadata(metadata)?);
         self.validate_create(&req)?;
         // Reject client-stream-only runners from non-client-stream enqueue
-        {
+        let worker = {
             let (wid_opt, wname_opt) = match req.worker.as_ref() {
                 Some(Worker::WorkerId(id)) => (Some(id), None),
                 Some(Worker::WorkerName(name)) => (None, Some(name)),
@@ -303,126 +381,31 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                 .check_worker_streaming(&wid, true, Some(false), req.using.as_deref())
                 .await
                 .map_err(|e| handle_error(&e))?;
-        }
-        let res = match req.worker.as_ref() {
-            Some(Worker::WorkerId(id)) => {
-                self.app()
-                    .enqueue_job(
-                        metadata,
-                        Some(id),
-                        None,
-                        req.args,
-                        req.uniq_key,
-                        req.run_after_time.unwrap_or(0),
-                        req.priority.unwrap_or(Priority::Medium as i32),
-                        req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
-                        None,
-                        StreamingType::Response,
-                        req.using,
-                        req.overrides,
-                    )
-                    .await
-            }
-            Some(Worker::WorkerName(name)) => {
-                self.app()
-                    .enqueue_job(
-                        metadata,
-                        None,
-                        Some(name),
-                        req.args,
-                        req.uniq_key,
-                        req.run_after_time.unwrap_or(0),
-                        req.priority.unwrap_or(Priority::Medium as i32),
-                        req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
-                        None,
-                        StreamingType::Response,
-                        req.using,
-                        req.overrides,
-                    )
-                    .await
-            }
-            None => Err(JobWorkerError::InvalidParameter(
-                "Invalid worker type: both worker_id and worker_name are None".to_string(),
-            )
-            .into()),
+            worker
         };
-        tracing::debug!(
-            "enqueue_for_stream result = {:?}",
-            &res.as_ref().map(|r| r.0)
-        );
-
-        match res {
-            Ok((id, Some(res), Some(st))) => {
-                tracing::debug!(
-                    "enqueue_for_stream output = {:?}",
-                    &res.data
-                        .as_ref()
-                        .map(|d| d.output.as_ref().map(|o| o.items.len()))
-                );
-                let res_header = res.encode_to_vec();
-                let job_id_header = id.encode_to_vec();
-
-                let stream: Self::EnqueueForStreamStream =
-                    Box::pin(wrap_result_output_stream(st, "enqueue_for_stream"));
-                let mut res = Response::new(stream);
-                res.metadata_mut().insert_bin(
-                    super::JOB_RESULT_HEADER_NAME,
-                    MetadataValue::from_bytes(res_header.as_slice()),
-                );
-                res.metadata_mut().insert_bin(
-                    super::JOB_ID_HEADER_NAME,
-                    MetadataValue::from_bytes(job_id_header.as_slice()),
-                );
-                Ok(res)
-            }
-            Ok((id, res, _)) => {
-                // For streaming requests where no actual stream is available (error cases),
-                // return an error status with JobResult in trailers
-                if let Some(job_result) = &res
-                    && let Some(result_data) = &job_result.data
-                {
-                    use proto::jobworkerp::data::ResultStatus;
-                    if result_data.status != ResultStatus::Success as i32 {
-                        tracing::warn!(
-                            "enqueue_for_stream: job {} failed with status {}, returning gRPC error with trailers",
-                            id.value,
-                            result_data.status
-                        );
-
-                        let status = JobGrpcImpl::create_job_error_status(&id, result_data);
-
-                        return Err(status);
-                    }
-                }
-
-                let res_header = res.map(|r| r.encode_to_vec());
-                let job_id_header = id.encode_to_vec();
-
-                // Using stream::iter with empty iterator to ensure proper gRPC stream termination
-                let st = futures::stream::iter(std::iter::empty::<
-                    Result<ResultOutputItem, tonic::Status>,
-                >())
-                .boxed() as Self::EnqueueForStreamStream;
-
-                let mut res = Response::new(st);
-                if let Some(header) = res_header {
-                    res.metadata_mut().insert_bin(
-                        super::JOB_RESULT_HEADER_NAME,
-                        MetadataValue::from_bytes(header.as_slice()),
-                    );
-                }
-                res.metadata_mut().insert_bin(
-                    super::JOB_ID_HEADER_NAME,
-                    MetadataValue::from_bytes(job_id_header.as_slice()),
-                );
-                Ok(res)
-            }
-            Err(e) => {
-                // enqueue_job failed before creating job_id - no headers to include
-                tracing::warn!("enqueue_for_stream failed during job creation: {:?}", e);
-                Err(handle_error(&e))
-            }
-        }
+        let (job_id, result_fut) = self
+            .app()
+            .enqueue_job_with_channel(
+                metadata,
+                worker,
+                req.args,
+                req.uniq_key,
+                req.run_after_time.unwrap_or(0),
+                req.priority.unwrap_or(Priority::Medium as i32),
+                req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
+                None,
+                StreamingType::Response,
+                req.using,
+                req.overrides,
+            )
+            .await
+            .map_err(|error| {
+                tracing::warn!("enqueue_for_stream failed during enqueue: {:?}", error);
+                handle_error(&error)
+            })?;
+        let stream: Self::EnqueueForStreamStream =
+            start_deferred_result_output_stream(job_id, result_fut, "enqueue_for_stream").await;
+        Ok(response_with_job_id(job_id, stream))
     }
 
     type EnqueueWithClientStreamStream =
@@ -498,7 +481,9 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         let reserved_job_id = self.app().generate_job_id().map_err(|e| handle_error(&e))?;
         let job_id_value = reserved_job_id.value;
 
-        // 6. Run enqueue_job and feed_forwarder in parallel
+        // 6. Run enqueue and feed forwarding in parallel. The enqueue API
+        // returns once the JobId is durable/visible; Direct result waiting is
+        // deferred to the response stream below.
         let app = self.app().clone();
         let app_module = self.app_module().clone();
         let meta_clone = metadata.clone();
@@ -506,15 +491,9 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         let reserved_id_clone = reserved_job_id;
 
         let enqueue_handle = tokio::spawn(async move {
-            let (wid, wname) = match job_request_clone.worker.as_ref() {
-                Some(Worker::WorkerId(id)) => (Some(id), None),
-                Some(Worker::WorkerName(name)) => (None, Some(name)),
-                None => (None, None),
-            };
-            app.enqueue_job(
+            app.enqueue_job_with_channel(
                 meta_clone,
-                wid,
-                wname,
+                worker,
                 job_request_clone.args,
                 job_request_clone.uniq_key,
                 job_request_clone.run_after_time.unwrap_or(0),
@@ -621,10 +600,8 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         });
 
         // Wait only for enqueue to complete; feed_handle continues in the background.
-        // enqueue_job blocks until runner returns a stream and complete_job publishes the
-        // result via enqueue_result_direct (BLPOP unblock). The subscribed result stream
-        // is already receiving data at this point, so we can return the gRPC response
-        // immediately and let the client start reading while feed forwarding continues.
+        // The deferred result future has not been awaited yet, so this does not
+        // wait for runner completion.
         let enqueue_join_result = enqueue_handle.await;
 
         // Whether enqueue panicked or returned an Err, the runner will never
@@ -716,77 +693,17 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             });
         }
 
-        // Process enqueue result (same pattern as enqueue_for_stream)
-        match enqueue_result {
-            Ok((id, Some(res), Some(st))) => {
-                tracing::debug!(
-                    "enqueue_with_client_stream output = {:?}",
-                    &res.data
-                        .as_ref()
-                        .map(|d| d.output.as_ref().map(|o| o.items.len()))
-                );
-                let res_header = res.encode_to_vec();
-                let job_id_header = id.encode_to_vec();
-
-                let stream: Self::EnqueueWithClientStreamStream =
-                    Box::pin(wrap_result_output_stream(st, "enqueue_with_client_stream"));
-                let mut res = Response::new(stream);
-                res.metadata_mut().insert_bin(
-                    super::JOB_RESULT_HEADER_NAME,
-                    MetadataValue::from_bytes(res_header.as_slice()),
-                );
-                res.metadata_mut().insert_bin(
-                    super::JOB_ID_HEADER_NAME,
-                    MetadataValue::from_bytes(job_id_header.as_slice()),
-                );
-                Ok(res)
-            }
-            Ok((id, res, _)) => {
-                // NoResult mode or error case
-                if let Some(job_result) = &res
-                    && let Some(result_data) = &job_result.data
-                {
-                    use proto::jobworkerp::data::ResultStatus;
-                    if result_data.status != ResultStatus::Success as i32 {
-                        tracing::warn!(
-                            "enqueue_with_client_stream: job {} failed with status {}",
-                            id.value,
-                            result_data.status
-                        );
-                        let status = JobGrpcImpl::create_job_error_status(&id, result_data);
-                        return Err(status);
-                    }
-                }
-
-                let res_header = res.map(|r| r.encode_to_vec());
-                let job_id_header = id.encode_to_vec();
-
-                let st = futures::stream::iter(std::iter::empty::<
-                    Result<ResultOutputItem, tonic::Status>,
-                >())
-                .boxed() as Self::EnqueueWithClientStreamStream;
-
-                let mut res = Response::new(st);
-                if let Some(header) = res_header {
-                    res.metadata_mut().insert_bin(
-                        super::JOB_RESULT_HEADER_NAME,
-                        MetadataValue::from_bytes(header.as_slice()),
-                    );
-                }
-                res.metadata_mut().insert_bin(
-                    super::JOB_ID_HEADER_NAME,
-                    MetadataValue::from_bytes(job_id_header.as_slice()),
-                );
-                Ok(res)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "enqueue_with_client_stream failed during job creation: {:?}",
-                    e
-                );
-                Err(handle_error(&e))
-            }
-        }
+        let (job_id, result_fut) = enqueue_result.map_err(|error| {
+            tracing::warn!(
+                "enqueue_with_client_stream failed during enqueue: {:?}",
+                error
+            );
+            handle_error(&error)
+        })?;
+        let stream: Self::EnqueueWithClientStreamStream =
+            start_deferred_result_output_stream(job_id, result_fut, "enqueue_with_client_stream")
+                .await;
+        Ok(response_with_job_id(job_id, stream))
     }
 
     #[allow(clippy::result_large_err)]
@@ -983,7 +900,7 @@ impl JobGrpcImpl {
         value_len.div_ceil(3) * 4
     }
 
-    fn grpc_error_header_bytes(message: &str, job_result_len: usize, job_id_len: usize) -> usize {
+    fn grpc_error_header_bytes(message: &str, job_result_len: usize) -> usize {
         // Count HPACK's per-header overhead too. Treat every message byte as
         // percent-escaped (three bytes) to keep this a conservative bound.
         let header = |name_len: usize, value_len: usize| {
@@ -994,10 +911,6 @@ impl JobGrpcImpl {
             + header(
                 super::JOB_RESULT_HEADER_NAME.len(),
                 Self::encoded_binary_metadata_len(job_result_len),
-            )
-            + header(
-                super::JOB_ID_HEADER_NAME.len(),
-                Self::encoded_binary_metadata_len(job_id_len),
             )
     }
 
@@ -1080,19 +993,9 @@ impl JobGrpcImpl {
             .metadata_mut()
             .insert_bin(super::JOB_RESULT_HEADER_NAME, metadata_value);
 
-        // Also add job_id separately for convenience
-        let job_id_bytes = job_id.encode_to_vec();
-        let job_id_metadata = tonic::metadata::MetadataValue::from_bytes(job_id_bytes.as_slice());
-        status
-            .metadata_mut()
-            .insert_bin(super::JOB_ID_HEADER_NAME, job_id_metadata);
-
         debug_assert!(
-            Self::grpc_error_header_bytes(
-                status.message(),
-                job_result_bytes.len(),
-                job_id_bytes.len(),
-            ) <= Self::MAX_GRPC_ERROR_HEADER_BYTES
+            Self::grpc_error_header_bytes(status.message(), job_result_bytes.len())
+                <= Self::MAX_GRPC_ERROR_HEADER_BYTES
         );
 
         status
@@ -1350,11 +1253,8 @@ mod tests {
         let trailer_data = trailer_result.data.expect("job result data");
 
         assert!(
-            JobGrpcImpl::grpc_error_header_bytes(
-                status.message(),
-                job_result_bytes.len(),
-                job_id.encoded_len(),
-            ) <= JobGrpcImpl::MAX_GRPC_ERROR_HEADER_BYTES
+            JobGrpcImpl::grpc_error_header_bytes(status.message(), job_result_bytes.len())
+                <= JobGrpcImpl::MAX_GRPC_ERROR_HEADER_BYTES
         );
         assert!(trailer_data.args.is_empty());
         assert!(trailer_data.worker_name.is_empty());
@@ -1364,6 +1264,101 @@ mod tests {
             status.message(),
             "job_id=9223372036854775807, Fatal job execution error"
         );
+    }
+
+    #[test]
+    fn response_with_job_id_has_no_job_result_header() {
+        let response = response_with_job_id(JobId { value: 42 }, ());
+        assert!(
+            response
+                .metadata()
+                .get_bin(crate::service::JOB_ID_HEADER_NAME)
+                .is_some()
+        );
+        assert!(
+            response
+                .metadata()
+                .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_error_is_reported_in_result_trailer_only() {
+        use crate::proto::jobworkerp::data::{JobResult, JobResultData, ResultStatus};
+
+        let result_fut = Box::pin(async {
+            Ok((
+                Some(JobResult {
+                    data: Some(JobResultData {
+                        status: ResultStatus::Cancelled as i32,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                None,
+            ))
+        });
+        let mut stream = deferred_result_output_stream(
+            JobId { value: 42 },
+            tokio::spawn(result_fut),
+            "deferred_error_is_reported_in_result_trailer_only",
+        );
+
+        let status = stream
+            .next()
+            .await
+            .expect("stream error item")
+            .expect_err("execution failure must terminate the stream");
+        assert!(
+            status
+                .metadata()
+                .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+                .is_some()
+        );
+        assert!(
+            status
+                .metadata()
+                .get_bin(crate::service::JOB_ID_HEADER_NAME)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_success_preserves_data_and_end_items() {
+        use futures::stream;
+        use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
+
+        let result_fut = Box::pin(async {
+            Ok((
+                None,
+                Some(Box::pin(stream::iter(vec![
+                    ResultOutputItem {
+                        item: Some(result_output_item::Item::Data(b"chunk".to_vec())),
+                    },
+                    ResultOutputItem {
+                        item: Some(result_output_item::Item::End(Trailer::default())),
+                    },
+                ])) as BoxStream<'static, ResultOutputItem>),
+            ))
+        });
+        let items = deferred_result_output_stream(
+            JobId { value: 42 },
+            tokio::spawn(result_fut),
+            "deferred_success_preserves_data_and_end_items",
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            items[0].as_ref().unwrap().item,
+            Some(result_output_item::Item::Data(ref data)) if data == b"chunk"
+        ));
+        assert!(matches!(
+            items[1].as_ref().unwrap().item,
+            Some(result_output_item::Item::End(_))
+        ));
     }
 
     #[test]

@@ -161,7 +161,7 @@ EOF
 
 ### 失敗時の診断メッセージ
 
-`ResultStatus` が `SUCCESS` 以外の場合、`output.items` は runner 固有の `resultProto` ではなく、UTF-8 の診断メッセージです。`x-job-result-bin` に載る失敗診断メッセージは HTTP/2 metadata の上限を守るため、UTF-8 エンコード後で最大 4 KiB です。超過時は文字境界で切り詰め、末尾に `\n[truncated]` を付加します。
+`ResultStatus` が `SUCCESS` 以外の場合、`output.items` は runner 固有の `resultProto` ではなく、UTF-8 の診断メッセージです。ストリーミングRPC（`EnqueueForStream`／`EnqueueWithClientStream`）では、enqueue成功時に`x-job-id-bin`のみが初期ヘッダーで返り、実行失敗時の最終`JobResult`はストリームエラーのtrailerにある`x-job-result-bin`から取得します。失敗診断メッセージは HTTP/2 metadata の上限を守るため、UTF-8 エンコード後で最大 4 KiB です。超過時は文字境界で切り詰め、末尾に`\n[truncated]`を付加します。
 
 完全な失敗記録が必要な Worker では `store_failure=true` を設定し、返された Job ID を使って `JobResultService.FindListByJobId` から保存済み結果を取得してください。
 

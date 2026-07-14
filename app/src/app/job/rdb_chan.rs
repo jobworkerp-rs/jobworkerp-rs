@@ -1,6 +1,6 @@
 use super::super::JobBuilder;
 use super::super::worker::{UseWorkerApp, WorkerApp};
-use super::{JobApp, JobCacheKeys, resolve_job_params};
+use super::{JobApp, JobCacheKeys, resolve_and_validate_job_params, resolve_job_params};
 use crate::app::{UseWorkerConfig, WorkerConfig};
 use crate::module::AppConfigModule;
 use anyhow::Result;
@@ -390,7 +390,7 @@ impl RdbChanJobAppImpl {
                 .check_worker_data_streaming(wid, w, request_streaming, None, using.as_deref())
                 .await?;
 
-            let resolved = resolve_job_params(w, overrides.as_ref());
+            let resolved = resolve_and_validate_job_params(w, overrides.as_ref())?;
             let job_data = JobData {
                 worker_id: Some(*wid),
                 args,
@@ -750,14 +750,14 @@ impl JobApp for RdbChanJobAppImpl {
         self.worker_app()
             .check_worker_data_streaming(&wid, &w, request_streaming, None, using.as_deref())
             .await?;
-        let resolved = resolve_job_params(&w, overrides.as_ref());
+        let resolved = resolve_and_validate_job_params(&w, overrides.as_ref())?;
 
-        // Channel separation is only meaningful for an instant Direct-response
-        // job on the chan queue: that path enqueues, then blocks waiting for the
-        // result, so we can hand the JobId back before the wait. Every other
-        // worker shape (non-Direct, run_after, periodic, DbOnly/WithBackup) does
-        // not block on a Direct result, so fall back to the regular enqueue and
-        // wrap its already-resolved outcome in a ready future.
+        // Channel separation is meaningful for an instant Direct-response job
+        // on the chan queue: that path enqueues, then blocks waiting for the
+        // result, so we can hand the JobId back before the wait. Non-Direct,
+        // run_after, and periodic workers do not block on a Direct result, so
+        // fall back to the regular enqueue and wrap its already-resolved
+        // outcome in a ready future.
         //
         // Unlike the hybrid (Redis) path, there is no `StreamingType::Internal`
         // carve-out here: rdb_chan's `enqueue_job_sync` treats Internal the same
@@ -766,7 +766,8 @@ impl JobApp for RdbChanJobAppImpl {
         let is_instant_direct_chan = resolved.response_type == ResponseType::Direct as i32
             && run_after_time == 0
             && w.periodic_interval == 0
-            && w.queue_type == QueueType::Normal as i32;
+            && (w.queue_type == QueueType::Normal as i32
+                || w.queue_type == QueueType::WithBackup as i32);
 
         if !is_instant_direct_chan {
             let (job_id, result, stream) = self
@@ -812,6 +813,21 @@ impl JobApp for RdbChanJobAppImpl {
             data: Some(job_data.clone()),
             metadata: (*metadata).clone(),
         };
+        let total_timeout =
+            proto::calculate_direct_response_timeout_ms(timeout, resolved.retry_policy.as_ref());
+
+        // Establish the output subscription before making the job visible to a
+        // worker. Broadcast channels do not retain messages, so doing this
+        // after enqueue can lose an instant runner's Data/End items.
+        let result_stream = if request_streaming {
+            Some(
+                self.job_result_pubsub_repository()
+                    .subscribe_result_stream(&jid, total_timeout)
+                    .await?,
+            )
+        } else {
+            None
+        };
 
         // Enqueue phase only — the JobId is now live and the job is Pending.
         let job_id = self.enqueue_job_sync_enqueue_only(&job, &w, false).await?;
@@ -826,9 +842,7 @@ impl JobApp for RdbChanJobAppImpl {
             resolved.broadcast_results,
         );
 
-        let total_timeout =
-            proto::calculate_direct_response_timeout_ms(timeout, resolved.retry_policy.as_ref());
-        let fut = self.wait_for_direct_response_future(job_id, total_timeout, request_streaming);
+        let fut = self.wait_for_direct_response_future(job_id, total_timeout, result_stream);
         Ok((job_id, fut))
     }
 
@@ -1585,13 +1599,14 @@ where
         &self,
         job_id: JobId,
         timeout: Option<u64>,
-        request_streaming: bool,
+        result_stream: Option<BoxStream<'static, ResultOutputItem>>,
     ) -> super::ChannelJobResultFuture {
         let pubsub = self.job_result_pubsub_repository().clone();
         Box::pin(async move {
-            subscribe_direct_response(&pubsub, &job_id, timeout, request_streaming)
+            pubsub
+                .subscribe_result(&job_id, timeout)
                 .await
-                .map(|(r, st)| (Some(r), st))
+                .map(|r| (Some(r), result_stream))
         })
     }
 

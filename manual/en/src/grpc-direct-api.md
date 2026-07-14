@@ -161,7 +161,7 @@ For a successful result, Base64-decode `output.items` and parse the resulting by
 
 ### Failure diagnostic messages
 
-When `ResultStatus` is not `SUCCESS`, `output.items` is a UTF-8 diagnostic message rather than runner-specific `resultProto` data. Failure diagnostics carried by `x-job-result-bin` are limited to 4 KiB after UTF-8 encoding to stay within HTTP/2 metadata limits. When the limit is exceeded, the server truncates at a character boundary and appends `\n[truncated]`.
+When `ResultStatus` is not `SUCCESS`, `output.items` is a UTF-8 diagnostic message rather than runner-specific `resultProto` data. For streaming RPCs (`EnqueueForStream` and `EnqueueWithClientStream`), a successful enqueue returns only `x-job-id-bin` in the initial headers; the final `JobResult` for an execution failure is carried by `x-job-result-bin` in the stream-error trailer. Failure diagnostics are limited to 4 KiB after UTF-8 encoding to stay within HTTP/2 metadata limits. When the limit is exceeded, the server truncates at a character boundary and appends `\n[truncated]`.
 
 For a complete persisted failure record, configure the Worker with `store_failure=true` and retrieve the stored result through `JobResultService.FindListByJobId` using the returned Job ID.
 

@@ -3,7 +3,9 @@ use crate::module::AppConfigModule;
 
 use super::super::JobBuilder;
 use super::super::worker::{UseWorkerApp, WorkerApp};
-use super::{JobApp, JobCacheKeys, RedisJobAppHelper, resolve_job_params};
+use super::{
+    JobApp, JobCacheKeys, RedisJobAppHelper, resolve_and_validate_job_params, resolve_job_params,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
@@ -14,10 +16,10 @@ use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::redis::{RedisJobRepository, UseRedisJobRepository};
 use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
-use infra::infra::job_result::pubsub::JobResultPublisher;
 use infra::infra::job_result::pubsub::redis::{
     RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
 };
+use infra::infra::job_result::pubsub::{JobResultPublisher, JobResultSubscriber};
 use infra::infra::module::HybridRepositoryModule;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
@@ -239,7 +241,7 @@ impl HybridJobAppImpl {
                 .check_worker_data_streaming(wid, w, request_streaming, None, using.as_deref())
                 .await?;
 
-            let resolved = resolve_job_params(w, overrides.as_ref());
+            let resolved = resolve_and_validate_job_params(w, overrides.as_ref())?;
             let job_data = JobData {
                 worker_id: Some(*wid),
                 args,
@@ -726,7 +728,7 @@ impl JobApp for HybridJobAppImpl {
                 .check_worker_streaming(wid, request_streaming, None, using.as_deref())
                 .await?;
 
-            let resolved = resolve_job_params(w, overrides.as_ref());
+            let resolved = resolve_and_validate_job_params(w, overrides.as_ref())?;
             let job_data = JobData {
                 worker_id: Some(*wid),
                 args,
@@ -873,18 +875,19 @@ impl JobApp for HybridJobAppImpl {
         self.worker_app()
             .check_worker_data_streaming(&wid, &w, request_streaming, None, using.as_deref())
             .await?;
-        let resolved = resolve_job_params(&w, overrides.as_ref());
+        let resolved = resolve_and_validate_job_params(&w, overrides.as_ref())?;
 
-        // Channel separation only applies to an instant Direct-response job on
-        // the Redis queue that actually blocks waiting for its result. Internal
-        // streaming returns immediately anyway, and run_after / periodic / DB
-        // workers never block on a Direct result — fall back to the regular
-        // enqueue and wrap its already-resolved outcome in a ready future.
+        // Channel separation applies to instant Direct-response jobs that use
+        // the Redis queue. Internal streaming returns immediately anyway, and
+        // run_after / periodic workers do not block on a Direct result — fall
+        // back to the regular enqueue and wrap its already-resolved outcome in
+        // a ready future.
         let is_instant_direct_redis = resolved.response_type == ResponseType::Direct as i32
             && streaming_type != StreamingType::Internal
             && run_after_time == 0
             && w.periodic_interval == 0
-            && w.queue_type == QueueType::Normal as i32;
+            && (w.queue_type == QueueType::Normal as i32
+                || w.queue_type == QueueType::WithBackup as i32);
 
         if !is_instant_direct_redis {
             let (job_id, result, stream) = self
@@ -930,6 +933,21 @@ impl JobApp for HybridJobAppImpl {
             data: Some(job_data.clone()),
             metadata: (*meta).clone(),
         };
+        let total_timeout =
+            proto::calculate_direct_response_timeout_ms(timeout, resolved.retry_policy.as_ref());
+
+        // Subscribe before publishing the job: Redis pub/sub does not retain
+        // stream messages, and a fast runner may otherwise publish End before
+        // the front-end starts listening.
+        let result_stream = if request_streaming {
+            Some(
+                self.job_result_pubsub_repository()
+                    .subscribe_result_stream(&jid, total_timeout)
+                    .await?,
+            )
+        } else {
+            None
+        };
 
         // Enqueue phase: push to the Redis queue, mark Pending, run the hook,
         // and create the TTL record for running-job visibility — everything
@@ -951,12 +969,10 @@ impl JobApp for HybridJobAppImpl {
         // Build the result-wait future owning a clone of the redis repository so
         // it does not borrow `self` and can be returned to the caller.
         let repo = self.redis_job_repository().clone();
-        let total_timeout =
-            proto::calculate_direct_response_timeout_ms(timeout, resolved.retry_policy.as_ref());
         let fut: BoxFuture<'static, _> = Box::pin(async move {
-            repo.wait_for_result_queue_for_response(&jid, total_timeout, request_streaming)
+            repo.wait_for_result_queue_for_response(&jid, total_timeout, false)
                 .await
-                .map(|(r, stream)| (Some(r), stream))
+                .map(|(r, _)| (Some(r), result_stream))
         });
         Ok((jid, fut))
     }

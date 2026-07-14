@@ -184,6 +184,27 @@ pub fn resolve_job_params(
     }
 }
 
+/// Reject response and queue combinations whose semantics cannot be honored.
+pub fn validate_response_queue_type(queue_type: i32, response_type: i32) -> Result<()> {
+    if response_type == ResponseType::Direct as i32 && queue_type == QueueType::DbOnly as i32 {
+        return Err(JobWorkerError::InvalidParameter(
+            "response_type=Direct is not supported for queue_type=DbOnly".to_string(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Resolve worker settings and reject unsupported response/queue combinations.
+pub fn resolve_and_validate_job_params(
+    worker: &WorkerData,
+    overrides: Option<&JobExecutionOverrides>,
+) -> Result<ResolvedJobParams> {
+    let resolved = resolve_job_params(worker, overrides);
+    validate_response_queue_type(worker.queue_type, resolved.response_type)?;
+    Ok(resolved)
+}
+
 pub trait JobCacheKeys {
     fn find_cache_key(id: &JobId) -> String {
         ["j:eid:", &id.value.to_string()].join("")
@@ -774,6 +795,16 @@ mod resolve_tests {
         assert!(eff.store_failure);
         assert!(!eff.broadcast_results);
         assert_eq!(eff.retry_policy.as_ref().unwrap().max_retry, 3);
+    }
+
+    #[test]
+    fn direct_db_only_is_rejected() {
+        let mut worker = test_worker();
+        worker.response_type = ResponseType::Direct as i32;
+        worker.queue_type = QueueType::DbOnly as i32;
+
+        let error = resolve_and_validate_job_params(&worker, None).unwrap_err();
+        assert!(error.to_string().contains("queue_type=DbOnly"));
     }
 
     #[test]
