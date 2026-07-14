@@ -41,23 +41,12 @@ jobs:
           pr_data="$(curl --fail --silent --show-error \
             --header "Authorization: token $GITEA_TOKEN" \
             "$GITEA_API_URL/repos/$GITEA_REPOSITORY/pulls/$PR_NUMBER" | jq -ce .)"
-          pr_head_branch="$(printf '%s' "$pr_data" | jq -er '.head.ref')"
           delimiter="pr_data_${RANDOM}_${RANDOM}"
           {
             echo "pr_data<<$delimiter"
             printf '%s\n' "$pr_data"
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
-          echo "pr_head_branch=$pr_head_branch" >> "$GITHUB_OUTPUT"
-
-      - name: Reject fork PR before loading workflow
-        env:
-          GITEA_REPOSITORY: ${{ github.repository }}
-          PR_DATA: ${{ steps.fetch-pr-data.outputs.pr_data }}
-        run: |
-          set -eu
-          head_repository="$(printf '%s' "$PR_DATA" | jq -er '.head.repo.full_name')"
-          [ "$head_repository" = "$GITEA_REPOSITORY" ]
 
       - name: Install protoc
         run: |
@@ -81,7 +70,7 @@ jobs:
         with:
           host: ${{ secrets.JOBWORKERP_HOST }}
           channel: ${{ vars.JOBWORKERP_CHANNEL || 'workflow_base' }}
-          target: https://gitea.sutr.app/${{ github.repository }}/raw/branch/${{ steps.fetch-pr-data.outputs.pr_head_branch }}/.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml
+          target: https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs/raw/commit/82776d1f47fe1a74c08e84f8ac7ab8de67d263cc/.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml
           target-type: workflow-url
           action-context: token
           action-token-env: GITEA_TOKEN

@@ -9,7 +9,7 @@ function readRepoFile(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
 }
 
-test('Gitea PR workflow dispatches the tracked jobworkerp auto review workflow', () => {
+test('Gitea PR workflow dispatches an immutable trusted jobworkerp workflow', () => {
   const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
 
   assert.match(workflow, /pull_request:/);
@@ -18,23 +18,22 @@ test('Gitea PR workflow dispatches the tracked jobworkerp auto review workflow',
     /uses: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-actions\/jobworkerp-run@1ecd9a0f9a58fabadb4609871e8e0d349f7ba010/,
   );
   assert.doesNotMatch(workflow, /actions\/checkout@v4/);
-  assert.doesNotMatch(workflow, /target: \.gitea\/jobworkerp\/workflows\//);
   assert.match(
     workflow,
-    /target: https:\/\/gitea\.sutr\.app\/\$\{\{ github\.repository \}\}\/raw\/branch\/\$\{\{ steps\.fetch-pr-data\.outputs\.pr_head_branch \}\}\/\.gitea\/jobworkerp\/workflows\/gitea-pr-auto-review-fix-workflow\.yaml/,
+    /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/82776d1f47fe1a74c08e84f8ac7ab8de67d263cc\/\.gitea\/jobworkerp\/workflows\/gitea-pr-auto-review-fix-workflow\.yaml/,
   );
+  assert.doesNotMatch(workflow, /raw\/branch\//);
+  assert.doesNotMatch(workflow, /pr_head_branch/);
   assert.match(workflow, /"max_iterations": \$\{\{ github\.event\.inputs\.max_iterations \|\| '10' \}\}/);
 });
 
-test('Gitea Action loads the latest workflow from a validated same-repository PR branch', () => {
+test('Gitea Action does not load a workflow definition from a PR branch', () => {
   const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
 
   assert.match(workflow, /id: fetch-pr-data/);
-  assert.match(workflow, /pr_head_branch="\$\(printf '%s' "\$pr_data" \| jq -er '\.head\.ref'\)"/);
-  assert.match(workflow, /echo "pr_head_branch=\$pr_head_branch" >> "\$GITHUB_OUTPUT"/);
-  assert.match(workflow, /name: Reject fork PR before loading workflow/);
-  assert.match(workflow, /jq -er '\.head\.repo\.full_name'/);
-  assert.match(workflow, /\[ "\$head_repository" = "\$GITEA_REPOSITORY" \]/);
+  assert.doesNotMatch(workflow, /pr_head_branch/);
+  assert.doesNotMatch(workflow, /raw\/branch\//);
+  assert.doesNotMatch(workflow, /target: .*\$\{\{/);
 });
 
 test('Gitea Action uses a prebuilt client instead of requiring Cargo on the runner', () => {
