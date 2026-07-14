@@ -171,6 +171,19 @@ test('jobworkerp workflow has a six-hour root timeout', () => {
   assert.match(workflow, /timeout:\n\s+after:\n\s+hours: 6\n\ndo:/);
 });
 
+test('prompt files are written in bounded base64 chunks', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+
+  for (const prompt of ['Review', 'Fix', 'Refactor']) {
+    assert.match(workflow, new RegExp(`encode${prompt}Prompt:`));
+    assert.match(workflow, new RegExp(`split${prompt}Prompt:`));
+    assert.match(workflow, new RegExp(`write${prompt}PromptChunks:`));
+  }
+  assert.equal((workflow.match(/range\(0; length; 32768\)/g) ?? []).length, 3);
+  assert.equal((workflow.match(/base64 -d >>/g) ?? []).length, 3);
+  assert.doesNotMatch(workflow, /echo '" \+ \(\$\w+_prompt \| encode_base64\) \+ "' \| base64 -d/);
+});
+
 test('workflow rejects fork PRs before cloning, including manual dispatches', () => {
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
   const extractFields = workflow.match(/- extractPRFields:\n([\s\S]*?)\n\s*- rejectUntrustedHeadRepository:/)?.[1] ?? '';
