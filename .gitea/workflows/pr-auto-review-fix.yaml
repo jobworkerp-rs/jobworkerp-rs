@@ -1,0 +1,110 @@
+name: PR Auto Review Fix
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      pull_number:
+        description: "Pull request number to process"
+        required: true
+        type: string
+      max_iterations:
+        description: "Maximum review/fix loop count"
+        required: false
+        default: "10"
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  auto-review-fix:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Fetch PR data
+        id: fetch-pr-data
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          GITEA_API_URL: ${{ vars.GITEA_API_URL || 'https://gitea.sutr.app/api/v1' }}
+          GITEA_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pull_number }}
+        run: |
+          set -eu
+          pr_data="$(curl --fail --silent --show-error \
+            --header "Authorization: token $GITEA_TOKEN" \
+            "$GITEA_API_URL/repos/$GITEA_REPOSITORY/pulls/$PR_NUMBER" | jq -ce .)"
+          delimiter="pr_data_${RANDOM}_${RANDOM}"
+          {
+            echo "pr_data<<$delimiter"
+            printf '%s\n' "$pr_data"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install protoc
+        run: |
+          if command -v protoc >/dev/null 2>&1; then
+            protoc --version
+            exit 0
+          fi
+          if ! command -v apt-get >/dev/null 2>&1 || [ "$(id -u)" -ne 0 ]; then
+            echo "protoc is required by jobworkerp-client; provide it in the Actions runner image" >&2
+            exit 1
+          fi
+          apt-get update
+          apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Run jobworkerp PR review/fix workflow
+        id: pr-review-fix
+        uses: https://gitea.sutr.app/jobworkerp-rs/jobworkerp-actions/jobworkerp-run@1ecd9a0f9a58fabadb4609871e8e0d349f7ba010
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+        with:
+          host: ${{ secrets.JOBWORKERP_HOST }}
+          channel: ${{ vars.JOBWORKERP_CHANNEL || 'workflow_base' }}
+          target: https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs/raw/commit/30e04297363f5c070573d7c2ffd60398b473ab76/.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml
+          target-type: workflow-url
+          action-context: token
+          action-token-env: GITEA_TOKEN
+          timeout-ms: "21600000"
+          output-json-path: $
+          client-command: ${{ vars.JOBWORKERP_CLIENT_COMMAND || 'jobworkerp-client' }}
+          client-binary-url: ${{ vars.JOBWORKERP_CLIENT_BINARY_URL }}
+          client-source-repository: ""
+          input-data: |
+            {
+              "owner": "${{ github.repository_owner }}",
+              "repo": "${{ github.event.repository.name }}",
+              "pull_number": ${{ github.event.pull_request.number || github.event.inputs.pull_number }},
+              "max_iterations": ${{ github.event.inputs.max_iterations || '10' }},
+              "pr_data": ${{ steps.fetch-pr-data.outputs.pr_data }},
+              "language": "${{ vars.CODE_AGENT_LANGUAGE || 'ja' }}",
+              "agent_image": "${{ vars.CODE_AGENT_IMAGE }}",
+              "agent_config_volumes": ${{ vars.CODE_AGENT_CONFIG_VOLUMES || '[]' }},
+              "agent_cmd": "${{ vars.CODE_AGENT_CMD || 'codex exec --dangerously-bypass-approvals-and-sandbox < /prompt/prompt.txt' }}",
+              "worktree_base_path": "${{ vars.JOBWORKERP_WORKTREE_BASE_PATH || '/tmp/jobworkerp-worktrees' }}",
+              "gitea_clone_url_template": "${{ vars.GITEA_CLONE_URL_TEMPLATE || 'https://gitea.sutr.app/{owner}/{repo}.git' }}",
+              "llm_base_url": "${{ vars.LLM_BASE_URL || 'http://localhost:11434' }}",
+              "llm_model": "${{ vars.LLM_MODEL || 'qwen3.6:27b' }}"
+            }
+
+      - name: Verify jobworkerp result
+        env:
+          JOBWORKERP_RESULT: ${{ steps.pr-review-fix.outputs.result }}
+        run: |
+          printf '%s\n' "$JOBWORKERP_RESULT"
+          printf '%s' "$JOBWORKERP_RESULT" | jq -er '
+            if (.output | type) == "string" then
+              (.output | fromjson | .status == "success")
+            else
+              error(.errorMessage // "jobworkerp action returned no workflow result")
+            end
+          '

@@ -948,6 +948,78 @@ impl Tracing for JobGrpcImpl {}
 impl RequestValidator for JobGrpcImpl {}
 
 impl JobGrpcImpl {
+    // gRPC status messages and binary metadata are transported as HTTP/2
+    // headers/trailers. Keep their *combined encoded size* below common proxy
+    // header limits; otherwise proxies can reset the stream and hide the
+    // original error.
+    const MAX_GRPC_ERROR_HEADER_BYTES: usize = 8 * 1024;
+    const MAX_GRPC_ERROR_OUTPUT_BYTES: usize = 4 * 1024;
+    const GRPC_HEADER_ENTRY_OVERHEAD_BYTES: usize = 32;
+    const GRPC_ERROR_TRUNCATED_SUFFIX: &str = "\n[truncated]";
+    const INVALID_ERROR_MESSAGE: &str =
+        "Job execution failed; diagnostic message was not valid UTF-8";
+
+    fn truncate_grpc_error_message(message: &str) -> Vec<u8> {
+        // Failure output is a UTF-8 diagnostic message. Truncate only at a
+        // character boundary so the trailer always remains displayable text.
+        if message.len() <= Self::MAX_GRPC_ERROR_OUTPUT_BYTES {
+            return message.as_bytes().to_vec();
+        }
+
+        let mut end = Self::MAX_GRPC_ERROR_OUTPUT_BYTES - Self::GRPC_ERROR_TRUNCATED_SUFFIX.len();
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+
+        let mut truncated = Vec::with_capacity(Self::MAX_GRPC_ERROR_OUTPUT_BYTES);
+        truncated.extend_from_slice(&message.as_bytes()[..end]);
+        truncated.extend_from_slice(Self::GRPC_ERROR_TRUNCATED_SUFFIX.as_bytes());
+        truncated
+    }
+
+    fn encoded_binary_metadata_len(value_len: usize) -> usize {
+        // Binary gRPC metadata is base64 encoded when written as an HTTP/2
+        // header value.
+        value_len.div_ceil(3) * 4
+    }
+
+    fn grpc_error_header_bytes(message: &str, job_result_len: usize, job_id_len: usize) -> usize {
+        // Count HPACK's per-header overhead too. Treat every message byte as
+        // percent-escaped (three bytes) to keep this a conservative bound.
+        let header = |name_len: usize, value_len: usize| {
+            name_len + value_len + Self::GRPC_HEADER_ENTRY_OVERHEAD_BYTES
+        };
+        header("grpc-status".len(), 1)
+            + header("grpc-message".len(), message.len() * 3)
+            + header(
+                super::JOB_RESULT_HEADER_NAME.len(),
+                Self::encoded_binary_metadata_len(job_result_len),
+            )
+            + header(
+                super::JOB_ID_HEADER_NAME.len(),
+                Self::encoded_binary_metadata_len(job_id_len),
+            )
+    }
+
+    fn error_result_data(
+        result_data: &proto::jobworkerp::data::JobResultData,
+    ) -> proto::jobworkerp::data::JobResultData {
+        // Do not copy arbitrary job arguments or worker metadata to trailers.
+        // They can be much larger than the failure output and are not needed to
+        // diagnose an RPC error.
+        proto::jobworkerp::data::JobResultData {
+            status: result_data.status,
+            output: result_data.output.as_ref().map(|output| {
+                let message =
+                    std::str::from_utf8(&output.items).unwrap_or(Self::INVALID_ERROR_MESSAGE);
+                proto::jobworkerp::data::ResultOutput {
+                    items: Self::truncate_grpc_error_message(message),
+                }
+            }),
+            ..Default::default()
+        }
+    }
+
     /// Create appropriate gRPC error status from job result data with protobuf in trailers
     fn create_job_error_status(
         job_id: &proto::jobworkerp::data::JobId,
@@ -956,17 +1028,12 @@ impl JobGrpcImpl {
         use prost::Message;
         use proto::jobworkerp::data::ResultStatus;
 
+        let metadata_result_data = Self::error_result_data(result_data);
         let job_result = proto::jobworkerp::data::JobResult {
             id: Some(proto::jobworkerp::data::JobResultId { value: 0 }), // dummy id for error response
-            data: Some(result_data.clone()),
+            data: Some(metadata_result_data),
             metadata: std::collections::HashMap::new(),
         };
-
-        let error_output = result_data
-            .output
-            .as_ref()
-            .map(|o| String::from_utf8_lossy(&o.items))
-            .unwrap_or_default();
 
         // Map ResultStatus to appropriate gRPC status codes and messages
         let (code, message) = match ResultStatus::try_from(result_data.status) {
@@ -976,27 +1043,23 @@ impl JobGrpcImpl {
             ),
             Ok(ResultStatus::ErrorAndRetry) => (
                 tonic::Code::Unavailable,
-                format!("Job execution failed (retryable): {error_output}"),
+                "Job execution failed (retryable)".to_string(),
             ),
             Ok(ResultStatus::MaxRetry) => (
                 tonic::Code::Aborted,
-                format!("Job execution failed (max retries exceeded): {error_output}"),
+                "Job execution failed (max retries exceeded)".to_string(),
             ),
-            Ok(ResultStatus::OtherError) => (
-                tonic::Code::Internal,
-                format!("Job execution error: {error_output}"),
-            ),
+            Ok(ResultStatus::OtherError) => {
+                (tonic::Code::Internal, "Job execution error".to_string())
+            }
             Ok(ResultStatus::FatalError) => (
                 tonic::Code::FailedPrecondition,
-                format!("Fatal job execution error: {error_output}"),
+                "Fatal job execution error".to_string(),
             ),
-            Ok(ResultStatus::Abort) => (
-                tonic::Code::Aborted,
-                format!("Job execution aborted: {error_output}"),
-            ),
+            Ok(ResultStatus::Abort) => (tonic::Code::Aborted, "Job execution aborted".to_string()),
             Ok(ResultStatus::Cancelled) => (
                 tonic::Code::Cancelled,
-                format!("Job execution cancelled: {error_output}"),
+                "Job execution cancelled".to_string(),
             ),
             Err(_) => (
                 tonic::Code::Unknown,
@@ -1023,6 +1086,14 @@ impl JobGrpcImpl {
         status
             .metadata_mut()
             .insert_bin(super::JOB_ID_HEADER_NAME, job_id_metadata);
+
+        debug_assert!(
+            Self::grpc_error_header_bytes(
+                status.message(),
+                job_result_bytes.len(),
+                job_id_bytes.len(),
+            ) <= Self::MAX_GRPC_ERROR_HEADER_BYTES
+        );
 
         status
     }
@@ -1097,6 +1168,202 @@ mod tests {
         assert!(v.validate_create(&req).is_ok());
         req.args = Vec::new();
         assert!(v.validate_create(&req).is_ok());
+    }
+
+    #[test]
+    fn test_create_job_error_status_bounds_large_error_metadata() {
+        use crate::proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
+        use prost::Message;
+
+        let prefix = "Workflow schema validation failed: Path: /do/1/mainProcessWithErrorHandling";
+        let large_error = format!("{prefix}\n{}", "invalid workflow data ".repeat(2_000));
+        let result_data = JobResultData {
+            status: ResultStatus::FatalError as i32,
+            output: Some(ResultOutput {
+                items: large_error.into_bytes(),
+            }),
+            ..Default::default()
+        };
+
+        let status = JobGrpcImpl::create_job_error_status(&JobId { value: 42 }, &result_data);
+
+        assert_eq!(status.message(), "job_id=42, Fatal job execution error");
+
+        let metadata = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("job result metadata");
+        let decoded = JobResult::decode(metadata.to_bytes().unwrap()).unwrap();
+        let output = decoded.data.unwrap().output.unwrap().items;
+        assert!(output.starts_with(prefix.as_bytes()));
+        assert!(output.len() <= JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn test_create_job_error_status_preserves_short_utf8_message() {
+        use crate::proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
+        use prost::Message;
+
+        let output =
+            "workflow validation failed: \u{8a73}\u{5b9a}\u{306f}\u{7121}\u{52b9}\u{3067}\u{3059}"
+                .as_bytes()
+                .to_vec();
+        let result_data = JobResultData {
+            status: ResultStatus::FatalError as i32,
+            output: Some(ResultOutput {
+                items: output.clone(),
+            }),
+            ..Default::default()
+        };
+
+        let status = JobGrpcImpl::create_job_error_status(&JobId { value: 42 }, &result_data);
+        let metadata = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("job result metadata");
+        let decoded = JobResult::decode(metadata.to_bytes().unwrap()).unwrap();
+
+        assert_eq!(decoded.data.unwrap().output.unwrap().items, output);
+    }
+
+    #[test]
+    fn test_create_job_error_status_preserves_message_at_byte_limit() {
+        use crate::proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
+        use prost::Message;
+
+        let output = "x".repeat(JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES);
+        let result_data = JobResultData {
+            status: ResultStatus::FatalError as i32,
+            output: Some(ResultOutput {
+                items: output.as_bytes().to_vec(),
+            }),
+            ..Default::default()
+        };
+
+        let status = JobGrpcImpl::create_job_error_status(&JobId { value: 42 }, &result_data);
+        let metadata = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("job result metadata");
+        let decoded = JobResult::decode(metadata.to_bytes().unwrap()).unwrap();
+
+        assert_eq!(
+            decoded.data.unwrap().output.unwrap().items,
+            output.as_bytes()
+        );
+    }
+
+    #[test]
+    fn test_create_job_error_status_truncates_utf8_message_at_character_boundary() {
+        use crate::proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
+        use prost::Message;
+
+        let output = "\u{8a73}\u{5b9a}\u{30a8}\u{30e9}\u{30fc}"
+            .repeat(JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES);
+        let result_data = JobResultData {
+            status: ResultStatus::FatalError as i32,
+            output: Some(ResultOutput {
+                items: output.as_bytes().to_vec(),
+            }),
+            ..Default::default()
+        };
+
+        let status = JobGrpcImpl::create_job_error_status(&JobId { value: 42 }, &result_data);
+        let metadata = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("job result metadata");
+        let decoded = JobResult::decode(metadata.to_bytes().unwrap()).unwrap();
+
+        let message = String::from_utf8(decoded.data.unwrap().output.unwrap().items)
+            .expect("error metadata must remain valid UTF-8");
+        assert!(message.ends_with("\n[truncated]"));
+        assert!(message.len() <= JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES);
+
+        let prefix = message.strip_suffix("\n[truncated]").unwrap();
+        assert!(output.starts_with(prefix));
+    }
+
+    #[test]
+    fn test_create_job_error_status_uses_fallback_for_invalid_utf8_message() {
+        use crate::proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
+        use prost::Message;
+
+        let result_data = JobResultData {
+            status: ResultStatus::FatalError as i32,
+            output: Some(ResultOutput {
+                items: vec![0xff, 0xfe, 0x80],
+            }),
+            ..Default::default()
+        };
+
+        let status = JobGrpcImpl::create_job_error_status(&JobId { value: 42 }, &result_data);
+        let metadata = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("job result metadata");
+        let decoded = JobResult::decode(metadata.to_bytes().unwrap()).unwrap();
+
+        assert_eq!(
+            decoded.data.unwrap().output.unwrap().items,
+            b"Job execution failed; diagnostic message was not valid UTF-8"
+        );
+    }
+
+    #[test]
+    fn test_create_job_error_status_stays_within_proxy_header_budget() {
+        use crate::proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
+        use prost::Message;
+
+        let result_data = JobResultData {
+            status: ResultStatus::FatalError as i32,
+            args: vec![b'a'; 32 * 1024],
+            worker_name: "worker-name-".repeat(2_000),
+            uniq_key: Some("unique-key-".repeat(2_000)),
+            using: Some("runner-name-".repeat(2_000)),
+            output: Some(ResultOutput {
+                items: "large failure output ".repeat(4_000).into_bytes(),
+            }),
+            ..Default::default()
+        };
+
+        let job_id = JobId { value: i64::MAX };
+        let status = JobGrpcImpl::create_job_error_status(&job_id, &result_data);
+        let job_result = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("job result metadata");
+        let job_result_bytes = job_result.to_bytes().unwrap();
+        let trailer_result = JobResult::decode(job_result_bytes.clone()).unwrap();
+        let trailer_data = trailer_result.data.expect("job result data");
+
+        assert!(
+            JobGrpcImpl::grpc_error_header_bytes(
+                status.message(),
+                job_result_bytes.len(),
+                job_id.encoded_len(),
+            ) <= JobGrpcImpl::MAX_GRPC_ERROR_HEADER_BYTES
+        );
+        assert!(trailer_data.args.is_empty());
+        assert!(trailer_data.worker_name.is_empty());
+        assert!(trailer_data.uniq_key.is_none());
+        assert!(trailer_data.using.is_none());
+        assert_eq!(
+            status.message(),
+            "job_id=9223372036854775807, Fatal job execution error"
+        );
     }
 
     #[test]

@@ -22,7 +22,7 @@ In `WorkerData` / `JobRequest` / `JobResultData`, every field whose type varies 
 |---------------|----------------------------|
 | `WorkerData.runner_settings` | `RunnerData.runner_settings_proto` |
 | `JobRequest.args` | `RunnerData.method_proto_map.schemas[using].args_proto` |
-| `JobResultData.output.items` | `RunnerData.method_proto_map.schemas[using].result_proto` |
+| `JobResultData.output.items` on success | `RunnerData.method_proto_map.schemas[using].result_proto` |
 | `ResultOutputItem.data` / `final_collected` (streaming) | Same `result_proto` |
 
 For multi-method Runners (LLM, WORKFLOW, MCP, Plugin), specify the key into `method_proto_map.schemas` (e.g. `"chat"`, `"run"`) via `JobRequest.using`. See "Multi-method Runners and `using`" below.
@@ -157,7 +157,13 @@ For a Worker created with `responseType=DIRECT`, the response carries the result
 
 ### 5. Decode the result
 
-Base64-decode `output.items` and parse the resulting bytes through the `resultProto` you saved in Step 1 to get a structured object back.
+For a successful result, Base64-decode `output.items` and parse the resulting bytes through the `resultProto` you saved in Step 1 to get a structured object back.
+
+### Failure diagnostic messages
+
+When `ResultStatus` is not `SUCCESS`, `output.items` is a UTF-8 diagnostic message rather than runner-specific `resultProto` data. Failure diagnostics carried by `x-job-result-bin` are limited to 4 KiB after UTF-8 encoding to stay within HTTP/2 metadata limits. When the limit is exceeded, the server truncates at a character boundary and appends `\n[truncated]`.
+
+For a complete persisted failure record, configure the Worker with `store_failure=true` and retrieve the stored result through `JobResultService.FindListByJobId` using the returned Job ID.
 
 ## Per-language Implementation Guide
 

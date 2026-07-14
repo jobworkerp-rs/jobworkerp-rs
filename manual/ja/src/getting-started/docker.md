@@ -41,11 +41,46 @@ $ docker run -p 8080:8080 -p 9000:9000 -p 8000:8000 -p 8001:8001 \
   jobworkerp-all-in-one
 ```
 
+### worker デプロイ時の Docker ソケット権限
+
+`worker-main/Dockerfile` の worker は非 root ユーザー `jobworkerp` として
+実行されます。スケーラブル Compose 構成は、ホストの Docker ソケットの数値
+GID を worker の補助グループとして追加します。起動前に以下を実行してください。
+
+```shell
+export DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock)"
+docker-compose -f docker-compose-scalable.yml up --scale jobworkerp-worker=3
+```
+
+`DOCKER_SOCKET_GID` は `compose-scalable.env` ではなく Compose を起動するシェルで設定します。
+ソケットを world-writable に変更しないでください。
+
 gRPC を公開する環境では `AUTH_TOKEN` を設定してください。保護対象の gRPC リクエストでは metadata header として `jobworkerp-auth: <AUTH_TOKEN>` を送信します。**Admin UI を使う場合は `AUTH_TOKEN` を設定しないでください**: 同梱の Admin UI クライアントはこのヘッダをまだ送信しないため、保護対象の呼び出し（ジョブ投入など）が `Unauthenticated` で失敗します。Admin UI が認証ヘッダに対応するまでは `AUTH_TOKEN` を未設定のままにしてください。
 
 ## 起動後のアクセス
 
 コンテナ起動後、ブラウザで [http://localhost:8080](http://localhost:8080) にアクセスするとAdmin UI（管理画面）が利用できます。
+
+## 分離workerイメージのビルドとテスト公開
+
+`worker-main/Dockerfile` は Ubuntu 24.04 の builder stage 内で worker をビルドします。ホストで作成した `target/release/worker` はイメージに含まれません。
+
+1. MySQL 構成の worker イメージをビルドします。
+
+   ```shell
+   docker build -f worker-main/Dockerfile \
+     --build-arg CARGO_FEATURES=mysql \
+     -t gitea.sutr.app/jobworkerp-rs/worker:test-<commit-sha> .
+   ```
+
+2. Gitea Package Registry にログインしてテストタグを公開します。
+
+   ```shell
+   docker login gitea.sutr.app
+   docker push gitea.sutr.app/jobworkerp-rs/worker:test-<commit-sha>
+   ```
+
+3. デプロイ対象の worker image をこのタグへ更新し、worker の起動ログと job 実行を確認します。
 管理画面ではWorkerの作成・管理、ジョブの投入・監視などの操作をGUIで行えます。
 
 ### ポート構成

@@ -29,6 +29,11 @@ use tokio_util::sync::CancellationToken;
 const DEFAULT_DOCKER_TIMEOUT_SEC: u64 = 3600;
 const DEFAULT_DOCKER_SOCKET_PATH: &str = "/var/run/docker.sock";
 
+// Bollard panics when rustls has multiple crypto backends and no process-level provider is set.
+fn install_rustls_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// Create Docker client with custom timeout, respecting DOCKER_HOST environment variable
 /// and rootless Docker socket locations.
 ///
@@ -146,6 +151,7 @@ fn connect_with_ssl_from_env(docker_host: &str, timeout_sec: u64) -> Result<Dock
         ));
     }
 
+    install_rustls_provider();
     Docker::connect_with_ssl(
         docker_host,
         &key_path,
@@ -1340,6 +1346,15 @@ mod test {
     use proto::jobworkerp::data::{JobData, JobId};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn rustls_provider_setup_is_idempotent() {
+        install_rustls_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+
+        install_rustls_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    }
 
     /// Test stub for RunnerCancellationManager
     /// Simple implementation that wraps a CancellationToken for unit testing

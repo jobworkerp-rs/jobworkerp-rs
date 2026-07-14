@@ -19,7 +19,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-const TEST_PLUGIN_DIR: &str = "./target/debug,../target/debug,../target/release,./target/release";
+#[cfg(debug_assertions)]
+const TEST_PLUGIN_DIR: &str = "./target/debug,../target/debug";
+#[cfg(not(debug_assertions))]
+const TEST_PLUGIN_DIR: &str = "./target/release,../target/release";
 
 fn make_helper(token: CancellationToken) -> CancelMonitoringHelper {
     CancelMonitoringHelper::new(Box::new(MockCancellationManager::new_with_token(token)))

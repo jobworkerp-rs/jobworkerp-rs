@@ -7,7 +7,10 @@ use prost::Message;
 use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
 use std::collections::HashMap;
 
-const TEST_PLUGIN_DIR: &str = "./target/debug,../target/debug,../target/release,./target/release";
+#[cfg(debug_assertions)]
+const TEST_PLUGIN_DIR: &str = "./target/debug,../target/debug";
+#[cfg(not(debug_assertions))]
+const TEST_PLUGIN_DIR: &str = "./target/release,../target/release";
 
 #[tokio::test]
 async fn test_load_legacy_plugin() -> Result<()> {
