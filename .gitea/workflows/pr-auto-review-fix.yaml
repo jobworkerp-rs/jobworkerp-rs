@@ -101,4 +101,4 @@ jobs:
           JOBWORKERP_RESULT: ${{ steps.pr-review-fix.outputs.result }}
         run: |
           printf '%s\n' "$JOBWORKERP_RESULT"
-          printf '%s' "$JOBWORKERP_RESULT" | jq -er '.status == "success"'
+          printf '%s' "$JOBWORKERP_RESULT" | jq -er '.output | fromjson | .status == "success"'

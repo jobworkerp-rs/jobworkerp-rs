@@ -132,11 +132,28 @@ test('CI runs for every push without waiting for a separate workflow', () => {
   assert.doesNotMatch(workflow, /github\.event\.workflow_run|github\.event\.pull_request\.head\.ref/);
 });
 
-test('Gitea Action fails when the jobworkerp workflow reports failure', () => {
+test('Gitea Action verifies the nested jobworkerp workflow result', () => {
   const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const resultFilter = '.output | fromjson | .status == "success"';
+  const successfulResult = JSON.stringify({
+    id: 'job-1',
+    output: JSON.stringify({ status: 'success', pushed: true }),
+  });
+  const failedResult = JSON.stringify({
+    id: 'job-2',
+    output: JSON.stringify({ status: 'failed', error_message: 'agent failed' }),
+  });
 
   assert.match(workflow, /JOBWORKERP_RESULT: \$\{\{ steps\.pr-review-fix\.outputs\.result \}\}/);
-  assert.match(workflow, /jq -er '\.status == "success"'/);
+  assert.match(workflow, /jq -er '\.output \| fromjson \| \.status == "success"'/);
+  assert.equal(
+    execFileSync('jq', ['-er', resultFilter], { input: successfulResult, encoding: 'utf8' }).trim(),
+    'true',
+  );
+  assert.throws(
+    () => execFileSync('jq', ['-er', resultFilter], { input: failedResult, encoding: 'utf8' }),
+    /Command failed/,
+  );
 });
 
 test('workflow rejects fork PRs before cloning, including manual dispatches', () => {
