@@ -133,6 +133,16 @@ test('CI runs for every push without waiting for a separate workflow', () => {
   assert.doesNotMatch(workflow, /github\.event\.workflow_run|github\.event\.pull_request\.head\.ref/);
 });
 
+test('CI runs jobworkerp regression tests with immutable commit history', () => {
+  for (const ciPath of ['.gitea/workflows/ci.yaml', '.github/workflows/ci.yaml']) {
+    const workflow = readRepoFile(ciPath);
+    const jobTest = workflow.match(/job-test:[\s\S]*?(?=\n  [a-z][\w-]*:|$)/)?.[0] ?? '';
+
+    assert.match(jobTest, /uses: actions\/checkout@v4[\s\S]*?submodules: true[\s\S]*?fetch-depth: 0/);
+    assert.match(jobTest, /node --test \.gitea\/jobworkerp\/tests\/\*\.test\.js/);
+  }
+});
+
 test('Gitea Action verifies the nested jobworkerp workflow result', () => {
   const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
   const successfulResult = JSON.stringify({
@@ -378,8 +388,12 @@ test('worktree checkout does not reuse PR head branch as a local branch', () => 
 
 test('workflow rebases agent commits onto the latest PR head before pushing', () => {
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const commitCheck = workflow.match(/- checkCommittedChangesBeforeRefactor:\n([\s\S]*?)\n\s*- generateRefactorPrompt:/)?.[1] ?? '';
   const syncBeforePush = workflow.match(/- synchronizePRHeadBeforePush:\n([\s\S]*?)\n\s*- checkPushNeeded:/)?.[1] ?? '';
 
+  assert.match(commitCheck, /- recordAgentCreatedCommits:/);
+  assert.match(commitCheck, /has_agent_created_commits: "\$\{\$commits_before_refactor > 0\}"/);
+  assert.match(syncBeforePush, /if: "\$\{\$has_agent_created_commits == true\}"/);
   assert.ok(syncBeforePush.includes('\\"fetch\\", $effective_head_clone_url'));
   assert.ok(syncBeforePush.includes('\\"rebase\\", \\"refs/remotes/pr-head/\\" + $pr_head_branch'));
   assert.ok(
@@ -387,6 +401,11 @@ test('workflow rebases agent commits onto the latest PR head before pushing', ()
     'the PR head must be synchronized before calculating commits to push',
   );
   assert.doesNotMatch(syncBeforePush, /--force|--force-with-lease/);
+  const checkPushNeeded = workflow.match(/- checkPushNeeded:\n([\s\S]*?)\n\s*- pushChanges:/)?.[1] ?? '';
+  const pushChanges = workflow.match(/- pushChanges:\n([\s\S]*?)\n\s*- setPushed:/)?.[1] ?? '';
+
+  assert.match(checkPushNeeded, /if: "\$\{\$has_agent_created_commits == true\}"/);
+  assert.match(pushChanges, /if: "\$\{\$commits_to_push > 0\}"/);
 });
 
 test('LLM settings come from workflow input without undefined context variables', () => {

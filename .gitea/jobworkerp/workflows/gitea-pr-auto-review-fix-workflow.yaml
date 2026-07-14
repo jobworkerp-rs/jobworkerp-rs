@@ -97,6 +97,8 @@ do:
         forced_to_refactor: false
         changed_by_refactor: false
         pushed: false
+        has_agent_created_commits: false
+        commits_to_push: 0
         prompt_temp_dir: ""
         effective_worktree_root: ""
         effective_worktree_path: ""
@@ -556,6 +558,10 @@ do:
               as:
                 commits_before_refactor: "${.stdout | rtrimstr(\"\\n\") | tonumber}"
 
+        - recordAgentCreatedCommits:
+            set:
+              has_agent_created_commits: "${$commits_before_refactor > 0}"
+
         - generateRefactorPrompt:
             if: "${$commits_before_refactor > 0}"
             set:
@@ -684,6 +690,7 @@ do:
                   treat_nonzero_as_error: true
 
         - synchronizePRHeadBeforePush:
+            if: "${$has_agent_created_commits == true}"
             run:
               runner:
                 name: COMMAND
@@ -693,6 +700,7 @@ do:
                   treat_nonzero_as_error: true
 
         - rebaseAgentCommitsOntoLatestPRHead:
+            if: "${$has_agent_created_commits == true}"
             run:
               runner:
                 name: COMMAND
@@ -702,6 +710,7 @@ do:
                   treat_nonzero_as_error: true
 
         - checkPushNeeded:
+            if: "${$has_agent_created_commits == true}"
             run:
               runner:
                 name: COMMAND
