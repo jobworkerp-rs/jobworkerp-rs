@@ -40,7 +40,14 @@ use proto::jobworkerp::data::{
     JobResultId, QueueType, ResponseType, ResultOutputItem, ResultStatus, RetryPolicy,
     StreamingType, Trailer, Worker, WorkerData, WorkerId, result_output_item,
 };
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 /// Receiver that the dispatcher awaits to know when a spawned stream-publishing
 /// task has finished. `None` means there is no background task to wait for.
@@ -50,13 +57,44 @@ pub type StreamCompletionReceiver = Option<tokio::sync::oneshot::Receiver<()>>;
 /// `JobResult` plus an optional output stream, resolved once the (Direct
 /// response) job completes. `'static` so it can be returned past the borrow of
 /// `self` and awaited by the caller after recording the `JobId`.
-pub type ChannelJobResultFuture = BoxFuture<
-    'static,
-    Result<(
+pub struct ChannelJobResultFuture {
+    result: BoxFuture<'static, Result<Option<JobResult>>>,
+    stream: Option<BoxStream<'static, ResultOutputItem>>,
+}
+
+impl ChannelJobResultFuture {
+    pub fn new(
+        result: BoxFuture<'static, Result<Option<JobResult>>>,
+        stream: Option<BoxStream<'static, ResultOutputItem>>,
+    ) -> Self {
+        Self { result, stream }
+    }
+
+    /// Split the already-subscribed output stream from the final-result wait.
+    /// This lets transports forward output while the job is still running.
+    pub fn into_parts(
+        self,
+    ) -> (
+        BoxFuture<'static, Result<Option<JobResult>>>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    ) {
+        (self.result, self.stream)
+    }
+}
+
+impl Future for ChannelJobResultFuture {
+    type Output = Result<(
         Option<JobResult>,
         Option<BoxStream<'static, ResultOutputItem>>,
-    )>,
->;
+    )>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.result.as_mut().poll(cx) {
+            Poll::Ready(result) => Poll::Ready(result.map(|result| (result, self.stream.take()))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
 
 /// Guard that sends `()` on the oneshot when dropped.
 /// Prevents the dispatcher from hanging if the spawned task panics or returns early.

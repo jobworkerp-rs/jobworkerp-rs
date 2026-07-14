@@ -95,6 +95,7 @@ do:
         review_iteration: 0
         review_outputs: []
         fix_outputs: []
+        fix_output: ""
         post_fix_status: ""
         post_refactor_status: ""
         continue_review: true
@@ -436,8 +437,10 @@ do:
                       - Stage only files you modified or created; do not use `git add -A` or `git add .`.
                       - End your response with a concise Japanese PR comment summary between these exact markers:
                         <!-- PR-AUTO-REVIEW-SUMMARY:START -->
-                        ## 判断
-                        ## 変更内容
+                        - 指摘: 対応した指摘を短く記載
+                        - 判断: 有効・対応不要などの判断
+                        - 対応: 実施した変更、または対応しなかった理由
+                        - 指摘ごとにこの形式を繰り返す
                         ## テスト
                         ## 変更なしの場合の理由
                         <!-- PR-AUTO-REVIEW-SUMMARY:END -->
@@ -652,7 +655,7 @@ do:
 
               - buildFixCommentPayload:
                   set:
-                    fix_comment_payload: "${{\"body\": (\"## 自動レビュー対応（ターン \" + ($review_iteration | tostring) + \"）\\n\\n\" + $fix_comment_summary)} | tojson}"
+                    fix_comment_payload: "${{\"body\": (if $needs_fix == true then \"## 自動レビュー対応（ターン \" + ($review_iteration | tostring) + \"）\\n\\n## 指摘事項\\n\\n\" + $fix_prompt + \"\\n\\n## 対応結果\\n\\n\" + $fix_comment_summary else \"## 自動レビュー対応（ターン \" + ($review_iteration | tostring) + \"）\\n\\n## 指摘事項\\n\\n有効な対応事項はありませんでした。\\n\\n## 対応結果\\n\\n\" + $fix_comment_summary end)} | tojson}"
 
               - postFixResultComment:
                   call: http
@@ -781,11 +784,11 @@ do:
                   working_dir: "/workspace"
                   entrypoint: ["/bin/sh", "-c"]
                   cmd: "${[$agent_cmd]}"
-                  timeout_sec: 3600
+                  timeout_sec: 10800
                   treat_nonzero_as_error: true
             timeout:
               after:
-                minutes: 60
+                minutes: 180
             export:
                   as:
                     refactor_output: "${.stdout // \"\"}"

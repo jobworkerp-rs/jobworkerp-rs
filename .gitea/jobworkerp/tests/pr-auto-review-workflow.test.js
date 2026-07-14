@@ -58,6 +58,13 @@ test('pinned jobworkerp workflow revision initializes post-review status variabl
   assert.match(targetWorkflow, /timeout:\n\s+after:\n\s+hours: 6\n\ndo:/);
 });
 
+test('workflow initializes skipped fix agent output before creating a result comment', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const initialization = workflow.match(/- initializeVariables:\n([\s\S]*?)\n\s*- mainProcessWithErrorHandling:/)?.[1] ?? '';
+
+  assert.match(initialization, /fix_output: ""/);
+});
+
 test('Gitea Action does not load a workflow definition from a PR branch', () => {
   const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
 
@@ -253,6 +260,14 @@ test('fix agent allows the same three-hour execution window as the review agent'
 
   assert.match(fixAgent, /timeout_sec: 10800/);
   assert.match(fixAgent, /timeout:\n\s+after:\n\s+minutes: 180/);
+});
+
+test('refactor agent allows the same three-hour execution window as the review and fix agents', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const refactorAgent = workflow.match(/- runRefactorAgent:\n([\s\S]*?)\n\s*- cleanupRefactorPromptDir:/)?.[1] ?? '';
+
+  assert.match(refactorAgent, /timeout_sec: 10800/);
+  assert.match(refactorAgent, /timeout:\n\s+after:\n\s+minutes: 180/);
 });
 
 test('review judge prompt expands the actual review output', () => {
@@ -453,8 +468,21 @@ test('each review fix is pushed before its Japanese summary is posted to the PR'
   assert.match(workflow, /\$_secrets\.token/);
   assert.match(workflow, /comment_post_failures:/);
   const fixComment = workflow.match(/- postFixResultComment:\n([\s\S]*?)\n\s*- recordFixCommentFailure:/)?.[1] ?? '';
+  const fixCommentPayload = workflow.match(/- buildFixCommentPayload:\n([\s\S]*?)\n\s*- postFixResultComment:/)?.[1] ?? '';
   assert.match(fixComment, /call: http/);
   assert.doesNotMatch(fixComment, /command: "curl"/);
+  assert.match(fixCommentPayload, /指摘事項/);
+  assert.match(fixCommentPayload, /対応結果/);
+  assert.match(fixCommentPayload, /\$fix_prompt/);
+});
+
+test('fix agent summary maps each finding to its judgment and response', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const fixPrompt = workflow.match(/- generateFixPrompt:\n([\s\S]*?)\n\s*- createFixPromptDir:/)?.[1] ?? '';
+
+  assert.match(fixPrompt, /- 指摘:/);
+  assert.match(fixPrompt, /- 判断:/);
+  assert.match(fixPrompt, /- 対応:/);
 });
 
 test('final refactor is retained after per-iteration pushes and its result is posted', () => {

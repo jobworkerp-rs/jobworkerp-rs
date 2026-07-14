@@ -908,7 +908,10 @@ impl JobApp for HybridJobAppImpl {
                     overrides,
                 )
                 .await?;
-            return Ok((job_id, Box::pin(async move { Ok((result, stream)) })));
+            return Ok((
+                job_id,
+                super::ChannelJobResultFuture::new(Box::pin(async move { Ok(result) }), stream),
+            ));
         }
 
         let job_data = JobData {
@@ -972,9 +975,9 @@ impl JobApp for HybridJobAppImpl {
         let fut: BoxFuture<'static, _> = Box::pin(async move {
             repo.wait_for_result_queue_for_response(&jid, total_timeout, false)
                 .await
-                .map(|(r, _)| (Some(r), result_stream))
+                .map(|(r, _)| Some(r))
         });
-        Ok((jid, fut))
+        Ok((jid, super::ChannelJobResultFuture::new(fut, result_stream)))
     }
 
     // update (re-enqueue) job with id (redis: upsert, rdb: update)

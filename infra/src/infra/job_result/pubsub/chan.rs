@@ -207,35 +207,10 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
 impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
     // subscribe job result of listen after by all listening client using broadcast_chan and return got result immediately
     async fn subscribe_result(&self, job_id: &JobId, timeout: Option<u64>) -> Result<JobResult> {
-        let cn = Self::job_result_pubsub_channel_name(job_id);
-        tracing::debug!("subscribe_result: job_id={}, ch={}", &job_id.value, &cn);
-
-        let message = self
-            .broadcast_chan_buf()
-            .receive_from_chan(
-                cn.as_str(),
-                timeout.map(Duration::from_millis),
-                Some(&Duration::from_secs(
-                    self.job_queue_config().expire_job_result_seconds as u64,
-                )),
-            )
+        self.subscribe_result_with_ready(job_id, timeout, None)
             .await
-            .inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?;
-
-        // Clean up the channel if no other subscribers (like Redis unsubscribe)
-        if self.broadcast_chan_buf().receiver_count(cn.as_str()).await == 0 {
-            let _ = self
-                .broadcast_chan_buf()
-                .delete_chan(cn.as_str())
-                .await
-                .inspect_err(|e| tracing::warn!("failed to delete channel: {:?}", e));
-        }
-
-        let res = Self::deserialize_message::<JobResult>(&message)
-            .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
-        tracing::debug!("subscribe_result_received: result={:?}", &res.id);
-        Ok(res)
     }
+
     // subscribe job result of listen after by all listening client using broadcast_chan and return got result immediately
     async fn subscribe_result_stream(
         &self,
@@ -362,6 +337,54 @@ pub struct ChanJobResultPubSubRepositoryImpl {
     job_queue_config: Arc<JobQueueConfig>,
 }
 impl ChanJobResultPubSubRepositoryImpl {
+    // Registers the broadcast receiver before notifying `ready`. Callers that
+    // enqueue immediately afterwards can therefore not lose a fast result.
+    pub async fn subscribe_result_with_ready(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        ready: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> Result<JobResult> {
+        let cn = Self::job_result_pubsub_channel_name(job_id);
+        tracing::debug!("subscribe_result: job_id={}, ch={}", &job_id.value, &cn);
+        let chan_buf = self.broadcast_chan_buf();
+        let ttl = Duration::from_secs(self.job_queue_config().expire_job_result_seconds as u64);
+        let message = match ready {
+            Some(ready) => {
+                chan_buf
+                    .receive_from_chan_with_check(
+                        cn.as_str(),
+                        timeout.map(Duration::from_millis),
+                        Some(&ttl),
+                        || async move {
+                            let _ = ready.send(());
+                            None
+                        },
+                    )
+                    .await
+            }
+            None => {
+                chan_buf
+                    .receive_from_chan(cn.as_str(), timeout.map(Duration::from_millis), Some(&ttl))
+                    .await
+            }
+        }
+        .inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?;
+
+        if self.broadcast_chan_buf().receiver_count(cn.as_str()).await == 0 {
+            let _ = self
+                .broadcast_chan_buf()
+                .delete_chan(cn.as_str())
+                .await
+                .inspect_err(|e| tracing::warn!("failed to delete channel: {:?}", e));
+        }
+
+        let res = Self::deserialize_message::<JobResult>(&message)
+            .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
+        tracing::debug!("subscribe_result_received: result={:?}", &res.id);
+        Ok(res)
+    }
+
     pub fn new(
         broadcast_chan_buf: ChanBuffer<Vec<u8>, BroadcastChan<ChanBufferItem<Vec<u8>>>>,
         job_queue_config: Arc<JobQueueConfig>,
@@ -514,6 +537,44 @@ mod test {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn subscribe_result_with_ready_receives_immediate_publish() -> Result<()> {
+        let app = ChanJobResultPubSubRepositoryImpl {
+            broadcast_chan_buf: ChanBuffer::new(None, 10000),
+            job_queue_config: Arc::new(JobQueueConfig {
+                expire_job_result_seconds: 60,
+                fetch_interval: 1000,
+                channel_capacity: 10000,
+                pubsub_channel_capacity: 128,
+                max_channels: 10_000,
+                cancel_channel_capacity: 1_000,
+                feed_dispatch_timeout: 5000,
+            }),
+        };
+        let job_id = JobId { value: 12 };
+        let result_id = JobResultId { value: 1213 };
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(WorkerId { value: 1 }),
+            ..JobResultData::default()
+        };
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let subscriber = app.clone();
+        let result_wait = tokio::spawn(async move {
+            subscriber
+                .subscribe_result_with_ready(&job_id, Some(1000), Some(ready_tx))
+                .await
+        });
+
+        // This is the synchronization used by enqueue_job_with_channel: publish
+        // immediately after readiness, with no scheduling delay for the waiter.
+        ready_rx.await.expect("subscriber must register");
+        app.publish_result(&result_id, &data, true).await?;
+        assert_eq!(result_wait.await??.id, Some(result_id));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_subscribe_result_stream_by_worker() -> Result<()> {
         let app = ChanJobResultPubSubRepositoryImpl {

@@ -71,55 +71,107 @@ fn wrap_result_output_stream(
 
 /// Defer Direct-response completion until after the gRPC headers have been
 /// sent. The JobId is therefore available to a client while the job runs.
-type DeferredResult = anyhow::Result<(
-    Option<JobResult>,
-    Option<BoxStream<'static, ResultOutputItem>>,
-)>;
+type DeferredResult = anyhow::Result<Option<JobResult>>;
 type DeferredResultHandle = tokio::task::JoinHandle<DeferredResult>;
+
+/// Abort the result wait task unless the response stream consumes it to normal
+/// completion. Dropping a `JoinHandle` alone detaches its task, which would
+/// otherwise leave a Redis result wait running after the client disconnects.
+struct AbortResultWaitOnDrop {
+    handle: DeferredResultHandle,
+    completed: bool,
+}
+
+impl AbortResultWaitOnDrop {
+    fn new(handle: DeferredResultHandle) -> Self {
+        Self {
+            handle,
+            completed: false,
+        }
+    }
+
+    fn handle_mut(&mut self) -> &mut DeferredResultHandle {
+        &mut self.handle
+    }
+
+    fn mark_completed(&mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for AbortResultWaitOnDrop {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.handle.abort();
+        }
+    }
+}
 
 fn deferred_result_output_stream(
     job_id: JobId,
     result_handle: DeferredResultHandle,
+    output_stream: Option<BoxStream<'static, ResultOutputItem>>,
     method_name: &'static str,
 ) -> BoxStream<'static, Result<ResultOutputItem, tonic::Status>> {
+    let result_handle = AbortResultWaitOnDrop::new(result_handle);
     stream! {
-        match result_handle.await {
-            Ok(Ok((result, stream))) => {
-                if let Some(result_data) = result.as_ref().and_then(|result| result.data.as_ref())
-                    && result_data.status != proto::jobworkerp::data::ResultStatus::Success as i32
-                {
-                    tracing::warn!(
-                        "gRPC {}: job {} completed with status {}",
-                        method_name,
-                        job_id.value,
-                        result_data.status
-                    );
-                    yield Err(JobGrpcImpl::create_job_error_status(&job_id, result_data));
-                    return;
-                }
+        let mut result_handle = result_handle;
+        let mut output_stream = output_stream.map(|stream| wrap_result_output_stream(stream, method_name));
+        let mut result_done = false;
+        let mut output_done = output_stream.is_none();
+        let mut end_item = None;
 
-                if let Some(stream) = stream {
-                    let mut stream = wrap_result_output_stream(stream, method_name);
-                    while let Some(item) = stream.next().await {
-                        let done = item
-                            .as_ref()
-                            .ok()
-                            .is_some_and(|output| matches!(output.item, Some(result_output_item::Item::End(_))));
-                        yield item;
-                        if done {
-                            break;
+        // Poll both sources at once. In particular, do not make output wait for
+        // the final JobResult: a Direct job may stream for minutes before it
+        // completes. Hold End until the result wait succeeds so a failed wait
+        // can still be reported as the terminal gRPC error.
+        while !(result_done && output_done) {
+            tokio::select! {
+                result = result_handle.handle_mut(), if !result_done => {
+                    match result {
+                        Ok(Ok(Some(result))) => {
+                            if let Some(data) = result.data.as_ref()
+                                && data.status != proto::jobworkerp::data::ResultStatus::Success as i32
+                            {
+                                tracing::warn!(
+                                    "gRPC {}: job {} completed with non-success status {}",
+                                    method_name,
+                                    job_id.value,
+                                    data.status
+                                );
+                                yield Err(JobGrpcImpl::create_job_error_status(&job_id, data));
+                                return;
+                            }
+                            result_done = true;
+                        }
+                        Ok(Ok(None)) => result_done = true,
+                        Ok(Err(error)) => {
+                            tracing::warn!("gRPC {}: result wait failed for job {}: {:?}", method_name, job_id.value, error);
+                            yield Err(handle_error(&error));
+                            return;
+                        }
+                        Err(error) => {
+                            tracing::error!("gRPC {}: result wait task panicked for job {}: {:?}", method_name, job_id.value, error);
+                            yield Err(tonic::Status::internal("result wait task panicked"));
+                            return;
                         }
                     }
                 }
+                item = async { output_stream.as_mut().unwrap().next().await }, if !output_done => {
+                    match item {
+                        Some(Ok(item)) if matches!(item.item, Some(result_output_item::Item::End(_))) => {
+                            end_item = Some(item);
+                            output_done = true;
+                        }
+                        Some(item) => yield item,
+                        None => output_done = true,
+                    }
+                }
             }
-            Ok(Err(error)) => {
-                tracing::warn!("gRPC {}: result wait failed for job {}: {:?}", method_name, job_id.value, error);
-                yield Err(handle_error(&error));
-            }
-            Err(error) => {
-                tracing::error!("gRPC {}: result wait task panicked for job {}: {:?}", method_name, job_id.value, error);
-                yield Err(tonic::Status::internal("result wait task panicked"));
-            }
+        }
+        result_handle.mark_completed();
+        if let Some(end_item) = end_item {
+            yield Ok(end_item);
         }
     }
     .boxed()
@@ -130,11 +182,8 @@ async fn start_deferred_result_output_stream(
     result_fut: ChannelJobResultFuture,
     method_name: &'static str,
 ) -> BoxStream<'static, Result<ResultOutputItem, tonic::Status>> {
-    // A stream is lazy, so waiting to poll it would let a fast worker publish
-    // output before Redis/chan pubsub has a subscriber.
-    let result_handle = tokio::spawn(result_fut);
-    tokio::task::yield_now().await;
-    deferred_result_output_stream(job_id, result_handle, method_name)
+    let (result_fut, output_stream) = result_fut.into_parts();
+    deferred_result_output_stream(job_id, tokio::spawn(result_fut), output_stream, method_name)
 }
 
 fn response_with_job_id<S>(job_id: JobId, stream: S) -> Response<S> {
@@ -1284,44 +1333,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deferred_error_is_reported_in_result_trailer_only() {
-        use crate::proto::jobworkerp::data::{JobResult, JobResultData, ResultStatus};
+    async fn deferred_non_success_result_returns_error_with_job_result_trailer() {
+        use crate::proto::jobworkerp::data::{
+            JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
+        use prost::Message;
 
         let result_fut = Box::pin(async {
-            Ok((
-                Some(JobResult {
-                    data: Some(JobResultData {
-                        status: ResultStatus::Cancelled as i32,
-                        ..Default::default()
+            Ok(Some(JobResult {
+                data: Some(JobResultData {
+                    status: ResultStatus::Cancelled as i32,
+                    output: Some(ResultOutput {
+                        items: b"cancelled by caller".to_vec(),
                     }),
                     ..Default::default()
                 }),
-                None,
-            ))
+                ..Default::default()
+            }))
         });
         let mut stream = deferred_result_output_stream(
             JobId { value: 42 },
             tokio::spawn(result_fut),
-            "deferred_error_is_reported_in_result_trailer_only",
+            None,
+            "deferred_non_success_result_returns_error_with_job_result_trailer",
         );
 
         let status = stream
             .next()
             .await
-            .expect("stream error item")
-            .expect_err("execution failure must terminate the stream");
-        assert!(
-            status
-                .metadata()
-                .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
-                .is_some()
+            .expect("terminal error")
+            .expect_err("non-success result must fail the RPC");
+        assert_eq!(status.code(), tonic::Code::Cancelled);
+        let trailer = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("x-job-result-bin trailer");
+        let job_result = JobResult::decode(trailer.to_bytes().expect("trailer bytes")).unwrap();
+        let data = job_result.data.expect("trailer result data");
+        assert_eq!(data.status, ResultStatus::Cancelled as i32);
+        assert_eq!(
+            data.output.expect("trailer output").items,
+            b"cancelled by caller"
         );
-        assert!(
-            status
-                .metadata()
-                .get_bin(crate::service::JOB_ID_HEADER_NAME)
-                .is_none()
-        );
+        assert!(stream.next().await.is_none());
     }
 
     #[tokio::test]
@@ -1329,22 +1383,19 @@ mod tests {
         use futures::stream;
         use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
 
-        let result_fut = Box::pin(async {
-            Ok((
-                None,
-                Some(Box::pin(stream::iter(vec![
-                    ResultOutputItem {
-                        item: Some(result_output_item::Item::Data(b"chunk".to_vec())),
-                    },
-                    ResultOutputItem {
-                        item: Some(result_output_item::Item::End(Trailer::default())),
-                    },
-                ])) as BoxStream<'static, ResultOutputItem>),
-            ))
-        });
+        let result_fut = Box::pin(async { Ok(None) });
+        let output_stream = Box::pin(stream::iter(vec![
+            ResultOutputItem {
+                item: Some(result_output_item::Item::Data(b"chunk".to_vec())),
+            },
+            ResultOutputItem {
+                item: Some(result_output_item::Item::End(Trailer::default())),
+            },
+        ])) as BoxStream<'static, ResultOutputItem>;
         let items = deferred_result_output_stream(
             JobId { value: 42 },
             tokio::spawn(result_fut),
+            Some(output_stream),
             "deferred_success_preserves_data_and_end_items",
         )
         .collect::<Vec<_>>()
@@ -1359,6 +1410,84 @@ mod tests {
             items[1].as_ref().unwrap().item,
             Some(result_output_item::Item::End(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn deferred_streams_data_before_final_result_is_ready() {
+        use futures::stream;
+        use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
+
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let result_fut = Box::pin(async move {
+            result_rx.await.expect("result sender dropped");
+            Ok(None)
+        });
+        let output_stream = Box::pin(stream::iter(vec![
+            ResultOutputItem {
+                item: Some(result_output_item::Item::Data(b"first".to_vec())),
+            },
+            ResultOutputItem {
+                item: Some(result_output_item::Item::End(Trailer::default())),
+            },
+        ])) as BoxStream<'static, ResultOutputItem>;
+        let mut stream = deferred_result_output_stream(
+            JobId { value: 42 },
+            tokio::spawn(result_fut),
+            Some(output_stream),
+            "deferred_streams_data_before_final_result_is_ready",
+        );
+
+        let first = tokio::time::timeout(std::time::Duration::from_millis(100), stream.next())
+            .await
+            .expect("data must not wait for the final result")
+            .expect("data item")
+            .expect("successful item");
+        assert!(matches!(
+            first.item,
+            Some(result_output_item::Item::Data(ref data)) if data == b"first"
+        ));
+        result_tx.send(()).expect("result receiver alive");
+        assert!(matches!(
+            stream.next().await,
+            Some(Ok(ResultOutputItem {
+                item: Some(result_output_item::Item::End(_))
+            }))
+        ));
+    }
+
+    #[tokio::test]
+    async fn deferred_stream_drop_aborts_pending_result_wait() {
+        struct NotifyOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
+
+        impl Drop for NotifyOnDrop {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (aborted_tx, aborted_rx) = tokio::sync::oneshot::channel();
+        let result_fut = Box::pin(async move {
+            let _notify_on_drop = NotifyOnDrop(Some(aborted_tx));
+            started_tx.send(()).expect("result wait task started");
+            std::future::pending::<()>().await;
+            Ok(None)
+        });
+        let stream = deferred_result_output_stream(
+            JobId { value: 42 },
+            tokio::spawn(result_fut),
+            None,
+            "deferred_stream_drop_aborts_pending_result_wait",
+        );
+
+        started_rx.await.expect("result wait task must start");
+        drop(stream);
+        tokio::time::timeout(std::time::Duration::from_millis(100), aborted_rx)
+            .await
+            .expect("dropping the response stream must abort the result wait")
+            .expect("aborted task must drop its future");
     }
 
     #[test]

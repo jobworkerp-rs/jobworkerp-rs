@@ -788,7 +788,10 @@ impl JobApp for RdbChanJobAppImpl {
                     overrides,
                 )
                 .await?;
-            return Ok((job_id, Box::pin(async move { Ok((result, stream)) })));
+            return Ok((
+                job_id,
+                super::ChannelJobResultFuture::new(Box::pin(async move { Ok(result) }), stream),
+            ));
         }
 
         let job_data = JobData {
@@ -829,8 +832,34 @@ impl JobApp for RdbChanJobAppImpl {
             None
         };
 
+        // The result channel is also a broadcast channel. Register its receiver
+        // before making the job visible, otherwise a fast runner can publish the
+        // final JobResult before the deferred future is first polled. The
+        // subscription itself has no timeout; its wait timeout starts below,
+        // after enqueue/cache admission succeeds.
+        let (result_ready_tx, result_ready_rx) = tokio::sync::oneshot::channel();
+        let result_pubsub = self.job_result_pubsub_repository().clone();
+        let result_job_id = jid;
+        let result_handle = tokio::spawn(async move {
+            result_pubsub
+                .subscribe_result_with_ready(&result_job_id, None, Some(result_ready_tx))
+                .await
+        });
+        result_ready_rx.await.map_err(|_| {
+            JobWorkerError::RuntimeError("result subscriber stopped before registering".to_string())
+        })?;
+
         // Enqueue phase only — the JobId is now live and the job is Pending.
-        let job_id = self.enqueue_job_sync_enqueue_only(&job, &w, false).await?;
+        // If making it visible to a worker fails, neither of the subscriptions
+        // can ever receive a result. Drop the output receiver and stop the
+        // pre-started result waiter before returning the enqueue error.
+        let job_id = match self.enqueue_job_sync_enqueue_only(&job, &w, false).await {
+            Ok(job_id) => job_id,
+            Err(error) => {
+                abort_deferred_result_wait(result_handle, result_stream).await;
+                return Err(error);
+            }
+        };
         self.index_job_status_async(
             jid,
             JobProcessingStatus::Pending,
@@ -842,7 +871,11 @@ impl JobApp for RdbChanJobAppImpl {
             resolved.broadcast_results,
         );
 
-        let fut = self.wait_for_direct_response_future(job_id, total_timeout, result_stream);
+        // Enqueue and cache admission are complete. Start the Direct-response
+        // timeout now, while retaining the receiver registered before the job
+        // became visible to a worker.
+        let result_handle = start_deferred_result_wait(result_handle, total_timeout);
+        let fut = self.wait_for_direct_response_future(result_handle, result_stream);
         Ok((job_id, fut))
     }
 
@@ -1597,17 +1630,13 @@ where
     /// `enqueue_job_with_channel`).
     fn wait_for_direct_response_future(
         &self,
-        job_id: JobId,
-        timeout: Option<u64>,
+        result_handle: tokio::task::JoinHandle<Result<JobResult>>,
         result_stream: Option<BoxStream<'static, ResultOutputItem>>,
     ) -> super::ChannelJobResultFuture {
-        let pubsub = self.job_result_pubsub_repository().clone();
-        Box::pin(async move {
-            pubsub
-                .subscribe_result(&job_id, timeout)
-                .await
-                .map(|r| (Some(r), result_stream))
-        })
+        super::ChannelJobResultFuture::new(
+            Box::pin(async move { result_handle.await?.map(Some) }),
+            result_stream,
+        )
     }
 
     #[inline]
@@ -1625,6 +1654,49 @@ where
         )
         .await
     }
+}
+
+/// Tear down the subscriptions that were created before enqueueing a Direct
+/// response job when the enqueue itself fails.
+async fn abort_deferred_result_wait(
+    result_handle: tokio::task::JoinHandle<Result<JobResult>>,
+    result_stream: Option<BoxStream<'static, ResultOutputItem>>,
+) {
+    drop(result_stream);
+    result_handle.abort();
+    let _ = result_handle.await;
+}
+
+/// Start enforcing the Direct-response timeout only after enqueue/cache
+/// admission has completed. The underlying subscriber is already registered,
+/// preserving results published by an immediately running worker.
+fn start_deferred_result_wait(
+    result_handle: tokio::task::JoinHandle<Result<JobResult>>,
+    total_timeout: Option<u64>,
+) -> tokio::task::JoinHandle<Result<JobResult>> {
+    tokio::spawn(async move {
+        let mut result_handle = result_handle;
+        let result = match total_timeout {
+            Some(timeout_ms) => match tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                &mut result_handle,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    result_handle.abort();
+                    let _ = result_handle.await;
+                    return Err(JobWorkerError::RuntimeError(format!(
+                        "subscribe_result timeout after {timeout_ms}ms"
+                    ))
+                    .into());
+                }
+            },
+            None => result_handle.await,
+        };
+        result?
+    })
 }
 
 /// Wait for a Direct-response job's result via the chan pubsub repository.
@@ -1684,7 +1756,56 @@ mod tests {
         RunnerId, WorkerData,
     };
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn abort_deferred_result_wait_aborts_task_and_drops_output_stream() {
+        let task_dropped = Arc::new(AtomicBool::new(false));
+        let task_flag = DropFlag(task_dropped.clone());
+        let result_handle = tokio::spawn(async move {
+            let _task_flag = task_flag;
+            std::future::pending::<Result<JobResult>>().await
+        });
+
+        let stream_dropped = Arc::new(AtomicBool::new(false));
+        let stream_flag = DropFlag(stream_dropped.clone());
+        let result_stream = Box::pin(futures::stream::once(async move {
+            let _stream_flag = stream_flag;
+            std::future::pending::<ResultOutputItem>().await
+        })) as BoxStream<'static, ResultOutputItem>;
+
+        abort_deferred_result_wait(result_handle, Some(result_stream)).await;
+
+        assert!(task_dropped.load(Ordering::SeqCst));
+        assert!(stream_dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn deferred_result_timeout_starts_when_wait_is_started() {
+        let result_handle =
+            tokio::spawn(async { std::future::pending::<Result<JobResult>>().await });
+
+        // Simulate work performed before enqueue/cache admission completes.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let mut result_wait = start_deferred_result_wait(result_handle, Some(20));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), &mut result_wait)
+                .await
+                .is_err(),
+            "the timeout must not include pre-enqueue work"
+        );
+        assert!(result_wait.await.expect("wait task must join").is_err());
+    }
 
     async fn create_test_app(
         use_mock_id: bool,
