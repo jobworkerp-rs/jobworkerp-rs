@@ -36,7 +36,7 @@ test('Gitea PR workflow dispatches an immutable trusted jobworkerp workflow', ()
   assert.doesNotMatch(workflow, /actions\/checkout@v4/);
   assert.match(
     workflow,
-    /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/055f1f6cf6cecdda6d0b63380548d78debe92445\/\.gitea\/jobworkerp\/workflows\/gitea-pr-auto-review-fix-workflow\.yaml/,
+    /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/ef110f9e153060c82785c260b4a850554f04b203\/\.gitea\/jobworkerp\/workflows\/gitea-pr-auto-review-fix-workflow\.yaml/,
   );
   assert.doesNotMatch(workflow, /raw\/branch\//);
   assert.doesNotMatch(workflow, /pr_head_branch/);
