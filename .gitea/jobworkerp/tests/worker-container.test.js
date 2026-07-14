@@ -35,6 +35,16 @@ test('worker runtime image includes Git for command-runner repository operations
   assert.match(runtimeStage, /apt-get install -y --no-install-recommends[\s\S]*?\n\s*git\s*\\/);
 });
 
+test('GPU worker runtime grants its non-root user Docker socket group access', () => {
+  const dockerfile = readRepoFile('worker-main/Dockerfile');
+
+  assert.match(dockerfile, /RUN adduser jobworkerp docker/);
+  assert.ok(
+    dockerfile.indexOf('RUN adduser jobworkerp docker') < dockerfile.indexOf('USER jobworkerp'),
+    'jobworkerp must join the docker group before the image switches users',
+  );
+});
+
 test('Docker build context includes files used by root runtime images', () => {
   const dockerignore = readRepoFile('.dockerignore');
 

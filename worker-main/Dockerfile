@@ -40,6 +40,7 @@ RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y --no-install
     && rm -rf /var/lib/apt/lists/*
 
 RUN adduser --system jobworkerp
+RUN adduser jobworkerp docker
 
 RUN mkdir -p /home/jobworkerp && chown jobworkerp:daemon /home/jobworkerp
 RUN mkdir -p /home/jobworkerp/plugins && chown jobworkerp:daemon /home/jobworkerp/plugins

@@ -41,6 +41,16 @@ $ docker run -p 8080:8080 -p 9000:9000 -p 8000:8000 -p 8001:8001 \
   jobworkerp-all-in-one
 ```
 
+### Docker socket permissions for worker deployments
+
+`worker-main/Dockerfile` runs the worker as the non-root `jobworkerp` user and
+adds that user to the image's `docker` group. When mounting
+`/var/run/docker.sock`, the socket must be group-readable and writable by that
+group. Confirm that the host socket's group ID matches the container's Docker
+group; if it does not, configure the deployment to add the host socket group ID
+(for example, Docker Compose `group_add`) rather than making the socket
+world-writable.
+
 Set `AUTH_TOKEN` for deployments that expose gRPC. Protected gRPC requests must include the metadata header `jobworkerp-auth: <AUTH_TOKEN>`. **Do not set `AUTH_TOKEN` when using the Admin UI**: the bundled Admin UI client does not yet send this header, so protected calls (e.g. job enqueue) would fail with `Unauthenticated`. Leave `AUTH_TOKEN` unset until Admin UI support for the auth header is added.
 
 ## Accessing After Launch
