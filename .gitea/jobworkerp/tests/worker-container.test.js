@@ -35,10 +35,15 @@ test('worker runtime image includes Git for command-runner repository operations
   assert.match(runtimeStage, /apt-get install -y --no-install-recommends[\s\S]*?\n\s*git\s*\\/);
 });
 
-test('Docker build context excludes host build artifacts', () => {
+test('Docker build context includes only the host binaries used by runtime images', () => {
   const dockerignore = readRepoFile('.dockerignore');
 
   assert.match(dockerignore, /^\*$/m);
   assert.match(dockerignore, /^!worker-main\/\*\*$/m);
   assert.match(dockerignore, /^!modules\/\*\*$/m);
+  assert.match(dockerignore, /^!target\/$/m);
+  assert.match(dockerignore, /^!target\/release\/$/m);
+  assert.match(dockerignore, /^!target\/release\/grpc-front$/m);
+  assert.match(dockerignore, /^!target\/release\/mcp-http$/m);
+  assert.doesNotMatch(dockerignore, /^!target\/\*\*$/m);
 });

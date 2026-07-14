@@ -31,3 +31,7 @@
 !worker-app/**
 !worker-main/
 !worker-main/**
+!target/
+!target/release/
+!target/release/grpc-front
+!target/release/mcp-http
