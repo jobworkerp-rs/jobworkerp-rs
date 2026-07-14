@@ -956,18 +956,10 @@ impl JobGrpcImpl {
     const MAX_GRPC_ERROR_OUTPUT_BYTES: usize = 4 * 1024;
     const GRPC_HEADER_ENTRY_OVERHEAD_BYTES: usize = 32;
 
-    fn truncate_grpc_error_output(output: &str) -> String {
-        const SUFFIX: &str = "\n... [truncated by jobworkerp grpc-front]";
-
-        if output.len() <= Self::MAX_GRPC_ERROR_OUTPUT_BYTES {
-            return output.to_string();
-        }
-
-        let mut end = Self::MAX_GRPC_ERROR_OUTPUT_BYTES.saturating_sub(SUFFIX.len());
-        while !output.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}{}", &output[..end], SUFFIX)
+    fn truncate_grpc_error_output(output: &[u8]) -> Vec<u8> {
+        // ResultOutput.items is protobuf bytes, not UTF-8 text. Preserve the
+        // original byte sequence so clients can decode binary runner output.
+        output[..output.len().min(Self::MAX_GRPC_ERROR_OUTPUT_BYTES)].to_vec()
     }
 
     fn encoded_binary_metadata_len(value_len: usize) -> usize {
@@ -1004,10 +996,7 @@ impl JobGrpcImpl {
             status: result_data.status,
             output: result_data.output.as_ref().map(|output| {
                 proto::jobworkerp::data::ResultOutput {
-                    items: Self::truncate_grpc_error_output(&String::from_utf8_lossy(
-                        &output.items,
-                    ))
-                    .into_bytes(),
+                    items: Self::truncate_grpc_error_output(&output.items),
                 }
             }),
             ..Default::default()
@@ -1196,8 +1185,67 @@ mod tests {
     }
 
     #[test]
+    fn test_create_job_error_status_preserves_non_utf8_output_bytes() {
+        use crate::proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
+        use prost::Message;
+
+        let output = vec![0xff, 0xfe, 0x00, b'e', b'r', b'r', 0x80];
+        let result_data = JobResultData {
+            status: ResultStatus::FatalError as i32,
+            output: Some(ResultOutput {
+                items: output.clone(),
+            }),
+            ..Default::default()
+        };
+
+        let status = JobGrpcImpl::create_job_error_status(&JobId { value: 42 }, &result_data);
+        let metadata = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("job result metadata");
+        let decoded = JobResult::decode(metadata.to_bytes().unwrap()).unwrap();
+
+        assert_eq!(decoded.data.unwrap().output.unwrap().items, output);
+    }
+
+    #[test]
+    fn test_create_job_error_status_truncates_output_as_raw_bytes() {
+        use crate::proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
+        use prost::Message;
+
+        let output: Vec<u8> = (0..(JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES + 32))
+            .map(|index| (index % 256) as u8)
+            .collect();
+        let result_data = JobResultData {
+            status: ResultStatus::FatalError as i32,
+            output: Some(ResultOutput {
+                items: output.clone(),
+            }),
+            ..Default::default()
+        };
+
+        let status = JobGrpcImpl::create_job_error_status(&JobId { value: 42 }, &result_data);
+        let metadata = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("job result metadata");
+        let decoded = JobResult::decode(metadata.to_bytes().unwrap()).unwrap();
+
+        assert_eq!(
+            decoded.data.unwrap().output.unwrap().items,
+            output[..JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES]
+        );
+    }
+
+    #[test]
     fn test_create_job_error_status_stays_within_proxy_header_budget() {
-        use crate::proto::jobworkerp::data::{JobId, JobResultData, ResultOutput, ResultStatus};
+        use crate::proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+        };
         use prost::Message;
 
         let result_data = JobResultData {
