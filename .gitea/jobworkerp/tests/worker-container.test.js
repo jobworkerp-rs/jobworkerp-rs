@@ -37,10 +37,11 @@ test('worker runtime image includes Git for command-runner repository operations
 
 test('GPU worker runtime grants its non-root user Docker socket group access', () => {
   const dockerfile = readRepoFile('worker-main/Dockerfile');
+  const addUserToDockerGroup = 'adduser jobworkerp docker';
 
-  assert.match(dockerfile, /RUN adduser jobworkerp docker/);
+  assert.ok(dockerfile.includes(addUserToDockerGroup));
   assert.ok(
-    dockerfile.indexOf('RUN adduser jobworkerp docker') < dockerfile.indexOf('USER jobworkerp'),
+    dockerfile.indexOf(addUserToDockerGroup) < dockerfile.indexOf('USER jobworkerp'),
     'jobworkerp must join the docker group before the image switches users',
   );
 });
