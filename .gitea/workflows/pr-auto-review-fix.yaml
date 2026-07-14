@@ -75,7 +75,7 @@ jobs:
 
       - name: Run jobworkerp PR review/fix workflow
         id: pr-review-fix
-        uses: https://gitea.sutr.app/jobworkerp-rs/jobworkerp-actions/jobworkerp-run@main
+        uses: https://gitea.sutr.app/jobworkerp-rs/jobworkerp-actions/jobworkerp-run@1ecd9a0f9a58fabadb4609871e8e0d349f7ba010
         env:
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
         with:

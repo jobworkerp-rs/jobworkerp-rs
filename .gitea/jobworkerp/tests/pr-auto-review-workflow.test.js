@@ -15,7 +15,7 @@ test('Gitea PR workflow dispatches the tracked jobworkerp auto review workflow',
   assert.match(workflow, /pull_request:/);
   assert.match(
     workflow,
-    /uses: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-actions\/jobworkerp-run@main/,
+    /uses: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-actions\/jobworkerp-run@1ecd9a0f9a58fabadb4609871e8e0d349f7ba010/,
   );
   assert.doesNotMatch(workflow, /actions\/checkout@v4/);
   assert.doesNotMatch(workflow, /target: \.gitea\/jobworkerp\/workflows\//);
