@@ -36,7 +36,7 @@ test('Gitea PR workflow dispatches an immutable trusted jobworkerp workflow', ()
   assert.doesNotMatch(workflow, /actions\/checkout@v4/);
   assert.match(
     workflow,
-    /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/672fef180788fdae3f17dace919515062bace0c2\/\.gitea\/jobworkerp\/workflows\/gitea-pr-auto-review-fix-workflow\.yaml/,
+    /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/055f1f6cf6cecdda6d0b63380548d78debe92445\/\.gitea\/jobworkerp\/workflows\/gitea-pr-auto-review-fix-workflow\.yaml/,
   );
   assert.doesNotMatch(workflow, /raw\/branch\//);
   assert.doesNotMatch(workflow, /pr_head_branch/);
@@ -55,6 +55,7 @@ test('pinned jobworkerp workflow revision initializes post-review status variabl
 
   assert.match(initialization, /post_fix_status: ""/);
   assert.match(initialization, /post_refactor_status: ""/);
+  assert.match(targetWorkflow, /timeout:\n\s+after:\n\s+hours: 6\n\ndo:/);
 });
 
 test('Gitea Action does not load a workflow definition from a PR branch', () => {
