@@ -11,7 +11,7 @@ WORKDIR /app
 RUN npm install -g pnpm
 
 # Copy admin-ui package files
-COPY admin-ui/package.json admin-ui/pnpm-lock.yaml ./
+COPY admin-ui/package.json admin-ui/pnpm-lock.yaml admin-ui/pnpm-workspace.yaml ./
 
 # Install dependencies
 RUN pnpm install --frozen-lockfile

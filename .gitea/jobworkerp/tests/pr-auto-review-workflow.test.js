@@ -158,17 +158,19 @@ test('jobworkerp workflow has six-hour root and main process timeouts', () => {
   assert.match(mainProcess, /catch:[\s\S]*?\n\s+timeout:\n\s+after:\n\s+hours: 6/);
 });
 
-test('prompt files are written in bounded base64 chunks', () => {
+test('prompt files are written from COMMAND stdin without chunking', () => {
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
 
-  for (const prompt of ['Review', 'Fix', 'Refactor']) {
-    assert.match(workflow, new RegExp(`encode${prompt}Prompt:`));
-    assert.match(workflow, new RegExp(`split${prompt}Prompt:`));
-    assert.match(workflow, new RegExp(`write${prompt}PromptChunks:`));
+  for (const [task, input] of [
+    ['Review', 'review_prompt'],
+    ['Fix', 'fix_agent_prompt'],
+    ['Refactor', 'refactor_prompt'],
+  ]) {
+    assert.match(workflow, new RegExp(`write${task}Prompt:`));
+    assert.match(workflow, new RegExp(`stdin: "\\$\\{\\$${input}\\}"`));
   }
-  assert.equal((workflow.match(/range\(0; length; 32768\)/g) ?? []).length, 3);
-  assert.equal((workflow.match(/base64 -d >>/g) ?? []).length, 3);
-  assert.doesNotMatch(workflow, /echo '" \+ \(\$\w+_prompt \| encode_base64\) \+ "' \| base64 -d/);
+  assert.equal((workflow.match(/cat > /g) ?? []).length, 3);
+  assert.doesNotMatch(workflow, /PromptChunks:|range\(0; length; 32768\)|base64 -d >>|encode_base64/);
 });
 
 test('workflow rejects fork PRs before cloning, including manual dispatches', () => {
