@@ -560,11 +560,26 @@ impl RunnerTrait for CommandRunnerImpl {
                     }
                 }
 
-                if let Some(handle) = stdin_write.take() {
-                    match handle.await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => return Err(anyhow::Error::new(e).context("failed to write command stdin")),
-                        Err(e) => return Err(anyhow::Error::new(e).context("command stdin writer task failed")),
+                if let Some(mut handle) = stdin_write.take() {
+                    tokio::select! {
+                        write_result = &mut handle => {
+                            match write_result {
+                                Ok(Ok(())) => {}
+                                Ok(Err(e)) => return Err(anyhow::Error::new(e).context("failed to write command stdin")),
+                                Err(e) => return Err(anyhow::Error::new(e).context("command stdin writer task failed")),
+                            }
+                        }
+                        _ = cancellation_token.cancelled() => {
+                            tracing::info!("Command execution cancelled while writing stdin");
+                            handle.abort();
+
+                            if let Some(mut child) = self.consume_child()
+                                && let Err(e) = child.kill().await
+                            {
+                                tracing::warn!("Failed to immediately terminate cancelled command: {:?}", e);
+                            }
+                            return Err(JobWorkerError::CancelledError("Command execution was cancelled while writing stdin".to_string()).into());
+                        }
                     }
                 }
 
@@ -1470,6 +1485,41 @@ mod tests {
             ProstMessageCodec::deserialize_message::<CommandResult>(&res.0.unwrap()).unwrap();
         assert_eq!(result.stdout.as_deref(), Some("stdin for normal execution"));
         assert_eq!(result.exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_run_cancels_while_waiting_for_stdin_writer() {
+        use crate::runner::cancellation_helper::CancelMonitoringHelper;
+        use crate::runner::test_common::mock::MockCancellationManager;
+
+        let cancellation_token = CancellationToken::new();
+        let cancel_helper = CancelMonitoringHelper::new(Box::new(
+            MockCancellationManager::new_with_token(cancellation_token.clone()),
+        ));
+        let mut runner = CommandRunnerImpl::new_with_cancel_monitoring(cancel_helper);
+        let arg = CommandArgs {
+            // Close output immediately, keep stdin open, and do not read from it.
+            // This leaves the stdin writer blocked after the output readers finish.
+            command: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "exec 1>&- 2>&-; sleep 30".to_string()],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
+            working_dir: "".to_string(),
+            stdin: "x".repeat(1024 * 1024),
+        };
+        let arg = ProstMessageCodec::serialize_message(&arg).unwrap();
+
+        let execution = tokio::spawn(async move { runner.run(&arg, HashMap::new(), None).await });
+        sleep(Duration::from_millis(100)).await;
+        cancellation_token.cancel();
+
+        let (result, _) = tokio::time::timeout(Duration::from_secs(1), execution)
+            .await
+            .expect("cancellation should not wait for the blocked stdin writer")
+            .unwrap();
+        let error = result.expect_err("cancelled command should return an error");
+        assert!(error.to_string().contains("cancelled while writing stdin"));
     }
 
     #[tokio::test]
