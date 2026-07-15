@@ -300,36 +300,15 @@ do:
                     as:
                       prompt_temp_dir: "${.stdout | rtrimstr(\"\\n\")}"
 
-              - encodeReviewPrompt:
-                  set:
-                    review_prompt_base64: "${$review_prompt | encode_base64}"
-
-              - splitReviewPrompt:
-                  set:
-                    review_prompt_chunks: "${$review_prompt_base64 | [range(0; length; 32768) as $offset | .[$offset:$offset + 32768]]}"
-
-              - createReviewPromptFile:
+              - writeReviewPrompt:
                   run:
                     runner:
                       name: COMMAND
                       arguments:
                         command: "sh"
-                        args: "${[\"-c\", \": > \\\"$1\\\"\", \"sh\", $prompt_temp_dir + \"/prompt.txt\"]}"
+                        args: "${[\"-c\", \"cat > \\\"$1\\\"\", \"sh\", $prompt_temp_dir + \"/prompt.txt\"]}"
+                        stdin: "${$review_prompt}"
                         treat_nonzero_as_error: true
-
-              - writeReviewPromptChunks:
-                  for:
-                    in: "${$review_prompt_chunks}"
-                    each: prompt_chunk
-                  do:
-                    - appendReviewPromptChunk:
-                        run:
-                          runner:
-                            name: COMMAND
-                            arguments:
-                              command: "sh"
-                              args: "${[\"-c\", \"printf '%s' \\\"$1\\\" | base64 -d >> \\\"$2\\\"\", \"sh\", $prompt_chunk, $prompt_temp_dir + \"/prompt.txt\"]}"
-                              treat_nonzero_as_error: true
 
               - runReviewAgent:
                   run:
@@ -462,40 +441,16 @@ do:
                     as:
                       prompt_temp_dir: "${.stdout | rtrimstr(\"\\n\")}"
 
-              - encodeFixPrompt:
-                  if: "${$needs_fix == true}"
-                  set:
-                    fix_prompt_base64: "${$fix_agent_prompt | encode_base64}"
-
-              - splitFixPrompt:
-                  if: "${$needs_fix == true}"
-                  set:
-                    fix_prompt_chunks: "${$fix_prompt_base64 | [range(0; length; 32768) as $offset | .[$offset:$offset + 32768]]}"
-
-              - createFixPromptFile:
+              - writeFixPrompt:
                   if: "${$needs_fix == true}"
                   run:
                     runner:
                       name: COMMAND
                       arguments:
                         command: "sh"
-                        args: "${[\"-c\", \": > \\\"$1\\\"\", \"sh\", $prompt_temp_dir + \"/prompt.txt\"]}"
+                        args: "${[\"-c\", \"cat > \\\"$1\\\"\", \"sh\", $prompt_temp_dir + \"/prompt.txt\"]}"
+                        stdin: "${$fix_agent_prompt}"
                         treat_nonzero_as_error: true
-
-              - writeFixPromptChunks:
-                  if: "${$needs_fix == true}"
-                  for:
-                    in: "${$fix_prompt_chunks}"
-                    each: prompt_chunk
-                  do:
-                    - appendFixPromptChunk:
-                        run:
-                          runner:
-                            name: COMMAND
-                            arguments:
-                              command: "sh"
-                              args: "${[\"-c\", \"printf '%s' \\\"$1\\\" | base64 -d >> \\\"$2\\\"\", \"sh\", $prompt_chunk, $prompt_temp_dir + \"/prompt.txt\"]}"
-                              treat_nonzero_as_error: true
 
               - recordFixHeadBeforeAgent:
                   if: "${$needs_fix == true}"
@@ -722,40 +677,16 @@ do:
               as:
                 prompt_temp_dir: "${.stdout | rtrimstr(\"\\n\")}"
 
-        - encodeRefactorPrompt:
-            if: "${$has_review_changes == true}"
-            set:
-              refactor_prompt_base64: "${$refactor_prompt | encode_base64}"
-
-        - splitRefactorPrompt:
-            if: "${$has_review_changes == true}"
-            set:
-              refactor_prompt_chunks: "${$refactor_prompt_base64 | [range(0; length; 32768) as $offset | .[$offset:$offset + 32768]]}"
-
-        - createRefactorPromptFile:
+        - writeRefactorPrompt:
             if: "${$has_review_changes == true}"
             run:
               runner:
                 name: COMMAND
                 arguments:
                   command: "sh"
-                  args: "${[\"-c\", \": > \\\"$1\\\"\", \"sh\", $prompt_temp_dir + \"/prompt.txt\"]}"
+                  args: "${[\"-c\", \"cat > \\\"$1\\\"\", \"sh\", $prompt_temp_dir + \"/prompt.txt\"]}"
+                  stdin: "${$refactor_prompt}"
                   treat_nonzero_as_error: true
-
-        - writeRefactorPromptChunks:
-            if: "${$has_review_changes == true}"
-            for:
-              in: "${$refactor_prompt_chunks}"
-              each: prompt_chunk
-            do:
-              - appendRefactorPromptChunk:
-                  run:
-                    runner:
-                      name: COMMAND
-                      arguments:
-                        command: "sh"
-                        args: "${[\"-c\", \"printf '%s' \\\"$1\\\" | base64 -d >> \\\"$2\\\"\", \"sh\", $prompt_chunk, $prompt_temp_dir + \"/prompt.txt\"]}"
-                        treat_nonzero_as_error: true
 
         - recordRefactorHeadBeforeAgent:
             if: "${$has_review_changes == true}"
