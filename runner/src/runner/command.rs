@@ -24,8 +24,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use sysinfo::System;
+use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::{JoinError, JoinHandle};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
@@ -55,6 +57,40 @@ fn parse_command_with_args(command: &str, args: &[String]) -> (String, Vec<Strin
             }
             (command.to_string(), vec![])
         }
+    }
+}
+
+async fn write_stdin(mut stdin: tokio::process::ChildStdin, input: String) -> std::io::Result<()> {
+    stdin.write_all(input.as_bytes()).await?;
+    stdin.shutdown().await
+}
+
+fn configure_stdin(command: &mut Command, has_input: bool) {
+    command.stdin(if has_input {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    });
+}
+
+fn spawn_stdin_writer(
+    child: &mut Child,
+    input: Option<String>,
+) -> Option<JoinHandle<std::io::Result<()>>> {
+    input.and_then(|input| {
+        child
+            .stdin
+            .take()
+            .map(|stdin| tokio::spawn(write_stdin(stdin, input)))
+    })
+}
+
+async fn wait_for_stdin_writer(
+    writer: &mut Option<JoinHandle<std::io::Result<()>>>,
+) -> std::result::Result<std::io::Result<()>, JoinError> {
+    match writer {
+        Some(writer) => writer.await,
+        None => futures::future::pending().await,
     }
 }
 
@@ -329,7 +365,7 @@ impl RunnerTrait for CommandRunnerImpl {
         let cancellation_token = self.get_cancellation_token().await;
 
         let res = async {
-        let data =
+        let mut data =
             ProstMessageCodec::deserialize_message::<CommandArgs>(args).context("on run job")?;
         let (cmd_name, parsed_args) = parse_command_with_args(&data.command, &data.args);
         let mut command = Command::new(cmd_name.as_str());
@@ -363,6 +399,8 @@ impl RunnerTrait for CommandRunnerImpl {
             &data.success_exit_codes,
             started_at
         );
+        let stdin_input = (!data.stdin.is_empty()).then(|| mem::take(&mut data.stdin));
+        configure_stdin(&mut command, stdin_input.is_some());
         let spawn_result = tokio::select! {
             spawn_result = async {
                 command
@@ -382,6 +420,10 @@ impl RunnerTrait for CommandRunnerImpl {
             Ok(child) => {
                 tracing::debug!("spawned child: {:?}", child);
                 self.set_child(Some(child));
+                let mut stdin_write = self
+                    .child()
+                    .as_mut()
+                    .and_then(|child| spawn_stdin_writer(child, stdin_input));
 
                 // Memory monitoring task handle - initialize as None
                 let memory_monitor_handle = if should_monitor_memory {
@@ -473,6 +515,10 @@ impl RunnerTrait for CommandRunnerImpl {
                             _ = cancellation_token.cancelled() => {
                                 tracing::info!("Command execution cancelled during output reading");
 
+                                if let Some(handle) = stdin_write.take() {
+                                    handle.abort();
+                                }
+
                                 // Stop memory monitoring task before returning
                                 if let Some((handle, stop_tx)) = memory_monitor_handle {
                                     let _ = stop_tx.send(());
@@ -493,7 +539,32 @@ impl RunnerTrait for CommandRunnerImpl {
                                 }
                                 return Err(JobWorkerError::CancelledError("Command execution was cancelled during output reading".to_string()).into());
                             }
+                            write_result = wait_for_stdin_writer(&mut stdin_write), if stdin_write.is_some() => {
+                                match write_result {
+                                    Ok(Ok(())) => stdin_write = None,
+                                    Ok(Err(e)) => {
+                                        if let Some(mut child) = self.consume_child() {
+                                            Self::graceful_kill_process(&mut child).await;
+                                        }
+                                        return Err(anyhow::Error::new(e).context("failed to write command stdin"));
+                                    }
+                                    Err(e) => {
+                                        if let Some(mut child) = self.consume_child() {
+                                            Self::graceful_kill_process(&mut child).await;
+                                        }
+                                        return Err(anyhow::Error::new(e).context("command stdin writer task failed"));
+                                    }
+                                }
+                            }
                         }
+                    }
+                }
+
+                if let Some(handle) = stdin_write.take() {
+                    match handle.await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => return Err(anyhow::Error::new(e).context("failed to write command stdin")),
+                        Err(e) => return Err(anyhow::Error::new(e).context("command stdin writer task failed")),
                     }
                 }
 
@@ -631,12 +702,13 @@ impl RunnerTrait for CommandRunnerImpl {
         // Set up cancellation token using manager
         let cancellation_token = self.get_cancellation_token().await;
 
-        let data = ProstMessageCodec::deserialize_message::<CommandArgs>(args)
+        let mut data = ProstMessageCodec::deserialize_message::<CommandArgs>(args)
             .context("on run_stream job")?;
         let (command_str, args_vec) = parse_command_with_args(&data.command, &data.args);
         let should_monitor_memory = data.with_memory_monitoring;
         let treat_nonzero_as_error = data.treat_nonzero_as_error;
         let success_exit_codes = data.success_exit_codes.clone();
+        let stdin_input = (!data.stdin.is_empty()).then(|| mem::take(&mut data.stdin));
 
         // Clone stream_process_pid for use within the stream
         let stream_pid_ref = self.stream_process_pid.clone();
@@ -649,6 +721,7 @@ impl RunnerTrait for CommandRunnerImpl {
         if !data.working_dir.is_empty() {
             command.current_dir(&data.working_dir);
         }
+        configure_stdin(&mut command, stdin_input.is_some());
 
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -690,6 +763,7 @@ impl RunnerTrait for CommandRunnerImpl {
             {
                 Ok(mut child) => {
                     tracing::debug!("spawned child in stream mode: {:?}", child);
+                    let mut stdin_write = spawn_stdin_writer(&mut child, stdin_input);
                     let process_id = child.id();
 
                     // Store the process ID for cancellation from outside the stream
@@ -955,6 +1029,10 @@ impl RunnerTrait for CommandRunnerImpl {
                                 tracing::info!("Command stream execution was cancelled");
                                 // Note: cancellation is already handled by the token
 
+                                if let Some(handle) = stdin_write.take() {
+                                    handle.abort();
+                                }
+
                                 // Gracefully kill the process
                                 Self::graceful_kill_process(&mut child).await;
 
@@ -964,6 +1042,33 @@ impl RunnerTrait for CommandRunnerImpl {
                                 drop(pid_guard);
 
                                 break;
+                            }
+                            write_result = wait_for_stdin_writer(&mut stdin_write), if stdin_write.is_some() => {
+                                let message = match write_result {
+                                    Ok(Ok(())) => {
+                                        stdin_write = None;
+                                        continue;
+                                    }
+                                    Ok(Err(e)) => format!("Failed to write command stdin: {e}"),
+                                    Err(e) => format!("Command stdin writer task failed: {e}"),
+                                };
+                                Self::graceful_kill_process(&mut child).await;
+                                let mut pid_guard = stream_pid_ref.write().await;
+                                *pid_guard = None;
+                                drop(pid_guard);
+                                let error_result = CommandResult {
+                                    exit_code: Some(-1),
+                                    stdout: None,
+                                    stderr: Some(message),
+                                    execution_time_ms: None,
+                                    started_at: Some(started_at),
+                                    max_memory_usage_kb: None,
+                                };
+                                if let Ok(serialized) = ProstMessageCodec::serialize_message(&error_result) {
+                                    yield ResultOutputItem { item: Some(Item::Data(serialized)) };
+                                }
+                                yield ResultOutputItem { item: Some(Item::End((*trailer).clone())) };
+                                return;
                             }
                         }
                     }
@@ -1281,6 +1386,7 @@ mod tests {
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let res = runner
@@ -1319,6 +1425,7 @@ mod tests {
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let res = runner
@@ -1339,6 +1446,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_run_writes_stdin() {
+        let mut runner = CommandRunnerImpl::new();
+        let arg = CommandArgs {
+            command: "/bin/cat".to_string(),
+            args: vec![],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
+            working_dir: "".to_string(),
+            stdin: "stdin for normal execution\n".to_string(),
+        };
+
+        let res = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+                None,
+            )
+            .await;
+
+        let result =
+            ProstMessageCodec::deserialize_message::<CommandResult>(&res.0.unwrap()).unwrap();
+        assert_eq!(result.stdout.as_deref(), Some("stdin for normal execution"));
+        assert_eq!(result.exit_code, Some(0));
+    }
+
+    #[tokio::test]
     async fn test_run_with_error() {
         let mut runner = CommandRunnerImpl::new();
         let arg = CommandArgs {
@@ -1348,6 +1482,7 @@ mod tests {
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let res = runner
@@ -1372,6 +1507,7 @@ mod tests {
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let stream_result = runner
@@ -1440,6 +1576,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_run_stream_writes_stdin() {
+        let mut runner = CommandRunnerImpl::new();
+        let arg = CommandArgs {
+            command: "/bin/cat".to_string(),
+            args: vec![],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
+            working_dir: "".to_string(),
+            stdin: "stdin for stream execution\n".to_string(),
+        };
+
+        let mut stream = runner
+            .run_stream(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+                None,
+            )
+            .await
+            .unwrap();
+        let mut stdout = Vec::new();
+        let mut found_end = false;
+        while let Some(item) = stream.next().await {
+            match item.item {
+                Some(Item::Data(data)) => {
+                    let result =
+                        ProstMessageCodec::deserialize_message::<CommandResult>(&data).unwrap();
+                    if let Some(line) = result.stdout {
+                        stdout.push(line);
+                    }
+                }
+                Some(Item::End(_)) => {
+                    found_end = true;
+                    break;
+                }
+                Some(Item::FinalCollected(_)) | None => {}
+            }
+        }
+
+        assert_eq!(stdout, vec!["stdin for stream execution"]);
+        assert!(found_end);
+    }
+
+    #[tokio::test]
     async fn test_run_stream_with_multiple_lines() {
         use std::io::{self, Write};
 
@@ -1454,6 +1634,7 @@ mod tests {
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         eprintln!("\n=== Starting stream test with multiple lines ===");
@@ -1591,6 +1772,7 @@ mod tests {
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let arg_bytes = ProstMessageCodec::serialize_message(&arg).unwrap();
@@ -1793,6 +1975,7 @@ mod tests {
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let res = runner
@@ -1828,6 +2011,7 @@ mod tests {
             treat_nonzero_as_error: true,
             success_exit_codes: vec![],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let res = runner
@@ -1862,6 +2046,7 @@ mod tests {
             treat_nonzero_as_error: true,
             success_exit_codes: vec![],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let res = runner
@@ -1894,6 +2079,7 @@ mod tests {
             treat_nonzero_as_error: true,
             success_exit_codes: vec![0, 1],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let res = runner
@@ -1926,6 +2112,7 @@ mod tests {
             treat_nonzero_as_error: true,
             success_exit_codes: vec![0, 1],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let res = runner
@@ -1998,6 +2185,7 @@ mod tests {
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
             working_dir: "/tmp".to_string(),
+            stdin: String::new(),
         };
 
         let res = runner
@@ -2080,6 +2268,7 @@ mod tests {
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let res = runner
@@ -2109,6 +2298,7 @@ mod tests {
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let res = runner
@@ -2138,6 +2328,7 @@ mod tests {
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
             working_dir: "".to_string(),
+            stdin: String::new(),
         };
 
         let stream_result = runner

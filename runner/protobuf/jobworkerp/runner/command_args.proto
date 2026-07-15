@@ -18,5 +18,7 @@ message CommandArgs {
   repeated int32 success_exit_codes = 5;
   // # working directory for the command
   string working_dir = 6;
+  // # standard input passed to the command
+  // # when empty, the command inherits the worker process standard input.
+  string stdin = 7;
 }
-

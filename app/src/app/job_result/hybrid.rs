@@ -660,6 +660,7 @@ pub mod tests {
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
                 working_dir: String::new(),
+                stdin: String::new(),
             })?;
             let mut data = JobResultData {
                 job_id: Some(job_id),
@@ -815,6 +816,7 @@ pub mod tests {
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
                 working_dir: String::new(),
+                stdin: String::new(),
             })?;
             let data = JobResultData {
                 job_id: Some(job_id),

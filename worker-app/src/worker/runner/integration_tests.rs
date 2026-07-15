@@ -67,6 +67,7 @@ mod streaming_pool_guard_tests {
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
                 working_dir: String::new(),
+                stdin: String::new(),
             };
 
             let stream_result = runner
@@ -114,6 +115,7 @@ mod streaming_pool_guard_tests {
                     treat_nonzero_as_error: false,
                     success_exit_codes: vec![],
                     working_dir: String::new(),
+                    stdin: String::new(),
                 };
 
                 let stream_result = runner
@@ -210,6 +212,7 @@ mod streaming_pool_guard_tests {
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
                 working_dir: String::new(),
+                stdin: String::new(),
             };
 
             let stream_result = runner
@@ -335,6 +338,7 @@ mod streaming_pool_guard_tests {
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
                 working_dir: String::new(),
+                stdin: String::new(),
             };
 
             let stream_result = runner

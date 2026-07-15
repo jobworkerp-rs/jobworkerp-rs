@@ -1175,6 +1175,7 @@ pub(crate) mod tests {
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
                 working_dir: String::new(),
+                stdin: String::new(),
             })
             .unwrap();
             let job = Job {
@@ -1239,6 +1240,7 @@ pub(crate) mod tests {
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
                 working_dir: String::new(),
+                stdin: String::new(),
             })
             .unwrap();
 
@@ -1292,6 +1294,7 @@ pub(crate) mod tests {
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
                 working_dir: String::new(),
+                stdin: String::new(),
             })
             .unwrap();
 
@@ -1372,6 +1375,7 @@ pub(crate) mod tests {
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
                 working_dir: String::new(),
+                stdin: String::new(),
             })
             .unwrap();
 
@@ -1482,6 +1486,7 @@ pub(crate) mod tests {
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
                 working_dir: String::new(),
+                stdin: String::new(),
             })
             .unwrap();
 
