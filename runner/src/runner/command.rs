@@ -1088,12 +1088,65 @@ impl RunnerTrait for CommandRunnerImpl {
                         }
                     }
 
-                    // Wait for the process to finish if it hasn't already
-                    let exit_code = match child.wait().await {
-                        Ok(status) => status.code(),
-                        Err(e) => {
-                            tracing::error!("Error waiting for process: {:?}", e);
-                            None
+                    // Keep monitoring stdin writes and cancellation while waiting for the child.
+                    // The output streams can close before the child exits, leaving a large stdin
+                    // write blocked on the pipe.
+                    let exit_code = loop {
+                        tokio::select! {
+                            exit_result = child.wait() => {
+                                break match exit_result {
+                                    Ok(status) => status.code(),
+                                    Err(e) => {
+                                        tracing::error!("Error waiting for process: {:?}", e);
+                                        None
+                                    }
+                                };
+                            }
+                            write_result = wait_for_stdin_writer(&mut stdin_write), if stdin_write.is_some() => {
+                                match write_result {
+                                    Ok(Ok(())) => stdin_write = None,
+                                    Ok(Err(e)) => {
+                                        Self::graceful_kill_process(&mut child).await;
+                                        let error_result = CommandResult {
+                                            exit_code: Some(-1),
+                                            stdout: None,
+                                            stderr: Some(format!("Failed to write command stdin: {e}")),
+                                            execution_time_ms: None,
+                                            started_at: Some(started_at),
+                                            max_memory_usage_kb: None,
+                                        };
+                                        if let Ok(serialized) = ProstMessageCodec::serialize_message(&error_result) {
+                                            yield ResultOutputItem { item: Some(Item::Data(serialized)) };
+                                        }
+                                        yield ResultOutputItem { item: Some(Item::End((*trailer).clone())) };
+                                        return;
+                                    }
+                                    Err(e) => {
+                                        Self::graceful_kill_process(&mut child).await;
+                                        let error_result = CommandResult {
+                                            exit_code: Some(-1),
+                                            stdout: None,
+                                            stderr: Some(format!("Command stdin writer task failed: {e}")),
+                                            execution_time_ms: None,
+                                            started_at: Some(started_at),
+                                            max_memory_usage_kb: None,
+                                        };
+                                        if let Ok(serialized) = ProstMessageCodec::serialize_message(&error_result) {
+                                            yield ResultOutputItem { item: Some(Item::Data(serialized)) };
+                                        }
+                                        yield ResultOutputItem { item: Some(Item::End((*trailer).clone())) };
+                                        return;
+                                    }
+                                }
+                            }
+                            _ = cancellation_token.cancelled() => {
+                                tracing::info!("Command stream execution was cancelled while waiting for process exit");
+                                if let Some(handle) = stdin_write.take() {
+                                    handle.abort();
+                                }
+                                Self::graceful_kill_process(&mut child).await;
+                                break None;
+                            }
                         }
                     };
 
@@ -1667,6 +1720,46 @@ mod tests {
 
         assert_eq!(stdout, vec!["stdin for stream execution"]);
         assert!(found_end);
+    }
+
+    #[tokio::test]
+    async fn test_run_stream_cancels_while_waiting_for_stdin_writer() {
+        use crate::runner::cancellation_helper::CancelMonitoringHelper;
+        use crate::runner::test_common::mock::MockCancellationManager;
+
+        let cancellation_token = CancellationToken::new();
+        let cancel_helper = CancelMonitoringHelper::new(Box::new(
+            MockCancellationManager::new_with_token(cancellation_token.clone()),
+        ));
+        let mut runner = CommandRunnerImpl::new_with_cancel_monitoring(cancel_helper);
+        let arg = CommandArgs {
+            // Close output immediately, keep stdin open, and do not read from it.
+            // This makes the output readers finish while the stdin writer is blocked.
+            command: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "exec 1>&- 2>&-; sleep 30".to_string()],
+            with_memory_monitoring: false,
+            treat_nonzero_as_error: false,
+            success_exit_codes: vec![],
+            working_dir: "".to_string(),
+            stdin: "x".repeat(16 * 1024 * 1024),
+        };
+        let arg = ProstMessageCodec::serialize_message(&arg).unwrap();
+
+        let execution = tokio::spawn(async move {
+            let mut stream = runner.run_stream(&arg, HashMap::new(), None).await.unwrap();
+            while let Some(item) = stream.next().await {
+                if matches!(item.item, Some(Item::End(_))) {
+                    break;
+                }
+            }
+        });
+        sleep(Duration::from_millis(100)).await;
+        cancellation_token.cancel();
+
+        tokio::time::timeout(Duration::from_secs(1), execution)
+            .await
+            .expect("cancellation should abort the blocked stdin writer while waiting for exit")
+            .unwrap();
     }
 
     #[tokio::test]
