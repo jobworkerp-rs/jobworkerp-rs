@@ -29,7 +29,9 @@ Full streaming mode for client consumption.
 - Runner's `run_stream()` method is called
 - Results are streamed back to the client via pub/sub as `ResultOutputItem` messages
 - Client receives `Data` chunks as they are produced, followed by `End` trailer
-- For `ResponseType::Direct` workers, the enqueue call blocks and returns the stream
+- For `ResponseType::Direct` workers, `EnqueueForStream` and `EnqueueWithClientStream` return the `x-job-id-bin` response header once enqueue succeeds, then wait for completion through the server stream
+- Execution failures and cancellations with a final `JobResult` terminate the stream with an error whose gRPC trailer contains that result in `x-job-result-bin`. Result-wait failures (for example, Redis timeouts) have no final result, so no `x-job-result-bin` trailer is sent.
+- `queue_type=DbOnly` with `response_type=Direct` is rejected with `INVALID_ARGUMENT`
 - Compatible with `request_streaming=true` (legacy boolean field)
 
 ### STREAMING_TYPE_INTERNAL (2)
@@ -53,7 +55,7 @@ This mode is designed for workflow steps that:
 |---------------|--------------|------------------|-----------------|
 | None | Direct | Blocks until completion | Single JobResult |
 | None | NoResult | Returns immediately | Via Listen/store |
-| Response | Direct | Blocks, returns stream | Stream via pub/sub |
+| Response | Direct | Returns JobId header immediately | Stream via pub/sub |
 | Response | NoResult | Returns immediately | Stream via pub/sub |
 | Internal | Direct | **Returns immediately** | Stream + FinalCollected |
 | Internal | NoResult | Returns immediately | Stream + FinalCollected |
@@ -222,7 +224,7 @@ The sending client directly receives the result stream.
 Client                                    Server
   │                                          │
   │─── ClientStreamRequest(job_request) ────>│  Job accepted
-  │<── [headers: x-job-id-bin, x-job-result-bin]
+  │<── [headers: x-job-id-bin]
   │<── ResultOutputItem(Data) ──────────────│  Initial output
   │─── ClientStreamRequest(feed_data) ──────>│  Feed data
   │<── ResultOutputItem(Data) ──────────────│  Intermediate output
@@ -230,6 +232,8 @@ Client                                    Server
   │         is_final=true) ─────────────────>│  Final feed data
   │<── ResultOutputItem(End(trailer)) ──────│  Stream ends
 ```
+
+The initial `x-job-id-bin` header confirms enqueue success. Successful output and runner metadata are delivered through `Data` and `End.metadata`. Execution failures and cancellations use `x-job-result-bin` in the gRPC trailer of the stream error only when a final `JobResult` exists; result-wait failures such as Redis timeouts do not send that trailer.
 
 #### NoResult mode (`response_type=NoResult`)
 

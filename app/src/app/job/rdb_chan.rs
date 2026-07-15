@@ -1,6 +1,6 @@
 use super::super::JobBuilder;
 use super::super::worker::{UseWorkerApp, WorkerApp};
-use super::{JobApp, JobCacheKeys, resolve_job_params};
+use super::{JobApp, JobCacheKeys, resolve_and_validate_job_params, resolve_job_params};
 use crate::app::{UseWorkerConfig, WorkerConfig};
 use crate::module::AppConfigModule;
 use anyhow::Result;
@@ -390,7 +390,7 @@ impl RdbChanJobAppImpl {
                 .check_worker_data_streaming(wid, w, request_streaming, None, using.as_deref())
                 .await?;
 
-            let resolved = resolve_job_params(w, overrides.as_ref());
+            let resolved = resolve_and_validate_job_params(w, overrides.as_ref())?;
             let job_data = JobData {
                 worker_id: Some(*wid),
                 args,
@@ -750,14 +750,14 @@ impl JobApp for RdbChanJobAppImpl {
         self.worker_app()
             .check_worker_data_streaming(&wid, &w, request_streaming, None, using.as_deref())
             .await?;
-        let resolved = resolve_job_params(&w, overrides.as_ref());
+        let resolved = resolve_and_validate_job_params(&w, overrides.as_ref())?;
 
-        // Channel separation is only meaningful for an instant Direct-response
-        // job on the chan queue: that path enqueues, then blocks waiting for the
-        // result, so we can hand the JobId back before the wait. Every other
-        // worker shape (non-Direct, run_after, periodic, DbOnly/WithBackup) does
-        // not block on a Direct result, so fall back to the regular enqueue and
-        // wrap its already-resolved outcome in a ready future.
+        // Channel separation is meaningful for an instant Direct-response job
+        // on the chan queue: that path enqueues, then blocks waiting for the
+        // result, so we can hand the JobId back before the wait. Non-Direct,
+        // run_after, and periodic workers do not block on a Direct result, so
+        // fall back to the regular enqueue and wrap its already-resolved
+        // outcome in a ready future.
         //
         // Unlike the hybrid (Redis) path, there is no `StreamingType::Internal`
         // carve-out here: rdb_chan's `enqueue_job_sync` treats Internal the same
@@ -766,7 +766,8 @@ impl JobApp for RdbChanJobAppImpl {
         let is_instant_direct_chan = resolved.response_type == ResponseType::Direct as i32
             && run_after_time == 0
             && w.periodic_interval == 0
-            && w.queue_type == QueueType::Normal as i32;
+            && (w.queue_type == QueueType::Normal as i32
+                || w.queue_type == QueueType::WithBackup as i32);
 
         if !is_instant_direct_chan {
             let (job_id, result, stream) = self
@@ -787,7 +788,10 @@ impl JobApp for RdbChanJobAppImpl {
                     overrides,
                 )
                 .await?;
-            return Ok((job_id, Box::pin(async move { Ok((result, stream)) })));
+            return Ok((
+                job_id,
+                super::ChannelJobResultFuture::new(Box::pin(async move { Ok(result) }), stream),
+            ));
         }
 
         let job_data = JobData {
@@ -812,9 +816,50 @@ impl JobApp for RdbChanJobAppImpl {
             data: Some(job_data.clone()),
             metadata: (*metadata).clone(),
         };
+        let total_timeout =
+            proto::calculate_direct_response_timeout_ms(timeout, resolved.retry_policy.as_ref());
+
+        // Establish the output subscription before making the job visible to a
+        // worker. Broadcast channels do not retain messages, so doing this
+        // after enqueue can lose an instant runner's Data/End items.
+        let result_stream = if request_streaming {
+            Some(
+                self.job_result_pubsub_repository()
+                    .subscribe_result_stream(&jid, total_timeout)
+                    .await?,
+            )
+        } else {
+            None
+        };
+
+        // The result channel is also a broadcast channel. Register its receiver
+        // before making the job visible, otherwise a fast runner can publish the
+        // final JobResult before the deferred future is first polled. The
+        // subscription itself has no timeout; its wait timeout starts below,
+        // after enqueue/cache admission succeeds.
+        let (result_ready_tx, result_ready_rx) = tokio::sync::oneshot::channel();
+        let result_pubsub = self.job_result_pubsub_repository().clone();
+        let result_job_id = jid;
+        let result_handle = tokio::spawn(async move {
+            result_pubsub
+                .subscribe_result_with_ready(&result_job_id, None, Some(result_ready_tx))
+                .await
+        });
+        result_ready_rx.await.map_err(|_| {
+            JobWorkerError::RuntimeError("result subscriber stopped before registering".to_string())
+        })?;
 
         // Enqueue phase only — the JobId is now live and the job is Pending.
-        let job_id = self.enqueue_job_sync_enqueue_only(&job, &w, false).await?;
+        // If making it visible to a worker fails, neither of the subscriptions
+        // can ever receive a result. Drop the output receiver and stop the
+        // pre-started result waiter before returning the enqueue error.
+        let job_id = match self.enqueue_job_sync_enqueue_only(&job, &w, false).await {
+            Ok(job_id) => job_id,
+            Err(error) => {
+                abort_deferred_result_wait(result_handle, result_stream).await;
+                return Err(error);
+            }
+        };
         self.index_job_status_async(
             jid,
             JobProcessingStatus::Pending,
@@ -826,9 +871,11 @@ impl JobApp for RdbChanJobAppImpl {
             resolved.broadcast_results,
         );
 
-        let total_timeout =
-            proto::calculate_direct_response_timeout_ms(timeout, resolved.retry_policy.as_ref());
-        let fut = self.wait_for_direct_response_future(job_id, total_timeout, request_streaming);
+        // Enqueue and cache admission are complete. Start the Direct-response
+        // timeout now, while retaining the receiver registered before the job
+        // became visible to a worker.
+        let result_handle = start_deferred_result_wait(result_handle, total_timeout);
+        let fut = self.wait_for_direct_response_future(result_handle, result_stream);
         Ok((job_id, fut))
     }
 
@@ -1583,16 +1630,13 @@ where
     /// `enqueue_job_with_channel`).
     fn wait_for_direct_response_future(
         &self,
-        job_id: JobId,
-        timeout: Option<u64>,
-        request_streaming: bool,
+        result_handle: tokio::task::JoinHandle<Result<JobResult>>,
+        result_stream: Option<BoxStream<'static, ResultOutputItem>>,
     ) -> super::ChannelJobResultFuture {
-        let pubsub = self.job_result_pubsub_repository().clone();
-        Box::pin(async move {
-            subscribe_direct_response(&pubsub, &job_id, timeout, request_streaming)
-                .await
-                .map(|(r, st)| (Some(r), st))
-        })
+        super::ChannelJobResultFuture::new(
+            Box::pin(async move { result_handle.await?.map(Some) }),
+            result_stream,
+        )
     }
 
     #[inline]
@@ -1610,6 +1654,49 @@ where
         )
         .await
     }
+}
+
+/// Tear down the subscriptions that were created before enqueueing a Direct
+/// response job when the enqueue itself fails.
+async fn abort_deferred_result_wait(
+    result_handle: tokio::task::JoinHandle<Result<JobResult>>,
+    result_stream: Option<BoxStream<'static, ResultOutputItem>>,
+) {
+    drop(result_stream);
+    result_handle.abort();
+    let _ = result_handle.await;
+}
+
+/// Start enforcing the Direct-response timeout only after enqueue/cache
+/// admission has completed. The underlying subscriber is already registered,
+/// preserving results published by an immediately running worker.
+fn start_deferred_result_wait(
+    result_handle: tokio::task::JoinHandle<Result<JobResult>>,
+    total_timeout: Option<u64>,
+) -> tokio::task::JoinHandle<Result<JobResult>> {
+    tokio::spawn(async move {
+        let mut result_handle = result_handle;
+        let result = match total_timeout {
+            Some(timeout_ms) => match tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                &mut result_handle,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    result_handle.abort();
+                    let _ = result_handle.await;
+                    return Err(JobWorkerError::RuntimeError(format!(
+                        "subscribe_result timeout after {timeout_ms}ms"
+                    ))
+                    .into());
+                }
+            },
+            None => result_handle.await,
+        };
+        result?
+    })
 }
 
 /// Wait for a Direct-response job's result via the chan pubsub repository.
@@ -1669,7 +1756,56 @@ mod tests {
         RunnerId, WorkerData,
     };
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn abort_deferred_result_wait_aborts_task_and_drops_output_stream() {
+        let task_dropped = Arc::new(AtomicBool::new(false));
+        let task_flag = DropFlag(task_dropped.clone());
+        let result_handle = tokio::spawn(async move {
+            let _task_flag = task_flag;
+            std::future::pending::<Result<JobResult>>().await
+        });
+
+        let stream_dropped = Arc::new(AtomicBool::new(false));
+        let stream_flag = DropFlag(stream_dropped.clone());
+        let result_stream = Box::pin(futures::stream::once(async move {
+            let _stream_flag = stream_flag;
+            std::future::pending::<ResultOutputItem>().await
+        })) as BoxStream<'static, ResultOutputItem>;
+
+        abort_deferred_result_wait(result_handle, Some(result_stream)).await;
+
+        assert!(task_dropped.load(Ordering::SeqCst));
+        assert!(stream_dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn deferred_result_timeout_starts_when_wait_is_started() {
+        let result_handle =
+            tokio::spawn(async { std::future::pending::<Result<JobResult>>().await });
+
+        // Simulate work performed before enqueue/cache admission completes.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let mut result_wait = start_deferred_result_wait(result_handle, Some(20));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), &mut result_wait)
+                .await
+                .is_err(),
+            "the timeout must not include pre-enqueue work"
+        );
+        assert!(result_wait.await.expect("wait task must join").is_err());
+    }
 
     async fn create_test_app(
         use_mock_id: bool,

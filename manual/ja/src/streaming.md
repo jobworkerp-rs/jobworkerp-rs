@@ -29,7 +29,9 @@ jobworkerp-rsは、`run_stream()`メソッドを実装したRunnerに対して�
 - Runnerの`run_stream()`メソッドが呼ばれます
 - 結果はpub/sub経由で`ResultOutputItem`メッセージとしてクライアントにストリーミングされます
 - クライアントは生成された`Data`チャンクを受信し、最後に`End`トレーラーを受信します
-- `ResponseType::Direct`のWorkerの場合、エンキュー呼び出しはブロックし、ストリームを返します
+- `ResponseType::Direct`のWorkerの場合、`EnqueueForStream`および`EnqueueWithClientStream`はenqueue成功後に`x-job-id-bin`レスポンスヘッダーを返し、実行完了をサーバーストリームで待機します
+- 最終`JobResult`が存在する実行失敗・キャンセルはストリームエラーで終了し、gRPC trailerの`x-job-result-bin`からその結果を取得できます。Redisタイムアウトなどの結果待機失敗では最終結果が存在しないため、`x-job-result-bin` trailerは送信されません
+- `queue_type=DbOnly`と`response_type=Direct`の組み合わせは`INVALID_ARGUMENT`で拒否されます
 - `request_streaming=true`（レガシーのbooleanフィールド）と互換性があります
 
 ### STREAMING_TYPE_INTERNAL (2)
@@ -53,7 +55,7 @@ jobworkerp-rsは、`run_stream()`メソッドを実装したRunnerに対して�
 |---------------|--------------|----------------|----------|
 | None | Direct | 完了までブロック | 単一JobResult |
 | None | NoResult | 即座に返る | Listen/store経由 |
-| Response | Direct | ブロック、ストリーム返却 | pub/sub経由ストリーム |
+| Response | Direct | JobId headerを即時返却 | pub/sub経由ストリーム |
 | Response | NoResult | 即座に返る | pub/sub経由ストリーム |
 | Internal | Direct | **即座に返る** | ストリーム + FinalCollected |
 | Internal | NoResult | 即座に返る | ストリーム + FinalCollected |
@@ -222,7 +224,7 @@ rpc EnqueueWithClientStream(stream ClientStreamRequest)
 Client                                    Server
   │                                          │
   │─── ClientStreamRequest(job_request) ────>│  ジョブ受付
-  │<── [headers: x-job-id-bin, x-job-result-bin]
+  │<── [headers: x-job-id-bin]
   │<── ResultOutputItem(Data) ──────────────│  初期出力
   │─── ClientStreamRequest(feed_data) ──────>│  feedデータ
   │<── ResultOutputItem(Data) ──────────────│  中間出力
@@ -230,6 +232,8 @@ Client                                    Server
   │         is_final=true) ─────────────────>│  最終feedデータ
   │<── ResultOutputItem(End(trailer)) ──────│  ストリーム終了
 ```
+
+初期ヘッダーの`x-job-id-bin`はenqueue成功を示します。成功時の出力とrunner metadataは`Data`および`End.metadata`で受信します。実行失敗・キャンセルでは、最終`JobResult`が存在する場合にのみストリームエラーのgRPC trailerへ`x-job-result-bin`が設定されます。Redisタイムアウトなどの結果待機失敗では、このtrailerは送信されません。
 
 #### NoResultモード（`response_type=NoResult`）
 

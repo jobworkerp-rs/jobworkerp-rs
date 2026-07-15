@@ -1,31 +1,14 @@
 const assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '../../..');
-const pinnedWorkflowTargetPattern = /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/([0-9a-f]{40})\//;
-
 function readRepoFile(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
 }
 
-function readFileAtCommit(commit, relativePath) {
-  return execFileSync('git', ['show', `${commit}:${relativePath}`], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-  });
-}
-
-function getPinnedWorkflowCommit(workflow) {
-  const targetCommit = workflow.match(pinnedWorkflowTargetPattern)?.[1];
-
-  assert.ok(targetCommit, 'workflow target must contain an immutable commit SHA');
-  return targetCommit;
-}
-
-test('Gitea PR workflow dispatches an immutable trusted jobworkerp workflow', () => {
+test('Gitea PR workflow dispatches the trusted main-branch jobworkerp workflow during the temporary transition', () => {
   const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
 
   assert.match(workflow, /pull_request:/);
@@ -36,26 +19,17 @@ test('Gitea PR workflow dispatches an immutable trusted jobworkerp workflow', ()
   assert.doesNotMatch(workflow, /actions\/checkout@v4/);
   assert.match(
     workflow,
-    /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/30e04297363f5c070573d7c2ffd60398b473ab76\/\.gitea\/jobworkerp\/workflows\/gitea-pr-auto-review-fix-workflow\.yaml/,
+    /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/branch\/main\/\.gitea\/jobworkerp\/workflows\/gitea-pr-auto-review-fix-workflow\.yaml/,
   );
-  assert.doesNotMatch(workflow, /raw\/branch\//);
   assert.doesNotMatch(workflow, /pr_head_branch/);
   assert.match(workflow, /"max_iterations": \$\{\{ github\.event\.inputs\.max_iterations \|\| '10' \}\}/);
 });
 
-test('pinned jobworkerp workflow revision initializes post-review status variables', () => {
-  const actionWorkflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
-  const targetCommit = getPinnedWorkflowCommit(actionWorkflow);
+test('workflow initializes skipped fix agent output before creating a result comment', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const initialization = workflow.match(/- initializeVariables:\n([\s\S]*?)\n\s*- mainProcessWithErrorHandling:/)?.[1] ?? '';
 
-  const targetWorkflow = readFileAtCommit(
-    targetCommit,
-    '.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml',
-  );
-  const initialization = targetWorkflow.match(/- initializeVariables:\n([\s\S]*?)\n\s*- mainProcessWithErrorHandling:/)?.[1] ?? '';
-
-  assert.match(initialization, /post_fix_status: ""/);
-  assert.match(initialization, /post_refactor_status: ""/);
-  assert.match(targetWorkflow, /timeout:\n\s+after:\n\s+hours: 6\n\ndo:/);
+  assert.match(initialization, /fix_output: ""/);
 });
 
 test('Gitea Action does not load a workflow definition from a PR branch', () => {
@@ -63,7 +37,7 @@ test('Gitea Action does not load a workflow definition from a PR branch', () => 
 
   assert.match(workflow, /id: fetch-pr-data/);
   assert.doesNotMatch(workflow, /pr_head_branch/);
-  assert.doesNotMatch(workflow, /raw\/branch\//);
+  assert.match(workflow, /raw\/branch\/main\//);
   assert.doesNotMatch(workflow, /target: .*\$\{\{/);
 });
 
@@ -124,11 +98,11 @@ test('Gitea Action auto-runs review only when a PR is opened or reopened', () =>
   assert.match(workflow, /workflow_dispatch:/);
 });
 
-test('CI runs for every push without waiting for a separate workflow', () => {
+test('CI runs for pull requests to main to avoid unnecessary push builds', () => {
   const workflow = readRepoFile('.gitea/workflows/ci.yaml');
 
-  assert.match(workflow, /on:\n\s+push:/);
-  assert.doesNotMatch(workflow, /pull_request:/);
+  assert.match(workflow, /on:\n\s+pull_request:\n\s+branches:\n\s+- main/);
+  assert.doesNotMatch(workflow, /\n\s+push:/);
   assert.doesNotMatch(workflow, /workflow_run:/);
   assert.doesNotMatch(workflow, /github\.event\.workflow_run|github\.event\.pull_request\.head\.ref/);
 });
@@ -235,7 +209,8 @@ test('jobworkerp workflow contains the bounded review/fix/refactor flow', () => 
   assert.match(workflow, /runnerName: LLM/);
   assert.match(workflow, /runFixAgent:/);
   assert.match(workflow, /runRefactorAgent:/);
-  assert.match(workflow, /pushChanges:/);
+  assert.match(workflow, /pushFixChanges:/);
+  assert.match(workflow, /pushRefactorChanges:/);
 });
 
 test('review agent allows a three-hour execution window', () => {
@@ -244,6 +219,22 @@ test('review agent allows a three-hour execution window', () => {
 
   assert.match(reviewAgent, /timeout_sec: 10800/);
   assert.match(reviewAgent, /timeout:\n\s+after:\n\s+minutes: 180/);
+});
+
+test('fix agent allows the same three-hour execution window as the review agent', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const fixAgent = workflow.match(/- runFixAgent:\n([\s\S]*?)\n\s*- cleanupFixPromptDir:/)?.[1] ?? '';
+
+  assert.match(fixAgent, /timeout_sec: 10800/);
+  assert.match(fixAgent, /timeout:\n\s+after:\n\s+minutes: 180/);
+});
+
+test('refactor agent allows the same three-hour execution window as the review and fix agents', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const refactorAgent = workflow.match(/- runRefactorAgent:\n([\s\S]*?)\n\s*- cleanupRefactorPromptDir:/)?.[1] ?? '';
+
+  assert.match(refactorAgent, /timeout_sec: 10800/);
+  assert.match(refactorAgent, /timeout:\n\s+after:\n\s+minutes: 180/);
 });
 
 test('review judge prompt expands the actual review output', () => {
@@ -386,26 +377,23 @@ test('worktree checkout does not reuse PR head branch as a local branch', () => 
   assert.match(workflow, /checkout\\", \\"--detach\\", \\"refs\/remotes\/pr-head\//);
 });
 
-test('workflow rebases agent commits onto the latest PR head before pushing', () => {
+test('workflow rebases each changed phase onto the latest PR head before pushing', () => {
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
-  const commitCheck = workflow.match(/- checkCommittedChangesBeforeRefactor:\n([\s\S]*?)\n\s*- generateRefactorPrompt:/)?.[1] ?? '';
-  const syncBeforePush = workflow.match(/- synchronizePRHeadBeforePush:\n([\s\S]*?)\n\s*- checkPushNeeded:/)?.[1] ?? '';
 
-  assert.match(commitCheck, /- recordAgentCreatedCommits:/);
-  assert.match(commitCheck, /has_agent_created_commits: "\$\{\$commits_before_refactor > 0\}"/);
-  assert.match(syncBeforePush, /if: "\$\{\$has_agent_created_commits == true\}"/);
-  assert.ok(syncBeforePush.includes('\\"fetch\\", $effective_head_clone_url'));
-  assert.ok(syncBeforePush.includes('\\"rebase\\", \\"refs/remotes/pr-head/\\" + $pr_head_branch'));
-  assert.ok(
-    workflow.indexOf('- synchronizePRHeadBeforePush:') < workflow.indexOf('- checkPushNeeded:'),
-    'the PR head must be synchronized before calculating commits to push',
-  );
-  assert.doesNotMatch(syncBeforePush, /--force|--force-with-lease/);
-  const checkPushNeeded = workflow.match(/- checkPushNeeded:\n([\s\S]*?)\n\s*- pushChanges:/)?.[1] ?? '';
-  const pushChanges = workflow.match(/- pushChanges:\n([\s\S]*?)\n\s*- setPushed:/)?.[1] ?? '';
-
-  assert.match(checkPushNeeded, /if: "\$\{\$has_agent_created_commits == true\}"/);
-  assert.match(pushChanges, /if: "\$\{\$commits_to_push > 0\}"/);
+  for (const phase of ['Fix', 'Refactor']) {
+    assert.match(workflow, new RegExp('synchronizePRHeadBefore' + phase + 'Push:'));
+    assert.match(workflow, new RegExp('rebase' + phase + 'CommitsOntoLatestPRHead:'));
+    assert.match(workflow, new RegExp('push' + phase + 'Changes:'));
+    assert.ok(
+      workflow.indexOf('- synchronizePRHeadBefore' + phase + 'Push:') < workflow.indexOf('- rebase' + phase + 'CommitsOntoLatestPRHead:'),
+      phase + ' commits must be synchronized before rebasing',
+    );
+    assert.ok(
+      workflow.indexOf('- rebase' + phase + 'CommitsOntoLatestPRHead:') < workflow.indexOf('- push' + phase + 'Changes:'),
+      phase + ' commits must be rebased before pushing',
+    );
+  }
+  assert.doesNotMatch(workflow, /--force|--force-with-lease/);
 });
 
 test('LLM settings come from workflow input without undefined context variables', () => {
@@ -419,4 +407,71 @@ test('LLM settings come from workflow input without undefined context variables'
   assert.match(jobworkerpWorkflow, /llm_model: "\$\{\$workflow\.input\.llm_model \/\/ \\"qwen3\.6:27b\\"\}"/);
   assert.match(actionWorkflow, /"llm_base_url": "\$\{\{ vars\.LLM_BASE_URL \|\| 'http:\/\/localhost:11434' \}\}"/);
   assert.match(actionWorkflow, /"llm_model": "\$\{\{ vars\.LLM_MODEL \|\| 'qwen3\.6:27b' \}\}"/);
+});
+
+test('review prompt treats performance as an evidence-based review concern', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const reviewPrompt = workflow.match(/- generateReviewPrompt:\n([\s\S]*?)\n\s*- createReviewPromptDir:/)?.[1] ?? '';
+
+  assert.match(reviewPrompt, /performance/i);
+  assert.match(reviewPrompt, /resource usage/i);
+  assert.match(reviewPrompt, /evidence/i);
+  assert.match(reviewPrompt, /reproduction/i);
+});
+
+test('each review fix is pushed before its Japanese summary is posted to the PR', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+
+  assert.match(workflow, /- pushFixChanges:/);
+  assert.match(workflow, /- postFixResultComment:/);
+  assert.match(workflow, /<!-- PR-AUTO-REVIEW-SUMMARY:START -->/);
+  assert.match(workflow, /<!-- PR-AUTO-REVIEW-SUMMARY:END -->/);
+  assert.ok(
+    workflow.indexOf('- pushFixChanges:') < workflow.indexOf('- postFixResultComment:'),
+    'a fix result must be posted only after its push succeeds',
+  );
+  assert.match(workflow, /\/issues\//);
+  assert.match(workflow, /Authorization:/);
+  assert.match(workflow, /\$_secrets\.token/);
+  assert.match(workflow, /comment_post_failures:/);
+  const fixComment = workflow.match(/- postFixResultComment:\n([\s\S]*?)\n\s*- recordFixCommentFailure:/)?.[1] ?? '';
+  const fixCommentPayload = workflow.match(/- buildFixCommentPayload:\n([\s\S]*?)\n\s*- postFixResultComment:/)?.[1] ?? '';
+  assert.match(fixComment, /call: http/);
+  assert.doesNotMatch(fixComment, /command: "curl"/);
+  assert.match(fixCommentPayload, /指摘事項/);
+  assert.match(fixCommentPayload, /対応結果/);
+  assert.match(fixCommentPayload, /\$fix_prompt/);
+});
+
+test('fix agent summary maps each finding to its judgment and response', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const fixPrompt = workflow.match(/- generateFixPrompt:\n([\s\S]*?)\n\s*- createFixPromptDir:/)?.[1] ?? '';
+
+  assert.match(fixPrompt, /- 指摘:/);
+  assert.match(fixPrompt, /- 判断:/);
+  assert.match(fixPrompt, /- 対応:/);
+});
+
+test('final refactor is retained after per-iteration pushes and its result is posted', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+
+  assert.match(workflow, /has_review_changes: false/);
+  assert.match(workflow, /has_review_changes: true/);
+  assert.match(workflow, /generateRefactorPrompt:\n\s+if: "\$\{\$has_review_changes == true\}"/);
+  assert.match(workflow, /- pushRefactorChanges:/);
+  assert.match(workflow, /- postRefactorResultComment:/);
+  assert.ok(
+    workflow.indexOf('- pushRefactorChanges:') < workflow.indexOf('- postRefactorResultComment:'),
+    'a refactor result must be posted only after its push succeeds',
+  );
+  const refactorComment = workflow.match(/- postRefactorResultComment:\n([\s\S]*?)\n\s*- recordRefactorCommentFailure:/)?.[1] ?? '';
+  assert.match(refactorComment, /call: http/);
+  assert.doesNotMatch(refactorComment, /command: "curl"/);
+});
+
+test('Gitea Action grants issue comment permission and passes the API URL to the workflow', () => {
+  const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+
+  assert.match(workflow, /permissions:\n\s+contents: write\n\s+issues: write\n\s+pull-requests: read/);
+  assert.match(workflow, /"gitea_api_url": "\$\{\{ vars\.GITEA_API_URL \|\| 'https:\/\/gitea\.sutr\.app\/api\/v1' \}\}"/);
 });
