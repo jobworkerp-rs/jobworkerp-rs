@@ -360,6 +360,7 @@ mod tests {
             treat_nonzero_as_error: false,
             success_exit_codes: vec![],
             working_dir: String::new(),
+            stdin: String::new(),
         })?;
         let job = Job {
             id: Some(JobId { value: 1 }),

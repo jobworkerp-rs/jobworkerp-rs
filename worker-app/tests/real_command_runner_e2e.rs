@@ -101,6 +101,7 @@ fn create_command_job(command: &str, args: Vec<String>, timeout_ms: u64) -> Job 
         treat_nonzero_as_error: false,
         success_exit_codes: vec![],
         working_dir: "".to_string(),
+        stdin: String::new(),
     };
     let args_bytes = ProstMessageCodec::serialize_message(&command_args).unwrap();
 
@@ -478,6 +479,7 @@ async fn test_real_command_working_directory() -> Result<()> {
                 treat_nonzero_as_error: false,
                 success_exit_codes: vec![],
                 working_dir: temp_dir_path.clone(),
+                stdin: String::new(),
             })
             .unwrap(),
             uniq_key: Some("real_command_cwd_test".to_string()),
