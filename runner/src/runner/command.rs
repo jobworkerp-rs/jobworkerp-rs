@@ -94,6 +94,17 @@ async fn wait_for_stdin_writer(
     }
 }
 
+fn stdin_write_error_result(message: String, started_at: u64) -> CommandResult {
+    CommandResult {
+        exit_code: Some(-1),
+        stdout: None,
+        stderr: Some(message),
+        execution_time_ms: None,
+        started_at: Some(started_at),
+        max_memory_usage_kb: None,
+    }
+}
+
 /**
  * CommandRunner
  * - command: command to run
@@ -1071,14 +1082,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                 let mut pid_guard = stream_pid_ref.write().await;
                                 *pid_guard = None;
                                 drop(pid_guard);
-                                let error_result = CommandResult {
-                                    exit_code: Some(-1),
-                                    stdout: None,
-                                    stderr: Some(message),
-                                    execution_time_ms: None,
-                                    started_at: Some(started_at),
-                                    max_memory_usage_kb: None,
-                                };
+                                let error_result = stdin_write_error_result(message, started_at);
                                 if let Ok(serialized) = ProstMessageCodec::serialize_message(&error_result) {
                                     yield ResultOutputItem { item: Some(Item::Data(serialized)) };
                                 }
@@ -1107,14 +1111,10 @@ impl RunnerTrait for CommandRunnerImpl {
                                     Ok(Ok(())) => stdin_write = None,
                                     Ok(Err(e)) => {
                                         Self::graceful_kill_process(&mut child).await;
-                                        let error_result = CommandResult {
-                                            exit_code: Some(-1),
-                                            stdout: None,
-                                            stderr: Some(format!("Failed to write command stdin: {e}")),
-                                            execution_time_ms: None,
-                                            started_at: Some(started_at),
-                                            max_memory_usage_kb: None,
-                                        };
+                                        let error_result = stdin_write_error_result(
+                                            format!("Failed to write command stdin: {e}"),
+                                            started_at,
+                                        );
                                         if let Ok(serialized) = ProstMessageCodec::serialize_message(&error_result) {
                                             yield ResultOutputItem { item: Some(Item::Data(serialized)) };
                                         }
@@ -1123,14 +1123,10 @@ impl RunnerTrait for CommandRunnerImpl {
                                     }
                                     Err(e) => {
                                         Self::graceful_kill_process(&mut child).await;
-                                        let error_result = CommandResult {
-                                            exit_code: Some(-1),
-                                            stdout: None,
-                                            stderr: Some(format!("Command stdin writer task failed: {e}")),
-                                            execution_time_ms: None,
-                                            started_at: Some(started_at),
-                                            max_memory_usage_kb: None,
-                                        };
+                                        let error_result = stdin_write_error_result(
+                                            format!("Command stdin writer task failed: {e}"),
+                                            started_at,
+                                        );
                                         if let Ok(serialized) = ProstMessageCodec::serialize_message(&error_result) {
                                             yield ResultOutputItem { item: Some(Item::Data(serialized)) };
                                         }
