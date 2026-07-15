@@ -1,31 +1,14 @@
 const assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '../../..');
-const pinnedWorkflowTargetPattern = /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/([0-9a-f]{40})\//;
-
 function readRepoFile(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
 }
 
-function readFileAtCommit(commit, relativePath) {
-  return execFileSync('git', ['show', `${commit}:${relativePath}`], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-  });
-}
-
-function getPinnedWorkflowCommit(workflow) {
-  const targetCommit = workflow.match(pinnedWorkflowTargetPattern)?.[1];
-
-  assert.ok(targetCommit, 'workflow target must contain an immutable commit SHA');
-  return targetCommit;
-}
-
-test('Gitea PR workflow dispatches an immutable trusted jobworkerp workflow', () => {
+test('Gitea PR workflow dispatches the trusted main-branch jobworkerp workflow during the temporary transition', () => {
   const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
 
   assert.match(workflow, /pull_request:/);
@@ -36,26 +19,10 @@ test('Gitea PR workflow dispatches an immutable trusted jobworkerp workflow', ()
   assert.doesNotMatch(workflow, /actions\/checkout@v4/);
   assert.match(
     workflow,
-    /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/commit\/3a3d05f1d3a348b9872959bd25536e67a3adac6d\/\.gitea\/jobworkerp\/workflows\/gitea-pr-auto-review-fix-workflow\.yaml/,
+    /target: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-rs\/raw\/branch\/main\/\.gitea\/jobworkerp\/workflows\/gitea-pr-auto-review-fix-workflow\.yaml/,
   );
-  assert.doesNotMatch(workflow, /raw\/branch\//);
   assert.doesNotMatch(workflow, /pr_head_branch/);
   assert.match(workflow, /"max_iterations": \$\{\{ github\.event\.inputs\.max_iterations \|\| '10' \}\}/);
-});
-
-test('pinned jobworkerp workflow revision initializes post-review status variables', () => {
-  const actionWorkflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
-  const targetCommit = getPinnedWorkflowCommit(actionWorkflow);
-
-  const targetWorkflow = readFileAtCommit(
-    targetCommit,
-    '.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml',
-  );
-  const initialization = targetWorkflow.match(/- initializeVariables:\n([\s\S]*?)\n\s*- mainProcessWithErrorHandling:/)?.[1] ?? '';
-
-  assert.match(initialization, /post_fix_status: ""/);
-  assert.match(initialization, /post_refactor_status: ""/);
-  assert.match(targetWorkflow, /timeout:\n\s+after:\n\s+hours: 6\n\ndo:/);
 });
 
 test('workflow initializes skipped fix agent output before creating a result comment', () => {
@@ -70,7 +37,7 @@ test('Gitea Action does not load a workflow definition from a PR branch', () => 
 
   assert.match(workflow, /id: fetch-pr-data/);
   assert.doesNotMatch(workflow, /pr_head_branch/);
-  assert.doesNotMatch(workflow, /raw\/branch\//);
+  assert.match(workflow, /raw\/branch\/main\//);
   assert.doesNotMatch(workflow, /target: .*\$\{\{/);
 });
 
