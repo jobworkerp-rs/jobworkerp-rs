@@ -62,7 +62,10 @@ pub trait RdbJobDispatcher:
     {
         let pairs = self.worker_config().channel_concurrency_pair();
         tracing::debug!("start dispatch jobs by rdb. workers and conc: {:?}", &pairs);
-        // TODO
+        if pairs.is_empty() {
+            tracing::info!("RDB job dispatcher is not started because no channels are enabled");
+            return Ok(());
+        }
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(
                 self.job_queue_config().fetch_interval as u64,

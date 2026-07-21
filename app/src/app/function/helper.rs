@@ -575,6 +575,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         }
 
         // 6. Channel verification
+        validate_default_channel(self.worker_config(), worker_data.channel.as_deref())?;
         if let Some(channel) = &worker_data.channel {
             self.validate_channel(channel)?;
         }
@@ -816,5 +817,34 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 }
             }
         })
+    }
+}
+
+fn validate_default_channel(worker_config: &WorkerConfig, channel: Option<&str>) -> Result<()> {
+    if channel.is_none() && worker_config.is_default_channel_disabled() {
+        return Err(JobWorkerError::InvalidParameter(
+            "default channel is disabled; specify an enabled channel".to_string(),
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_default_channel_rejects_implicit_selection() {
+        let config = WorkerConfig {
+            default_concurrency: 0,
+            default_channel_disabled: false,
+            channels: vec!["custom".to_string()],
+            channel_concurrencies: vec![1],
+        };
+
+        assert!(validate_default_channel(&config, None).is_err());
+        assert!(validate_default_channel(&config, Some("custom")).is_ok());
     }
 }

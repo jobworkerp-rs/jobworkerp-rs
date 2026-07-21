@@ -120,6 +120,12 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig + UseWorkerConf
     }
     #[allow(clippy::result_large_err)]
     fn validate_channel(&self, channel: Option<&String>) -> Result<(), tonic::Status> {
+        if channel.is_none() && self.worker_config().is_default_channel_disabled() {
+            return Err(tonic::Status::invalid_argument(
+                "default channel is disabled; specify an enabled channel",
+            ));
+        }
+
         if let Some(ch) = channel {
             if ch.is_empty() {
                 return Err(tonic::Status::invalid_argument(
@@ -619,6 +625,7 @@ mod tests {
             storage_type: StorageType::Standalone,
             worker_config: WorkerConfig {
                 default_concurrency: 4,
+                default_channel_disabled: false,
                 channels: vec![],
                 channel_concurrencies: vec![],
             },
@@ -641,6 +648,7 @@ mod tests {
             storage_type: StorageType::Standalone,
             worker_config: WorkerConfig {
                 default_concurrency: 4,
+                default_channel_disabled: false,
                 channels: vec![],
                 channel_concurrencies: vec![],
             },
@@ -668,6 +676,7 @@ mod tests {
             storage_type: StorageType::Scalable,
             worker_config: WorkerConfig {
                 default_concurrency: 4,
+                default_channel_disabled: false,
                 channels: vec![],
                 channel_concurrencies: vec![],
             },
@@ -698,6 +707,7 @@ mod tests {
             storage_type: StorageType::Scalable,
             worker_config: WorkerConfig {
                 default_concurrency: 4,
+                default_channel_disabled: false,
                 channels: vec![],
                 channel_concurrencies: vec![],
             },
@@ -737,6 +747,7 @@ mod tests {
             storage_type: StorageType::Standalone,
             worker_config: WorkerConfig {
                 default_concurrency: 4,
+                default_channel_disabled: false,
                 channels: vec!["custom-channel".to_string()],
                 channel_concurrencies: vec![2],
             },
@@ -761,11 +772,64 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_channel_rejects_disabled_default_channel() {
+        let v = Validator {
+            storage_type: StorageType::Standalone,
+            worker_config: WorkerConfig {
+                default_concurrency: 0,
+                default_channel_disabled: false,
+                channels: vec!["custom-channel".to_string()],
+                channel_concurrencies: vec![2],
+            },
+        };
+
+        assert_eq!(
+            v.validate_channel(None).unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            v.validate_channel(Some(
+                &<Validator as UseJobqueueAndCodec>::DEFAULT_CHANNEL_NAME.to_string()
+            ))
+            .unwrap_err()
+            .code(),
+            tonic::Code::InvalidArgument
+        );
+        assert!(
+            v.validate_channel(Some(&"custom-channel".to_string()))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_validate_worker_rejects_implicit_disabled_default_channel() {
+        let v = Validator {
+            storage_type: StorageType::Standalone,
+            worker_config: WorkerConfig {
+                default_concurrency: 2,
+                default_channel_disabled: true,
+                channels: vec!["custom-channel".to_string()],
+                channel_concurrencies: vec![1],
+            },
+        };
+        let worker = WorkerData {
+            name: "default-channel-worker".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            v.validate_worker(&worker).unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+    }
+
+    #[test]
     fn test_validate_channel_not_exist() {
         let v = Validator {
             storage_type: StorageType::Standalone,
             worker_config: WorkerConfig {
                 default_concurrency: 4,
+                default_channel_disabled: false,
                 channels: vec!["valid-channel".to_string()],
                 channel_concurrencies: vec![2],
             },
@@ -789,6 +853,7 @@ mod tests {
             storage_type: StorageType::Standalone,
             worker_config: WorkerConfig {
                 default_concurrency: 4,
+                default_channel_disabled: false,
                 channels: vec![],
                 channel_concurrencies: vec![],
             },
@@ -810,6 +875,7 @@ mod tests {
             storage_type: StorageType::Standalone,
             worker_config: WorkerConfig {
                 default_concurrency: 4,
+                default_channel_disabled: false,
                 channels: vec!["valid-channel".to_string()],
                 channel_concurrencies: vec![2],
             },

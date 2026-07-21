@@ -28,7 +28,8 @@
 |---------|------------|------|-------------|
 | **実行runner設定** | PLUGINS_RUNNER_DIR | プラグイン格納ディレクトリ | ./ |
 | | DOCKER_GID | DockerグループID (DockerRunner用) | - |
-| **ジョブキュー設定** | WORKER_DEFAULT_CONCURRENCY | デフォルトチャンネルの並列度 | CPUコア数（`num_cpus::get()`）。dot.envでは8を設定例として記載 |
+| **ジョブキュー設定** | WORKER_DEFAULT_CONCURRENCY | デフォルトチャンネルの並列度。`0`で無効化 | CPUコア数（`num_cpus::get()`）。dot.envでは8を設定例として記載 |
+| | WORKER_DEFAULT_CHANNEL_DISABLED | デフォルトチャンネルを明示的に無効化。`true`は並列度より優先され、追加チャンネルには影響しない | false |
 | | WORKER_CHANNELS | 追加ジョブキューチャンネルの名称(カンマ区切り) | - |
 | | WORKER_CHANNEL_CONCURRENCIES | 追加ジョブキューチャンネルの並列度(カンマ区切り) | - |
 | **ログ設定** | LOG_LEVEL | ログレベル(trace, debug, info, warn, error) | info |

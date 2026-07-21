@@ -358,7 +358,8 @@ MCPサーバーからの応答はジョブ結果として取得でき、response
 |---------|------------|------|-------------|
 | **実行runner設定** | PLUGINS_RUNNER_DIR | プラグイン格納ディレクトリ | plugins |
 | | DOCKER_GID | DockerグループID (DockerRunner用) | - |
-| **ジョブキュー設定** | WORKER_DEFAULT_CONCURRENCY | デフォルトチャンネルの並列度 | 4 |
+| **ジョブキュー設定** | WORKER_DEFAULT_CONCURRENCY | デフォルトチャンネルの並列度（`0`で無効化） | 4 |
+| | WORKER_DEFAULT_CHANNEL_DISABLED | デフォルトチャンネルを明示的に無効化（並列度より優先） | false |
 | | WORKER_CHANNELS | 追加ジョブキューチャンネルの名称(カンマ区切り) | - |
 | | WORKER_CHANNEL_CONCURRENCIES | 追加ジョブキューチャンネルの並列度(カンマ区切り) | - |
 | **ログ設定** | LOG_LEVEL | ログレベル(trace, debug, info, warn, error) | info |

@@ -26,7 +26,8 @@ Database schema:
 |---------|----------------------------|-------------|---------------|
 | **Runner Execution Settings** | PLUGINS_RUNNER_DIR | Directory for storing plugins | ./ |
 | | DOCKER_GID | Docker group ID (for DockerRunner) | - |
-| **Job Queue Settings** | WORKER_DEFAULT_CONCURRENCY | Default channel concurrency | Number of CPU cores (`num_cpus::get()`). dot.env uses 8 as an example. |
+| **Job Queue Settings** | WORKER_DEFAULT_CONCURRENCY | Default channel concurrency. Set to `0` to disable it | Number of CPU cores (`num_cpus::get()`). dot.env uses 8 as an example. |
+| | WORKER_DEFAULT_CHANNEL_DISABLED | Explicitly disables the default channel. `true` takes precedence over concurrency and does not affect custom channels | false |
 | | WORKER_CHANNELS | Names of additional job queue channels (comma-separated) | - |
 | | WORKER_CHANNEL_CONCURRENCIES | Concurrency of additional job queue channels (comma-separated) | - |
 | **Log Settings** | LOG_LEVEL | Log level (trace, debug, info, warn, error) | info |

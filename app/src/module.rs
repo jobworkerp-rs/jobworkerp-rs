@@ -544,6 +544,7 @@ pub mod test {
         // the shared redis blocking pool in tests.
         let worker_config = Arc::new(WorkerConfig {
             default_concurrency: 2,
+            default_channel_disabled: false,
             channels: vec![],
             channel_concurrencies: vec![],
         });
@@ -697,6 +698,7 @@ pub mod test {
 
         let worker_config = Arc::new(WorkerConfig {
             default_concurrency: 4,
+            default_channel_disabled: false,
             channels: vec!["test".to_string()],
             channel_concurrencies: vec![2],
         });

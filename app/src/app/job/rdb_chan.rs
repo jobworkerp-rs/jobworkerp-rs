@@ -1839,6 +1839,7 @@ mod tests {
         });
         let worker_config = Arc::new(WorkerConfig {
             default_concurrency: 4,
+            default_channel_disabled: false,
             channels: vec!["test".to_string()],
             channel_concurrencies: vec![2],
         });
