@@ -361,7 +361,8 @@ Database schema:
 |---------|----------------------------|-------------|---------------|
 | **Runner Execution Settings** | PLUGINS_RUNNER_DIR | Directory for storing plugins | plugins |
 | | DOCKER_GID | Docker group ID (for DockerRunner) | - |
-| **Job Queue Settings** | WORKER_DEFAULT_CONCURRENCY | Default channel concurrency | 4 |
+| **Job Queue Settings** | WORKER_DEFAULT_CONCURRENCY | Default channel concurrency (`0` disables the default channel) | 4 |
+| | WORKER_DEFAULT_CHANNEL_DISABLED | Explicitly disable the default channel (takes precedence over concurrency) | false |
 | | WORKER_CHANNELS | Names of additional job queue channels (comma-separated) | - |
 | | WORKER_CHANNEL_CONCURRENCIES | Concurrency of additional job queue channels (comma-separated) | - |
 | **Log Settings** | LOG_LEVEL | Log level (trace, debug, info, warn, error) | info |

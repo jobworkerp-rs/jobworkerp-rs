@@ -4,14 +4,18 @@ const path = require('node:path');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '../../..');
+const actionWorkflowPath = '.gitea/scoped_workflows/pr-auto-review-fix.yaml';
 function readRepoFile(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
 }
+function readActionWorkflow() {
+  return readRepoFile(actionWorkflowPath);
+}
 
-test('Gitea PR workflow dispatches the trusted main-branch jobworkerp workflow during the temporary transition', () => {
-  const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+test('Gitea scoped workflow dispatches the trusted main-branch jobworkerp workflow', () => {
+  const workflow = readActionWorkflow();
 
-  assert.match(workflow, /pull_request:/);
+  assert.match(workflow, /workflow_dispatch:/);
   assert.match(
     workflow,
     /uses: https:\/\/gitea\.sutr\.app\/jobworkerp-rs\/jobworkerp-actions\/jobworkerp-run@1ecd9a0f9a58fabadb4609871e8e0d349f7ba010/,
@@ -33,7 +37,7 @@ test('workflow initializes skipped fix agent output before creating a result com
 });
 
 test('Gitea Action does not load a workflow definition from a PR branch', () => {
-  const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const workflow = readActionWorkflow();
 
   assert.match(workflow, /id: fetch-pr-data/);
   assert.doesNotMatch(workflow, /pr_head_branch/);
@@ -42,7 +46,7 @@ test('Gitea Action does not load a workflow definition from a PR branch', () => 
 });
 
 test('Gitea Action uses a prebuilt client instead of requiring Cargo on the runner', () => {
-  const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const workflow = readActionWorkflow();
 
   assert.match(workflow, /client-command: \$\{\{ vars\.JOBWORKERP_CLIENT_COMMAND \|\| 'jobworkerp-client' \}\}/);
   assert.match(workflow, /client-binary-url: \$\{\{ vars\.JOBWORKERP_CLIENT_BINARY_URL \}\}/);
@@ -50,7 +54,7 @@ test('Gitea Action uses a prebuilt client instead of requiring Cargo on the runn
 });
 
 test('Gitea Action routes only Docker runner tasks to the docker channel', () => {
-  const actionWorkflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const actionWorkflow = readActionWorkflow();
   const jobworkerpWorkflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
 
   assert.doesNotMatch(actionWorkflow, /docker_channel/);
@@ -60,7 +64,7 @@ test('Gitea Action routes only Docker runner tasks to the docker channel', () =>
 });
 
 test('Gitea Action ensures protoc is available before invoking the client', () => {
-  const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const workflow = readActionWorkflow();
 
   assert.match(workflow, /name: Install protoc/);
   assert.match(workflow, /command -v protoc/);
@@ -68,7 +72,7 @@ test('Gitea Action ensures protoc is available before invoking the client', () =
 });
 
 test('Gitea Action fetches PR data and passes it without an MCP runner', () => {
-  const actionWorkflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const actionWorkflow = readActionWorkflow();
   const jobworkerpWorkflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
 
   assert.match(actionWorkflow, /id: fetch-pr-data/);
@@ -82,7 +86,7 @@ test('Gitea Action fetches PR data and passes it without an MCP runner', () => {
 });
 
 test('Gitea Action runs privileged agents only for same-repository PRs', () => {
-  const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const workflow = readActionWorkflow();
 
   assert.match(
     workflow,
@@ -90,11 +94,11 @@ test('Gitea Action runs privileged agents only for same-repository PRs', () => {
   );
 });
 
-test('Gitea Action auto-runs review only when a PR is opened or reopened', () => {
-  const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+test('Gitea scoped workflow is manually dispatched while PR triggering is disabled', () => {
+  const workflow = readActionWorkflow();
 
-  assert.match(workflow, /pull_request:\n\s+types:\n\s+- opened\n\s+- reopened/);
-  assert.doesNotMatch(workflow, /\n\s+- synchronize/);
+  assert.doesNotMatch(workflow, /\non:\n\s+pull_request:/);
+  assert.match(workflow, /#\s+pull_request:/);
   assert.match(workflow, /workflow_dispatch:/);
 });
 
@@ -118,7 +122,7 @@ test('CI runs jobworkerp regression tests with immutable commit history', () => 
 });
 
 test('Gitea Action verifies the nested jobworkerp workflow result', () => {
-  const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const workflow = readActionWorkflow();
   const successfulResult = JSON.stringify({
     id: 'job-1',
     output: JSON.stringify({ status: 'success', pushed: true }),
@@ -185,7 +189,7 @@ test('workflow rejects fork PRs before cloning, including manual dispatches', ()
 });
 
 test('Gitea Action passes the write token through the protected workflow context', () => {
-  const actionWorkflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const actionWorkflow = readActionWorkflow();
   const jobworkerpWorkflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
 
   assert.match(actionWorkflow, /GITEA_TOKEN: \$\{\{ secrets\.GITEA_TOKEN \}\}/);
@@ -319,6 +323,22 @@ test('each execution uses and removes its own independent clone', () => {
   assert.match(workflow, /- cleanupWorktreeOnError:\n[\s\S]*?command: "rm"[\s\S]*?\$effective_worktree_root/);
 });
 
+test('workflow removes only stale execution worktrees before creating a new clone', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const staleCleanup = workflow.match(/- cleanupStaleWorktrees:\n([\s\S]*?)\n\s*- createExecutionWorktreePath:/)?.[1] ?? '';
+
+  assert.match(staleCleanup, /command: "sh"/);
+  assert.ok(
+    staleCleanup.includes("find \\\"$1\\\" -mindepth 1 -maxdepth 1 -type d -name 'pr-*-*' -mmin +1440"),
+  );
+  assert.match(staleCleanup, /-exec rm -rf -- \{\} \+/);
+  assert.match(staleCleanup, /\$effective_worktree_parent_path/);
+  assert.ok(
+    workflow.indexOf('- cleanupStaleWorktrees:') < workflow.indexOf('- createExecutionWorktreePath:'),
+    'stale worktrees must be removed before a new worktree is created',
+  );
+});
+
 test('agent prompt directories are created in the shared worktree', () => {
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
 
@@ -399,7 +419,7 @@ test('workflow rebases each changed phase onto the latest PR head before pushing
 });
 
 test('LLM settings come from workflow input without undefined context variables', () => {
-  const actionWorkflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const actionWorkflow = readActionWorkflow();
   const jobworkerpWorkflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
 
   assert.doesNotMatch(jobworkerpWorkflow, /\$ollamaBaseUrl|\$ollamaModel/);
@@ -409,6 +429,28 @@ test('LLM settings come from workflow input without undefined context variables'
   assert.match(jobworkerpWorkflow, /llm_model: "\$\{\$workflow\.input\.llm_model \/\/ \\"qwen3\.6:27b\\"\}"/);
   assert.match(actionWorkflow, /"llm_base_url": "\$\{\{ vars\.LLM_BASE_URL \|\| 'http:\/\/localhost:11434' \}\}"/);
   assert.match(actionWorkflow, /"llm_model": "\$\{\{ vars\.LLM_MODEL \|\| 'qwen3\.6:27b' \}\}"/);
+});
+
+test('all coding agents receive the persistent Rust cache environment', () => {
+  const actionWorkflow = readActionWorkflow();
+  const jobworkerpWorkflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const cacheEnvironment = [
+    'RUSTUP_HOME=/home/codespace/.rustup',
+    'CARGO_HOME=/tmp/.cargo',
+    'SCCACHE_DIR=/tmp/.cache/sccache',
+  ];
+
+  assert.match(jobworkerpWorkflow, /agent_env:\n\s+type: array/);
+  assert.match(jobworkerpWorkflow, /agent_env: "\$\{\$workflow\.input\.agent_env \/\/ \[/);
+  for (const taskName of ['runReviewAgent', 'runFixAgent', 'runRefactorAgent']) {
+    const task = jobworkerpWorkflow.match(new RegExp('- ' + taskName + ':\\n([\\s\\S]*?)(?=\\n\\s*- (?!-)|$)'))?.[1] ?? '';
+    assert.match(task, /env: "\$\{\$agent_env\}"/);
+  }
+  for (const value of cacheEnvironment) {
+    assert.match(jobworkerpWorkflow, new RegExp(value.replace(/[./]/g, '\\$&')));
+    assert.match(actionWorkflow, new RegExp(value.replace(/[./]/g, '\\$&')));
+  }
+  assert.match(actionWorkflow, /"agent_env": \$\{\{ vars\.CODE_AGENT_ENV \|\| '\[/);
 });
 
 test('review prompt treats performance as an evidence-based review concern', () => {
@@ -472,7 +514,7 @@ test('final refactor is retained after per-iteration pushes and its result is po
 });
 
 test('Gitea Action grants issue comment permission and passes the API URL to the workflow', () => {
-  const workflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const workflow = readActionWorkflow();
 
   assert.match(workflow, /permissions:\n\s+contents: write\n\s+issues: write\n\s+pull-requests: read/);
   assert.match(workflow, /"gitea_api_url": "\$\{\{ vars\.GITEA_API_URL \|\| 'https:\/\/gitea\.sutr\.app\/api\/v1' \}\}"/);

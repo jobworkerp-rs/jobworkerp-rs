@@ -50,6 +50,9 @@ pub trait UseStorageConfig {
 pub struct WorkerConfig {
     /// concurrency num for default channel (worker tokio thread num)
     pub default_concurrency: u32,
+    /// disables the default channel regardless of its configured concurrency
+    #[serde(default)]
+    pub default_channel_disabled: bool,
     /// worker channel name (for tokio thread)
     pub channels: Vec<String>,
     /// concurrency num for channels (worker tokio thread num)
@@ -64,6 +67,7 @@ impl Default for WorkerConfig {
         );
         Self {
             default_concurrency: cn,
+            default_channel_disabled: false,
             channels: vec![],
             channel_concurrencies: vec![],
         }
@@ -72,11 +76,11 @@ impl Default for WorkerConfig {
 impl WorkerConfig {
     const DEFAULT_CHANNEL_NAME: &'static str = <infra::infra::job::redis::RedisJobRepositoryImpl as UseJobqueueAndCodec>::DEFAULT_CHANNEL_NAME;
     pub fn get_channels(&self) -> Vec<String> {
-        self.channels
-            .iter()
-            .cloned()
-            .chain(vec![WorkerConfig::DEFAULT_CHANNEL_NAME.to_string()])
-            .collect()
+        let mut channels = self.channels.to_vec();
+        if !self.is_default_channel_disabled() {
+            channels.push(WorkerConfig::DEFAULT_CHANNEL_NAME.to_string());
+        }
+        channels
     }
     pub fn channel_concurrency_pair(&self) -> Vec<(String, u32)> {
         let mut pairs = self
@@ -85,11 +89,16 @@ impl WorkerConfig {
             .zip(self.channel_concurrencies.clone())
             .map(|(a, b)| (a.clone(), b))
             .collect::<Vec<(String, u32)>>();
-        pairs.push((
-            WorkerConfig::DEFAULT_CHANNEL_NAME.to_string(),
-            self.default_concurrency,
-        ));
+        if !self.is_default_channel_disabled() {
+            pairs.push((
+                WorkerConfig::DEFAULT_CHANNEL_NAME.to_string(),
+                self.default_concurrency,
+            ));
+        }
         pairs
+    }
+    pub fn is_default_channel_disabled(&self) -> bool {
+        self.default_channel_disabled || self.default_concurrency == 0
     }
     pub fn get_concurrency(&self, channel: Option<&String>) -> Option<u32> {
         self.channel_concurrency_pair()
@@ -106,6 +115,90 @@ impl WorkerConfig {
 
 pub trait UseWorkerConfig {
     fn worker_config(&self) -> &WorkerConfig;
+}
+
+#[cfg(test)]
+mod worker_config_tests {
+    use super::WorkerConfig;
+
+    #[test]
+    fn default_channel_is_available_by_default() {
+        let config = WorkerConfig {
+            default_concurrency: 2,
+            default_channel_disabled: false,
+            channels: vec!["priority".to_string()],
+            channel_concurrencies: vec![1],
+        };
+
+        assert_eq!(
+            config.get_channels(),
+            vec![
+                "priority".to_string(),
+                "__default_job_channel__".to_string()
+            ]
+        );
+        assert_eq!(
+            config.channel_concurrency_pair(),
+            vec![
+                ("priority".to_string(), 1),
+                ("__default_job_channel__".to_string(), 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn zero_default_concurrency_disables_only_default_channel() {
+        let config = WorkerConfig {
+            default_concurrency: 0,
+            default_channel_disabled: false,
+            channels: vec!["priority".to_string()],
+            channel_concurrencies: vec![2],
+        };
+
+        assert_eq!(config.get_channels(), vec!["priority".to_string()]);
+        assert_eq!(
+            config.channel_concurrency_pair(),
+            vec![("priority".to_string(), 2)]
+        );
+        assert!(config.get_concurrency(None).is_none());
+    }
+
+    #[test]
+    fn explicit_default_channel_disable_overrides_positive_concurrency() {
+        let config = WorkerConfig {
+            default_concurrency: 2,
+            default_channel_disabled: true,
+            channels: vec!["priority".to_string()],
+            channel_concurrencies: vec![1],
+        };
+
+        assert_eq!(config.get_channels(), vec!["priority".to_string()]);
+        assert!(config.get_concurrency(None).is_none());
+    }
+
+    #[test]
+    fn disabling_the_only_channel_returns_no_active_channels() {
+        let config = WorkerConfig {
+            default_concurrency: 0,
+            default_channel_disabled: false,
+            channels: vec![],
+            channel_concurrencies: vec![],
+        };
+
+        assert!(config.get_channels().is_empty());
+        assert!(config.channel_concurrency_pair().is_empty());
+    }
+
+    #[test]
+    fn missing_disable_flag_defaults_to_false_when_deserializing() {
+        let config: WorkerConfig = serde_json::from_str(
+            r#"{"default_concurrency":2,"channels":[],"channel_concurrencies":[]}"#,
+        )
+        .unwrap();
+
+        assert!(!config.default_channel_disabled);
+        assert!(!config.is_default_channel_disabled());
+    }
 }
 
 // build job from result status (for retry job)
