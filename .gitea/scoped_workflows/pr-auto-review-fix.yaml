@@ -1,12 +1,12 @@
 name: PR Auto Review Fix
 
 on:
-  pull_request:
-    types:
-      - opened
-      - reopened
-    branches:
-      - main
+#  pull_request:
+#    types:
+#      - opened
+#      - reopened
+#    branches:
+#      - main
   workflow_dispatch:
     inputs:
       pull_number:
@@ -90,6 +90,7 @@ jobs:
               "language": "${{ vars.CODE_AGENT_LANGUAGE || 'ja' }}",
               "agent_image": "${{ vars.CODE_AGENT_IMAGE }}",
               "agent_config_volumes": ${{ vars.CODE_AGENT_CONFIG_VOLUMES || '[]' }},
+              "agent_env": ${{ vars.CODE_AGENT_ENV || '["RUSTUP_HOME=/home/codespace/.rustup","CARGO_HOME=/tmp/.cargo","SCCACHE_DIR=/tmp/.cache/sccache"]' }},
               "agent_cmd": "${{ vars.CODE_AGENT_CMD || 'codex exec --dangerously-bypass-approvals-and-sandbox < /prompt/prompt.txt' }}",
               "worktree_base_path": "${{ vars.JOBWORKERP_WORKTREE_BASE_PATH || '/tmp/jobworkerp-worktrees' }}",
               "gitea_clone_url_template": "${{ vars.GITEA_CLONE_URL_TEMPLATE || 'https://gitea.sutr.app/{owner}/{repo}.git' }}",

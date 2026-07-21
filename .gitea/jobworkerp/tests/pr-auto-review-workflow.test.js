@@ -319,6 +319,22 @@ test('each execution uses and removes its own independent clone', () => {
   assert.match(workflow, /- cleanupWorktreeOnError:\n[\s\S]*?command: "rm"[\s\S]*?\$effective_worktree_root/);
 });
 
+test('workflow removes only stale execution worktrees before creating a new clone', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const staleCleanup = workflow.match(/- cleanupStaleWorktrees:\n([\s\S]*?)\n\s*- createExecutionWorktreePath:/)?.[1] ?? '';
+
+  assert.match(staleCleanup, /command: "sh"/);
+  assert.ok(
+    staleCleanup.includes("find \\\"$1\\\" -mindepth 1 -maxdepth 1 -type d -name 'pr-*-*' -mmin +1440"),
+  );
+  assert.match(staleCleanup, /-exec rm -rf -- \{\} \+/);
+  assert.match(staleCleanup, /\$effective_worktree_parent_path/);
+  assert.ok(
+    workflow.indexOf('- cleanupStaleWorktrees:') < workflow.indexOf('- createExecutionWorktreePath:'),
+    'stale worktrees must be removed before a new worktree is created',
+  );
+});
+
 test('agent prompt directories are created in the shared worktree', () => {
   const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
 
@@ -409,6 +425,28 @@ test('LLM settings come from workflow input without undefined context variables'
   assert.match(jobworkerpWorkflow, /llm_model: "\$\{\$workflow\.input\.llm_model \/\/ \\"qwen3\.6:27b\\"\}"/);
   assert.match(actionWorkflow, /"llm_base_url": "\$\{\{ vars\.LLM_BASE_URL \|\| 'http:\/\/localhost:11434' \}\}"/);
   assert.match(actionWorkflow, /"llm_model": "\$\{\{ vars\.LLM_MODEL \|\| 'qwen3\.6:27b' \}\}"/);
+});
+
+test('all coding agents receive the persistent Rust cache environment', () => {
+  const actionWorkflow = readRepoFile('.gitea/workflows/pr-auto-review-fix.yaml');
+  const jobworkerpWorkflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+  const cacheEnvironment = [
+    'RUSTUP_HOME=/home/codespace/.rustup',
+    'CARGO_HOME=/tmp/.cargo',
+    'SCCACHE_DIR=/tmp/.cache/sccache',
+  ];
+
+  assert.match(jobworkerpWorkflow, /agent_env:\n\s+type: array/);
+  assert.match(jobworkerpWorkflow, /agent_env: "\$\{\$workflow\.input\.agent_env \/\/ \[/);
+  for (const taskName of ['runReviewAgent', 'runFixAgent', 'runRefactorAgent']) {
+    const task = jobworkerpWorkflow.match(new RegExp('- ' + taskName + ':\\n([\\s\\S]*?)(?=\\n\\s*- (?!-)|$)'))?.[1] ?? '';
+    assert.match(task, /env: "\$\{\$agent_env\}"/);
+  }
+  for (const value of cacheEnvironment) {
+    assert.match(jobworkerpWorkflow, new RegExp(value.replace(/[./]/g, '\\$&')));
+    assert.match(actionWorkflow, new RegExp(value.replace(/[./]/g, '\\$&')));
+  }
+  assert.match(actionWorkflow, /"agent_env": \$\{\{ vars\.CODE_AGENT_ENV \|\| '\[/);
 });
 
 test('review prompt treats performance as an evidence-based review concern', () => {

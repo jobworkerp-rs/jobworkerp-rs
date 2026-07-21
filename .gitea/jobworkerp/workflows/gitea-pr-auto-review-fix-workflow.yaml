@@ -53,6 +53,15 @@ input:
           default: []
           items:
             type: string
+        agent_env:
+          type: array
+          description: "Environment variables for the coding agent"
+          default:
+            - "RUSTUP_HOME=/home/codespace/.rustup"
+            - "CARGO_HOME=/tmp/.cargo"
+            - "SCCACHE_DIR=/tmp/.cache/sccache"
+          items:
+            type: string
         agent_cmd:
           type: string
           description: "Shell command executed in the coding agent container"
@@ -117,6 +126,7 @@ do:
         language: "${$workflow.input.language // \"ja\"}"
         agent_image: "${$workflow.input.agent_image // \"\"}"
         agent_config_volumes: "${$workflow.input.agent_config_volumes // []}"
+        agent_env: "${$workflow.input.agent_env // [\"RUSTUP_HOME=/home/codespace/.rustup\", \"CARGO_HOME=/tmp/.cargo\", \"SCCACHE_DIR=/tmp/.cache/sccache\"]}"
         agent_cmd: "${$workflow.input.agent_cmd // \"codex exec --dangerously-bypass-approvals-and-sandbox < /prompt/prompt.txt\"}"
         llm_base_url: "${$workflow.input.llm_base_url // \"http://localhost:11434\"}"
         llm_model: "${$workflow.input.llm_model // \"qwen3.6:27b\"}"
@@ -166,6 +176,19 @@ do:
                 arguments:
                   command: "sh"
                   args: "${[\"-c\", \"mkdir -p '\" + $effective_worktree_parent_path + \"'\"]}"
+                  treat_nonzero_as_error: true
+
+        - cleanupStaleWorktrees:
+            run:
+              runner:
+                name: COMMAND
+                arguments:
+                  command: "sh"
+                  args:
+                    - "-c"
+                    - "find \"$1\" -mindepth 1 -maxdepth 1 -type d -name 'pr-*-*' -mmin +1440 -print -exec rm -rf -- {} +"
+                    - "sh"
+                    - "${$effective_worktree_parent_path}"
                   treat_nonzero_as_error: true
 
         - createExecutionWorktreePath:
@@ -318,6 +341,7 @@ do:
                           channel: "docker"
                         arguments:
                           image: "${$agent_image}"
+                          env: "${$agent_env}"
                           volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $prompt_temp_dir + \":/prompt:ro\"]}"
                           working_dir: "/workspace"
                           entrypoint: ["/bin/sh", "-c"]
@@ -475,6 +499,7 @@ do:
                           channel: "docker"
                         arguments:
                           image: "${$agent_image}"
+                          env: "${$agent_env}"
                           volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $prompt_temp_dir + \":/prompt:ro\"]}"
                           working_dir: "/workspace"
                           entrypoint: ["/bin/sh", "-c"]
@@ -711,6 +736,7 @@ do:
                   channel: "docker"
                 arguments:
                   image: "${$agent_image}"
+                  env: "${$agent_env}"
                   volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $prompt_temp_dir + \":/prompt:ro\"]}"
                   working_dir: "/workspace"
                   entrypoint: ["/bin/sh", "-c"]
