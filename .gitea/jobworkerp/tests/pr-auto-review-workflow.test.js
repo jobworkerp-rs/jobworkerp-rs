@@ -27,6 +27,10 @@ test('Gitea scoped workflow dispatches the trusted main-branch jobworkerp workfl
   );
   assert.doesNotMatch(workflow, /pr_head_branch/);
   assert.match(workflow, /"max_iterations": \$\{\{ github\.event\.inputs\.max_iterations \|\| '10' \}\}/);
+  assert.match(workflow, /commit_author_name:\n\s+description: "Git author and committer name for automated commits"\n\s+required: false\n\s+default: "sutr"/);
+  assert.match(workflow, /commit_author_email:\n\s+description: "Git author and committer email for automated commits"\n\s+required: false\n\s+default: "sutr@local"/);
+  assert.match(workflow, /"commit_author_name": \$\{\{ toJSON\(github\.event\.inputs\.commit_author_name \|\| 'sutr'\) \}\}/);
+  assert.match(workflow, /"commit_author_email": \$\{\{ toJSON\(github\.event\.inputs\.commit_author_email \|\| 'sutr@local'\) \}\}/);
 });
 
 test('workflow initializes skipped fix agent output before creating a result comment', () => {
@@ -444,13 +448,34 @@ test('all coding agents receive the persistent Rust cache environment', () => {
   assert.match(jobworkerpWorkflow, /agent_env: "\$\{\$workflow\.input\.agent_env \/\/ \[/);
   for (const taskName of ['runReviewAgent', 'runFixAgent', 'runRefactorAgent']) {
     const task = jobworkerpWorkflow.match(new RegExp('- ' + taskName + ':\\n([\\s\\S]*?)(?=\\n\\s*- (?!-)|$)'))?.[1] ?? '';
-    assert.match(task, /env: "\$\{\$agent_env\}"/);
+    assert.match(task, /GIT_AUTHOR_NAME=/);
+    assert.match(task, /GIT_AUTHOR_EMAIL=/);
+    assert.match(task, /GIT_COMMITTER_NAME=/);
+    assert.match(task, /GIT_COMMITTER_EMAIL=/);
+    assert.match(task, /\$commit_author_name/);
+    assert.match(task, /\$commit_author_email/);
   }
   for (const value of cacheEnvironment) {
     assert.match(jobworkerpWorkflow, new RegExp(value.replace(/[./]/g, '\\$&')));
     assert.match(actionWorkflow, new RegExp(value.replace(/[./]/g, '\\$&')));
   }
   assert.match(actionWorkflow, /"agent_env": \$\{\{ vars\.CODE_AGENT_ENV \|\| '\[/);
+});
+
+test('agent and fallback commits use the workflow commit author inputs', () => {
+  const workflow = readRepoFile('.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml');
+
+  assert.match(workflow, /commit_author_name:\n\s+type: string[\s\S]*?default: "sutr"/);
+  assert.match(workflow, /commit_author_email:\n\s+type: string[\s\S]*?default: "sutr@local"/);
+  assert.match(workflow, /commit_author_name: "\$\{\$workflow\.input\.commit_author_name/);
+  assert.match(workflow, /commit_author_email: "\$\{\$workflow\.input\.commit_author_email/);
+  for (const taskName of ['commitFallbackFixChanges', 'commitFallbackRefactorChanges']) {
+    const task = workflow.match(new RegExp('- ' + taskName + ':\\n([\\s\\S]*?)\\n\\s+working_dir:'))?.[1] ?? '';
+    assert.match(task, /args: "\$\{\[/);
+    assert.doesNotMatch(task, /args:\n\s+-/);
+    assert.match(task, /\$commit_author_name/);
+    assert.match(task, /\$commit_author_email/);
+  }
 });
 
 test('review prompt treats performance as an evidence-based review concern', () => {

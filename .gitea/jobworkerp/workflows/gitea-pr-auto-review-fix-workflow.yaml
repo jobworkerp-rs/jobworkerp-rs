@@ -62,6 +62,14 @@ input:
             - "SCCACHE_DIR=/tmp/.cache/sccache"
           items:
             type: string
+        commit_author_name:
+          type: string
+          description: "Git author and committer name for automated commits"
+          default: "sutr"
+        commit_author_email:
+          type: string
+          description: "Git author and committer email for automated commits"
+          default: "sutr@local"
         agent_cmd:
           type: string
           description: "Shell command executed in the coding agent container"
@@ -127,6 +135,8 @@ do:
         agent_image: "${$workflow.input.agent_image // \"\"}"
         agent_config_volumes: "${$workflow.input.agent_config_volumes // []}"
         agent_env: "${$workflow.input.agent_env // [\"RUSTUP_HOME=/home/codespace/.rustup\", \"CARGO_HOME=/tmp/.cargo\", \"SCCACHE_DIR=/tmp/.cache/sccache\"]}"
+        commit_author_name: "${$workflow.input.commit_author_name // \"sutr\"}"
+        commit_author_email: "${$workflow.input.commit_author_email // \"sutr@local\"}"
         agent_cmd: "${$workflow.input.agent_cmd // \"codex exec --dangerously-bypass-approvals-and-sandbox < /prompt/prompt.txt\"}"
         llm_base_url: "${$workflow.input.llm_base_url // \"http://localhost:11434\"}"
         llm_model: "${$workflow.input.llm_model // \"qwen3.6:27b\"}"
@@ -341,7 +351,7 @@ do:
                           channel: "docker"
                         arguments:
                           image: "${$agent_image}"
-                          env: "${$agent_env}"
+                          env: "${$agent_env + [\"GIT_AUTHOR_NAME=\" + $commit_author_name, \"GIT_AUTHOR_EMAIL=\" + $commit_author_email, \"GIT_COMMITTER_NAME=\" + $commit_author_name, \"GIT_COMMITTER_EMAIL=\" + $commit_author_email]}"
                           volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $prompt_temp_dir + \":/prompt:ro\"]}"
                           working_dir: "/workspace"
                           entrypoint: ["/bin/sh", "-c"]
@@ -499,7 +509,7 @@ do:
                           channel: "docker"
                         arguments:
                           image: "${$agent_image}"
-                          env: "${$agent_env}"
+                          env: "${$agent_env + [\"GIT_AUTHOR_NAME=\" + $commit_author_name, \"GIT_AUTHOR_EMAIL=\" + $commit_author_email, \"GIT_COMMITTER_NAME=\" + $commit_author_name, \"GIT_COMMITTER_EMAIL=\" + $commit_author_email]}"
                           volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $prompt_temp_dir + \":/prompt:ro\"]}"
                           working_dir: "/workspace"
                           entrypoint: ["/bin/sh", "-c"]
@@ -544,9 +554,7 @@ do:
                       name: COMMAND
                       arguments:
                         command: "sh"
-                        args:
-                          - "-c"
-                          - "${\"git config user.email local-code-agent@localhost && git config user.name 'Local Code Agent' && git ls-files --modified --deleted --others --exclude-standard -z | xargs -0 -r git add -- && git diff --cached --quiet || git commit -m 'Fix review findings for PR #\" + ($workflow.input.pull_number | tostring) + \" iteration \" + ($review_iteration | tostring) + \"'\"}"
+                        args: "${[\"-c\", \"git config user.email \\\"$1\\\" && git config user.name \\\"$2\\\" && git ls-files --modified --deleted --others --exclude-standard -z | xargs -0 -r git add -- && git diff --cached --quiet || git commit -m \\\"$3\\\"\", \"sh\", $commit_author_email, $commit_author_name, \"Fix review findings for PR #\" + ($workflow.input.pull_number | tostring) + \" iteration \" + ($review_iteration | tostring)]}"
                         working_dir: "${$effective_worktree_path}"
                         treat_nonzero_as_error: true
 
@@ -736,7 +744,7 @@ do:
                   channel: "docker"
                 arguments:
                   image: "${$agent_image}"
-                  env: "${$agent_env}"
+                  env: "${$agent_env + [\"GIT_AUTHOR_NAME=\" + $commit_author_name, \"GIT_AUTHOR_EMAIL=\" + $commit_author_email, \"GIT_COMMITTER_NAME=\" + $commit_author_name, \"GIT_COMMITTER_EMAIL=\" + $commit_author_email]}"
                   volumes: "${$agent_config_volumes + [$effective_worktree_path + \":/workspace\", $prompt_temp_dir + \":/prompt:ro\"]}"
                   working_dir: "/workspace"
                   entrypoint: ["/bin/sh", "-c"]
@@ -781,9 +789,7 @@ do:
                 name: COMMAND
                 arguments:
                   command: "sh"
-                  args:
-                    - "-c"
-                    - "git config user.email local-code-agent@localhost && git config user.name 'Local Code Agent' && git ls-files --modified --deleted --others --exclude-standard -z | xargs -0 -r git add -- && git diff --cached --quiet || git commit -m 'Refactor after automated PR review fixes'"
+                  args: "${[\"-c\", \"git config user.email \\\"$1\\\" && git config user.name \\\"$2\\\" && git ls-files --modified --deleted --others --exclude-standard -z | xargs -0 -r git add -- && git diff --cached --quiet || git commit -m \\\"$3\\\"\", \"sh\", $commit_author_email, $commit_author_name, \"Refactor after automated PR review fixes\"]}"
                   working_dir: "${$effective_worktree_path}"
                   treat_nonzero_as_error: true
 

@@ -18,6 +18,16 @@ on:
         required: false
         default: "10"
         type: string
+      commit_author_name:
+        description: "Git author and committer name for automated commits"
+        required: false
+        default: "sutr"
+        type: string
+      commit_author_email:
+        description: "Git author and committer email for automated commits"
+        required: false
+        default: "sutr@local"
+        type: string
 
 permissions:
   contents: write
@@ -86,6 +96,8 @@ jobs:
               "repo": "${{ github.event.repository.name }}",
               "pull_number": ${{ github.event.pull_request.number || github.event.inputs.pull_number }},
               "max_iterations": ${{ github.event.inputs.max_iterations || '10' }},
+              "commit_author_name": ${{ toJSON(github.event.inputs.commit_author_name || 'sutr') }},
+              "commit_author_email": ${{ toJSON(github.event.inputs.commit_author_email || 'sutr@local') }},
               "pr_data": ${{ steps.fetch-pr-data.outputs.pr_data }},
               "language": "${{ vars.CODE_AGENT_LANGUAGE || 'ja' }}",
               "agent_image": "${{ vars.CODE_AGENT_IMAGE }}",
