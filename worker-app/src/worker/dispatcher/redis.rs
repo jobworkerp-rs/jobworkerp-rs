@@ -1,4 +1,5 @@
 use crate::worker::dispatcher::redis_run_after::RedisRunAfterJobDispatcher;
+use crate::worker::instance_session::{UseWorkerInstanceSession, WorkerInstanceSessionHandle};
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
 use crate::worker::runner::JobRunner;
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
@@ -20,6 +21,7 @@ use infra::infra::job::redis::RedisJobRepositoryImpl;
 use infra::infra::job::redis::UseRedisJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job::status::UseJobProcessingStatusRepository;
+use infra::infra::job::status::rdb::StatusIndexUpdate;
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
@@ -57,6 +59,7 @@ pub trait RedisJobDispatcher:
     + UseRunnerApp
     + UseJobQueueConfig
     + UseIdGenerator
+    + UseWorkerInstanceSession
     + JobDispatcher
 {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
@@ -299,6 +302,19 @@ pub trait RedisJobDispatcher:
             return Ok(result);
         }
 
+        let start_permit = self
+            .worker_instance_session()
+            .as_ref()
+            .map(|session| {
+                session.acquire_start_permit().ok_or_else(|| {
+                    JobWorkerError::RuntimeError(
+                        "worker instance is isolated; refusing to start a job".to_string(),
+                    )
+                })
+            })
+            .transpose()?;
+        let worker_instance_id = start_permit.as_ref().map(|permit| permit.instance_id());
+
         let resolved = app::app::job::resolve_job_params(&wdat, jdat.overrides.as_ref());
         if resolved.response_type != ResponseType::Direct as i32
             && wdat.queue_type == QueueType::WithBackup as i32
@@ -330,16 +346,17 @@ pub trait RedisJobDispatcher:
                         let broadcast_results = resolved.broadcast_results;
                         tokio::spawn(async move {
                             if let Err(e) = index_repo
-                                .index_status(
-                                    &job_id,
-                                    &JobProcessingStatus::Running,
-                                    &worker_id,
-                                    channel.as_deref(),
+                                .index_status_update(StatusIndexUpdate {
+                                    job_id: &job_id,
+                                    status: &JobProcessingStatus::Running,
+                                    worker_id: &worker_id,
+                                    channel: channel.as_deref(),
                                     priority,
                                     enqueue_time,
                                     is_streamable,
                                     broadcast_results,
-                                )
+                                    worker_instance_id,
+                                })
                                 .await
                             {
                                 tracing::warn!(
@@ -382,16 +399,17 @@ pub trait RedisJobDispatcher:
                 let broadcast_results = resolved.broadcast_results;
                 tokio::spawn(async move {
                     if let Err(e) = index_repo
-                        .index_status(
-                            &job_id,
-                            &JobProcessingStatus::Running,
-                            &worker_id,
-                            channel.as_deref(),
+                        .index_status_update(StatusIndexUpdate {
+                            job_id: &job_id,
+                            status: &JobProcessingStatus::Running,
+                            worker_id: &worker_id,
+                            channel: channel.as_deref(),
                             priority,
                             enqueue_time,
                             is_streamable,
                             broadcast_results,
-                        )
+                            worker_instance_id,
+                        })
                         .await
                     {
                         tracing::warn!(
@@ -410,6 +428,15 @@ pub trait RedisJobDispatcher:
         let jdat_request_streaming = jdat.streaming_type != 0;
 
         // run job (load-only requests were handled and returned above)
+        if let Some(permit) = &start_permit
+            && !permit.confirm_start()
+        {
+            return Err(JobWorkerError::RuntimeError(
+                "worker instance was isolated before runner start".to_string(),
+            )
+            .into());
+        }
+
         let mut r = self
             .run_job(
                 &runner_data,
@@ -507,6 +534,7 @@ pub struct RedisJobDispatcherImpl {
     pub runner_factory: Arc<RunnerFactory>,
     pub runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
+    worker_instance_session: Option<WorkerInstanceSessionHandle>,
 }
 
 impl RedisJobDispatcherImpl {
@@ -522,6 +550,7 @@ impl RedisJobDispatcherImpl {
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
+        worker_instance_session: Option<WorkerInstanceSessionHandle>,
     ) -> Self {
         // use redis only, use run after dispatcher for run after job
         let run_after_dispatcher = // TODO redis only storage
@@ -546,6 +575,7 @@ impl RedisJobDispatcherImpl {
             runner_factory,
             runner_pool_map,
             result_processor,
+            worker_instance_session,
         }
     }
 }
@@ -553,6 +583,12 @@ impl RedisJobDispatcherImpl {
 impl UseRedisPool for RedisJobDispatcherImpl {
     fn redis_pool(&self) -> &RedisPool {
         self.pool
+    }
+}
+
+impl UseWorkerInstanceSession for RedisJobDispatcherImpl {
+    fn worker_instance_session(&self) -> Option<&WorkerInstanceSessionHandle> {
+        self.worker_instance_session.as_ref()
     }
 }
 

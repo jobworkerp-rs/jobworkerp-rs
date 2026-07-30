@@ -92,6 +92,54 @@ pub trait WorkerInstanceRepository: Send + Sync + std::fmt::Debug + 'static {
     }
 }
 
+/// Immutable observation of a Registry entry that may be recovered.
+///
+/// `registry_value` is deliberately kept at the repository boundary so the
+/// subsequent lock operation can prove that it still addresses the same
+/// logical instance observed during enumeration.
+#[derive(Debug, Clone)]
+pub struct ExpiredWorkerInstance {
+    pub instance: WorkerInstance,
+    pub observed_heartbeat_millis: i64,
+    pub registry_value: Vec<u8>,
+}
+
+/// Redis-only operations needed by the recovery coordinator.
+///
+/// They are separate from `WorkerInstanceRepository` because a standalone
+/// registry has no distributed failure domain to recover from.
+#[async_trait]
+pub trait WorkerInstanceRecoveryRepository: Send + Sync + std::fmt::Debug + 'static {
+    async fn find_expired_for_recovery(
+        &self,
+        timeout_millis: i64,
+    ) -> Result<Vec<ExpiredWorkerInstance>>;
+
+    async fn try_lock_expired(
+        &self,
+        expired: &ExpiredWorkerInstance,
+        timeout_millis: i64,
+        recovery_id: &str,
+        lock_ttl_millis: i64,
+    ) -> Result<bool>;
+
+    async fn refresh_recovery_lock(
+        &self,
+        instance_id: i64,
+        recovery_id: &str,
+        lock_ttl_millis: i64,
+    ) -> Result<bool>;
+
+    async fn release_recovery_lock(&self, instance_id: i64, recovery_id: &str) -> Result<bool>;
+
+    async fn delete_expired_owned(
+        &self,
+        expired: &ExpiredWorkerInstance,
+        timeout_millis: i64,
+        recovery_id: &str,
+    ) -> Result<bool>;
+}
+
 /// Aggregate worker instance channels into ChannelAggregation map
 ///
 /// This is a pure function that aggregates channel information from instances.

@@ -191,6 +191,7 @@ CREATE TABLE `job_processing_status` (
     -- Timestamp information
     `pending_time` BIGINT COMMENT 'Timestamp when job entered PENDING state (milliseconds)',
     `start_time` BIGINT COMMENT 'Timestamp when job entered RUNNING state (milliseconds)',
+    `worker_instance_id` BIGINT COMMENT 'Logical worker instance that entered RUNNING',
 
     -- Real-time output capability flags
     `is_streamable` BOOLEAN NOT NULL DEFAULT 0 COMMENT 'Whether job was enqueued via EnqueueForStream',

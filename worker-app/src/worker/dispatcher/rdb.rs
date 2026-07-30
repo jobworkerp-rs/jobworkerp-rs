@@ -1,4 +1,5 @@
 use super::JobDispatcher;
+use crate::worker::instance_session::{UseWorkerInstanceSession, WorkerInstanceSessionHandle};
 use crate::worker::result_processor::ResultProcessorImpl;
 use crate::worker::result_processor::UseResultProcessor;
 use crate::worker::runner::JobRunner;
@@ -31,7 +32,9 @@ use infra::infra::job::queue::rdb::RdbJobQueueRepository;
 use infra::infra::job::rdb::RdbChanJobRepositoryImpl;
 use infra::infra::job::rdb::UseRdbChanJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::job::status::execution::{RdbDispatchStart, RdbJobStatusExecutionRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
+use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::Job;
 use proto::jobworkerp::data::JobResult;
@@ -52,6 +55,7 @@ pub trait RdbJobDispatcher:
     + UseWorkerApp
     + UseRunnerApp
     + UseJobQueueConfig
+    + UseWorkerInstanceSession
 {
     // mergin time to re-execute if it does not disappear from queue (row) after timeout
     const GRAB_MERGIN_MILLISEC: i64 = infra::infra::job::queue::rdb::GRAB_MERGIN_MILLISEC;
@@ -198,21 +202,58 @@ pub trait RdbJobDispatcher:
             )))
         }?;
 
-        // time millis to re-execute if the job does not disappear from queue (row) after a while after timeout(GRAB_MERGIN_MILLISEC)
-        match self
-            .rdb_job_repository()
-            .grab_job(
-                job.id.as_ref().unwrap(), // checked is_some
-                job.data.as_ref().map(|d| d.timeout),
-                job.data
-                    .as_ref()
-                    .and_then(|d| d.grabbed_until_time)
-                    .unwrap_or(0),
-            )
-            .await
-        {
+        let job_id = job.id.as_ref().expect("validated job ID");
+        let job_data = job.data.as_ref().expect("validated job data");
+        let start_permit = self
+            .worker_instance_session()
+            .map(|session| {
+                session.acquire_start_permit().ok_or_else(|| {
+                    JobWorkerError::RuntimeError(
+                        "worker instance is isolated; refusing to start an RDB job".to_string(),
+                    )
+                })
+            })
+            .transpose()?;
+        let grabbed = if let Some(permit) = &start_permit {
+            let resolved = app::app::job::resolve_job_params(&w, job_data.overrides.as_ref());
+            let repository = RdbJobStatusExecutionRepository::new(Arc::new(
+                self.rdb_job_repository().db_pool().clone(),
+            ));
+            repository
+                .grab_and_mark_running(RdbDispatchStart {
+                    job_id,
+                    worker_id: &wid,
+                    worker_instance_id: permit.instance_id(),
+                    channel: w.channel.as_deref(),
+                    priority: job_data.priority,
+                    enqueue_time: job_data.enqueue_time,
+                    is_streamable: job_data.streaming_type != 0,
+                    broadcast_results: resolved.broadcast_results,
+                    timeout: Some(job_data.timeout),
+                    original_grabbed_until_time: job_data.grabbed_until_time.unwrap_or(0),
+                })
+                .await?
+                .is_some()
+        } else {
+            self.rdb_job_repository()
+                .grab_job(
+                    job_id,
+                    Some(job_data.timeout),
+                    job_data.grabbed_until_time.unwrap_or(0),
+                )
+                .await?
+        };
+        match Ok(grabbed) {
             Ok(grabbed) => {
                 if grabbed {
+                    if let Some(permit) = &start_permit
+                        && !permit.confirm_start()
+                    {
+                        return Err(JobWorkerError::RuntimeError(
+                            "worker instance was isolated before RDB runner start".to_string(),
+                        )
+                        .into());
+                    }
                     let res = self.run_job(&runner_data, &wid, &w, job).await;
                     tracing::debug!(
                         "job completed. result: {}",
@@ -258,6 +299,7 @@ pub struct RdbJobDispatcherImpl {
     runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
     feed_sender_store: Arc<infra::infra::feed::chan::ChanFeedSenderStore>,
+    worker_instance_session: Option<WorkerInstanceSessionHandle>,
 }
 
 impl RdbJobDispatcherImpl {
@@ -271,6 +313,7 @@ impl RdbJobDispatcherImpl {
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
         feed_sender_store: Arc<infra::infra::feed::chan::ChanFeedSenderStore>,
+        worker_instance_session: Option<WorkerInstanceSessionHandle>,
     ) -> Self {
         Self {
             id_generator,
@@ -281,6 +324,7 @@ impl RdbJobDispatcherImpl {
             runner_pool_map,
             result_processor,
             feed_sender_store,
+            worker_instance_session,
         }
     }
 }
@@ -288,6 +332,11 @@ impl RdbJobDispatcherImpl {
 impl UseRdbChanJobRepository for RdbJobDispatcherImpl {
     fn rdb_job_repository(&self) -> &RdbChanJobRepositoryImpl {
         &self.rdb_job_repository
+    }
+}
+impl UseWorkerInstanceSession for RdbJobDispatcherImpl {
+    fn worker_instance_session(&self) -> Option<&WorkerInstanceSessionHandle> {
+        self.worker_instance_session.as_ref()
     }
 }
 impl UseJobResultApp for RdbJobDispatcherImpl {

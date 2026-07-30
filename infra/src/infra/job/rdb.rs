@@ -7,6 +7,10 @@ use super::{
     },
     queue::{chan::UseChanQueueBuffer, rdb::RdbJobQueueRepository},
     rows::{JobRow, UseJobqueueAndCodec},
+    status::{
+        execution::{RdbJobStatusExecutionRepository, RecoveryClaim},
+        rdb::RdbJobProcessingStatusIndexRepository,
+    },
 };
 use crate::infra::{JobQueueConfig, UseJobQueueConfig};
 use anyhow::{Context, Result};
@@ -92,6 +96,56 @@ pub trait RdbJobRepository:
         }
         tx.commit().await?;
         Ok(res)
+    }
+
+    /// Persist a retry/periodic job and restore its RDB status index in one
+    /// transaction.  RDB-dispatched jobs prefer this durable publication
+    /// boundary over queue throughput so a committed retry cannot retain an
+    /// old owner/deleted execution row.
+    async fn upsert_with_pending_status_reset(
+        &self,
+        index: Option<&RdbJobProcessingStatusIndexRepository>,
+        id: &JobId,
+        job: &JobData,
+    ) -> Result<bool> {
+        let mut tx = self.db_pool().begin().await?;
+        let result = self.upsert_tx(&mut *tx, id, job).await?;
+        delete_overrides_tx(&mut *tx, id).await?;
+        if let Some(overrides) = job.overrides.as_ref() {
+            create_overrides_tx(&mut *tx, id, overrides).await?;
+        }
+        if let Some(index) = index {
+            index.reset_to_pending_by_job_id_tx(&mut *tx, id).await?;
+        }
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Publish a retry owned by an expired worker only if the recovery claim
+    /// still identifies the same old execution.  The status CAS and job
+    /// upsert share one transaction, so a conflict cannot expose a retry job.
+    async fn upsert_with_recovery_claim_reset(
+        &self,
+        execution_status: &RdbJobStatusExecutionRepository,
+        claim: &RecoveryClaim,
+        id: &JobId,
+        job: &JobData,
+    ) -> Result<bool> {
+        let mut tx = self.db_pool().begin().await?;
+        let result = self.upsert_tx(&mut *tx, id, job).await?;
+        delete_overrides_tx(&mut *tx, id).await?;
+        if let Some(overrides) = job.overrides.as_ref() {
+            create_overrides_tx(&mut *tx, id, overrides).await?;
+        }
+        if execution_status
+            .reset_claim_to_pending_tx(&mut *tx, claim)
+            .await?
+            != crate::infra::job::status::execution::ClaimOutcome::Claimed
+        {
+            anyhow::bail!("recovery claim no longer owns the job status row");
+        }
+        tx.commit().await?;
+        Ok(result)
     }
     // filepath: [rdb.rs](http://_vscodecontentref_/0)
     #[inline]
@@ -490,10 +544,15 @@ mod test {
     use super::RdbJobRepository;
     use crate::infra::JobQueueConfig;
     use crate::infra::job::overrides::find_overrides_tx;
+    use crate::infra::job::status::execution::{
+        RdbJobStatusExecutionRepository, RunningStatusCandidate,
+    };
+    use crate::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
     use jobworkerp_base::codec::UseProstCodec;
+    use jobworkerp_base::job_status_config::JobStatusConfig;
     use proto::TestArgs;
     use proto::jobworkerp::data::Job;
     use proto::jobworkerp::data::JobData;
@@ -955,6 +1014,96 @@ mod test {
             repository.delete(&JobId { value: id }).await?;
         }
         Ok(())
+    }
+
+    #[cfg(not(feature = "mysql"))]
+    #[test]
+    fn retry_upsert_and_status_reset_commit_together() -> Result<()> {
+        use infra_utils::infra::test::{TEST_RUNTIME, setup_test_rdb_from};
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_rdb_from("sql/sqlite").await;
+            sqlx::query("DELETE FROM job_processing_status;").execute(pool).await?;
+            sqlx::query("DELETE FROM job_execution_overrides;").execute(pool).await?;
+            sqlx::query("DELETE FROM job;").execute(pool).await?;
+            let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
+            let id = JobId { value: 77_001 };
+            let data = JobData {
+                worker_id: Some(WorkerId { value: 77 }),
+                args: vec![],
+                uniq_key: None,
+                enqueue_time: 1,
+                grabbed_until_time: None,
+                run_after_time: 0,
+                retried: 1,
+                priority: 0,
+                timeout: 30,
+                streaming_type: 0,
+                using: None,
+                overrides: None,
+            };
+            repository.create(&Job { id: Some(id), data: Some(data.clone()), metadata: HashMap::new() }).await?;
+            sqlx::query(
+                "INSERT INTO job_processing_status
+                 (job_id, status, worker_id, channel, priority, enqueue_time, deleted_at, version, updated_at)
+                 VALUES (?, 2, ?, '', 0, 1, 10, 1, 10)",
+            )
+            .bind(id.value)
+            .bind(77_i64)
+            .execute(pool)
+            .await?;
+            let index = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(JobStatusConfig { rdb_indexing_enabled: true, cleanup_interval_hours: 1, retention_hours: 24 }),
+            );
+            assert!(repository.upsert_with_pending_status_reset(Some(&index), &id, &data).await?);
+            let row: (i64, Option<i64>) = sqlx::query_as(
+                "SELECT status, worker_instance_id FROM job_processing_status WHERE job_id = ?",
+            )
+            .bind(id.value)
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(row, (1, None));
+            Ok(())
+        })
+    }
+
+    #[cfg(not(feature = "mysql"))]
+    #[test]
+    fn recovery_retry_upsert_requires_and_consumes_the_claim() -> Result<()> {
+        use infra_utils::infra::test::{TEST_RUNTIME, setup_test_rdb_from};
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_rdb_from("sql/sqlite").await;
+            sqlx::query("DELETE FROM job_processing_status;").execute(pool).await?;
+            sqlx::query("DELETE FROM job_execution_overrides;").execute(pool).await?;
+            sqlx::query("DELETE FROM job;").execute(pool).await?;
+            let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
+            let id = JobId { value: 77_002 };
+            let data = JobData {
+                worker_id: Some(WorkerId { value: 77 }), args: vec![], uniq_key: None,
+                enqueue_time: 1, grabbed_until_time: None, run_after_time: 0, retried: 1,
+                priority: 0, timeout: 30, streaming_type: 0, using: None, overrides: None,
+            };
+            repository.create(&Job { id: Some(id), data: Some(data.clone()), metadata: HashMap::new() }).await?;
+            sqlx::query(
+                "INSERT INTO job_processing_status
+                 (job_id, status, worker_id, channel, priority, enqueue_time, worker_instance_id, version, updated_at)
+                 VALUES (?, 2, ?, '', 0, 1, 99, 1, 10)",
+            ).bind(id.value).bind(77_i64).execute(pool).await?;
+            let execution = RdbJobStatusExecutionRepository::new(Arc::new(pool.clone()));
+            let candidate = RunningStatusCandidate {
+                job_id: id.value, worker_id: 77, worker_instance_id: 99,
+                version: 1, start_time: None, updated_at: 10,
+            };
+            let claim = execution.claim_running(&candidate).await?.expect("claim running row");
+            assert!(repository
+                .upsert_with_recovery_claim_reset(&execution, &claim, &id, &data)
+                .await?);
+            let row: (i64, Option<i64>) = sqlx::query_as(
+                "SELECT status, worker_instance_id FROM job_processing_status WHERE job_id = ?",
+            ).bind(id.value).fetch_one(pool).await?;
+            assert_eq!(row, (1, None));
+            Ok(())
+        })
     }
 
     #[cfg(not(feature = "mysql"))]

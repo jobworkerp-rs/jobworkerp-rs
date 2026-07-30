@@ -1,15 +1,14 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::util::datetime;
 use infra_utils::infra::redis::RedisPool;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{WorkerInstance, WorkerInstanceData, WorkerInstanceId};
-use redis::AsyncCommands;
+use redis::{AsyncCommands, cmd};
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
-use super::WorkerInstanceRepository;
+use super::{ExpiredWorkerInstance, WorkerInstanceRecoveryRepository, WorkerInstanceRepository};
 
 /// Redis-based implementation for Scalable configuration
 ///
@@ -24,7 +23,12 @@ pub struct RedisWorkerInstanceRepository {
 }
 
 impl RedisWorkerInstanceRepository {
-    const HASH_KEY: &'static str = "WORKER_INSTANCE";
+    const REGISTRY_KEY: &'static str = "WORKER_INSTANCE_REGISTRY:{worker-instance}";
+    const HEARTBEAT_KEY: &'static str = "WORKER_INSTANCE_HEARTBEAT:{worker-instance}";
+
+    fn recovery_lock_key(id: i64) -> String {
+        format!("WORKER_INSTANCE_RECOVERY_LOCK:{{worker-instance}}:{id}")
+    }
 
     pub fn new(redis_pool: &'static RedisPool) -> Self {
         Self { redis_pool }
@@ -42,6 +46,32 @@ impl RedisWorkerInstanceRepository {
         WorkerInstance::decode(&mut Cursor::new(buf))
             .map_err(|e| anyhow::anyhow!("decode error: {}", e))
     }
+
+    async fn heartbeat_value(&self, id: i64) -> Result<Option<i64>> {
+        Ok(self
+            .redis_pool
+            .get()
+            .await?
+            .hget(Self::HEARTBEAT_KEY, id)
+            .await
+            .map_err(JobWorkerError::RedisError)?)
+    }
+
+    async fn redis_now_millis(&self) -> Result<i64> {
+        let mut connection = self.redis_pool.get().await?;
+        let (seconds, microseconds): (i64, i64) = cmd("TIME")
+            .query_async(&mut *connection)
+            .await
+            .map_err(JobWorkerError::RedisError)?;
+        Ok(seconds * 1000 + microseconds / 1000)
+    }
+
+    fn with_heartbeat(mut instance: WorkerInstance, heartbeat: Option<i64>) -> WorkerInstance {
+        if let (Some(data), Some(heartbeat)) = (instance.data.as_mut(), heartbeat) {
+            data.last_heartbeat = heartbeat;
+        }
+        instance
+    }
 }
 
 #[async_trait]
@@ -52,46 +82,63 @@ impl WorkerInstanceRepository for RedisWorkerInstanceRepository {
             data: Some(data.clone()),
         };
 
-        let result: bool = self
-            .redis_pool
-            .get()
-            .await?
-            .hset(Self::HASH_KEY, id.value, Self::serialize(&instance)?)
+        let script = r#"
+            if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 then return 0 end
+            if redis.call('EXISTS', KEYS[3]) == 1 then return -1 end
+            local time = redis.call('TIME')
+            local now = time[1] * 1000 + math.floor(time[2] / 1000)
+            redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+            redis.call('HSET', KEYS[2], ARGV[1], now)
+            return 1
+        "#;
+        let mut connection = self.redis_pool.get().await?;
+        let result: i64 = cmd("EVAL")
+            .arg(script)
+            .arg(3)
+            .arg(Self::REGISTRY_KEY)
+            .arg(Self::HEARTBEAT_KEY)
+            .arg(Self::recovery_lock_key(id.value))
+            .arg(id.value)
+            .arg(Self::serialize(&instance)?)
+            .query_async(&mut *connection)
             .await
             .map_err(JobWorkerError::RedisError)?;
+        if result == -1 {
+            return Err(anyhow::anyhow!(
+                "worker instance is protected by a recovery lock: {}",
+                id.value
+            ));
+        }
 
         tracing::debug!(
             "upsert worker instance to redis: id={}, result={}",
             id.value,
             result
         );
-        Ok(result)
+        Ok(result == 0)
     }
 
     async fn update_heartbeat(&self, id: &WorkerInstanceId) -> Result<bool> {
-        let mut conn = self.redis_pool.get().await?;
-
-        let data: Option<Vec<u8>> = conn
-            .hget(Self::HASH_KEY, id.value)
+        let script = r#"
+            if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 0 then return 0 end
+            if redis.call('HEXISTS', KEYS[2], ARGV[1]) == 0 then return 0 end
+            if redis.call('EXISTS', KEYS[3]) == 1 then return -1 end
+            local time = redis.call('TIME')
+            redis.call('HSET', KEYS[2], ARGV[1], time[1] * 1000 + math.floor(time[2] / 1000))
+            return 1
+        "#;
+        let mut connection = self.redis_pool.get().await?;
+        let result: i64 = cmd("EVAL")
+            .arg(script)
+            .arg(3)
+            .arg(Self::REGISTRY_KEY)
+            .arg(Self::HEARTBEAT_KEY)
+            .arg(Self::recovery_lock_key(id.value))
+            .arg(id.value)
+            .query_async(&mut *connection)
             .await
             .map_err(JobWorkerError::RedisError)?;
-
-        match data {
-            Some(buf) => {
-                let mut instance = Self::deserialize(&buf)?;
-                if let Some(ref mut d) = instance.data {
-                    d.last_heartbeat = datetime::now_millis();
-                }
-
-                let _: bool = conn
-                    .hset(Self::HASH_KEY, id.value, Self::serialize(&instance)?)
-                    .await
-                    .map_err(JobWorkerError::RedisError)?;
-
-                Ok(true)
-            }
-            None => Ok(false),
-        }
+        Ok(result == 1)
     }
 
     async fn delete(&self, id: &WorkerInstanceId) -> Result<bool> {
@@ -99,7 +146,7 @@ impl WorkerInstanceRepository for RedisWorkerInstanceRepository {
             .redis_pool
             .get()
             .await?
-            .hdel(Self::HASH_KEY, id.value)
+            .hdel(Self::REGISTRY_KEY, id.value)
             .await
             .map_err(JobWorkerError::RedisError)?;
 
@@ -108,6 +155,15 @@ impl WorkerInstanceRepository for RedisWorkerInstanceRepository {
             id.value,
             deleted > 0
         );
+        if deleted > 0 {
+            let _: i32 = self
+                .redis_pool
+                .get()
+                .await?
+                .hdel(Self::HEARTBEAT_KEY, id.value)
+                .await
+                .map_err(JobWorkerError::RedisError)?;
+        }
         Ok(deleted > 0)
     }
 
@@ -116,12 +172,15 @@ impl WorkerInstanceRepository for RedisWorkerInstanceRepository {
             .redis_pool
             .get()
             .await?
-            .hget(Self::HASH_KEY, id.value)
+            .hget(Self::REGISTRY_KEY, id.value)
             .await
             .map_err(JobWorkerError::RedisError)?;
 
         match data {
-            Some(buf) => Self::deserialize(&buf).map(Some),
+            Some(buf) => Ok(Some(Self::with_heartbeat(
+                Self::deserialize(&buf)?,
+                self.heartbeat_value(id.value).await?,
+            ))),
             None => Ok(None),
         }
     }
@@ -131,15 +190,22 @@ impl WorkerInstanceRepository for RedisWorkerInstanceRepository {
             .redis_pool
             .get()
             .await?
-            .hgetall(Self::HASH_KEY)
+            .hgetall(Self::REGISTRY_KEY)
             .await
             .map_err(JobWorkerError::RedisError)?;
 
-        all.values().map(|buf| Self::deserialize(buf)).collect()
+        let mut instances = Vec::with_capacity(all.len());
+        for (id, buf) in all {
+            instances.push(Self::with_heartbeat(
+                Self::deserialize(&buf)?,
+                self.heartbeat_value(id).await?,
+            ));
+        }
+        Ok(instances)
     }
 
     async fn find_all_active(&self, timeout_millis: i64) -> Result<Vec<WorkerInstance>> {
-        let now = datetime::now_millis();
+        let now = self.redis_now_millis().await?;
         let cutoff = now - timeout_millis;
 
         let all = self.find_all().await?;
@@ -156,7 +222,7 @@ impl WorkerInstanceRepository for RedisWorkerInstanceRepository {
     }
 
     async fn delete_expired(&self, timeout_millis: i64) -> Result<u32> {
-        let now = datetime::now_millis();
+        let now = self.redis_now_millis().await?;
         let cutoff = now - timeout_millis;
 
         let all = self.find_all().await?;
@@ -180,10 +246,14 @@ impl WorkerInstanceRepository for RedisWorkerInstanceRepository {
 
         for id in expired_ids {
             let result: i32 = conn
-                .hdel(Self::HASH_KEY, id)
+                .hdel(Self::REGISTRY_KEY, id)
                 .await
                 .map_err(JobWorkerError::RedisError)?;
             if result > 0 {
+                let _: i32 = conn
+                    .hdel(Self::HEARTBEAT_KEY, id)
+                    .await
+                    .map_err(JobWorkerError::RedisError)?;
                 deleted += 1;
                 tracing::info!("deleted expired worker instance: id={}", id);
             }
@@ -193,9 +263,173 @@ impl WorkerInstanceRepository for RedisWorkerInstanceRepository {
     }
 }
 
+#[async_trait]
+impl WorkerInstanceRecoveryRepository for RedisWorkerInstanceRepository {
+    async fn find_expired_for_recovery(
+        &self,
+        timeout_millis: i64,
+    ) -> Result<Vec<ExpiredWorkerInstance>> {
+        let cutoff = self.redis_now_millis().await? - timeout_millis;
+        let mut connection = self.redis_pool.get().await?;
+        let registry: BTreeMap<i64, Vec<u8>> = connection
+            .hgetall(Self::REGISTRY_KEY)
+            .await
+            .map_err(JobWorkerError::RedisError)?;
+        let heartbeats: BTreeMap<i64, i64> = connection
+            .hgetall(Self::HEARTBEAT_KEY)
+            .await
+            .map_err(JobWorkerError::RedisError)?;
+
+        registry
+            .into_iter()
+            .filter_map(|(id, registry_value)| {
+                let heartbeat = heartbeats.get(&id).copied()?;
+                (heartbeat < cutoff).then_some((registry_value, heartbeat))
+            })
+            .map(|(registry_value, observed_heartbeat_millis)| {
+                let instance = Self::with_heartbeat(
+                    Self::deserialize(&registry_value)?,
+                    Some(observed_heartbeat_millis),
+                );
+                Ok(ExpiredWorkerInstance {
+                    instance,
+                    observed_heartbeat_millis,
+                    registry_value,
+                })
+            })
+            .collect()
+    }
+
+    async fn try_lock_expired(
+        &self,
+        expired: &ExpiredWorkerInstance,
+        timeout_millis: i64,
+        recovery_id: &str,
+        lock_ttl_millis: i64,
+    ) -> Result<bool> {
+        let instance_id = expired
+            .instance
+            .id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("expired worker instance has no ID"))?
+            .value;
+        let script = r#"
+            local record = redis.call('HGET', KEYS[1], ARGV[1])
+            local heartbeat = redis.call('HGET', KEYS[2], ARGV[1])
+            if not record or not heartbeat then return 0 end
+            if record ~= ARGV[2] or heartbeat ~= ARGV[3] then return 0 end
+            local time = redis.call('TIME')
+            local now = time[1] * 1000 + math.floor(time[2] / 1000)
+            if now - tonumber(heartbeat) < tonumber(ARGV[4]) then return 0 end
+            return redis.call('SET', KEYS[3], ARGV[5], 'PX', ARGV[6], 'NX') and 1 or 0
+        "#;
+        let mut connection = self.redis_pool.get().await?;
+        let locked: i64 = cmd("EVAL")
+            .arg(script)
+            .arg(3)
+            .arg(Self::REGISTRY_KEY)
+            .arg(Self::HEARTBEAT_KEY)
+            .arg(Self::recovery_lock_key(instance_id))
+            .arg(instance_id)
+            .arg(&expired.registry_value)
+            .arg(expired.observed_heartbeat_millis)
+            .arg(timeout_millis)
+            .arg(recovery_id)
+            .arg(lock_ttl_millis)
+            .query_async(&mut *connection)
+            .await
+            .map_err(JobWorkerError::RedisError)?;
+        Ok(locked == 1)
+    }
+
+    async fn refresh_recovery_lock(
+        &self,
+        instance_id: i64,
+        recovery_id: &str,
+        lock_ttl_millis: i64,
+    ) -> Result<bool> {
+        let script = r#"
+            if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+            return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+        "#;
+        let mut connection = self.redis_pool.get().await?;
+        let refreshed: i64 = cmd("EVAL")
+            .arg(script)
+            .arg(1)
+            .arg(Self::recovery_lock_key(instance_id))
+            .arg(recovery_id)
+            .arg(lock_ttl_millis)
+            .query_async(&mut *connection)
+            .await
+            .map_err(JobWorkerError::RedisError)?;
+        Ok(refreshed == 1)
+    }
+
+    async fn release_recovery_lock(&self, instance_id: i64, recovery_id: &str) -> Result<bool> {
+        let script = r#"
+            if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+            return redis.call('DEL', KEYS[1])
+        "#;
+        let mut connection = self.redis_pool.get().await?;
+        let released: i64 = cmd("EVAL")
+            .arg(script)
+            .arg(1)
+            .arg(Self::recovery_lock_key(instance_id))
+            .arg(recovery_id)
+            .query_async(&mut *connection)
+            .await
+            .map_err(JobWorkerError::RedisError)?;
+        Ok(released == 1)
+    }
+
+    async fn delete_expired_owned(
+        &self,
+        expired: &ExpiredWorkerInstance,
+        timeout_millis: i64,
+        recovery_id: &str,
+    ) -> Result<bool> {
+        let instance_id = expired
+            .instance
+            .id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("expired worker instance has no ID"))?
+            .value;
+        let script = r#"
+            if redis.call('GET', KEYS[3]) ~= ARGV[1] then return 0 end
+            local record = redis.call('HGET', KEYS[1], ARGV[2])
+            local heartbeat = redis.call('HGET', KEYS[2], ARGV[2])
+            if not record or not heartbeat or record ~= ARGV[3] or heartbeat ~= ARGV[4] then return 0 end
+            local time = redis.call('TIME')
+            local now = time[1] * 1000 + math.floor(time[2] / 1000)
+            if now - tonumber(heartbeat) < tonumber(ARGV[5]) then return 0 end
+            redis.call('HDEL', KEYS[1], ARGV[2])
+            redis.call('HDEL', KEYS[2], ARGV[2])
+            redis.call('DEL', KEYS[3])
+            return 1
+        "#;
+        let mut connection = self.redis_pool.get().await?;
+        let deleted: i64 = cmd("EVAL")
+            .arg(script)
+            .arg(3)
+            .arg(Self::REGISTRY_KEY)
+            .arg(Self::HEARTBEAT_KEY)
+            .arg(Self::recovery_lock_key(instance_id))
+            .arg(recovery_id)
+            .arg(instance_id)
+            .arg(&expired.registry_value)
+            .arg(expired.observed_heartbeat_millis)
+            .arg(timeout_millis)
+            .query_async(&mut *connection)
+            .await
+            .map_err(JobWorkerError::RedisError)?;
+        Ok(deleted == 1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use command_utils::util::datetime;
     use proto::jobworkerp::data::ChannelConfig;
 
     fn create_test_data(
@@ -217,6 +451,7 @@ mod tests {
                 .collect(),
             registered_at,
             last_heartbeat,
+            rdb_status_index_recovery_version: 0,
         }
     }
 
@@ -254,10 +489,9 @@ mod tests {
                 now,
             );
 
-            // First upsert should return true (new field added)
-            // Redis HSET returns 1 (true) for new field, 0 (false) for update
+            // Repository contract returns false when a registry entry is created.
             let result = repo.upsert(&id, &data).await.unwrap();
-            assert!(result, "First upsert should return true (new field)");
+            assert!(!result, "First upsert should create the registry entry");
 
             // Find should return the instance
             let found = repo.find(&id).await.unwrap();
@@ -266,9 +500,9 @@ mod tests {
             assert_eq!(inst.id.unwrap().value, 100001);
             assert_eq!(inst.data.as_ref().unwrap().ip_address, "192.168.1.100");
 
-            // Second upsert should return false (update existing)
+            // A duplicate registration preserves the initial static record.
             let result2 = repo.upsert(&id, &data).await.unwrap();
-            assert!(!result2, "Second upsert should return false (update)");
+            assert!(result2, "Second upsert should report an existing entry");
 
             cleanup_repo(&repo).await;
         }
@@ -300,6 +534,42 @@ mod tests {
             assert!(new_heartbeat > old_time);
 
             cleanup_repo(&repo).await;
+        }
+
+        #[tokio::test]
+        async fn recovery_lock_requires_the_observed_expired_record() {
+            let repo = setup_repo().await;
+            cleanup_repo(&repo).await;
+            let id = WorkerInstanceId { value: 100003 };
+            let now = datetime::now_millis();
+            repo.upsert(
+                &id,
+                &create_test_data("192.168.1.103", None, vec![("default", 1)], now, now),
+            )
+            .await
+            .unwrap();
+
+            let expired = repo.find_expired_for_recovery(0).await.unwrap();
+            assert_eq!(expired.len(), 1);
+            let observed = &expired[0];
+            assert!(
+                repo.try_lock_expired(observed, 0, "recovery-a", 30_000)
+                    .await
+                    .unwrap()
+            );
+            assert!(!repo.update_heartbeat(&id).await.unwrap());
+            assert!(
+                !repo
+                    .release_recovery_lock(id.value, "different-recovery")
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                repo.delete_expired_owned(observed, 0, "recovery-a")
+                    .await
+                    .unwrap()
+            );
+            assert!(repo.find(&id).await.unwrap().is_none());
         }
 
         #[tokio::test]

@@ -29,6 +29,7 @@ fn create_test_registrar(
             heartbeat_interval_sec: 1,
             timeout_sec: 10,
             cleanup_interval_sec: 30,
+            ..Default::default()
         },
         storage_type,
     )

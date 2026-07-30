@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS `job_processing_status` (
     -- Timestamp information
     `pending_time` BIGINT,  -- Time when job entered PENDING state (milliseconds)
     `start_time` BIGINT,    -- Time when job entered RUNNING state (milliseconds)
+    `worker_instance_id` BIGINT, -- Logical instance that started RUNNING
 
     -- Real-time output availability
     `is_streamable` BOOLEAN NOT NULL DEFAULT 0,      -- Enqueued via EnqueueForStream

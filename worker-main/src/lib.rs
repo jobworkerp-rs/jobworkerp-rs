@@ -16,6 +16,7 @@ use std::sync::Arc;
 use tokio::sync::OnceCell;
 use worker_app::WorkerModules;
 use worker_app::worker::dispatcher::JobDispatcher;
+use worker_app::worker::instance_session::WorkerInstanceSessionHandle;
 
 const MCP_DEFAULT_ADDR: &str = "127.0.0.1:8000";
 
@@ -35,13 +36,23 @@ pub async fn start_worker(
     runner_factory: Arc<RunnerFactory>,
     lock: ShutdownLock,
 ) -> Result<()> {
+    start_worker_with_session(app_module, runner_factory, lock, None).await
+}
+
+pub async fn start_worker_with_session(
+    app_module: Arc<AppModule>,
+    runner_factory: Arc<RunnerFactory>,
+    lock: ShutdownLock,
+    worker_instance_session: Option<WorkerInstanceSessionHandle>,
+) -> Result<()> {
     let config_module = app_module.config_module.clone();
 
-    let wm = WorkerModules::new(
+    let wm = WorkerModules::new_with_session(
         config_module.clone(),
         Arc::new(IdGeneratorWrapper::new()), // use for job_result.id
         app_module.clone(),
         runner_factory.clone(),
+        worker_instance_session,
     );
 
     // create and start job dispatcher
@@ -112,7 +123,12 @@ pub async fn boot_all_in_one() -> Result<()> {
     }
 
     // Worker future
-    let worker_future = start_worker(app_module.clone(), runner_factory, lock.clone());
+    let worker_future = start_worker_with_session(
+        app_module.clone(),
+        runner_factory,
+        lock.clone(),
+        instance_manager.session(),
+    );
 
     // gRPC Front Server future with coordinated shutdown
     let grpc_lock = lock.clone();
@@ -271,7 +287,12 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
     }
 
     // Worker future
-    let worker_future = start_worker(app_module.clone(), runner_factory, lock.clone());
+    let worker_future = start_worker_with_session(
+        app_module.clone(),
+        runner_factory,
+        lock.clone(),
+        instance_manager.session(),
+    );
 
     // gRPC Front Server future
     let grpc_lock = lock.clone();

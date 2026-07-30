@@ -905,26 +905,31 @@ impl JobApp for RdbChanJobAppImpl {
                 self.job_processing_status_repository()
                     .upsert_status(jid, &JobProcessingStatus::Pending)
                     .await?;
-                super::reset_index_to_pending_for_retry(
-                    self.job_status_index_repository.as_ref(),
-                    jid,
-                )
-                .await;
-
                 // use db queue (run after, periodic, queue_type=DB worker)
-                let res_db = if is_run_after_job_data
+                let use_rdb_queue = is_run_after_job_data
                     || w.periodic_interval > 0
                     || w.queue_type == QueueType::DbOnly as i32
-                    || w.queue_type == QueueType::WithBackup as i32
-                {
+                    || w.queue_type == QueueType::WithBackup as i32;
+                let res_db = if use_rdb_queue {
                     // XXX should compare grabbed_until_time and update if not changed or not (now not compared)
                     // TODO store metadata
                     // NOTE: upsert() persists job data including any overrides snapshot from
                     // build_retry_job(). No separate overrides table manipulation needed here.
                     // The RDB overrides row (from initial enqueue) is only used as a display
                     // fallback in _fill_worker_data_to_data_inner().
-                    self.rdb_job_repository().upsert(jid, data).await
+                    self.rdb_job_repository()
+                        .upsert_with_pending_status_reset(
+                            self.job_status_index_repository.as_deref(),
+                            jid,
+                            data,
+                        )
+                        .await
                 } else {
+                    super::reset_index_to_pending_for_retry(
+                        self.job_status_index_repository.as_ref(),
+                        jid,
+                    )
+                    .await;
                     Ok(false)
                 };
                 let res_chan = if !is_run_after_job_data

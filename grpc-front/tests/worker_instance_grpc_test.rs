@@ -24,6 +24,7 @@ fn create_test_instance(id: i64, ip: &str, channels: Vec<(&str, u32)>) -> Worker
                 .collect(),
             registered_at: now,
             last_heartbeat: now,
+            rdb_status_index_recovery_version: 0,
         }),
     }
 }
@@ -118,6 +119,7 @@ fn test_aggregate_instance_channels_no_channels() {
             channels: vec![], // No channels
             registered_at: 0,
             last_heartbeat: 0,
+            rdb_status_index_recovery_version: 0,
         }),
     }];
 

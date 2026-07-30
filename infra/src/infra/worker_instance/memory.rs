@@ -117,6 +117,7 @@ mod tests {
             ],
             registered_at: datetime::now_millis(),
             last_heartbeat: datetime::now_millis(),
+            rdb_status_index_recovery_version: 0,
         }
     }
 
@@ -260,6 +261,7 @@ mod tests {
             }],
             registered_at: datetime::now_millis(),
             last_heartbeat: datetime::now_millis(),
+            rdb_status_index_recovery_version: 0,
         };
         repo.upsert(&id2, &data2).await.unwrap();
 

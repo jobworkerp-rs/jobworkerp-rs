@@ -1,3 +1,5 @@
+pub mod recovery;
+
 use infra::infra::worker_instance::WorkerInstanceRepository;
 use jobworkerp_base::WORKER_INSTANCE_CONFIG;
 use proto::jobworkerp::data::StorageType;
@@ -16,13 +18,19 @@ use tokio::time::{Duration, interval};
 /// when multiple instances try to clean up the same expired workers.
 pub struct InstanceCleanupTask {
     repository: Arc<dyn WorkerInstanceRepository>,
+    recovery_coordinator: Option<Arc<recovery::WorkerInstanceRecoveryCoordinator>>,
     storage_type: StorageType,
 }
 
 impl InstanceCleanupTask {
-    pub fn new(repository: Arc<dyn WorkerInstanceRepository>, storage_type: StorageType) -> Self {
+    pub fn new(
+        repository: Arc<dyn WorkerInstanceRepository>,
+        recovery_coordinator: Option<Arc<recovery::WorkerInstanceRecoveryCoordinator>>,
+        storage_type: StorageType,
+    ) -> Self {
         Self {
             repository,
+            recovery_coordinator,
             storage_type,
         }
     }
@@ -78,6 +86,15 @@ impl InstanceCleanupTask {
         loop {
             tokio::select! {
                 _ = cleanup_interval.tick() => {
+                    // Recovery is deliberately handled by grpc-front's coordinator.
+                    // Do not run the legacy delete-only cleanup when it is enabled:
+                    // it would erase the evidence needed to report lost jobs.
+                    if let Some(coordinator) = &self.recovery_coordinator {
+                        if let Err(error) = coordinator.recover_expired_instances(timeout_millis).await {
+                            tracing::warn!(%error, "failed to recover expired worker instances");
+                        }
+                        continue;
+                    }
                     match self.repository.delete_expired(timeout_millis).await {
                         Ok(deleted) if deleted > 0 => {
                             tracing::info!("Cleaned up {} expired worker instances", deleted);

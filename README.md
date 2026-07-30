@@ -381,6 +381,7 @@ Database schema:
 | **Worker Instance Settings** | WORKER_INSTANCE_ENABLED | Enable/disable worker instance registration | true |
 | | WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC | Heartbeat interval | 30 |
 | | WORKER_INSTANCE_TIMEOUT_SEC | Inactive timeout (Scalable only) | 90 |
+| | WORKER_INSTANCE_RDB_STATUS_RECOVERY_ENABLED | Enable best-effort RDB status-index recovery | false |
 
 ## About Plugins
 

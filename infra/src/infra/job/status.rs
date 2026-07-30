@@ -1,4 +1,5 @@
 pub mod cleanup;
+pub mod execution;
 pub mod memory;
 pub mod rdb;
 pub mod redis;

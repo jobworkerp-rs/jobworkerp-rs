@@ -37,6 +37,7 @@ fn create_enabled_config() -> WorkerInstanceConfig {
         heartbeat_interval_sec: 1, // Short interval for testing
         timeout_sec: 3,
         cleanup_interval_sec: 5,
+        ..Default::default()
     }
 }
 
@@ -133,6 +134,7 @@ async fn test_heartbeat_updates_timestamp() {
         heartbeat_interval_sec: 1, // 1 second for quick testing
         timeout_sec: 10,
         cleanup_interval_sec: 30,
+        ..Default::default()
     };
     let instance_id = 10003;
 
@@ -242,6 +244,7 @@ async fn test_re_register_on_missing() {
         heartbeat_interval_sec: 1,
         timeout_sec: 10,
         cleanup_interval_sec: 30,
+        ..Default::default()
     };
     let instance_id = 10005;
 
@@ -306,6 +309,7 @@ async fn test_disabled_registration() {
         heartbeat_interval_sec: 1,
         timeout_sec: 10,
         cleanup_interval_sec: 30,
+        ..Default::default()
     };
     let instance_id = 10006;
 
@@ -339,6 +343,7 @@ async fn test_heartbeat_loop_shutdown() {
         heartbeat_interval_sec: 10, // Long interval
         timeout_sec: 30,
         cleanup_interval_sec: 60,
+        ..Default::default()
     };
     let instance_id = 10007;
 

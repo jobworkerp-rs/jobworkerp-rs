@@ -5,7 +5,25 @@ use infra_utils::infra::rdb::{RdbPool, UseRdbPool};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_base::job_status_config::JobStatusConfig;
 use proto::jobworkerp::data::{JobId, JobProcessingStatus, WorkerId};
+use sqlx::Executor;
 use std::sync::Arc;
+
+/// Complete payload for a status-index write.
+///
+/// The owner is intentionally optional: the index remains usable for old
+/// non-recovery callers, while recovery-aware workers set it on RUNNING.
+#[derive(Debug, Clone)]
+pub struct StatusIndexUpdate<'a> {
+    pub job_id: &'a JobId,
+    pub status: &'a JobProcessingStatus,
+    pub worker_id: &'a WorkerId,
+    pub channel: Option<&'a str>,
+    pub priority: i32,
+    pub enqueue_time: i64,
+    pub is_streamable: bool,
+    pub broadcast_results: bool,
+    pub worker_instance_id: Option<i64>,
+}
 
 /// RDB-specific JobProcessingStatus index repository.
 ///
@@ -76,6 +94,33 @@ impl RdbJobProcessingStatusIndexRepository {
         is_streamable: bool,
         broadcast_results: bool,
     ) -> Result<()> {
+        self.index_status_update(StatusIndexUpdate {
+            job_id,
+            status,
+            worker_id,
+            channel,
+            priority,
+            enqueue_time,
+            is_streamable,
+            broadcast_results,
+            worker_instance_id: None,
+        })
+        .await
+    }
+
+    /// Index status with an optional logical worker-instance owner.
+    pub async fn index_status_update(&self, update: StatusIndexUpdate<'_>) -> Result<()> {
+        let StatusIndexUpdate {
+            job_id,
+            status,
+            worker_id,
+            channel,
+            priority,
+            enqueue_time,
+            is_streamable,
+            broadcast_results,
+            worker_instance_id,
+        } = update;
         // Do nothing if feature is disabled
         if !self.config.rdb_indexing_enabled {
             return Ok(());
@@ -96,8 +141,8 @@ impl RdbJobProcessingStatusIndexRepository {
                 let rows_affected = sqlx::query(
                     "INSERT INTO job_processing_status
                      (job_id, status, worker_id, channel, priority, enqueue_time,
-                      pending_time, is_streamable, broadcast_results, version, updated_at)
-                     SELECT ?, 1, ?, ?, ?, ?, ?, ?, ?, 1, ? FROM DUAL
+                      pending_time, is_streamable, broadcast_results, worker_instance_id, version, updated_at)
+                     SELECT ?, 1, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ? FROM DUAL
                      WHERE NOT EXISTS (
                        SELECT 1 FROM job_processing_status
                        WHERE job_id = ? AND (deleted_at IS NOT NULL OR status >= 2)
@@ -121,8 +166,8 @@ impl RdbJobProcessingStatusIndexRepository {
                 let rows_affected = sqlx::query(
                     "INSERT INTO job_processing_status
                      (job_id, status, worker_id, channel, priority, enqueue_time,
-                      pending_time, is_streamable, broadcast_results, version, updated_at)
-                     SELECT ?, 1, ?, ?, ?, ?, ?, ?, ?, 1, ?
+                      pending_time, is_streamable, broadcast_results, worker_instance_id, version, updated_at)
+                     SELECT ?, 1, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?
                      WHERE NOT EXISTS (
                        SELECT 1 FROM job_processing_status
                        WHERE job_id = ? AND (deleted_at IS NOT NULL OR status >= 2)
@@ -167,12 +212,13 @@ impl RdbJobProcessingStatusIndexRepository {
                     sqlx::query(
                         "INSERT INTO job_processing_status
                          (job_id, status, worker_id, channel, priority, enqueue_time,
-                          start_time, is_streamable, broadcast_results, version, updated_at)
-                         VALUES (?, 2, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                          start_time, is_streamable, broadcast_results, worker_instance_id, version, updated_at)
+                         VALUES (?, 2, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                          ON DUPLICATE KEY UPDATE
                            start_time = IF(status < 2 AND deleted_at IS NULL, COALESCE(start_time, VALUES(start_time)), start_time),
                            updated_at = IF(status < 2 AND deleted_at IS NULL, VALUES(updated_at), updated_at),
                            version = IF(status < 2 AND deleted_at IS NULL, version + 1, version),
+                           worker_instance_id = IF(status < 2 AND deleted_at IS NULL, VALUES(worker_instance_id), worker_instance_id),
                            status = IF(status < 2 AND deleted_at IS NULL, 2, status)",
                     )
                     .bind(job_id.value)
@@ -183,6 +229,7 @@ impl RdbJobProcessingStatusIndexRepository {
                     .bind(now)
                     .bind(is_streamable)
                     .bind(broadcast_results)
+                    .bind(worker_instance_id)
                     .bind(now)
                     .execute(&mut *conn)
                     .await?;
@@ -194,10 +241,11 @@ impl RdbJobProcessingStatusIndexRepository {
                     // First, try to update existing record with status < 2
                     let rows_affected = sqlx::query(
                         "UPDATE job_processing_status
-                         SET status = 2, start_time = COALESCE(start_time, ?), version = version + 1, updated_at = ?
+                         SET status = 2, start_time = COALESCE(start_time, ?), worker_instance_id = ?, version = version + 1, updated_at = ?
                          WHERE job_id = ? AND status < 2 AND deleted_at IS NULL",
                     )
                     .bind(now)
+                    .bind(worker_instance_id)
                     .bind(now)
                     .bind(job_id.value)
                     .execute(&mut *conn)
@@ -209,8 +257,8 @@ impl RdbJobProcessingStatusIndexRepository {
                         let insert_result = sqlx::query(
                             "INSERT INTO job_processing_status
                              (job_id, status, worker_id, channel, priority, enqueue_time,
-                              start_time, is_streamable, broadcast_results, version, updated_at)
-                             SELECT ?, 2, ?, ?, ?, ?, ?, ?, ?, 1, ?
+                              start_time, is_streamable, broadcast_results, worker_instance_id, version, updated_at)
+                             SELECT ?, 2, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?
                              WHERE NOT EXISTS (
                                SELECT 1 FROM job_processing_status WHERE job_id = ?
                              )",
@@ -223,6 +271,7 @@ impl RdbJobProcessingStatusIndexRepository {
                         .bind(now)
                         .bind(is_streamable)
                         .bind(broadcast_results)
+                        .bind(worker_instance_id)
                         .bind(now)
                         .bind(job_id.value)
                         .execute(&mut *conn)
@@ -355,6 +404,7 @@ impl RdbJobProcessingStatusIndexRepository {
              SET status = 1,
                  deleted_at = NULL,
                  start_time = NULL,
+                 worker_instance_id = NULL,
                  pending_time = ?,
                  version = version + 1,
                  updated_at = ?
@@ -375,6 +425,37 @@ impl RdbJobProcessingStatusIndexRepository {
         }
 
         Ok(())
+    }
+
+    /// Reset a logically-deleted row within the caller's job publication
+    /// transaction.  The retry job must not become durable without this reset:
+    /// otherwise a new RDB dispatcher grab can race an old deleted index row.
+    pub async fn reset_to_pending_by_job_id_tx<'c, E>(
+        &self,
+        executor: E,
+        job_id: &JobId,
+    ) -> Result<bool>
+    where
+        E: Executor<'c, Database = infra_utils::infra::rdb::Rdb>,
+    {
+        if !self.config.rdb_indexing_enabled {
+            return Ok(false);
+        }
+        let now = datetime::now_millis();
+        let rows_affected = sqlx::query(
+            "UPDATE job_processing_status
+             SET status = 1, deleted_at = NULL, start_time = NULL,
+                 worker_instance_id = NULL, pending_time = ?,
+                 version = version + 1, updated_at = ?
+             WHERE job_id = ? AND deleted_at IS NOT NULL",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(job_id.value)
+        .execute(executor)
+        .await?
+        .rows_affected();
+        Ok(rows_affected == 1)
     }
 
     /// Mark job as logically deleted in RDB index (set deleted_at timestamp)
@@ -840,6 +921,7 @@ mod tests {
                 enqueue_time BIGINT NOT NULL,
                 pending_time BIGINT,
                 start_time BIGINT,
+                worker_instance_id BIGINT,
                 is_streamable BOOLEAN NOT NULL DEFAULT 0,
                 broadcast_results BOOLEAN NOT NULL DEFAULT 0,
                 version BIGINT NOT NULL,
@@ -2238,6 +2320,45 @@ mod tests {
             assert_eq!(count, 0);
             assert_eq!(cutoff, 0);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn running_status_records_the_optional_worker_instance_owner() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(JobStatusConfig {
+                    rdb_indexing_enabled: true,
+                    cleanup_interval_hours: 1,
+                    retention_hours: 24,
+                }),
+            );
+            let job_id = JobId { value: 91_001 };
+            let worker_id = WorkerId { value: 91 };
+
+            repo.index_status_update(StatusIndexUpdate {
+                job_id: &job_id,
+                status: &JobProcessingStatus::Running,
+                worker_id: &worker_id,
+                channel: None,
+                priority: 0,
+                enqueue_time: 1,
+                is_streamable: false,
+                broadcast_results: false,
+                worker_instance_id: Some(123_456),
+            })
+            .await?;
+
+            let owner: Option<i64> = sqlx::query_scalar(
+                "SELECT worker_instance_id FROM job_processing_status WHERE job_id = ?",
+            )
+            .bind(job_id.value)
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(owner, Some(123_456));
             Ok(())
         })
     }
