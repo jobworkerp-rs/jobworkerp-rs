@@ -25,6 +25,13 @@ pub struct StatusIndexUpdate<'a> {
     pub worker_instance_id: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetRunningOutcome {
+    Reset,
+    Missing,
+    OwnedByOther,
+}
+
 /// RDB-specific JobProcessingStatus index repository.
 ///
 /// # Architectural note (different from other repositories)
@@ -425,6 +432,48 @@ impl RdbJobProcessingStatusIndexRepository {
         }
 
         Ok(())
+    }
+
+    /// Return a locally-owned active RUNNING row to PENDING before requeuing a
+    /// job whose runner did not start. The owner condition prevents a stale
+    /// worker from resetting a newer execution.
+    pub async fn reset_running_to_pending_by_owner(
+        &self,
+        job_id: &JobId,
+        worker_instance_id: i64,
+    ) -> Result<ResetRunningOutcome> {
+        if !self.config.rdb_indexing_enabled {
+            return Ok(ResetRunningOutcome::Reset);
+        }
+        let now = datetime::now_millis();
+        let rows_affected = sqlx::query(
+            "UPDATE job_processing_status
+             SET status = 1, worker_instance_id = NULL, start_time = NULL,
+                 pending_time = ?, updated_at = ?, version = version + 1
+             WHERE job_id = ? AND worker_instance_id = ?
+               AND status = 2 AND deleted_at IS NULL",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(job_id.value)
+        .bind(worker_instance_id)
+        .execute(&*self.rdb_pool)
+        .await?
+        .rows_affected();
+        if rows_affected == 1 {
+            return Ok(ResetRunningOutcome::Reset);
+        }
+        let owner = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT worker_instance_id FROM job_processing_status
+             WHERE job_id = ? AND status = 2 AND deleted_at IS NULL",
+        )
+        .bind(job_id.value)
+        .fetch_optional(&*self.rdb_pool)
+        .await?;
+        Ok(match owner.flatten() {
+            Some(owner) if owner != worker_instance_id => ResetRunningOutcome::OwnedByOther,
+            _ => ResetRunningOutcome::Missing,
+        })
     }
 
     /// Reset a logically-deleted row within the caller's job publication
@@ -1984,6 +2033,80 @@ mod tests {
             assert!(start_time.is_some(), "start_time must not be cleared");
             assert_eq!(version, pre_version, "version must not bump on RUNNING");
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_reset_running_to_pending_by_owner() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(JobStatusConfig {
+                    rdb_indexing_enabled: true,
+                    cleanup_interval_hours: 1,
+                    retention_hours: 24,
+                }),
+            );
+            let job_id = JobId { value: 601 };
+            let worker_id = WorkerId { value: 1 };
+            repo.index_status(
+                &job_id,
+                &JobProcessingStatus::Pending,
+                &worker_id,
+                Some("test_channel"),
+                1,
+                601,
+                false,
+                false,
+            )
+            .await?;
+            repo.index_status_update(StatusIndexUpdate {
+                job_id: &job_id,
+                status: &JobProcessingStatus::Running,
+                worker_id: &worker_id,
+                channel: Some("test_channel"),
+                priority: 1,
+                enqueue_time: 601,
+                is_streamable: false,
+                broadcast_results: false,
+                worker_instance_id: Some(7),
+            })
+            .await?;
+
+            assert_eq!(
+                repo.reset_running_to_pending_by_owner(&job_id, 7).await?,
+                ResetRunningOutcome::Reset
+            );
+            let row: (i32, Option<i64>, Option<i64>) = sqlx::query_as(
+                "SELECT status, worker_instance_id, start_time
+                 FROM job_processing_status WHERE job_id = ?",
+            )
+            .bind(job_id.value)
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(row, (JobProcessingStatus::Pending as i32, None, None));
+            assert_eq!(
+                repo.reset_running_to_pending_by_owner(&job_id, 7).await?,
+                ResetRunningOutcome::Missing
+            );
+            repo.index_status_update(StatusIndexUpdate {
+                job_id: &job_id,
+                status: &JobProcessingStatus::Running,
+                worker_id: &worker_id,
+                channel: Some("test_channel"),
+                priority: 1,
+                enqueue_time: 601,
+                is_streamable: false,
+                broadcast_results: false,
+                worker_instance_id: Some(8),
+            })
+            .await?;
+            assert_eq!(
+                repo.reset_running_to_pending_by_owner(&job_id, 7).await?,
+                ResetRunningOutcome::OwnedByOther
+            );
             Ok(())
         })
     }

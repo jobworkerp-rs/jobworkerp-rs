@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
     let repository = app_module.repositories.worker_instance_repository();
     let recovery_enabled = WORKER_INSTANCE_CONFIG.rdb_status_recovery.enabled
         && WORKER_INSTANCE_CONFIG
-            .validate_rdb_status_recovery(JOB_STATUS_CONFIG.retention_hours)
+            .validate_rdb_status_recovery()
             .is_ok()
         && storage_type == proto::jobworkerp::data::StorageType::Scalable
         && JOB_STATUS_CONFIG.rdb_indexing_enabled;

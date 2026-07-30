@@ -119,8 +119,7 @@ impl WorkerInstanceManager {
     ) -> Result<Self> {
         let config = WORKER_INSTANCE_CONFIG.clone();
 
-        let recovery_config_valid =
-            config.validate_rdb_status_recovery(JOB_STATUS_CONFIG.retention_hours);
+        let recovery_config_valid = config.validate_rdb_status_recovery();
         if let Err(error) = &recovery_config_valid {
             tracing::error!(
                 %error,

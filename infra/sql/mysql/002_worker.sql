@@ -212,7 +212,9 @@ CREATE TABLE `job_processing_status` (
     -- Start time sorting (WHERE deleted_at IS NULL ORDER BY start_time DESC)
     KEY `idx_jps_start_time_active` (`start_time` DESC, `deleted_at`),
     -- Composite index for status + start_time queries
-    KEY `idx_jps_status_start` (`status`, `start_time` DESC, `deleted_at`)
+    KEY `idx_jps_status_start` (`status`, `start_time` DESC, `deleted_at`),
+    -- Recovery pagination (one instance, active RUNNING rows, job_id cursor)
+    KEY `idx_jps_recovery_instance_running` (`worker_instance_id`, `status`, `deleted_at`, `job_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Update table statistics

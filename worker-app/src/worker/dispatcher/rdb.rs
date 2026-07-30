@@ -214,12 +214,12 @@ pub trait RdbJobDispatcher:
                 })
             })
             .transpose()?;
-        let grabbed = if let Some(permit) = &start_permit {
+        let (grabbed, rdb_execution) = if let Some(permit) = &start_permit {
             let resolved = app::app::job::resolve_job_params(&w, job_data.overrides.as_ref());
             let repository = RdbJobStatusExecutionRepository::new(Arc::new(
                 self.rdb_job_repository().db_pool().clone(),
             ));
-            repository
+            let execution = repository
                 .grab_and_mark_running(RdbDispatchStart {
                     job_id,
                     worker_id: &wid,
@@ -232,16 +232,18 @@ pub trait RdbJobDispatcher:
                     timeout: Some(job_data.timeout),
                     original_grabbed_until_time: job_data.grabbed_until_time.unwrap_or(0),
                 })
-                .await?
-                .is_some()
+                .await?;
+            (execution.is_some(), execution)
         } else {
-            self.rdb_job_repository()
+            let grabbed = self
+                .rdb_job_repository()
                 .grab_job(
                     job_id,
                     Some(job_data.timeout),
                     job_data.grabbed_until_time.unwrap_or(0),
                 )
-                .await?
+                .await?;
+            (grabbed, None)
         };
         match Ok(grabbed) {
             Ok(grabbed) => {
@@ -249,8 +251,23 @@ pub trait RdbJobDispatcher:
                     if let Some(permit) = &start_permit
                         && !permit.confirm_start()
                     {
+                        let execution = rdb_execution
+                            .as_ref()
+                            .expect("RDB execution exists when a start permit grabbed the job");
+                        let repository = RdbJobStatusExecutionRepository::new(Arc::new(
+                            self.rdb_job_repository().db_pool().clone(),
+                        ));
+                        if repository.release_unstarted_dispatch(execution).await?
+                            != infra::infra::job::status::execution::ClaimOutcome::Claimed
+                        {
+                            anyhow::bail!(
+                                "lost RDB execution before releasing isolated job: {}",
+                                job_id.value
+                            );
+                        }
                         return Err(JobWorkerError::RuntimeError(
-                            "worker instance was isolated before RDB runner start".to_string(),
+                            "worker instance was isolated before RDB runner start; RDB job was requeued"
+                                .to_string(),
                         )
                         .into());
                     }

@@ -381,7 +381,9 @@ Database schema:
 | **Worker Instance Settings** | WORKER_INSTANCE_ENABLED | Enable/disable worker instance registration | true |
 | | WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC | Heartbeat interval | 30 |
 | | WORKER_INSTANCE_TIMEOUT_SEC | Inactive timeout (Scalable only) | 90 |
-| | WORKER_INSTANCE_RDB_STATUS_RECOVERY_ENABLED | Enable best-effort RDB status-index recovery | false |
+| | WORKER_INSTANCE_RDB_STATUS_RECOVERY_ENABLED | Enable best-effort RDB status-index recovery; enable on grpc-front and every worker instance | false |
+| | WORKER_INSTANCE_RDB_STATUS_RECOVERY_EXECUTION_COMPLETION_RESERVE_SEC | Grace period after a timed runner expires before recovery | 5 |
+| | WORKER_INSTANCE_RDB_STATUS_RECOVERY_UNBOUNDED_EXECUTION_TIMEOUT_SEC | Maximum additional wait after instance expiry before recovering an unlimited runner | 86400 |
 
 ## About Plugins
 

@@ -1,3 +1,4 @@
+use crate::infra::job::rows::DEFAULT_CHANNEL_NAME;
 use anyhow::Result;
 use command_utils::util::datetime;
 use infra_utils::infra::rdb::RdbPool;
@@ -52,6 +53,7 @@ pub struct RdbDispatchExecution {
     pub job_id: JobId,
     pub worker_instance_id: i64,
     pub status_version: i64,
+    pub grabbed_until_time: i64,
 }
 
 /// Repository for recovery-only CAS operations. It intentionally does not
@@ -120,7 +122,7 @@ impl RdbJobStatusExecutionRepository {
             return Ok(None);
         }
 
-        let channel = start.channel.unwrap_or("");
+        let channel = status_index_channel(start.channel);
         #[cfg(feature = "mysql")]
         sqlx::query(
             "INSERT INTO job_processing_status
@@ -184,7 +186,52 @@ impl RdbJobStatusExecutionRepository {
             job_id: *start.job_id,
             worker_instance_id: start.worker_instance_id,
             status_version,
+            grabbed_until_time: grabbed_until,
         }))
+    }
+
+    /// Release an RDB-dispatched execution that was durably marked RUNNING but
+    /// never handed to a runner. Both updates share one transaction so the job
+    /// cannot become fetchable while its old execution remains RUNNING.
+    pub async fn release_unstarted_dispatch(
+        &self,
+        execution: &RdbDispatchExecution,
+    ) -> Result<ClaimOutcome> {
+        let now = datetime::now_millis();
+        let mut transaction = self.pool.begin().await?;
+        let status_updated = sqlx::query(
+            "UPDATE job_processing_status
+             SET status = 1, worker_instance_id = NULL, start_time = NULL,
+                 pending_time = ?, updated_at = ?, version = version + 1
+             WHERE job_id = ? AND worker_instance_id = ? AND version = ?
+               AND status = 2 AND deleted_at IS NULL",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(execution.job_id.value)
+        .bind(execution.worker_instance_id)
+        .bind(execution.status_version)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if status_updated != 1 {
+            transaction.rollback().await?;
+            return Ok(ClaimOutcome::Conflict);
+        }
+        let lease_released = sqlx::query(
+            "UPDATE job SET grabbed_until_time = 0 WHERE id = ? AND grabbed_until_time = ?",
+        )
+        .bind(execution.job_id.value)
+        .bind(execution.grabbed_until_time)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if lease_released != 1 {
+            transaction.rollback().await?;
+            return Ok(ClaimOutcome::Conflict);
+        }
+        transaction.commit().await?;
+        Ok(ClaimOutcome::Claimed)
     }
 
     pub async fn claim_running(
@@ -244,6 +291,33 @@ impl RdbJobStatusExecutionRepository {
         Ok(outcome)
     }
 
+    /// Compensate a failed Redis retry publication after the recovery claim
+    /// has been reset to PENDING. The version condition prevents an older
+    /// recovery attempt from overwriting a retry that became visible.
+    pub async fn restore_pending_claim_to_running(
+        &self,
+        claim: &RecoveryClaim,
+    ) -> Result<ClaimOutcome> {
+        let result = sqlx::query(
+            "UPDATE job_processing_status
+             SET status = 2, worker_instance_id = ?, start_time = ?, updated_at = ?, version = version + 1
+             WHERE job_id = ? AND status = 1 AND worker_instance_id IS NULL
+               AND version = ? AND deleted_at IS NULL",
+        )
+        .bind(claim.candidate.worker_instance_id)
+        .bind(claim.candidate.start_time)
+        .bind(datetime::now_millis())
+        .bind(claim.candidate.job_id)
+        .bind(claim.claimed_version + 1)
+        .execute(&*self.pool)
+        .await?;
+        Ok(if result.rows_affected() == 1 {
+            ClaimOutcome::Claimed
+        } else {
+            ClaimOutcome::Conflict
+        })
+    }
+
     pub async fn reset_claim_to_pending_tx<'c, E>(
         &self,
         executor: E,
@@ -287,10 +361,20 @@ impl RdbJobStatusExecutionRepository {
     }
 }
 
+fn status_index_channel(channel: Option<&str>) -> &str {
+    channel.unwrap_or(DEFAULT_CHANNEL_NAME)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use infra_utils::infra::test::{TEST_RUNTIME, setup_test_rdb_from};
+
+    #[test]
+    fn dispatch_status_channel_uses_the_shared_default_normalization() {
+        assert_eq!(status_index_channel(None), "__default_job_channel__");
+        assert_eq!(status_index_channel(Some("priority")), "priority");
+    }
 
     #[test]
     fn claim_and_reset_are_guarded_by_the_observed_owner_and_version() {
@@ -322,13 +406,20 @@ mod tests {
                 repository.reset_claim_to_pending(&claim).await.unwrap(),
                 ClaimOutcome::Claimed
             );
+            assert_eq!(
+                repository
+                    .restore_pending_claim_to_running(&claim)
+                    .await
+                    .unwrap(),
+                ClaimOutcome::Claimed
+            );
             let row: (i64, Option<i64>) = sqlx::query_as(
                 "SELECT status, worker_instance_id FROM job_processing_status WHERE job_id = 1",
             )
             .fetch_one(pool)
             .await
             .unwrap();
-            assert_eq!(row, (1, None));
+            assert_eq!(row, (2, Some(3)));
         });
     }
 
@@ -365,8 +456,9 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(execution.worker_instance_id, 13);
-            let row: (i64, i64, i64) = sqlx::query_as(
-                "SELECT status, worker_instance_id, version FROM job_processing_status WHERE job_id = 11",
+            let row: (i64, i64, i64, String) = sqlx::query_as(
+                "SELECT status, worker_instance_id, version, channel
+                 FROM job_processing_status WHERE job_id = 11",
             )
             .fetch_one(pool)
             .await
@@ -374,22 +466,59 @@ mod tests {
             assert_eq!(row.0, 2);
             assert_eq!(row.1, 13);
             assert!(row.2 >= 1);
-            assert!(repository
-                .grab_and_mark_running(RdbDispatchStart {
-                    job_id: &job_id,
-                    worker_id: &worker_id,
-                    worker_instance_id: 14,
-                    channel: None,
-                    priority: 3,
-                    enqueue_time: 1,
-                    is_streamable: false,
-                    broadcast_results: false,
-                    timeout: Some(30),
-                    original_grabbed_until_time: 0,
-                })
-                .await
-                .unwrap()
-                .is_none());
+            assert_eq!(row.3, DEFAULT_CHANNEL_NAME);
+            assert!(
+                repository
+                    .grab_and_mark_running(RdbDispatchStart {
+                        job_id: &job_id,
+                        worker_id: &worker_id,
+                        worker_instance_id: 14,
+                        channel: None,
+                        priority: 3,
+                        enqueue_time: 1,
+                        is_streamable: false,
+                        broadcast_results: false,
+                        timeout: Some(30),
+                        original_grabbed_until_time: 0,
+                    })
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                repository
+                    .release_unstarted_dispatch(&execution)
+                    .await
+                    .unwrap(),
+                ClaimOutcome::Claimed
+            );
+            let released: (i64, Option<i64>, i64) = sqlx::query_as(
+                "SELECT status, worker_instance_id, grabbed_until_time
+                 FROM job_processing_status JOIN job ON job.id = job_processing_status.job_id
+                 WHERE job_processing_status.job_id = 11",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(released, (1, None, 0));
+            assert!(
+                repository
+                    .grab_and_mark_running(RdbDispatchStart {
+                        job_id: &job_id,
+                        worker_id: &worker_id,
+                        worker_instance_id: 14,
+                        channel: None,
+                        priority: 3,
+                        enqueue_time: 1,
+                        is_streamable: false,
+                        broadcast_results: false,
+                        timeout: Some(30),
+                        original_grabbed_until_time: 0,
+                    })
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
         });
     }
 }

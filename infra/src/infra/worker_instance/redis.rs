@@ -23,6 +23,8 @@ pub struct RedisWorkerInstanceRepository {
 }
 
 impl RedisWorkerInstanceRepository {
+    // Registry keys are intentionally not backward-compatible with the legacy
+    // WORKER_INSTANCE hash because worker instances are deployed atomically.
     const REGISTRY_KEY: &'static str = "WORKER_INSTANCE_REGISTRY:{worker-instance}";
     const HEARTBEAT_KEY: &'static str = "WORKER_INSTANCE_HEARTBEAT:{worker-instance}";
 
@@ -300,6 +302,44 @@ impl WorkerInstanceRecoveryRepository for RedisWorkerInstanceRepository {
             .collect()
     }
 
+    async fn delete_expired_observed(
+        &self,
+        expired: &ExpiredWorkerInstance,
+        timeout_millis: i64,
+    ) -> Result<bool> {
+        let instance_id = expired
+            .instance
+            .id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("expired worker instance has no ID"))?
+            .value;
+        let script = r#"
+            local record = redis.call('HGET', KEYS[1], ARGV[1])
+            local heartbeat = redis.call('HGET', KEYS[2], ARGV[1])
+            if not record or not heartbeat or record ~= ARGV[2] or heartbeat ~= ARGV[3] then return 0 end
+            local time = redis.call('TIME')
+            local now = time[1] * 1000 + math.floor(time[2] / 1000)
+            if now - tonumber(heartbeat) < tonumber(ARGV[4]) then return 0 end
+            redis.call('HDEL', KEYS[1], ARGV[1])
+            redis.call('HDEL', KEYS[2], ARGV[1])
+            return 1
+        "#;
+        let mut connection = self.redis_pool.get().await?;
+        let deleted: i64 = cmd("EVAL")
+            .arg(script)
+            .arg(2)
+            .arg(Self::REGISTRY_KEY)
+            .arg(Self::HEARTBEAT_KEY)
+            .arg(instance_id)
+            .arg(&expired.registry_value)
+            .arg(expired.observed_heartbeat_millis)
+            .arg(timeout_millis)
+            .query_async(&mut *connection)
+            .await
+            .map_err(JobWorkerError::RedisError)?;
+        Ok(deleted == 1)
+    }
+
     async fn try_lock_expired(
         &self,
         expired: &ExpiredWorkerInstance,
@@ -474,6 +514,22 @@ mod tests {
             }
         }
 
+        async fn set_heartbeat(
+            repo: &RedisWorkerInstanceRepository,
+            id: &WorkerInstanceId,
+            heartbeat_millis: i64,
+        ) {
+            let mut connection = repo.redis_pool.get().await.unwrap();
+            let _: usize = connection
+                .hset(
+                    RedisWorkerInstanceRepository::HEARTBEAT_KEY,
+                    id.value,
+                    heartbeat_millis,
+                )
+                .await
+                .unwrap();
+        }
+
         #[tokio::test]
         async fn test_upsert_and_find() {
             let repo = setup_repo().await;
@@ -548,12 +604,17 @@ mod tests {
             )
             .await
             .unwrap();
+            let timeout_millis = 5_000;
+            set_heartbeat(&repo, &id, now - 10_000).await;
 
-            let expired = repo.find_expired_for_recovery(0).await.unwrap();
+            let expired = repo
+                .find_expired_for_recovery(timeout_millis)
+                .await
+                .unwrap();
             assert_eq!(expired.len(), 1);
             let observed = &expired[0];
             assert!(
-                repo.try_lock_expired(observed, 0, "recovery-a", 30_000)
+                repo.try_lock_expired(observed, timeout_millis, "recovery-a", 30_000)
                     .await
                     .unwrap()
             );
@@ -565,7 +626,35 @@ mod tests {
                     .unwrap()
             );
             assert!(
-                repo.delete_expired_owned(observed, 0, "recovery-a")
+                repo.delete_expired_owned(observed, timeout_millis, "recovery-a")
+                    .await
+                    .unwrap()
+            );
+            assert!(repo.find(&id).await.unwrap().is_none());
+        }
+
+        #[tokio::test]
+        async fn nonparticipating_expired_instance_is_deleted_without_a_recovery_lock() {
+            let repo = setup_repo().await;
+            cleanup_repo(&repo).await;
+            let id = WorkerInstanceId { value: 100004 };
+            let now = datetime::now_millis();
+            repo.upsert(
+                &id,
+                &create_test_data("192.168.1.104", None, vec![("default", 1)], now, now),
+            )
+            .await
+            .unwrap();
+            let timeout_millis = 5_000;
+            set_heartbeat(&repo, &id, now - 10_000).await;
+
+            let expired = repo
+                .find_expired_for_recovery(timeout_millis)
+                .await
+                .unwrap();
+            assert_eq!(expired.len(), 1);
+            assert!(
+                repo.delete_expired_observed(&expired[0], timeout_millis)
                     .await
                     .unwrap()
             );
@@ -654,6 +743,7 @@ mod tests {
                 now - 10000, // 10 seconds ago
             );
             repo.upsert(&expired_id, &expired_data).await.unwrap();
+            set_heartbeat(&repo, &expired_id, now - 10_000).await;
 
             // Find active only
             let active = repo.find_all_active(timeout_millis).await.unwrap();
@@ -687,6 +777,7 @@ mod tests {
                     now - 10000,
                 );
                 repo.upsert(&id, &data).await.unwrap();
+                set_heartbeat(&repo, &id, now - 10_000).await;
             }
 
             // Before delete

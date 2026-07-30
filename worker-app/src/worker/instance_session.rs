@@ -75,6 +75,20 @@ impl WorkerInstanceSessionHandle {
         }
     }
 
+    /// Whether this worker may continue consuming queued jobs.
+    ///
+    /// A dispatcher checks this after returning an unstarted job so an
+    /// isolated process cannot immediately dequeue the same job again.
+    pub fn accepts_new_starts(&self) -> bool {
+        let state = self
+            .0
+            .state
+            .lock()
+            .expect("worker instance session mutex poisoned");
+        state.state == SessionState::Active
+            && state.last_heartbeat_success.elapsed() < self.0.instance_timeout
+    }
+
     pub fn acquire_start_permit(&self) -> Option<ExecutionStartPermit> {
         let mut state = self
             .0

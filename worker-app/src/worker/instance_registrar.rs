@@ -122,14 +122,19 @@ impl WorkerInstanceRegistrar {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    match tokio::time::timeout(
-                        Duration::from_secs(
-                            self.config
-                                .rdb_status_recovery
-                                .heartbeat_request_timeout_sec,
-                        ),
-                        self.repository.update_heartbeat(&self.instance_id),
-                    ).await {
+                    let heartbeat_result = if should_timeout_heartbeat_request(self.session.is_some()) {
+                        tokio::time::timeout(
+                            Duration::from_secs(
+                                self.config
+                                    .rdb_status_recovery
+                                    .heartbeat_request_timeout_sec,
+                            ),
+                            self.repository.update_heartbeat(&self.instance_id),
+                        ).await
+                    } else {
+                        Ok(self.repository.update_heartbeat(&self.instance_id).await)
+                    };
+                    match heartbeat_result {
                         Ok(Ok(true)) => {
                             consecutive_failures = 0;
                             first_failure_at = None;
@@ -163,12 +168,17 @@ impl WorkerInstanceRegistrar {
                                             .rdb_status_recovery
                                             .heartbeat_failure_timeout_sec,
                                     );
-                            if should_isolate {
-                                if let Some(session) = &self.session {
-                                    session.begin_isolation();
-                                }
+                            if should_stop_heartbeat_loop(should_isolate, self.session.is_some())
+                                && let Some(session) = &self.session
+                            {
+                                session.begin_isolation();
                                 tracing::error!("Heartbeat update failed until isolation: {e}");
                                 break;
+                            }
+                            if should_isolate {
+                                tracing::error!(
+                                    "Heartbeat update failed beyond recovery threshold; continuing without recovery session: {e}"
+                                );
                             }
                             tracing::warn!("Heartbeat update failed ({consecutive_failures}): {e}");
                         }
@@ -183,12 +193,17 @@ impl WorkerInstanceRegistrar {
                                             .rdb_status_recovery
                                             .heartbeat_failure_timeout_sec,
                                     );
-                            if should_isolate {
-                                if let Some(session) = &self.session {
-                                    session.begin_isolation();
-                                }
+                            if should_stop_heartbeat_loop(should_isolate, self.session.is_some())
+                                && let Some(session) = &self.session
+                            {
+                                session.begin_isolation();
                                 tracing::error!("Heartbeat request timed out until isolation");
                                 break;
+                            }
+                            if should_isolate {
+                                tracing::error!(
+                                    "Heartbeat request timed out beyond recovery threshold; continuing without recovery session"
+                                );
                             }
                             tracing::warn!("Heartbeat request timed out ({consecutive_failures})");
                         }
@@ -244,6 +259,17 @@ impl WorkerInstanceRegistrar {
     }
 }
 
+fn should_stop_heartbeat_loop(
+    recovery_threshold_reached: bool,
+    has_recovery_session: bool,
+) -> bool {
+    recovery_threshold_reached && has_recovery_session
+}
+
+fn should_timeout_heartbeat_request(has_recovery_session: bool) -> bool {
+    has_recovery_session
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +286,19 @@ mod tests {
             WorkerInstanceConfig::default(),
             StorageType::Standalone,
         )
+    }
+
+    #[test]
+    fn only_recovery_enabled_workers_stop_after_heartbeat_failures() {
+        assert!(should_stop_heartbeat_loop(true, true));
+        assert!(!should_stop_heartbeat_loop(true, false));
+        assert!(!should_stop_heartbeat_loop(false, true));
+    }
+
+    #[test]
+    fn only_recovery_sessions_apply_a_heartbeat_request_timeout() {
+        assert!(should_timeout_heartbeat_request(true));
+        assert!(!should_timeout_heartbeat_request(false));
     }
 
     #[tokio::test]

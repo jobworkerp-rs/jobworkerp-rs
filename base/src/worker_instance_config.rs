@@ -41,9 +41,10 @@ pub struct WorkerInstanceConfig {
 pub struct RdbStatusRecoveryConfig {
     pub enabled: bool,
     pub lock_ttl_sec: u64,
-    pub job_timeout_sec: u64,
-    pub finalize_reserve_sec: u64,
-    pub unresolved_retention_sec: u64,
+    /// Extra time after a timed runner expires before recovery may retry it.
+    pub execution_completion_reserve_sec: u64,
+    /// Maximum time to wait after an instance expires before recovering an unbounded runner.
+    pub unbounded_execution_recovery_timeout_sec: u64,
     pub start_permit_timeout_sec: u64,
     pub heartbeat_request_timeout_sec: u64,
     pub heartbeat_failure_threshold: u32,
@@ -56,9 +57,8 @@ impl Default for RdbStatusRecoveryConfig {
         Self {
             enabled: false,
             lock_ttl_sec: 300,
-            job_timeout_sec: 30,
-            finalize_reserve_sec: 5,
-            unresolved_retention_sec: 86_400,
+            execution_completion_reserve_sec: 5,
+            unbounded_execution_recovery_timeout_sec: 86_400,
             start_permit_timeout_sec: 10,
             heartbeat_request_timeout_sec: 10,
             heartbeat_failure_threshold: 2,
@@ -107,13 +107,12 @@ impl WorkerInstanceConfig {
             rdb_status_recovery: RdbStatusRecoveryConfig {
                 enabled: env_bool("WORKER_INSTANCE_RDB_STATUS_RECOVERY_ENABLED", false),
                 lock_ttl_sec: env_u64("WORKER_INSTANCE_RDB_STATUS_RECOVERY_LOCK_TTL_SEC", 300),
-                job_timeout_sec: env_u64("WORKER_INSTANCE_RDB_STATUS_RECOVERY_JOB_TIMEOUT_SEC", 30),
-                finalize_reserve_sec: env_u64(
-                    "WORKER_INSTANCE_RDB_STATUS_RECOVERY_FINALIZE_RESERVE_SEC",
+                execution_completion_reserve_sec: env_u64(
+                    "WORKER_INSTANCE_RDB_STATUS_RECOVERY_EXECUTION_COMPLETION_RESERVE_SEC",
                     5,
                 ),
-                unresolved_retention_sec: env_u64(
-                    "WORKER_INSTANCE_RDB_STATUS_RECOVERY_UNRESOLVED_RETENTION_SEC",
+                unbounded_execution_recovery_timeout_sec: env_u64(
+                    "WORKER_INSTANCE_RDB_STATUS_RECOVERY_UNBOUNDED_EXECUTION_TIMEOUT_SEC",
                     86_400,
                 ),
                 start_permit_timeout_sec: env_u64("WORKER_INSTANCE_START_PERMIT_TIMEOUT_SEC", 10),
@@ -144,7 +143,7 @@ impl WorkerInstanceConfig {
 
     /// Validate only the relationships needed by the optional recovery loop.
     /// Callers log and disable recovery on an error while keeping registration alive.
-    pub fn validate_rdb_status_recovery(&self, retention_hours: u64) -> Result<(), String> {
+    pub fn validate_rdb_status_recovery(&self) -> Result<(), String> {
         let recovery = &self.rdb_status_recovery;
         if !recovery.enabled {
             return Ok(());
@@ -168,24 +167,11 @@ impl WorkerInstanceConfig {
         {
             return Err("invalid heartbeat isolation configuration".to_string());
         }
-        if recovery.job_timeout_sec == 0
-            || recovery.finalize_reserve_sec >= recovery.job_timeout_sec
-            || recovery.lock_ttl_sec < recovery.job_timeout_sec.saturating_mul(2)
+        if recovery.lock_ttl_sec == 0
+            || recovery.execution_completion_reserve_sec == 0
+            || recovery.unbounded_execution_recovery_timeout_sec == 0
         {
-            return Err("invalid recovery timeout or lock TTL".to_string());
-        }
-        if retention_hours == 0
-            || retention_hours
-                .checked_mul(60 * 60 * 1000)
-                .is_none_or(|millis| {
-                    millis
-                        <= recovery
-                            .job_timeout_sec
-                            .saturating_add(recovery.finalize_reserve_sec)
-                            .saturating_mul(1000)
-                })
-        {
-            return Err("job status retention is too short for recovery".to_string());
+            return Err("invalid recovery timeout".to_string());
         }
         Ok(())
     }
@@ -231,9 +217,8 @@ mod tests {
 
         assert!(!recovery.enabled);
         assert_eq!(recovery.lock_ttl_sec, 300);
-        assert_eq!(recovery.job_timeout_sec, 30);
-        assert_eq!(recovery.finalize_reserve_sec, 5);
-        assert!(config.validate_rdb_status_recovery(24).is_ok());
+        assert_eq!(recovery.unbounded_execution_recovery_timeout_sec, 86_400);
+        assert!(config.validate_rdb_status_recovery().is_ok());
     }
 
     #[test]
@@ -242,7 +227,36 @@ mod tests {
         config.rdb_status_recovery.enabled = true;
         config.rdb_status_recovery.start_permit_timeout_sec = config.timeout_sec;
 
-        assert!(config.validate_rdb_status_recovery(24).is_err());
+        assert!(config.validate_rdb_status_recovery().is_err());
+    }
+
+    #[test]
+    fn rdb_status_recovery_requires_a_nonzero_completion_reserve() {
+        let mut config = WorkerInstanceConfig::default();
+        config.rdb_status_recovery.enabled = true;
+        config.rdb_status_recovery.execution_completion_reserve_sec = 0;
+
+        assert!(config.validate_rdb_status_recovery().is_err());
+    }
+
+    #[test]
+    fn rdb_status_recovery_requires_a_nonzero_lock_ttl() {
+        let mut config = WorkerInstanceConfig::default();
+        config.rdb_status_recovery.enabled = true;
+        config.rdb_status_recovery.lock_ttl_sec = 0;
+
+        assert!(config.validate_rdb_status_recovery().is_err());
+    }
+
+    #[test]
+    fn rdb_status_recovery_requires_a_nonzero_unbounded_execution_timeout() {
+        let mut config = WorkerInstanceConfig::default();
+        config.rdb_status_recovery.enabled = true;
+        config
+            .rdb_status_recovery
+            .unbounded_execution_recovery_timeout_sec = 0;
+
+        assert!(config.validate_rdb_status_recovery().is_err());
     }
 
     #[test]

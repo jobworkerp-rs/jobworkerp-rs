@@ -544,14 +544,17 @@ mod test {
     use super::RdbJobRepository;
     use crate::infra::JobQueueConfig;
     use crate::infra::job::overrides::find_overrides_tx;
+    #[cfg(not(feature = "mysql"))]
     use crate::infra::job::status::execution::{
         RdbJobStatusExecutionRepository, RunningStatusCandidate,
     };
+    #[cfg(not(feature = "mysql"))]
     use crate::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
     use jobworkerp_base::codec::UseProstCodec;
+    #[cfg(not(feature = "mysql"))]
     use jobworkerp_base::job_status_config::JobStatusConfig;
     use proto::TestArgs;
     use proto::jobworkerp::data::Job;

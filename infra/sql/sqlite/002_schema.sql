@@ -207,3 +207,7 @@ CREATE INDEX IF NOT EXISTS idx_jps_start_time_active
 CREATE INDEX IF NOT EXISTS idx_jps_status_start
     ON job_processing_status(status, start_time DESC)
     WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_jps_recovery_instance_running
+    ON job_processing_status(worker_instance_id, status, job_id)
+    WHERE deleted_at IS NULL;

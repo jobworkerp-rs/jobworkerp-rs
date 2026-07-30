@@ -51,6 +51,32 @@ where
         job: &Job,
         load_only: bool,
     ) -> Result<i64> {
+        self.enqueue_job_with_load_only_at(channel_name, job, load_only, false)
+            .await
+    }
+
+    /// Requeue a dequeued job at the head of its priority queue.
+    ///
+    /// This is reserved for jobs refused after BLPOP (for example, when the
+    /// worker instance becomes isolated) so they are retried before newer work.
+    #[inline]
+    async fn requeue_job_with_load_only(
+        &self,
+        channel_name: Option<&String>,
+        job: &Job,
+        load_only: bool,
+    ) -> Result<i64> {
+        self.enqueue_job_with_load_only_at(channel_name, job, load_only, true)
+            .await
+    }
+
+    async fn enqueue_job_with_load_only_at(
+        &self,
+        channel_name: Option<&String>,
+        job: &Job,
+        load_only: bool,
+        at_head: bool,
+    ) -> Result<i64> {
         let cn = channel_name
             .unwrap_or(&Self::DEFAULT_CHANNEL_NAME.to_string())
             .to_owned();
@@ -58,15 +84,20 @@ where
             job: Some(job.clone()),
             load_only,
         };
-        self.redis_pool()
-            .get()
-            .await?
-            .rpush(
-                Self::queue_channel_name(cn, job.data.as_ref().map(|d| &d.priority)),
-                Self::serialize_message(&internal)?,
-            )
-            .await
-            .map_err(|e| JobWorkerError::RedisError(e).into())
+        let queue_name = Self::queue_channel_name(cn, job.data.as_ref().map(|d| &d.priority));
+        let payload = Self::serialize_message(&internal)?;
+        let mut connection = self.redis_pool().get().await?;
+        if at_head {
+            connection
+                .lpush(queue_name, payload)
+                .await
+                .map_err(|e| JobWorkerError::RedisError(e).into())
+        } else {
+            connection
+                .rpush(queue_name, payload)
+                .await
+                .map_err(|e| JobWorkerError::RedisError(e).into())
+        }
     }
 
     // send job result from worker to front directly

@@ -243,6 +243,8 @@ fn extract_fields_from_schema(
     let base_indent = "  ".repeat(depth + 1);
 
     let mut fields = Vec::new();
+    // Preserve schema definition order so append-only field additions retain
+    // the protobuf tags assigned to existing MCP arguments.
     for (i, (field_name, field_schema)) in properties.iter().enumerate() {
         let field_type =
             json_type_to_proto_type(field_schema, field_name, parent_path, depth, ctx)?;
@@ -522,6 +524,25 @@ mod tests {
     }
 
     #[test]
+    fn appended_property_keeps_existing_protobuf_field_numbers() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "timeout_ms": {"type": "integer"},
+                "retries": {"type": "integer"}
+            },
+            "required": ["url"]
+        });
+
+        let result = json_schema_to_protobuf(&schema, "fetch", "fetch_html").unwrap();
+
+        assert!(result.contains("string url = 1;"));
+        assert!(result.contains("optional int64 timeout_ms = 2;"));
+        assert!(result.contains("optional int64 retries = 3;"));
+    }
+
+    #[test]
     fn test_json_schema_to_protobuf_array() {
         let schema = json!({
             "type": "object",
@@ -560,13 +581,13 @@ mod tests {
         let result = json_schema_to_protobuf(&schema, "test", "all_types").unwrap();
 
         assert!(result.contains("string name = 1;"));
-        assert!(result.contains("optional int64 count"));
-        assert!(result.contains("optional double value"));
-        assert!(result.contains("optional bool enabled"));
+        assert!(result.contains("optional int64 count = 2;"));
+        assert!(result.contains("optional double value = 3;"));
+        assert!(result.contains("optional bool enabled = 4;"));
+        assert!(result.contains("repeated string tags = 5;"));
+        assert!(result.contains("optional string metadata = 6;"));
         // repeated fields don't need "optional" prefix in proto3
-        assert!(result.contains("repeated string tags"));
         assert!(!result.contains("optional repeated")); // verify no "optional repeated"
-        assert!(result.contains("optional string metadata")); // object → string
     }
 
     #[test]
@@ -710,8 +731,8 @@ mod tests {
         assert!(result.contains("string name = 1;"));
         assert!(result.contains("optional int64 age = 2;"));
         // Should reference the nested message type
-        assert!(result.contains("User user = "));
-        assert!(result.contains("optional bool enabled = "));
+        assert!(result.contains("User user = 1;"));
+        assert!(result.contains("optional bool enabled = 2;"));
     }
 
     #[test]

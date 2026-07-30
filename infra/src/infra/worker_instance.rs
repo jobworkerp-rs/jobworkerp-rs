@@ -115,6 +115,16 @@ pub trait WorkerInstanceRecoveryRepository: Send + Sync + std::fmt::Debug + 'sta
         timeout_millis: i64,
     ) -> Result<Vec<ExpiredWorkerInstance>>;
 
+    /// Delete an observed expired instance without taking a recovery lock.
+    ///
+    /// This is used for workers that did not opt into the recovery protocol,
+    /// so their expired registry entries retain the legacy cleanup behavior.
+    async fn delete_expired_observed(
+        &self,
+        expired: &ExpiredWorkerInstance,
+        timeout_millis: i64,
+    ) -> Result<bool>;
+
     async fn try_lock_expired(
         &self,
         expired: &ExpiredWorkerInstance,
