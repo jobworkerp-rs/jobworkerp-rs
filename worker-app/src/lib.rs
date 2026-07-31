@@ -5,6 +5,7 @@ use proto::jobworkerp::data::StorageType;
 use std::sync::Arc;
 use worker::{
     dispatcher::{JobDispatcher, JobDispatcherFactory},
+    instance_session::WorkerInstanceSessionHandle,
     result_processor::ResultProcessorImpl,
     runner::map::RunnerFactoryWithPoolMap,
 };
@@ -21,6 +22,22 @@ impl WorkerModules {
         id_generator: Arc<IdGeneratorWrapper>,
         app_module: Arc<AppModule>,
         runner_factory: Arc<RunnerFactory>,
+    ) -> Self {
+        Self::new_with_session(
+            config_module,
+            id_generator,
+            app_module,
+            runner_factory,
+            None,
+        )
+    }
+
+    pub fn new_with_session(
+        config_module: Arc<AppConfigModule>,
+        id_generator: Arc<IdGeneratorWrapper>,
+        app_module: Arc<AppModule>,
+        runner_factory: Arc<RunnerFactory>,
+        worker_instance_session: Option<WorkerInstanceSessionHandle>,
     ) -> Self {
         // XXX static?
         let runner_pool_map = Arc::new(RunnerFactoryWithPoolMap::new(
@@ -55,6 +72,7 @@ impl WorkerModules {
                     runner_factory,
                     runner_pool_map,
                     result_processor,
+                    worker_instance_session,
                 );
                 Self { job_dispatcher }
             }
@@ -68,6 +86,7 @@ impl WorkerModules {
                     runner_factory,
                     runner_pool_map,
                     result_processor,
+                    worker_instance_session,
                 );
                 Self { job_dispatcher }
             }

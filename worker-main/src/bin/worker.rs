@@ -77,10 +77,11 @@ pub async fn main() -> Result<()> {
     // Spawn shutdown signal handler (SIGINT + SIGTERM on Unix)
     util::shutdown::spawn_shutdown_handler(shutdown_send.clone());
 
-    let jh = tokio::spawn(jobworkerp_main::start_worker(
+    let jh = tokio::spawn(jobworkerp_main::start_worker_with_session(
         app_module,
         runner_factory,
         lock,
+        instance_manager.session(),
     ));
 
     tracing::info!("wait for processing ...");

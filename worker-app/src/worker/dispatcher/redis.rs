@@ -1,4 +1,5 @@
 use crate::worker::dispatcher::redis_run_after::RedisRunAfterJobDispatcher;
+use crate::worker::instance_session::{UseWorkerInstanceSession, WorkerInstanceSessionHandle};
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
 use crate::worker::runner::JobRunner;
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
@@ -15,11 +16,13 @@ use command_utils::trace::Tracing;
 use command_utils::util::shutdown::ShutdownLock;
 use futures::TryFutureExt;
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
+use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::rdb::{RdbChanJobRepositoryImpl, UseRdbChanJobRepositoryOptional};
 use infra::infra::job::redis::RedisJobRepositoryImpl;
 use infra::infra::job::redis::UseRedisJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job::status::UseJobProcessingStatusRepository;
+use infra::infra::job::status::rdb::StatusIndexUpdate;
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
@@ -57,6 +60,7 @@ pub trait RedisJobDispatcher:
     + UseRunnerApp
     + UseJobQueueConfig
     + UseIdGenerator
+    + UseWorkerInstanceSession
     + JobDispatcher
 {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
@@ -139,6 +143,13 @@ pub trait RedisJobDispatcher:
                                     tracing::warn!("process job error: {:?}", e);
                                 }
                             };
+                            if should_exit_redis_dispatch_loop(self.worker_instance_session()) {
+                                tracing::info!(
+                                    "exit isolated Redis job loop after returning its current job: {}",
+                                    &cn
+                                );
+                                break 'outer;
+                            }
                         },
                     }
                 } else {
@@ -299,20 +310,54 @@ pub trait RedisJobDispatcher:
             return Ok(result);
         }
 
+        let start_permit = self
+            .worker_instance_session()
+            .and_then(WorkerInstanceSessionHandle::acquire_start_permit);
+        let worker_instance_id = start_permit.as_ref().map(|permit| permit.instance_id());
+
+        if should_requeue_isolated_job(
+            self.worker_instance_session().is_some(),
+            start_permit.is_some(),
+        ) {
+            let job = Job {
+                id: Some(jid),
+                data: Some(jdat),
+                metadata: meta,
+            };
+            self.redis_job_repository()
+                .requeue_job_with_load_only(wdat.channel.as_ref(), &job, load_only)
+                .await
+                .map_err(|error| {
+                    tracing::error!(
+                        job_id = jid.value,
+                        %error,
+                        "failed to requeue job after worker instance isolation"
+                    );
+                    error
+                })?;
+            return Err(JobWorkerError::RuntimeError(
+                "worker instance is isolated; job was requeued".to_string(),
+            )
+            .into());
+        }
+
         let resolved = app::app::job::resolve_job_params(&wdat, jdat.overrides.as_ref());
+        let mut grab_lease_expires_at = None;
+        let mut running_index_task = None;
         if resolved.response_type != ResponseType::Direct as i32
             && wdat.queue_type == QueueType::WithBackup as i32
         {
             if let Some(repo) = self.rdb_job_repository_opt() {
                 // grab job in db (only for record as in progress)
-                if repo
-                    .grab_job(
+                if let Some(grabbed_until) = repo
+                    .grab_job_with_lease(
                         &jid,
                         Some(jdat.timeout),
                         jdat.grabbed_until_time.unwrap_or(0),
                     )
                     .await?
                 {
+                    grab_lease_expires_at = Some(grabbed_until);
                     // change status to running
                     self.redis_job_repository()
                         .job_processing_status_repository()
@@ -328,18 +373,21 @@ pub trait RedisJobDispatcher:
                         let enqueue_time = jdat.enqueue_time;
                         let is_streamable = jdat.streaming_type != 0;
                         let broadcast_results = resolved.broadcast_results;
-                        tokio::spawn(async move {
+                        // The recovery index is best-effort: awaiting it here would make
+                        // RDB availability a prerequisite for starting the primary job.
+                        running_index_task = Some(tokio::spawn(async move {
                             if let Err(e) = index_repo
-                                .index_status(
-                                    &job_id,
-                                    &JobProcessingStatus::Running,
-                                    &worker_id,
-                                    channel.as_deref(),
+                                .index_status_update(StatusIndexUpdate {
+                                    job_id: &job_id,
+                                    status: &JobProcessingStatus::Running,
+                                    worker_id: &worker_id,
+                                    channel: channel.as_deref(),
                                     priority,
                                     enqueue_time,
                                     is_streamable,
                                     broadcast_results,
-                                )
+                                    worker_instance_id,
+                                })
                                 .await
                             {
                                 tracing::warn!(
@@ -348,7 +396,7 @@ pub trait RedisJobDispatcher:
                                     e
                                 );
                             }
-                        });
+                        }));
                     }
                 } else {
                     // already grabbed (strange! (not reset previous process in retry?), but continue processing job)
@@ -380,18 +428,21 @@ pub trait RedisJobDispatcher:
                 let enqueue_time = jdat.enqueue_time;
                 let is_streamable = jdat.streaming_type != 0;
                 let broadcast_results = resolved.broadcast_results;
-                tokio::spawn(async move {
+                // The recovery index is best-effort: awaiting it here would make
+                // RDB availability a prerequisite for starting the primary job.
+                running_index_task = Some(tokio::spawn(async move {
                     if let Err(e) = index_repo
-                        .index_status(
-                            &job_id,
-                            &JobProcessingStatus::Running,
-                            &worker_id,
-                            channel.as_deref(),
+                        .index_status_update(StatusIndexUpdate {
+                            job_id: &job_id,
+                            status: &JobProcessingStatus::Running,
+                            worker_id: &worker_id,
+                            channel: channel.as_deref(),
                             priority,
                             enqueue_time,
                             is_streamable,
                             broadcast_results,
-                        )
+                            worker_instance_id,
+                        })
                         .await
                     {
                         tracing::warn!(
@@ -400,7 +451,7 @@ pub trait RedisJobDispatcher:
                             e
                         );
                     }
-                });
+                }));
             }
         }
 
@@ -410,6 +461,64 @@ pub trait RedisJobDispatcher:
         let jdat_request_streaming = jdat.streaming_type != 0;
 
         // run job (load-only requests were handled and returned above)
+        if let Some(permit) = &start_permit
+            && !permit.confirm_start()
+        {
+            await_running_index_update(running_index_task.take(), jid.value).await;
+            if let Some(grabbed_until) = grab_lease_expires_at
+                && let Some(repo) = self.rdb_job_repository_opt()
+                && !repo
+                    .reset_grabbed_until_time(&jid, grabbed_until, None)
+                    .await?
+            {
+                anyhow::bail!(
+                    "lost WithBackup RDB grab before isolated job requeue: {}",
+                    jid.value
+                );
+            }
+            self.redis_job_repository()
+                .job_processing_status_repository()
+                .upsert_status(&jid, &JobProcessingStatus::Pending)
+                .await?;
+            if let Some(index_repo) = self.rdb_job_processing_status_index_repository()
+                && matches!(
+                    index_repo
+                        .reset_running_to_pending_by_owner(
+                            &jid,
+                            worker_instance_id
+                                .expect("recovery-enabled session owns the RUNNING row"),
+                        )
+                        .await?,
+                    infra::infra::job::status::rdb::ResetRunningOutcome::OwnedByOther
+                )
+            {
+                anyhow::bail!(
+                    "lost RUNNING status index ownership before isolated job requeue: {}",
+                    jid.value
+                );
+            }
+            let job = Job {
+                id: Some(jid),
+                data: Some(jdat),
+                metadata: meta,
+            };
+            self.redis_job_repository()
+                .requeue_job_with_load_only(wdat.channel.as_ref(), &job, load_only)
+                .await
+                .map_err(|error| {
+                    tracing::error!(
+                        job_id = jid.value,
+                        %error,
+                        "failed to requeue job after worker isolation before runner start"
+                    );
+                    error
+                })?;
+            return Err(JobWorkerError::RuntimeError(
+                "worker instance was isolated before runner start; job was requeued".to_string(),
+            )
+            .into());
+        }
+
         let mut r = self
             .run_job(
                 &runner_data,
@@ -438,6 +547,7 @@ pub trait RedisJobDispatcher:
             &r.0,
             &r.1.is_some()
         );
+        await_running_index_update(running_index_task.take(), jid.value).await;
         // change status to wait handling result
         if resolved.response_type != ResponseType::Direct as i32 {
             self.redis_job_repository()
@@ -454,27 +564,25 @@ pub trait RedisJobDispatcher:
                 let enqueue_time = jdat_enqueue_time;
                 let is_streamable = jdat_request_streaming;
                 let broadcast_results = resolved.broadcast_results;
-                tokio::spawn(async move {
-                    if let Err(e) = index_repo
-                        .index_status(
-                            &job_id,
-                            &JobProcessingStatus::WaitResult,
-                            &worker_id,
-                            channel.as_deref(),
-                            priority,
-                            enqueue_time,
-                            is_streamable,
-                            broadcast_results,
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            "Failed to index WAIT_RESULT status for job {}: {}",
-                            job_id.value,
-                            e
-                        );
-                    }
-                });
+                if let Err(e) = index_repo
+                    .index_status(
+                        &job_id,
+                        &JobProcessingStatus::WaitResult,
+                        &worker_id,
+                        channel.as_deref(),
+                        priority,
+                        enqueue_time,
+                        is_streamable,
+                        broadcast_results,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to index WAIT_RESULT status for job {}: {}",
+                        job_id.value,
+                        e
+                    );
+                }
             }
         }
         let (result, completion_rx) = self
@@ -507,6 +615,7 @@ pub struct RedisJobDispatcherImpl {
     pub runner_factory: Arc<RunnerFactory>,
     pub runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
+    worker_instance_session: Option<WorkerInstanceSessionHandle>,
 }
 
 impl RedisJobDispatcherImpl {
@@ -522,6 +631,7 @@ impl RedisJobDispatcherImpl {
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
+        worker_instance_session: Option<WorkerInstanceSessionHandle>,
     ) -> Self {
         // use redis only, use run after dispatcher for run after job
         let run_after_dispatcher = // TODO redis only storage
@@ -546,6 +656,7 @@ impl RedisJobDispatcherImpl {
             runner_factory,
             runner_pool_map,
             result_processor,
+            worker_instance_session,
         }
     }
 }
@@ -553,6 +664,12 @@ impl RedisJobDispatcherImpl {
 impl UseRedisPool for RedisJobDispatcherImpl {
     fn redis_pool(&self) -> &RedisPool {
         self.pool
+    }
+}
+
+impl UseWorkerInstanceSession for RedisJobDispatcherImpl {
+    fn worker_instance_session(&self) -> Option<&WorkerInstanceSessionHandle> {
+        self.worker_instance_session.as_ref()
     }
 }
 
@@ -667,6 +784,22 @@ impl UseJobQueueConfig for RedisJobDispatcherImpl {
     }
 }
 
+fn should_requeue_isolated_job(has_session: bool, has_start_permit: bool) -> bool {
+    has_session && !has_start_permit
+}
+
+fn should_exit_redis_dispatch_loop(session: Option<&WorkerInstanceSessionHandle>) -> bool {
+    session.is_some_and(|session| !session.accepts_new_starts())
+}
+
+async fn await_running_index_update(task: Option<JoinHandle<()>>, job_id: i64) {
+    if let Some(task) = task
+        && let Err(error) = task.await
+    {
+        tracing::warn!(job_id, %error, "RUNNING status index task stopped before completion");
+    }
+}
+
 impl UseResultProcessor for RedisJobDispatcherImpl {
     fn result_processor(&self) -> &ResultProcessorImpl {
         &self.result_processor
@@ -689,6 +822,48 @@ impl JobDispatcher for RedisJobDispatcherImpl {
         Self: Send + Sync + 'static,
     {
         RedisJobDispatcher::dispatch_jobs(self, lock)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        await_running_index_update, should_exit_redis_dispatch_loop, should_requeue_isolated_job,
+    };
+    use crate::worker::instance_session::WorkerInstanceSessionHandle;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    #[test]
+    fn requeues_only_when_a_configured_session_refuses_the_start() {
+        assert!(should_requeue_isolated_job(true, false));
+        assert!(!should_requeue_isolated_job(true, true));
+        assert!(!should_requeue_isolated_job(false, false));
+    }
+
+    #[test]
+    fn isolated_session_exits_redis_dispatch_loop_after_requeueing() {
+        let session =
+            WorkerInstanceSessionHandle::new(7, Duration::from_secs(10), Duration::from_secs(1));
+
+        assert!(!should_exit_redis_dispatch_loop(Some(&session)));
+        session.begin_isolation();
+        assert!(should_exit_redis_dispatch_loop(Some(&session)));
+        assert!(!should_exit_redis_dispatch_loop(None));
+    }
+
+    #[tokio::test]
+    async fn completion_waits_for_the_running_index_update() {
+        let running_index_completed = Arc::new(AtomicBool::new(false));
+        let completed = running_index_completed.clone();
+        let task = tokio::spawn(async move {
+            completed.store(true, Ordering::SeqCst);
+        });
+
+        await_running_index_update(Some(task), 1).await;
+
+        assert!(running_index_completed.load(Ordering::SeqCst));
     }
 }
 

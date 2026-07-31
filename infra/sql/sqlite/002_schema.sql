@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS `job_processing_status` (
     -- Timestamp information
     `pending_time` BIGINT,  -- Time when job entered PENDING state (milliseconds)
     `start_time` BIGINT,    -- Time when job entered RUNNING state (milliseconds)
+    `worker_instance_id` BIGINT, -- Logical instance that started RUNNING
 
     -- Real-time output availability
     `is_streamable` BOOLEAN NOT NULL DEFAULT 0,      -- Enqueued via EnqueueForStream
@@ -205,4 +206,8 @@ CREATE INDEX IF NOT EXISTS idx_jps_start_time_active
 
 CREATE INDEX IF NOT EXISTS idx_jps_status_start
     ON job_processing_status(status, start_time DESC)
+    WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_jps_recovery_instance_running
+    ON job_processing_status(worker_instance_id, status, job_id)
     WHERE deleted_at IS NULL;

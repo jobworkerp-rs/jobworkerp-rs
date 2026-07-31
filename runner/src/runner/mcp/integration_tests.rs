@@ -37,25 +37,15 @@ async fn setup_python_environment_with_uv(
 
     // Explicitly target this server's venv to avoid uv picking up a
     // parent directory's .venv (e.g., the workspace root).
-    let uv_venv = std::process::Command::new("uv")
-        .args(["venv", &venv_path.to_string_lossy()])
+    let uv_sync = std::process::Command::new("uv")
+        .args(["sync", "--locked"])
         .current_dir(&server_path)
         .status()?;
 
-    if !uv_venv.success() {
+    if !uv_sync.success() {
         return Err(anyhow::anyhow!(
-            "Failed to create virtual environment with uv"
+            "Failed to synchronize locked MCP server dependencies with uv"
         ));
-    }
-
-    let uv_install = std::process::Command::new("uv")
-        .args(["pip", "install", "-e", "."])
-        .env("VIRTUAL_ENV", &venv_path)
-        .current_dir(&server_path)
-        .status()?;
-
-    if !uv_install.success() {
-        return Err(anyhow::anyhow!("Failed to install dependencies with uv"));
     }
 
     // Set environment variables

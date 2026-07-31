@@ -49,10 +49,12 @@ impl JobRow {
     }
 }
 
+pub const DEFAULT_CHANNEL_NAME: &str = "__default_job_channel__";
+
 // use job queue (store and the data)
 pub trait UseJobqueueAndCodec: UseProstCodec {
     // TODO specify arbitrary job channel name
-    const DEFAULT_CHANNEL_NAME: &'static str = "__default_job_channel__";
+    const DEFAULT_CHANNEL_NAME: &'static str = crate::infra::job::rows::DEFAULT_CHANNEL_NAME;
 
     // worker pubsub channel name (for cache clear)
     const WORKER_PUBSUB_CHANNEL_NAME: &'static str = "__worker_pubsub_channel__";

@@ -2,10 +2,17 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use app::app::worker_instance::InstanceCleanupTask;
+use app::app::worker_instance::recovery::WorkerInstanceRecoveryCoordinator;
 use app::module::{AppConfigModule, AppModule};
 use command_utils::util::shutdown;
 use dotenvy::dotenv;
-use infra::infra::worker_instance::UseWorkerInstanceRepository;
+use infra::infra::job::status::execution::RdbJobStatusExecutionRepository;
+use infra::infra::worker_instance::redis::RedisWorkerInstanceRepository;
+use infra::infra::worker_instance::{
+    UseWorkerInstanceRepository, WorkerInstanceRecoveryRepository,
+};
+use infra_utils::infra::rdb::UseRdbPool;
+use jobworkerp_base::{JOB_STATUS_CONFIG, WORKER_INSTANCE_CONFIG};
 use jobworkerp_runner::runner::{
     factory::RunnerSpecFactory,
     mcp::{config::McpConfig, proxy::McpServerFactory},
@@ -46,7 +53,34 @@ async fn main() -> Result<()> {
     // Start instance cleanup task (grpc-front only: cleanup expired instances)
     let storage_type = config_module.storage_type();
     let repository = app_module.repositories.worker_instance_repository();
-    let cleanup_task = InstanceCleanupTask::new(repository, storage_type);
+    let recovery_enabled = WORKER_INSTANCE_CONFIG.rdb_status_recovery.enabled
+        && WORKER_INSTANCE_CONFIG
+            .validate_rdb_status_recovery()
+            .is_ok()
+        && storage_type == proto::jobworkerp::data::StorageType::Scalable
+        && JOB_STATUS_CONFIG.rdb_indexing_enabled;
+    let recovery_coordinator = if recovery_enabled {
+        match (
+            &app_module.repositories.redis_module,
+            &app_module.repositories.rdb_module,
+        ) {
+            (Some(redis), Some(rdb)) => {
+                let registry: Arc<dyn WorkerInstanceRecoveryRepository> =
+                    Arc::new(RedisWorkerInstanceRepository::new(redis.redis_pool));
+                Some(Arc::new(WorkerInstanceRecoveryCoordinator::new(
+                    registry,
+                    RdbJobStatusExecutionRepository::new(Arc::new(
+                        rdb.job_repository.db_pool().clone(),
+                    )),
+                    app_module.clone(),
+                )))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let cleanup_task = InstanceCleanupTask::new(repository, recovery_coordinator, storage_type);
     let cleanup_handle =
         tokio::spawn(async move { cleanup_task.start_cleanup_loop(shutdown_recv).await });
 

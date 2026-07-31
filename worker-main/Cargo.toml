@@ -31,5 +31,6 @@ anyhow = { workspace = true }
 dotenvy = { workspace = true }
 envy = { workspace = true }
 hostname = { workspace = true }
+rand = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

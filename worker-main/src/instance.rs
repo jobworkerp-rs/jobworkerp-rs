@@ -1,42 +1,26 @@
 use anyhow::Result;
 use app::app::worker_instance::InstanceCleanupTask;
+use app::app::worker_instance::recovery::WorkerInstanceRecoveryCoordinator;
 use app::module::AppModule;
+use infra::infra::job::status::execution::RdbJobStatusExecutionRepository;
 use infra::infra::worker_instance::UseWorkerInstanceRepository;
+use infra::infra::worker_instance::WorkerInstanceRecoveryRepository;
 use infra::infra::worker_instance::WorkerInstanceRepository;
-use jobworkerp_base::WORKER_INSTANCE_CONFIG;
+use infra::infra::worker_instance::redis::RedisWorkerInstanceRepository;
+use infra_utils::infra::rdb::UseRdbPool;
+use jobworkerp_base::{JOB_STATUS_CONFIG, WORKER_INSTANCE_CONFIG};
+use rand::RngExt;
 use std::sync::Arc;
 use tokio::sync::watch;
 use worker_app::worker::instance_registrar::WorkerInstanceRegistrar;
+use worker_app::worker::instance_session::WorkerInstanceSessionHandle;
 
-/// Generate a unique instance ID from IP address and process ID
+/// Generate a non-zero positive logical instance ID.
 ///
-/// The ID combines:
-/// - Upper 32 bits: IPv4 address (all 4 octets)
-/// - Lower 32 bits: Process ID
-///
-/// This ensures uniqueness even when multiple worker processes run on the same host.
-///
-/// # ID Structure
-/// ```text
-/// |<-- upper 32 bits (IP) -->|<-- lower 32 bits (PID) -->|
-/// |   192.168.1.100          |        12345              |
-/// ```
-///
-/// # Notes
-/// - Process restart results in a new ID (different PID)
-/// - In k8s, pod restart naturally gets a new ID
-/// - IP and PID parts can be extracted for debugging
+/// An OS-seeded RNG prevents a restarted process from reusing a prior
+/// process's ownership ID merely because it received the same IP/PID pair.
 fn generate_instance_id() -> i64 {
-    let ip_u32 = command_utils::util::id_generator::iputil::resolve_host_ipv4()
-        .map(|addr| {
-            let octets = addr.ip().octets();
-            u32::from_be_bytes(octets)
-        })
-        .unwrap_or(0);
-    let pid = std::process::id();
-
-    // Upper 32 bits: IP, Lower 32 bits: PID
-    ((ip_u32 as u64) << 32 | (pid as u64 & 0xFFFFFFFF)) as i64
+    rand::rng().random_range(1..=i64::MAX)
 }
 
 /// Get IP address as string
@@ -102,6 +86,7 @@ pub struct WorkerInstanceManager {
     registrar: Option<Arc<WorkerInstanceRegistrar>>,
     heartbeat_handle: Option<tokio::task::JoinHandle<Result<()>>>,
     cleanup_handle: Option<tokio::task::JoinHandle<()>>,
+    session: Option<WorkerInstanceSessionHandle>,
 }
 
 impl WorkerInstanceManager {
@@ -134,22 +119,41 @@ impl WorkerInstanceManager {
     ) -> Result<Self> {
         let config = WORKER_INSTANCE_CONFIG.clone();
 
+        let recovery_config_valid = config.validate_rdb_status_recovery();
+        if let Err(error) = &recovery_config_valid {
+            tracing::error!(
+                %error,
+                "RDB status-index recovery is disabled by invalid worker-instance configuration"
+            );
+        }
+
         if !config.enabled {
             tracing::info!("Worker instance registration is disabled");
             return Ok(Self {
                 registrar: None,
                 heartbeat_handle: None,
                 cleanup_handle: None,
+                session: None,
             });
         }
 
         let storage_type = app_module.config_module.storage_type();
+        let rdb_status_recovery_enabled = config.rdb_status_recovery.enabled
+            && recovery_config_valid.is_ok()
+            && storage_type == proto::jobworkerp::data::StorageType::Scalable
+            && JOB_STATUS_CONFIG.rdb_indexing_enabled;
+        if config.rdb_status_recovery.enabled && !rdb_status_recovery_enabled {
+            tracing::error!(
+                "RDB status-index recovery is disabled because scalable storage and RDB status indexing are required"
+            );
+        }
         let repository: Arc<dyn WorkerInstanceRepository> =
             app_module.repositories.worker_instance_repository();
 
         let mut registrar = None;
         let mut heartbeat_handle = None;
         let mut cleanup_handle = None;
+        let mut session = None;
 
         // Registration and heartbeat (for worker processes)
         if manager_config.enable_registration {
@@ -161,7 +165,17 @@ impl WorkerInstanceManager {
                 .worker_config
                 .channel_concurrency_pair();
 
-            let reg = Arc::new(WorkerInstanceRegistrar::new(
+            let session_handle = rdb_status_recovery_enabled.then(|| {
+                WorkerInstanceSessionHandle::new(
+                    instance_id,
+                    std::time::Duration::from_secs(config.timeout_sec),
+                    std::time::Duration::from_secs(
+                        config.rdb_status_recovery.start_permit_timeout_sec,
+                    ),
+                )
+            });
+
+            let mut reg = WorkerInstanceRegistrar::new(
                 instance_id,
                 ip_address,
                 hostname,
@@ -169,7 +183,11 @@ impl WorkerInstanceManager {
                 repository.clone(),
                 config,
                 storage_type,
-            ));
+            );
+            if let Some(handle) = session_handle.clone() {
+                reg = reg.with_session(handle).with_rdb_status_recovery_protocol();
+            }
+            let reg = Arc::new(reg);
 
             // Register on startup
             reg.register().await?;
@@ -184,11 +202,34 @@ impl WorkerInstanceManager {
             }));
 
             registrar = Some(reg);
+            session = session_handle;
         }
 
         // Cleanup task (for grpc-front processes, only runs in Scalable mode)
         if manager_config.enable_cleanup {
-            let cleanup_task = InstanceCleanupTask::new(repository, storage_type);
+            let recovery_coordinator = if rdb_status_recovery_enabled {
+                match (
+                    &app_module.repositories.redis_module,
+                    &app_module.repositories.rdb_module,
+                ) {
+                    (Some(redis), Some(rdb)) => {
+                        let registry: Arc<dyn WorkerInstanceRecoveryRepository> =
+                            Arc::new(RedisWorkerInstanceRepository::new(redis.redis_pool));
+                        Some(Arc::new(WorkerInstanceRecoveryCoordinator::new(
+                            registry,
+                            RdbJobStatusExecutionRepository::new(Arc::new(
+                                rdb.job_repository.db_pool().clone(),
+                            )),
+                            app_module.clone(),
+                        )))
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let cleanup_task =
+                InstanceCleanupTask::new(repository, recovery_coordinator, storage_type);
             cleanup_handle = Some(tokio::spawn(async move {
                 cleanup_task.start_cleanup_loop(shutdown_rx).await
             }));
@@ -198,6 +239,7 @@ impl WorkerInstanceManager {
             registrar,
             heartbeat_handle,
             cleanup_handle,
+            session,
         })
     }
 
@@ -228,6 +270,10 @@ impl WorkerInstanceManager {
     pub fn registrar(&self) -> Option<&Arc<WorkerInstanceRegistrar>> {
         self.registrar.as_ref()
     }
+
+    pub fn session(&self) -> Option<WorkerInstanceSessionHandle> {
+        self.session.clone()
+    }
 }
 
 #[cfg(test)]
@@ -235,38 +281,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_generate_instance_id_format() {
+    fn test_generate_instance_id_is_positive() {
         let id = generate_instance_id();
-
-        // Extract PID from lower 32 bits
-        let extracted_pid = (id as u64 & 0xFFFFFFFF) as u32;
-        assert_eq!(extracted_pid, std::process::id());
+        assert!(id > 0);
     }
 
     #[test]
-    fn test_extract_ip_from_instance_id() {
-        let id = generate_instance_id();
-
-        // Extract IP from upper 32 bits
-        let extracted_ip_u32 = ((id as u64) >> 32) as u32;
-
-        // Verify it matches the resolved IP (if available)
-        let expected_ip_u32 = command_utils::util::id_generator::iputil::resolve_host_ipv4()
-            .map(|addr| {
-                let octets = addr.ip().octets();
-                u32::from_be_bytes(octets)
-            })
-            .unwrap_or(0);
-
-        assert_eq!(extracted_ip_u32, expected_ip_u32);
-    }
-
-    #[test]
-    fn test_instance_id_consistency() {
-        // Multiple calls should return the same ID (same process, same IP)
+    fn test_instance_id_is_not_process_derived() {
         let id1 = generate_instance_id();
         let id2 = generate_instance_id();
-        assert_eq!(id1, id2);
+        assert_ne!(id1, id2);
     }
 
     #[test]

@@ -4,6 +4,7 @@ use self::{
     rdb::{RdbJobDispatcher, RdbJobDispatcherImpl},
     redis::{RedisJobDispatcher, RedisJobDispatcherImpl},
 };
+use super::instance_session::WorkerInstanceSessionHandle;
 use super::result_processor::UseResultProcessor;
 use super::{result_processor::ResultProcessorImpl, runner::map::RunnerFactoryWithPoolMap};
 use anyhow::Result;
@@ -259,6 +260,7 @@ impl JobDispatcherFactory {
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
+        worker_instance_session: Option<WorkerInstanceSessionHandle>,
     ) -> Box<dyn JobDispatcher + 'static> {
         match (
             app_module.config_module.storage_type(),
@@ -295,6 +297,7 @@ impl JobDispatcherFactory {
                         runner_pool_map.clone(),
                         result_processor.clone(),
                         feed_store.clone(),
+                        None,
                     ),
                     chan_job_dispatcher: ChanJobDispatcherImpl::new(
                         id_generator,
@@ -332,6 +335,7 @@ impl JobDispatcherFactory {
                         // to return "No feed channel registered" errors. To fix this, RDB dispatcher
                         // should use RedisJobDispatcherImpl's Redis-based feed bridge instead.
                         Arc::new(infra::infra::feed::chan::ChanFeedSenderStore::new()),
+                        worker_instance_session.clone(),
                     ),
                     redis_job_dispatcher: RedisJobDispatcherImpl::new(
                         id_generator,
@@ -344,6 +348,7 @@ impl JobDispatcherFactory {
                         runner_factory,
                         runner_pool_map,
                         result_processor,
+                        worker_instance_session,
                     ),
                 })
             }

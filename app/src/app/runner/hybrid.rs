@@ -455,30 +455,29 @@ mod test {
         });
     }
 
-    // Test that delete_runner clears name cache
-    // Uses a real MCP server runner to test full create/find/delete cycle
+    // Test that delete_runner clears name cache without requiring an external transport.
     #[test]
     fn test_delete_runner_clears_name_cache() {
         use proto::jobworkerp::data::RunnerType;
 
         TEST_RUNTIME.block_on(async {
             let app = create_test_app().await.unwrap();
-
-            // Create a real MCP server runner using create_runner
-            let test_runner_name = "TestMcpServerForDeleteCacheTest";
-            let definition = serde_json::json!({
-                "transport": "stdio",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-everything"]
-            })
-            .to_string();
-
+            let test_runner_name = "TestRunnerForDeleteCacheTest";
+            let plugin_path = [
+                "./target/debug/libplugin_runner_hello.so",
+                "../target/debug/libplugin_runner_hello.so",
+                "./target/release/libplugin_runner_hello.so",
+                "../target/release/libplugin_runner_hello.so",
+            ]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).is_file())
+            .expect("test plugin must be built before runner tests");
             let runner_id = app
                 .create_runner(
                     test_runner_name,
-                    "Test MCP Server for cache test",
-                    RunnerType::McpServer as i32,
-                    &definition,
+                    "Test plugin runner for cache test",
+                    RunnerType::Plugin as i32,
+                    plugin_path,
                 )
                 .await
                 .unwrap();

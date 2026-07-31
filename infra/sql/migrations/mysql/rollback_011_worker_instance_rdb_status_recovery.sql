@@ -1,0 +1,2 @@
+DROP INDEX idx_jps_recovery_instance_running ON job_processing_status;
+ALTER TABLE job_processing_status DROP COLUMN worker_instance_id;

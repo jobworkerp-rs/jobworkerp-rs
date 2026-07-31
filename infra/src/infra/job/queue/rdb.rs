@@ -133,6 +133,22 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
         timeout: Option<u64>,
         original_grabbed_until_time: i64,
     ) -> Result<bool> {
+        Ok(self
+            .grab_job_with_lease(job_id, timeout, original_grabbed_until_time)
+            .await?
+            .is_some())
+    }
+
+    /// Grab a job and return the exact lease expiry written to the row.
+    ///
+    /// The returned expiry can later be used as a compare-and-set condition to
+    /// release the lease when runner execution never began.
+    async fn grab_job_with_lease(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        original_grabbed_until_time: i64,
+    ) -> Result<Option<i64>> {
         // time millis to re-execute if the job does not disappear from queue (row) after a while after timeout(GRAB_MERGIN_MILLISEC)
         let grabbed_until_time = Self::grabbed_until_time(timeout, datetime::now_millis());
 
@@ -149,7 +165,7 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
             .await
             .map_err(JobWorkerError::DBError)
             .context("failed to execute query")?;
-        Ok(res.rows_affected() > 0)
+        Ok((res.rows_affected() > 0).then_some(grabbed_until_time))
     }
     /// unix time (millis) to re-execute if the job does not finish after a while (timeout + GRAB_MERGIN_MILLISEC)
     fn grabbed_until_time(timeout: Option<u64>, now: i64) -> i64 {
@@ -287,8 +303,8 @@ mod test {
         assert_eq!(job, &job1);
 
         // grab job twice but only first one is success
-        let grabbed = repo
-            .grab_job(
+        let grabbed_until = repo
+            .grab_job_with_lease(
                 job.id.as_ref().unwrap(),
                 job.data.as_ref().map(|d| d.timeout),
                 job.data
@@ -297,7 +313,7 @@ mod test {
                     .unwrap_or(0),
             )
             .await?;
-        assert!(grabbed);
+        assert!(grabbed_until.is_some());
         let grabbed = repo
             .grab_job(
                 job.id.as_ref().unwrap(),
@@ -309,6 +325,21 @@ mod test {
             )
             .await?;
         assert!(!grabbed);
+        assert!(
+            repo.reset_grabbed_until_time(job.id.as_ref().unwrap(), grabbed_until.unwrap(), None)
+                .await?
+        );
+        assert!(
+            repo.grab_job(
+                job.id.as_ref().unwrap(),
+                job.data.as_ref().map(|d| d.timeout),
+                job.data
+                    .as_ref()
+                    .and_then(|d| d.grabbed_until_time)
+                    .unwrap_or(0),
+            )
+            .await?
+        );
         let jobs2 = repo.fetch_jobs_to_process(0, 5, vec![], 1000, true).await?;
         assert_eq!(jobs2.len(), 0);
 
