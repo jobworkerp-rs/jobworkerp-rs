@@ -10,6 +10,19 @@ use anyhow::Result;
 use proto::jobworkerp::data::{JobId, JobProcessingStatus};
 use tonic::async_trait;
 
+/// Authoritative processing state for one queue attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JobProcessingStatusRecord {
+    pub status: JobProcessingStatus,
+    pub retried: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StatusTransitionResult {
+    Applied,
+    Conflict(Option<JobProcessingStatusRecord>),
+}
+
 /// Source of truth for live job processing state.
 ///
 /// Note: this trait is authoritative. The RDB-backed
@@ -22,6 +35,16 @@ pub trait JobProcessingStatusRepository: Send + Sync + std::fmt::Debug + 'static
     async fn delete_status(&self, id: &JobId) -> Result<bool>;
     async fn find_status_all(&self) -> Result<Vec<(JobId, JobProcessingStatus)>>;
     async fn find_status(&self, id: &JobId) -> Result<Option<JobProcessingStatus>>;
+
+    async fn find_status_record(&self, id: &JobId) -> Result<Option<JobProcessingStatusRecord>>;
+
+    /// Atomically replace or remove a record only when it matches `expected`.
+    async fn compare_and_set_status(
+        &self,
+        id: &JobId,
+        expected: Option<JobProcessingStatusRecord>,
+        next: Option<JobProcessingStatusRecord>,
+    ) -> Result<StatusTransitionResult>;
 }
 
 pub trait UseJobProcessingStatusRepository {

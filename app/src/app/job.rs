@@ -30,11 +30,12 @@ use infra::infra::{
     job::{
         queue::redis::RedisJobQueueRepository,
         redis::{RedisJobRepository, UseRedisJobRepository, schedule::RedisJobScheduleRepository},
-        status::UseJobProcessingStatusRepository,
+        status::{
+            JobProcessingStatusRecord, StatusTransitionResult, UseJobProcessingStatusRepository,
+        },
     },
 };
 use jobworkerp_base::error::JobWorkerError;
-use proto::calculate_direct_response_timeout_ms;
 use proto::jobworkerp::data::{
     Job, JobData, JobExecutionOverrides, JobId, JobProcessingStatus, JobResult, JobResultData,
     JobResultId, QueueType, ResponseType, ResultOutputItem, ResultStatus, RetryPolicy,
@@ -126,6 +127,22 @@ pub struct ResolvedJobParams {
     pub store_failure: bool,
     pub broadcast_results: bool,
     pub retry_policy: Option<RetryPolicy>,
+}
+
+/// Describes who owns publishing a job's initial PENDING status.
+///
+/// A retry has already atomically claimed PENDING before it reaches a queue.
+/// Re-recording it with an upsert could resurrect a concurrent cancellation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingStatusPublication {
+    Create,
+    AlreadyClaimedForRetry,
+}
+
+impl PendingStatusPublication {
+    fn creates_status(self) -> bool {
+        matches!(self, Self::Create)
+    }
 }
 
 /// Default wait for a load-only job when the caller does not specify one.
@@ -545,6 +562,64 @@ pub(crate) async fn reset_index_to_pending_for_retry(
     }
 }
 
+/// Backend hooks for the shared user-initiated cancellation lifecycle.
+///
+/// Status ownership is identical for the channel and Redis-backed apps; only
+/// cleanup, cancellation notification, and optional index persistence differ.
+#[async_trait]
+pub(crate) trait JobCancellationLifecycle: UseJobProcessingStatusRepository {
+    async fn cleanup_cancelled_job(&self, id: &JobId) -> Result<()>;
+
+    async fn broadcast_cancelled_job(&self, id: &JobId) -> Result<()>;
+
+    async fn record_cancelling_index(&self, _id: &JobId) {}
+
+    async fn cancel_job_lifecycle(&self, id: &JobId) -> Result<bool> {
+        let Some(record) = self
+            .job_processing_status_repository()
+            .find_status_record(id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if record.status == JobProcessingStatus::Unknown {
+            return Ok(false);
+        }
+        if record.status == JobProcessingStatus::Cancelling {
+            return Ok(true);
+        }
+
+        let cancelling = JobProcessingStatusRecord {
+            status: JobProcessingStatus::Cancelling,
+            retried: record.retried,
+        };
+        if !matches!(
+            self.job_processing_status_repository()
+                .compare_and_set_status(id, Some(record), Some(cancelling))
+                .await?,
+            StatusTransitionResult::Applied
+        ) {
+            return Ok(matches!(
+                self.job_processing_status_repository()
+                    .find_status_record(id)
+                    .await?,
+                Some(JobProcessingStatusRecord {
+                    status: JobProcessingStatus::Cancelling,
+                    ..
+                })
+            ));
+        }
+
+        self.record_cancelling_index(id).await;
+        if record.status == JobProcessingStatus::Pending {
+            self.cleanup_cancelled_job(id).await?;
+        } else {
+            self.broadcast_cancelled_job(id).await?;
+        }
+        Ok(true)
+    }
+}
+
 /// Shared orphaned-only purge logic for hybrid.rs and rdb_chan.rs.
 ///
 /// Walks the candidates produced by `find_stale_job_ids` and asks the caller-
@@ -647,7 +722,7 @@ pub(crate) fn spawn_end_marker_if_needed<P: JobResultPublisher + Clone + Send + 
 }
 
 #[async_trait]
-pub trait RedisJobAppHelper:
+pub(crate) trait RedisJobAppHelper:
     UseRedisJobRepository + JobBuilder + UseJobQueueConfig + UseJobProcessingStatusRepository
 where
     Self: Sized + 'static,
@@ -678,6 +753,7 @@ where
         worker: &WorkerData,
         streaming_type: StreamingType,
         load_only: bool,
+        pending_status_publication: PendingStatusPublication,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -687,6 +763,13 @@ where
         Self: Send + 'static,
     {
         let job_id = job.id.unwrap();
+        let should_record_pending = !load_only && pending_status_publication.creates_status();
+
+        if should_record_pending {
+            self.job_processing_status_repository()
+                .upsert_status(&job_id, &JobProcessingStatus::Pending)
+                .await?;
+        }
 
         // Wait before processing to handle scheduled jobs
         let res = match if self.is_run_after_job(job) {
@@ -706,12 +789,11 @@ where
                 // likewise skips all status management for them. Only the Direct
                 // result is awaited below.
                 if !load_only {
-                    self.job_processing_status_repository()
-                        .upsert_status(&job_id, &JobProcessingStatus::Pending)
-                        .await?;
-
-                    // Call hook after PENDING status is set
-                    self.after_enqueue_to_redis_hook(job_id, job, worker, streaming_type);
+                    // Retry publication already owns a conditional PENDING
+                    // transition, so it must not overwrite a later cancellation.
+                    if pending_status_publication.creates_status() {
+                        self.after_enqueue_to_redis_hook(job_id, job, worker, streaming_type);
+                    }
 
                     // TTL prevents job orphaning when worker fails unexpectedly
                     if worker.queue_type == QueueType::Normal as i32
@@ -759,25 +841,29 @@ where
                     } else {
                         // Non-Internal streaming or no streaming: wait for job completion
                         let request_streaming = streaming_type == StreamingType::Response;
-                        // Calculate total timeout including retries (None means unlimited)
-                        let job_timeout = job.data.as_ref().map(|d| d.timeout).unwrap_or(0);
-                        let total_timeout = calculate_direct_response_timeout_ms(
-                            job_timeout,
-                            resolved.retry_policy.as_ref(),
-                        );
-                        self._wait_job_for_direct_response(
-                            &job_id,
-                            total_timeout,
-                            request_streaming,
-                        )
-                        .await
-                        .map(|(r, stream)| (job_id, Some(r), stream))
+                        self._wait_job_for_direct_response(&job_id, None, request_streaming)
+                            .await
+                            .map(|(r, stream)| (job_id, Some(r), stream))
                     }
                 } else {
                     Ok((job_id, None, None))
                 }
             }
-            Err(e) => Err(e),
+            Err(error) => {
+                if should_record_pending
+                    && let Err(cleanup_error) = self
+                        .job_processing_status_repository()
+                        .delete_status(&job_id)
+                        .await
+                {
+                    tracing::warn!(
+                        job_id = job_id.value,
+                        %cleanup_error,
+                        "failed to remove PENDING status after Redis enqueue failure"
+                    );
+                }
+                Err(error)
+            }
         }?;
         Ok(res)
     }

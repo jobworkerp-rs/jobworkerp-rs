@@ -21,15 +21,17 @@ use infra::infra::job::rdb::{RdbChanJobRepositoryImpl, UseRdbChanJobRepositoryOp
 use infra::infra::job::redis::RedisJobRepositoryImpl;
 use infra::infra::job::redis::UseRedisJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
-use infra::infra::job::status::UseJobProcessingStatusRepository;
 use infra::infra::job::status::rdb::StatusIndexUpdate;
+use infra::infra::job::status::{
+    JobProcessingStatusRecord, StatusTransitionResult, UseJobProcessingStatusRepository,
+};
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use infra_utils::infra::redis::{RedisPool, UseRedisBlockingPool, UseRedisPool};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobProcessingStatus, JobResult, JobResultId, Priority, QueueType, ResponseType, Worker,
+    Job, JobProcessingStatus, JobResult, Priority, QueueType, ResponseType, Worker,
 };
 use redis::{AsyncCommands, RedisError};
 use std::sync::Arc;
@@ -39,6 +41,13 @@ use tracing;
 
 use super::JobDispatcher;
 use super::redis_run_after::{RedisRunAfterJobDispatcherImpl, UseRedisRunAfterJobDispatcher};
+
+/// Result of releasing a claimed attempt before a Redis re-queue.
+pub enum RequeueRestoreOutcome {
+    Restored,
+    Cancelled(Box<JobResult>),
+    Skip,
+}
 
 // create worker threads by concurrency settings
 // pop job from redis queue by blpop and execute by runner, and send result to redis
@@ -291,23 +300,17 @@ pub trait RedisJobDispatcher:
             return Ok(result);
         }
 
-        if let Some(cancelled_result) = self
+        match self
             .check_cancellation_status(&jid, &wid, &wdat, meta.clone(), &jdat)
             .await?
         {
-            let (result, completion_rx) = self
-                .result_processor()
-                .process_result(cancelled_result, None, wdat)
-                .await?;
-            if let Some(rx) = completion_rx
-                && rx.await.is_err()
-            {
-                tracing::warn!(
-                    "stream completion sender dropped for cancelled job {:?}",
-                    &jid
-                );
+            super::DispatchEligibility::Execute => {}
+            super::DispatchEligibility::Skip => return Ok(JobResult::default()),
+            super::DispatchEligibility::Cancelled(cancelled_result) => {
+                return self
+                    .process_cancelled_dispatch_result(*cancelled_result, &wdat, &jid)
+                    .await;
             }
-            return Ok(result);
         }
 
         let start_permit = self
@@ -319,6 +322,18 @@ pub trait RedisJobDispatcher:
             self.worker_instance_session().is_some(),
             start_permit.is_some(),
         ) {
+            match self
+                .restore_pending_attempt_for_requeue(&jid, &wid, &wdat, meta.clone(), &jdat)
+                .await?
+            {
+                RequeueRestoreOutcome::Restored => {}
+                RequeueRestoreOutcome::Cancelled(result) => {
+                    return self
+                        .process_cancelled_dispatch_result(*result, &wdat, &jid)
+                        .await;
+                }
+                RequeueRestoreOutcome::Skip => return Ok(JobResult::default()),
+            }
             let job = Job {
                 id: Some(jid),
                 data: Some(jdat),
@@ -348,6 +363,9 @@ pub trait RedisJobDispatcher:
             && wdat.queue_type == QueueType::WithBackup as i32
         {
             if let Some(repo) = self.rdb_job_repository_opt() {
+                // TODO(#311): Claim RUNNING only after the RDB lease is acquired.
+                // Releasing this status blindly when grab fails can hide an active
+                // RDB-dispatched owner and prevent its cancellation notification.
                 // grab job in db (only for record as in progress)
                 if let Some(grabbed_until) = repo
                     .grab_job_with_lease(
@@ -359,10 +377,6 @@ pub trait RedisJobDispatcher:
                 {
                     grab_lease_expires_at = Some(grabbed_until);
                     // change status to running
-                    self.redis_job_repository()
-                        .job_processing_status_repository()
-                        .upsert_status(&jid, &JobProcessingStatus::Running)
-                        .await?;
 
                     // Index JobProcessingStatus in RDB (if enabled)
                     if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
@@ -414,10 +428,6 @@ pub trait RedisJobDispatcher:
                 jid.value
             );
             // change status to running
-            self.redis_job_repository()
-                .job_processing_status_repository()
-                .upsert_status(&jid, &JobProcessingStatus::Running)
-                .await?;
 
             // Index JobProcessingStatus in RDB (if enabled)
             if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
@@ -459,12 +469,25 @@ pub trait RedisJobDispatcher:
         let jdat_priority = jdat.priority;
         let jdat_enqueue_time = jdat.enqueue_time;
         let jdat_request_streaming = jdat.streaming_type != 0;
+        let attempt_for_status = jdat.retried;
 
         // run job (load-only requests were handled and returned above)
         if let Some(permit) = &start_permit
             && !permit.confirm_start()
         {
             await_running_index_update(running_index_task.take(), jid.value).await;
+            match self
+                .restore_pending_attempt_for_requeue(&jid, &wid, &wdat, meta.clone(), &jdat)
+                .await?
+            {
+                RequeueRestoreOutcome::Restored => {}
+                RequeueRestoreOutcome::Cancelled(result) => {
+                    return self
+                        .process_cancelled_dispatch_result(*result, &wdat, &jid)
+                        .await;
+                }
+                RequeueRestoreOutcome::Skip => return Ok(JobResult::default()),
+            }
             if let Some(grabbed_until) = grab_lease_expires_at
                 && let Some(repo) = self.rdb_job_repository_opt()
                 && !repo
@@ -476,10 +499,6 @@ pub trait RedisJobDispatcher:
                     jid.value
                 );
             }
-            self.redis_job_repository()
-                .job_processing_status_repository()
-                .upsert_status(&jid, &JobProcessingStatus::Pending)
-                .await?;
             if let Some(index_repo) = self.rdb_job_processing_status_index_repository()
                 && matches!(
                     index_repo
@@ -531,15 +550,7 @@ pub trait RedisJobDispatcher:
                 },
             )
             .await;
-        let id = if let Some(id) = r.0.id {
-            id
-        } else {
-            let id = JobResultId {
-                value: self.id_generator().generate_id()?,
-            };
-            r.0.id = Some(id);
-            id
-        };
+        let id = super::ensure_job_result_id(self.id_generator(), &mut r.0)?;
         // TODO execute and return result to result channel.
         tracing::trace!(
             "send result id: {:?}, data: {:?}, hasStream:{}, ",
@@ -550,9 +561,18 @@ pub trait RedisJobDispatcher:
         await_running_index_update(running_index_task.take(), jid.value).await;
         // change status to wait handling result
         if resolved.response_type != ResponseType::Direct as i32 {
-            self.redis_job_repository()
+            let running = infra::infra::job::status::JobProcessingStatusRecord {
+                status: JobProcessingStatus::Running,
+                retried: attempt_for_status,
+            };
+            let wait_result = infra::infra::job::status::JobProcessingStatusRecord {
+                status: JobProcessingStatus::WaitResult,
+                retried: attempt_for_status,
+            };
+            let _ = self
+                .redis_job_repository()
                 .job_processing_status_repository()
-                .upsert_status(&jid, &JobProcessingStatus::WaitResult)
+                .compare_and_set_status(&jid, Some(running), Some(wait_result))
                 .await?;
 
             // Index JobProcessingStatus in RDB (if enabled)
@@ -597,6 +617,69 @@ pub trait RedisJobDispatcher:
             tracing::warn!("stream completion sender dropped for job {:?}", &jid);
         }
         Ok(result)
+    }
+
+    /// Restores a claimed attempt before placing it back on Redis.
+    ///
+    /// A cancellation that wins this race is finalized instead of re-queueing
+    /// the job, so a stale delivery cannot revive a cancelled attempt.
+    async fn restore_pending_attempt_for_requeue(
+        &self,
+        job_id: &proto::jobworkerp::data::JobId,
+        worker_id: &proto::jobworkerp::data::WorkerId,
+        worker_data: &proto::jobworkerp::data::WorkerData,
+        job_metadata: std::collections::HashMap<String, String>,
+        job_data: &proto::jobworkerp::data::JobData,
+    ) -> Result<RequeueRestoreOutcome> {
+        let running = JobProcessingStatusRecord {
+            status: JobProcessingStatus::Running,
+            retried: job_data.retried,
+        };
+        let pending = JobProcessingStatusRecord {
+            status: JobProcessingStatus::Pending,
+            retried: job_data.retried,
+        };
+        match self
+            .job_processing_status_repository()
+            .compare_and_set_status(job_id, Some(running), Some(pending))
+            .await?
+        {
+            StatusTransitionResult::Applied => Ok(RequeueRestoreOutcome::Restored),
+            StatusTransitionResult::Conflict(Some(record))
+                if record.status == JobProcessingStatus::Cancelling
+                    && record.retried == job_data.retried =>
+            {
+                match self
+                    .check_cancellation_status(
+                        job_id,
+                        worker_id,
+                        worker_data,
+                        job_metadata,
+                        job_data,
+                    )
+                    .await?
+                {
+                    super::DispatchEligibility::Cancelled(result) => {
+                        Ok(RequeueRestoreOutcome::Cancelled(result))
+                    }
+                    super::DispatchEligibility::Skip => Ok(RequeueRestoreOutcome::Skip),
+                    super::DispatchEligibility::Execute => {
+                        Err(JobWorkerError::RuntimeError(format!(
+                            "job {} unexpectedly became executable while cancelling",
+                            job_id.value
+                        ))
+                        .into())
+                    }
+                }
+            }
+            StatusTransitionResult::Conflict(current) => {
+                Err(JobWorkerError::RuntimeError(format!(
+                    "lost RUNNING status ownership before isolated job requeue: {} (current: {:?})",
+                    job_id.value, current
+                ))
+                .into())
+            }
+        }
     }
 }
 

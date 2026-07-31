@@ -37,6 +37,25 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing;
 
+fn apply_resolved_delivery_settings(
+    result: &mut JobResult,
+    worker: &WorkerData,
+    resolved: &app::app::job::ResolvedJobParams,
+) {
+    let Some(data) = result.data.as_mut() else {
+        return;
+    };
+
+    // Cancellation helpers only know JobData. The dispatcher-side runner
+    // boundary owns the resolved worker settings required for result delivery.
+    data.response_type = resolved.response_type;
+    data.store_success = resolved.store_success;
+    data.store_failure = resolved.store_failure;
+    data.broadcast_results = resolved.broadcast_results;
+    data.worker_name = worker.name.clone();
+    data.resolved_retry_policy = resolved.retry_policy;
+}
+
 /// Whether a job finished normally or was dropped by its timeout. Used by run_job
 /// to decide whether a timed-out runner must be detached from the pool.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -585,13 +604,15 @@ pub trait JobRunner:
         RunnerOutcome,
     ) {
         let data = job.data.as_ref().unwrap(); // XXX unwrap
+        let resolved = app::app::job::resolve_job_params(worker_data, data.overrides.as_ref());
 
         // Setup cancellation monitoring if runner supports it
         let job_id = job.id.as_ref().unwrap();
-        if let Some(cancelled_result) = self
+        if let Some(mut cancelled_result) = self
             .setup_cancellation_monitoring_if_supported(job_id, data, runner_impl)
             .await
         {
+            apply_resolved_delivery_settings(&mut cancelled_result, worker_data, &resolved);
             // Job was already cancelled, return the cancellation result immediately
             return (cancelled_result, None, RunnerOutcome::Normal);
         }
@@ -614,9 +635,6 @@ pub trait JobRunner:
         let name = runner_impl.name();
         let streaming_type =
             StreamingType::try_from(data.streaming_type).unwrap_or(StreamingType::None);
-
-        // Resolve once, reuse for status check and result construction
-        let resolved = app::app::job::resolve_job_params(worker_data, data.overrides.as_ref());
 
         match streaming_type {
             StreamingType::Response => {
@@ -994,6 +1012,36 @@ pub(crate) mod tests {
         fn runner_pool_map(&self) -> &RunnerFactoryWithPoolMap {
             &self.runner_pool
         }
+    }
+
+    #[test]
+    fn immediate_cancellation_uses_resolved_delivery_settings() {
+        let worker = WorkerData {
+            name: "direct-worker".to_string(),
+            response_type: ResponseType::Direct as i32,
+            store_success: true,
+            store_failure: true,
+            broadcast_results: true,
+            ..Default::default()
+        };
+        let job_data = JobData::default();
+        let resolved = app::app::job::resolve_job_params(&worker, job_data.overrides.as_ref());
+        let mut result = JobResult {
+            data: Some(JobResultData {
+                response_type: ResponseType::NoResult as i32,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        apply_resolved_delivery_settings(&mut result, &worker, &resolved);
+
+        let data = result.data.unwrap();
+        assert_eq!(data.response_type, ResponseType::Direct as i32);
+        assert!(data.store_success);
+        assert!(data.store_failure);
+        assert!(data.broadcast_results);
+        assert_eq!(data.worker_name, worker.name);
     }
     impl JobRunner for MockJobRunner {
         fn register_feed_sender(&self, _job_id: i64, _sender: mpsc::Sender<FeedData>) {}

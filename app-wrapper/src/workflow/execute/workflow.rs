@@ -1362,20 +1362,17 @@ mod tests {
             child_guard.mark_completed();
 
             // Workflow status flips and the child job was actively cancelled.
-            // For a Running job, cancel_job broadcasts cancellation and then
-            // cleanup_job deletes its processing status. So after the fan-out
-            // the child's status is gone (None). Had delete_job NOT been called,
-            // it would still read Running — which is exactly what distinguishes
-            // "fan-out reached the child" from "fan-out skipped it".
+            // A running child retains CANCELLING until its result processor decides
+            // whether an actual terminal result or cancellation is published.
             assert_eq!(
                 executor.workflow_context.read().await.status,
                 WorkflowStatus::Cancelled
             );
             let child_status = status_repo.find_status(&child).await.unwrap();
             assert_eq!(
-                child_status, None,
-                "registered child job must be cancelled+cleaned-up by cancel() fan-out \
-                 (still Running means delete_job was never invoked)"
+                child_status,
+                Some(JobProcessingStatus::Cancelling),
+                "registered child must retain CANCELLING after workflow fan-out"
             );
         })
     }

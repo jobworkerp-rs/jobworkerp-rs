@@ -224,7 +224,7 @@ mod tests {
             let test_cases = vec![
                 (JobProcessingStatus::Pending, true),
                 (JobProcessingStatus::Running, true),
-                (JobProcessingStatus::WaitResult, false), // Can't cancel waiting results
+                (JobProcessingStatus::WaitResult, true), // Prevent retry after Delete
             ];
 
             for (initial_status, should_cancel) in test_cases {
@@ -430,8 +430,9 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(
-                status, None,
-                "RUNNING job status should be deleted after cancellation"
+                status,
+                Some(JobProcessingStatus::Cancelling),
+                "RUNNING job status should remain cancelling until result processing"
             );
 
             tracing::info!("test_delete_running_job_cancellation_broadcast completed successfully");
@@ -439,12 +440,8 @@ mod tests {
         })
     }
 
-    /// Sprint 3 Enhancement: Verify WAIT_RESULT job cancellation rejection
-    /// Test Case 3: WAIT_RESULT状態のJobキャンセル不可
-    /// - Verify that delete returns false
-    /// - Verify that status remains unchanged
     #[test]
-    fn test_delete_wait_result_job_rejection() -> Result<()> {
+    fn test_delete_wait_result_job_marks_cancelling() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
@@ -468,24 +465,19 @@ mod tests {
                 "Job should be in WAIT_RESULT status"
             );
 
-            // Attempt to cancel WAIT_RESULT job (should fail)
+            // Cancellation must win over a possible retry decision.
             let result = app.delete_job(&job_id).await?;
-            assert!(
-                !result,
-                "WAIT_RESULT job cancellation should fail (return false)"
-            );
+            assert!(result);
 
-            // This is the expected behavior after fix: status should be preserved
             let status = app
                 .job_processing_status_repository()
                 .find_status(&job_id)
                 .await
                 .unwrap();
-            // Fixed implementation preserves the status record
             assert_eq!(
                 status,
-                Some(JobProcessingStatus::WaitResult),
-                "WAIT_RESULT job status should be preserved when cancellation fails"
+                Some(JobProcessingStatus::Cancelling),
+                "WAIT_RESULT must become cancelling before retry is considered"
             );
 
             tracing::info!("test_delete_wait_result_job_rejection completed successfully");

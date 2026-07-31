@@ -36,7 +36,7 @@ Database schema:
 | | LOG_USE_STDOUT | Whether to output logs to stdout (boolean) | true |
 | | OTLP_ADDR | OpenTelemetry gRPC endpoint for distributed tracing and metrics | - (disabled when unset) |
 | **Storage Settings** | STORAGE_TYPE | Standalone: Single instance, Scalable: Multiple instances | Standalone |
-| | JOB_QUEUE_EXPIRE_JOB_RESULT_SECONDS | Maximum wait time for worker.broadcast_results=true | 86400 (dot.env recommends 3600) |
+| | JOB_QUEUE_EXPIRE_JOB_RESULT_SECONDS | Retention time for completed results when `worker.broadcast_results=true`; it does not limit active result streams or Direct response waits | 86400 (dot.env recommends 3600) |
 | | JOB_QUEUE_FETCH_INTERVAL | Interval for periodic fetch of jobs stored in RDB | 1000 |
 | | STORAGE_RESTORE_AT_STARTUP | Flag for restoring jobs after crashes | false |
 | **gRPC Settings** | GRPC_ADDR | gRPC server address:port | 0.0.0.0:9000 |
@@ -61,5 +61,16 @@ Database schema:
 | | WORKFLOW_SKIP_SCHEMA_VALIDATION | Skip schema validation | false |
 | **Runner/Plugin Settings** | PLUGIN_LOAD_TIMEOUT_SECS | Plugin load timeout (seconds) | 10 |
 | | MCP_CONNECTION_TIMEOUT_SECS | MCP connection timeout (seconds) | 15 |
+
+## Scalable status-format rollout
+
+Job statuses in Redis `JOB_STATUS` use the `status:retried` format, which includes the retry count. It is incompatible with the integer format written by older versions, so old and new versions must not share the same Redis deployment.
+
+Use the following sequence when rolling a Scalable deployment over to this format:
+
+1. Stop accepting new jobs and drain both normal and delayed queues. Wait for running jobs to finish or be cancelled.
+2. Stop every worker running the old version. Do not upgrade with unfinished jobs, including when `STORAGE_RESTORE_AT_STARTUP` is enabled.
+3. After verifying that every job is complete or cancelled, delete the Redis `JOB_STATUS` hash. This permanently removes stored statuses, so never do this before draining has finished.
+4. Deploy the new version to every instance, then resume job acceptance and workers.
 
 For additional environment variables (database connections, Redis, cache, LLM API keys, etc.), see [Advanced Configuration](./configuration-advanced.md).

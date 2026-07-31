@@ -132,7 +132,8 @@ mod hybrid_indexing_integration_tests {
             assert_eq!(status_repo.find_status(&job_id).await.unwrap(), None);
 
             // Step 3: Verify RDB index status (should be logically deleted)
-            // Wait and retry for async indexing to complete (deletion)
+            // Wait for the best-effort CANCELLING index update. Cleanup is deferred
+            // until result processing, so `deleted_at` must remain NULL here.
             // MySQL may have more latency than SQLite
             tracing::info!("Step 3: Verify RDB index status");
             let query = "SELECT deleted_at FROM job_processing_status WHERE job_id = ?";
@@ -285,16 +286,16 @@ mod hybrid_indexing_integration_tests {
 
             assert_eq!(
                 status_repo.find_status(&job_id).await.unwrap(),
-                None,
-                "RUNNING job status should be deleted after cancellation"
+                Some(JobProcessingStatus::Cancelling),
+                "RUNNING job status should remain cancelling until result processing"
             );
 
-            // Wait and retry for async indexing to complete (deletion)
+            // Wait for the best-effort CANCELLING index update.
             // MySQL may have more latency than SQLite
             let rdb_pool = index_repo.db_pool();
             let query = "SELECT deleted_at FROM job_processing_status WHERE job_id = ?";
 
-            let mut deleted_at_result = None;
+            let mut cancelling_visible = false;
             for attempt in 0..10 {
                 tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
 
@@ -306,34 +307,23 @@ mod hybrid_indexing_integration_tests {
                     .await?;
 
                 match row_result {
-                    Some(Some(timestamp)) => {
-                        deleted_at_result = Some(timestamp);
+                    Some(Some(_)) => panic!("CANCELLING job must not be logically deleted yet"),
+                    Some(None) => {
+                        tracing::debug!(attempt, "CANCELLING job remains visible in RDB index");
+                        cancelling_visible = true;
                         break;
                     }
-                    Some(None) => {
-                        tracing::debug!(
-                            attempt,
-                            "RUNNING job row exists but deleted_at is still NULL, retrying..."
-                        );
-                        continue;
-                    }
                     None => {
-                        panic!("RUNNING job row does not exist in RDB index after cancellation");
+                        tracing::debug!(attempt, "CANCELLING index update has not arrived yet");
+                        continue;
                     }
                 }
             }
 
-            match deleted_at_result {
-                Some(timestamp) => {
-                    tracing::info!(
-                        deleted_at = timestamp,
-                        "RUNNING job logically deleted in RDB at timestamp"
-                    );
-                }
-                None => {
-                    panic!("RUNNING job row exists but deleted_at is still NULL after retries");
-                }
-            }
+            assert!(
+                cancelling_visible,
+                "CANCELLING job must remain in the RDB index"
+            );
 
             tracing::info!(
                 "test_cancel_running_job_with_rdb_indexing_hybrid completed successfully"

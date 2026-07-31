@@ -1,6 +1,9 @@
 use super::super::JobBuilder;
 use super::super::worker::{UseWorkerApp, WorkerApp};
-use super::{JobApp, JobCacheKeys, resolve_and_validate_job_params, resolve_job_params};
+use super::{
+    JobApp, JobCacheKeys, JobCancellationLifecycle, PendingStatusPublication,
+    resolve_and_validate_job_params, resolve_job_params,
+};
 use crate::app::{UseWorkerConfig, WorkerConfig};
 use crate::module::AppConfigModule;
 use anyhow::Result;
@@ -191,102 +194,7 @@ impl RdbChanJobAppImpl {
     /// - `Ok(true)`: Cancellation succeeded
     /// - `Ok(false)`: Cancellation failed (job in non-cancellable state)
     pub(crate) async fn cancel_job(&self, id: &JobId) -> Result<bool> {
-        let current_status = self
-            .job_processing_status_repository()
-            .find_status(id)
-            .await?;
-
-        match current_status {
-            Some(JobProcessingStatus::Running) => {
-                // Running → Cancelling state change
-                self.job_processing_status_repository()
-                    .upsert_status(id, &JobProcessingStatus::Cancelling)
-                    .await?;
-
-                // Update RDB index status to CANCELLING (if enabled)
-                if let Some(index_repo) = self.job_status_index_repository.as_ref()
-                    && let Err(e) = index_repo
-                        .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
-                        .await
-                {
-                    tracing::warn!(
-                        "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
-                        id.value,
-                        e
-                    );
-                }
-                // Note: RDB index deleted_at will be set by cleanup_job()
-
-                // Active cancellation of running jobs (broadcast)
-                self.broadcast_job_cancellation(id).await?;
-
-                tracing::info!(
-                    "Job {} marked as cancelling, broadcasting to workers",
-                    id.value
-                );
-
-                // Cleanup job resources
-                self.cleanup_job(id).await?;
-                Ok(true)
-            }
-            Some(JobProcessingStatus::Pending) => {
-                // Pending → Cancelling state change (Worker will detect when fetching)
-                self.job_processing_status_repository()
-                    .upsert_status(id, &JobProcessingStatus::Cancelling)
-                    .await?;
-
-                // Update RDB index status to CANCELLING (if enabled)
-                if let Some(index_repo) = self.job_status_index_repository.as_ref()
-                    && let Err(e) = index_repo
-                        .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
-                        .await
-                {
-                    tracing::warn!(
-                        "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
-                        id.value,
-                        e
-                    );
-                }
-                // Note: RDB index deleted_at will be set by cleanup_job()
-
-                tracing::info!("Pending job {} marked as cancelling", id.value);
-
-                // Cleanup job resources
-                self.cleanup_job(id).await?;
-                Ok(true)
-            }
-            Some(JobProcessingStatus::Cancelling) => {
-                tracing::info!("Job {} is already being cancelled", id.value);
-                // Already being cancelled, cleanup anyway
-                self.cleanup_job(id).await?;
-                Ok(true)
-            }
-            Some(JobProcessingStatus::WaitResult) => {
-                // Cannot cancel: preserve status, no changes
-                tracing::info!(
-                    "Job {} is waiting for result processing, cancellation not possible",
-                    id.value
-                );
-                Ok(false)
-            }
-            Some(JobProcessingStatus::Unknown) => {
-                tracing::warn!(
-                    "Job {} has unknown status, cancellation not possible",
-                    id.value
-                );
-                Ok(false)
-            }
-            None => {
-                // Status doesn't exist in Redis (already completed or doesn't exist)
-                // Still cleanup RDB index and other resources (orphaned records)
-                tracing::info!(
-                    "Job {} status not found in Redis, cleaning up RDB index if exists",
-                    id.value
-                );
-                self.cleanup_job(id).await?;
-                Ok(false)
-            }
-        }
+        self.cancel_job_lifecycle(id).await
     }
 
     /// Internal: Unconditional job cleanup (always deletes resources)
@@ -569,6 +477,27 @@ impl RdbChanJobAppImpl {
 }
 
 #[async_trait]
+impl JobCancellationLifecycle for RdbChanJobAppImpl {
+    async fn cleanup_cancelled_job(&self, id: &JobId) -> Result<()> {
+        self.cleanup_job(id).await
+    }
+
+    async fn broadcast_cancelled_job(&self, id: &JobId) -> Result<()> {
+        self.broadcast_job_cancellation(id).await
+    }
+
+    async fn record_cancelling_index(&self, id: &JobId) {
+        if let Some(index_repo) = self.job_status_index_repository.as_ref()
+            && let Err(error) = index_repo
+                .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
+                .await
+        {
+            tracing::warn!("Failed to index CANCELLING for job {}: {error:?}", id.value);
+        }
+    }
+}
+
+#[async_trait]
 impl JobApp for RdbChanJobAppImpl {
     async fn enqueue_job_with_worker(
         &self,
@@ -664,7 +593,13 @@ impl JobApp for RdbChanJobAppImpl {
         };
         let job = super::build_load_job(job_id, worker_id, timeout_ms);
         // Drive the load on the worker side and wait for its Direct response.
-        self.enqueue_job_sync_enqueue_only(&job, &w, true).await?;
+        self.enqueue_job_sync_enqueue_only(
+            &job,
+            &w,
+            true,
+            PendingStatusPublication::AlreadyClaimedForRetry,
+        )
+        .await?;
         let total_timeout = job.data.as_ref().map(|d| d.timeout).filter(|t| *t > 0);
         let (result, _stream) = self
             ._wait_job_for_direct_response(&job_id, total_timeout, false)
@@ -816,16 +751,13 @@ impl JobApp for RdbChanJobAppImpl {
             data: Some(job_data.clone()),
             metadata: (*metadata).clone(),
         };
-        let total_timeout =
-            proto::calculate_direct_response_timeout_ms(timeout, resolved.retry_policy.as_ref());
-
         // Establish the output subscription before making the job visible to a
         // worker. Broadcast channels do not retain messages, so doing this
         // after enqueue can lose an instant runner's Data/End items.
         let result_stream = if request_streaming {
             Some(
                 self.job_result_pubsub_repository()
-                    .subscribe_result_stream(&jid, total_timeout)
+                    .subscribe_result_stream(&jid, None)
                     .await?,
             )
         } else {
@@ -853,7 +785,10 @@ impl JobApp for RdbChanJobAppImpl {
         // If making it visible to a worker fails, neither of the subscriptions
         // can ever receive a result. Drop the output receiver and stop the
         // pre-started result waiter before returning the enqueue error.
-        let job_id = match self.enqueue_job_sync_enqueue_only(&job, &w, false).await {
+        let job_id = match self
+            .enqueue_job_sync_enqueue_only(&job, &w, false, PendingStatusPublication::Create)
+            .await
+        {
             Ok(job_id) => job_id,
             Err(error) => {
                 abort_deferred_result_wait(result_handle, result_stream).await;
@@ -871,10 +806,9 @@ impl JobApp for RdbChanJobAppImpl {
             resolved.broadcast_results,
         );
 
-        // Enqueue and cache admission are complete. Start the Direct-response
-        // timeout now, while retaining the receiver registered before the job
-        // became visible to a worker.
-        let result_handle = start_deferred_result_wait(result_handle, total_timeout);
+        // Keep the registered receiver until the job reaches a terminal state.
+        // JobData.timeout bounds runner execution, not queue residence time.
+        let result_handle = start_deferred_result_wait(result_handle, None);
         let fut = self.wait_for_direct_response_future(result_handle, result_stream);
         Ok((job_id, fut))
     }
@@ -896,15 +830,8 @@ impl JobApp for RdbChanJobAppImpl {
                 // TODO validate argument types
                 // self.validate_worker_and_job_args(&w, data.args.as_ref())?;
 
-                // Restore live status and the search-index row BEFORE either
-                // queue path makes the job grabbable. If the RDB upsert below
-                // were to run first, a worker could pick the job up while the
-                // index row still carried `deleted_at` from the prior
-                // completion — `index_status(Running)` would skip and the
-                // job would never appear in admin search.
-                self.job_processing_status_repository()
-                    .upsert_status(jid, &JobProcessingStatus::Pending)
-                    .await?;
+                // The retry processor has already conditionally created the
+                // live PENDING record. Only restore the secondary index here.
                 // use db queue (run after, periodic, queue_type=DB worker)
                 let use_rdb_queue = is_run_after_job_data
                     || w.periodic_interval > 0
@@ -938,7 +865,14 @@ impl JobApp for RdbChanJobAppImpl {
                         || w.queue_type == QueueType::WithBackup as i32)
                 {
                     // enqueue to chan for instant job
-                    self.enqueue_job_sync(job, &w).await.map(|_| true)
+                    self.enqueue_job_sync_enqueue_only(
+                        job,
+                        &w,
+                        false,
+                        PendingStatusPublication::AlreadyClaimedForRetry,
+                    )
+                    .await
+                    .map(|_| true)
                 } else {
                     Ok(false)
                 };
@@ -1527,7 +1461,7 @@ impl UseChanJobResultPubSubRepository for RdbChanJobAppImpl {
 
 // for rdb chan
 #[async_trait]
-pub trait RdbChanJobAppHelper:
+pub(crate) trait RdbChanJobAppHelper:
     UseRdbChanJobRepository
     + UseChanJobQueueRepository
     + UseJobProcessingStatusRepository
@@ -1554,19 +1488,14 @@ where
         // wait phases keeps this method's behavior identical while letting
         // `enqueue_job_with_channel` reuse the enqueue phase and defer the wait.
         let job_id = self
-            .enqueue_job_sync_enqueue_only(job, worker, false)
+            .enqueue_job_sync_enqueue_only(job, worker, false, PendingStatusPublication::Create)
             .await?;
         let resolved =
             resolve_job_params(worker, job.data.as_ref().and_then(|d| d.overrides.as_ref()));
         if resolved.response_type == ResponseType::Direct as i32 {
-            let job_timeout = job.data.as_ref().map(|d| d.timeout).unwrap_or(0);
-            let total_timeout = proto::calculate_direct_response_timeout_ms(
-                job_timeout,
-                resolved.retry_policy.as_ref(),
-            );
             self._wait_job_for_direct_response(
                 &job_id,
-                total_timeout,
+                None,
                 job.data.as_ref().is_some_and(|j| j.streaming_type != 0),
             )
             .await
@@ -1585,6 +1514,7 @@ where
         job: &Job,
         worker: &WorkerData,
         load_only: bool,
+        pending_status_publication: PendingStatusPublication,
     ) -> Result<JobId> {
         let job_id = job.id.unwrap();
         if self.is_run_after_job(job) {
@@ -1593,38 +1523,55 @@ where
             )
             .into());
         }
-        self.chan_job_queue_repository()
+        if !load_only && pending_status_publication.creates_status() {
+            self.job_processing_status_repository()
+                .upsert_status(&job_id, &JobProcessingStatus::Pending)
+                .await?;
+        }
+        if let Err(error) = self
+            .chan_job_queue_repository()
             .enqueue_job_with_load_only(worker.channel.as_ref(), job, load_only)
-            .await?;
+            .await
+        {
+            if !load_only
+                && pending_status_publication.creates_status()
+                && let Err(cleanup_error) = self
+                    .job_processing_status_repository()
+                    .delete_status(&job_id)
+                    .await
+            {
+                tracing::warn!(
+                    job_id = job_id.value,
+                    %cleanup_error,
+                    "failed to remove PENDING status after channel enqueue failure"
+                );
+            }
+            return Err(error);
+        }
         // Load-only (config-check / pre-load) requests are not real jobs: they
         // are not looked up via find_job and have no lifecycle to observe, so
         // skip the running-job cache admission and Pending status entirely
         // (the worker side likewise skips all status management for them).
-        if !load_only {
-            if let Job {
+        if !load_only
+            && let Job {
                 id: Some(id),
                 data: Some(job_data),
                 ..
             } = &job
-            {
-                let cache_key = Arc::new(Self::find_cache_key(id));
-                // For timeout=0 (unlimited), uses expire_job_result_seconds from config
-                let job_ttl = self.calculate_job_ttl(job_data.timeout);
+        {
+            let cache_key = Arc::new(Self::find_cache_key(id));
+            // For timeout=0 (unlimited), uses expire_job_result_seconds from config
+            let job_ttl = self.calculate_job_ttl(job_data.timeout);
 
-                // Direct jobs exist only in cache (not in RDB), so wait for
-                // stretto admission to complete before returning.
-                self.set_and_wait_cache(cache_key, job.clone(), job_ttl.as_ref())
-                    .await;
-                tracing::debug!(
-                    "Cached Direct Response job {} with TTL {:?} for running job visibility",
-                    id.value,
-                    job_ttl
-                );
-            }
-            // update status (not use direct response)
-            self.job_processing_status_repository()
-                .upsert_status(&job_id, &JobProcessingStatus::Pending)
-                .await?;
+            // Direct jobs exist only in cache (not in RDB), so wait for
+            // stretto admission to complete before returning.
+            self.set_and_wait_cache(cache_key, job.clone(), job_ttl.as_ref())
+                .await;
+            tracing::debug!(
+                "Cached Direct Response job {} with TTL {:?} for running job visibility",
+                id.value,
+                job_ttl
+            );
         }
         Ok(job_id)
     }
@@ -1810,6 +1757,27 @@ mod tests {
             "the timeout must not include pre-enqueue work"
         );
         assert!(result_wait.await.expect("wait task must join").is_err());
+    }
+
+    #[tokio::test]
+    async fn deferred_result_without_timeout_waits_for_terminal_result() {
+        let expected = JobResult {
+            id: Some(JobResultId { value: 101 }),
+            ..JobResult::default()
+        };
+        let expected_for_task = expected.clone();
+        let result_handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            Ok(expected_for_task)
+        });
+
+        let result_wait = start_deferred_result_wait(result_handle, None);
+        let result = tokio::time::timeout(Duration::from_secs(1), result_wait)
+            .await
+            .expect("terminal result should be delivered")
+            .expect("result wait task should join")
+            .expect("terminal result should not fail");
+        assert_eq!(result, expected);
     }
 
     async fn create_test_app(

@@ -66,7 +66,8 @@ pub trait UseIdGenerator {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct JobQueueConfig {
-    /// seconds for expire direct or run after job_result queue
+    /// Seconds to retain completed Direct or ListenAfter job results.
+    /// Active result subscriptions are not bounded by this retention period.
     pub expire_job_result_seconds: u32,
     /// msec for periodic or run_after job
     pub fetch_interval: u32,

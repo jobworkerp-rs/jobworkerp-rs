@@ -18,12 +18,15 @@ use app::module::AppModule;
 use command_utils::trace::Tracing;
 use debug_stub_derive::DebugStub;
 use futures::stream::BoxStream;
-use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::job::{
+    rows::UseJobqueueAndCodec,
+    status::{JobProcessingStatusRecord, StatusTransitionResult},
+};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::JobResultData;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultOutputItem;
-use proto::jobworkerp::data::{JobResult, StreamingType, WorkerData};
+use proto::jobworkerp::data::{JobResult, ResultOutput, ResultStatus, StreamingType, WorkerData};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing;
@@ -33,6 +36,13 @@ pub struct ResultProcessorImpl {
     pub config_module: Arc<AppConfigModule>,
     #[debug_stub = "AppModule"]
     pub app_module: Arc<AppModule>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetryTransitionOutcome {
+    Pending,
+    Cancelled,
+    NotClaimed,
 }
 
 impl Tracing for ResultProcessorImpl {}
@@ -77,6 +87,7 @@ impl ResultProcessorImpl {
             metadata,
         } = jr
         {
+            let mut data = self.cancel_retryable_result_if_requested(data).await?;
             // Load-only: skip retry/periodic/store/temp-cleanup entirely and only
             // publish the Direct result so the Load caller unblocks.
             if load_only {
@@ -99,7 +110,7 @@ impl ResultProcessorImpl {
             // would find a cached entry with output=None and return it immediately
             // without the stream, causing callers to see empty output.
             let complete_or_retry_result = self
-                .process_complete_or_retry_condition(&id, &data, st_data, &w, &metadata)
+                .process_complete_or_retry_condition(&id, &mut data, st_data, &w, &metadata)
                 .await;
             // Store result if necessary by result status and worker setting.
             // data.broadcast_results is already resolved by resolve_job_params()
@@ -141,7 +152,7 @@ impl ResultProcessorImpl {
     async fn process_complete_or_retry_condition(
         &self,
         id: &JobResultId,
-        dat: &JobResultData,
+        dat: &mut JobResultData,
         stream: Option<BoxStream<'static, ResultOutputItem>>,
         worker: &WorkerData,
         metadata: &HashMap<String, String>,
@@ -150,6 +161,16 @@ impl ResultProcessorImpl {
         let jopt = Self::build_retry_job(dat, worker, metadata);
         // need to retry
         if let Some(j) = jopt {
+            match self.transition_retry_to_pending_or_cancel(dat, &j).await? {
+                RetryTransitionOutcome::Pending => {}
+                RetryTransitionOutcome::Cancelled | RetryTransitionOutcome::NotClaimed => {
+                    return self
+                        .job_app()
+                        .complete_job(id, dat, stream)
+                        .await
+                        .map(|(_, rx)| rx);
+                }
+            }
             // update or insert job for retry or periodic
             tracing::debug!(
                 "need to retry worker: {:?}, job: {}",
@@ -210,6 +231,81 @@ impl ResultProcessorImpl {
             complete_result?;
             Ok(completion_rx)
         }
+    }
+
+    async fn cancel_retryable_result_if_requested(
+        &self,
+        mut data: JobResultData,
+    ) -> Result<JobResultData> {
+        if data.status != ResultStatus::ErrorAndRetry as i32 {
+            return Ok(data);
+        }
+        let Some(job_id) = data.job_id.as_ref() else {
+            return Ok(data);
+        };
+        let cancelled = matches!(
+            self.app_module
+                .job_processing_status_repository()
+                .find_status_record(job_id)
+                .await?,
+            Some(record)
+                if record.status == proto::jobworkerp::data::JobProcessingStatus::Cancelling
+                    && record.retried == data.retried
+        );
+        if cancelled {
+            data.status = ResultStatus::Cancelled as i32;
+            data.output = Some(ResultOutput {
+                items: b"Job was cancelled while retrying".to_vec(),
+            });
+            data.max_retry = 0;
+        }
+        Ok(data)
+    }
+
+    async fn transition_retry_to_pending_or_cancel(
+        &self,
+        data: &mut JobResultData,
+        retry_job: &proto::jobworkerp::data::Job,
+    ) -> Result<RetryTransitionOutcome> {
+        let Some(job_id) = data.job_id.as_ref() else {
+            return Ok(RetryTransitionOutcome::Pending);
+        };
+        let Some(next_data) = retry_job.data.as_ref() else {
+            return Ok(RetryTransitionOutcome::Pending);
+        };
+        let repository = self.app_module.job_processing_status_repository();
+        let Some(current) = repository.find_status_record(job_id).await? else {
+            return Ok(RetryTransitionOutcome::NotClaimed);
+        };
+        if current.status == proto::jobworkerp::data::JobProcessingStatus::Cancelling {
+            Self::make_cancelled(data);
+            return Ok(RetryTransitionOutcome::Cancelled);
+        }
+        let next = JobProcessingStatusRecord {
+            status: proto::jobworkerp::data::JobProcessingStatus::Pending,
+            retried: next_data.retried,
+        };
+        match repository
+            .compare_and_set_status(job_id, Some(current), Some(next))
+            .await?
+        {
+            StatusTransitionResult::Applied => Ok(RetryTransitionOutcome::Pending),
+            StatusTransitionResult::Conflict(Some(record))
+                if record.status == proto::jobworkerp::data::JobProcessingStatus::Cancelling =>
+            {
+                Self::make_cancelled(data);
+                Ok(RetryTransitionOutcome::Cancelled)
+            }
+            StatusTransitionResult::Conflict(_) => Ok(RetryTransitionOutcome::NotClaimed),
+        }
+    }
+
+    fn make_cancelled(data: &mut JobResultData) {
+        data.status = ResultStatus::Cancelled as i32;
+        data.output = Some(ResultOutput {
+            items: b"Job was cancelled while retrying".to_vec(),
+        });
+        data.max_retry = 0;
     }
 }
 

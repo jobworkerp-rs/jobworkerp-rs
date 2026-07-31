@@ -1,4 +1,4 @@
-use super::JobProcessingStatusRepository;
+use super::{JobProcessingStatusRecord, JobProcessingStatusRepository, StatusTransitionResult};
 use anyhow::Result;
 use dashmap::DashMap;
 use itertools::Itertools;
@@ -12,7 +12,18 @@ use tonic::async_trait;
 impl JobProcessingStatusRepository for MemoryJobProcessingStatusRepository {
     async fn upsert_status(&self, id: &JobId, status: &JobProcessingStatus) -> Result<bool> {
         tracing::debug!("upsert_status to memory:{}={:?}", &id.value, status,);
-        let res = self.atomic_hash_map.insert(id.value, *status as i32);
+        let retried = self
+            .atomic_hash_map
+            .get(&id.value)
+            .map(|record| record.retried)
+            .unwrap_or(0);
+        let res = self.atomic_hash_map.insert(
+            id.value,
+            JobProcessingStatusRecord {
+                status: *status,
+                retried,
+            },
+        );
         Ok(res.is_some())
     }
 
@@ -27,35 +38,38 @@ impl JobProcessingStatusRepository for MemoryJobProcessingStatusRepository {
             .iter()
             .map(|r| {
                 let (id, v) = r.pair();
-                if *v == JobProcessingStatus::Pending as i32 {
+                if v.status == JobProcessingStatus::Pending {
                     (JobId { value: *id }, JobProcessingStatus::Pending)
-                } else if *v == JobProcessingStatus::Running as i32 {
+                } else if v.status == JobProcessingStatus::Running {
                     (JobId { value: *id }, JobProcessingStatus::Running)
-                } else if *v == JobProcessingStatus::WaitResult as i32 {
+                } else if v.status == JobProcessingStatus::WaitResult {
                     (JobId { value: *id }, JobProcessingStatus::WaitResult)
-                } else if *v == JobProcessingStatus::Cancelling as i32 {
+                } else if v.status == JobProcessingStatus::Cancelling {
                     (JobId { value: *id }, JobProcessingStatus::Cancelling)
                 } else {
-                    tracing::warn!("unknown status: id: {id}, status :{v}. returning as Unknown");
+                    tracing::warn!(
+                        "unknown status: id: {id}, status :{:?}. returning as Unknown",
+                        v.status
+                    );
                     (JobId { value: *id }, JobProcessingStatus::Unknown)
                 }
             })
             .collect_vec())
     }
     async fn find_status(&self, id: &JobId) -> Result<Option<JobProcessingStatus>> {
-        let res: Option<i32> = self.atomic_hash_map.get(&id.value).map(|v| *v);
+        let res = self.atomic_hash_map.get(&id.value).map(|v| v.status);
         if let Some(v) = res {
-            if v == JobProcessingStatus::Pending as i32 {
+            if v == JobProcessingStatus::Pending {
                 Ok(Some(JobProcessingStatus::Pending))
-            } else if v == JobProcessingStatus::Running as i32 {
+            } else if v == JobProcessingStatus::Running {
                 Ok(Some(JobProcessingStatus::Running))
-            } else if v == JobProcessingStatus::WaitResult as i32 {
+            } else if v == JobProcessingStatus::WaitResult {
                 Ok(Some(JobProcessingStatus::WaitResult))
-            } else if v == JobProcessingStatus::Cancelling as i32 {
+            } else if v == JobProcessingStatus::Cancelling {
                 Ok(Some(JobProcessingStatus::Cancelling))
             } else {
                 tracing::warn!(
-                    "unknown status in memory: id: {}, status :{}. returning as Unknown",
+                    "unknown status in memory: id: {}, status :{:?}. returning as Unknown",
                     &id.value,
                     v
                 );
@@ -65,11 +79,51 @@ impl JobProcessingStatusRepository for MemoryJobProcessingStatusRepository {
             Ok(None)
         }
     }
+
+    async fn find_status_record(&self, id: &JobId) -> Result<Option<JobProcessingStatusRecord>> {
+        Ok(self.atomic_hash_map.get(&id.value).map(|value| *value))
+    }
+
+    async fn compare_and_set_status(
+        &self,
+        id: &JobId,
+        expected: Option<JobProcessingStatusRecord>,
+        next: Option<JobProcessingStatusRecord>,
+    ) -> Result<StatusTransitionResult> {
+        use dashmap::mapref::entry::Entry;
+
+        match self.atomic_hash_map.entry(id.value) {
+            Entry::Occupied(mut entry) => {
+                let current = *entry.get();
+                if Some(current) != expected {
+                    return Ok(StatusTransitionResult::Conflict(Some(current)));
+                }
+                match next {
+                    Some(next) => {
+                        entry.insert(next);
+                    }
+                    None => {
+                        entry.remove();
+                    }
+                }
+                Ok(StatusTransitionResult::Applied)
+            }
+            Entry::Vacant(entry) => {
+                if expected.is_some() {
+                    return Ok(StatusTransitionResult::Conflict(None));
+                }
+                if let Some(next) = next {
+                    entry.insert(next);
+                }
+                Ok(StatusTransitionResult::Applied)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct MemoryJobProcessingStatusRepository {
-    atomic_hash_map: Arc<DashMap<i64, i32>>,
+    atomic_hash_map: Arc<DashMap<i64, JobProcessingStatusRecord>>,
 }
 impl MemoryJobProcessingStatusRepository {
     pub fn new() -> Self {
@@ -121,7 +175,13 @@ mod tests {
         let id = JobId { value: 1 };
 
         // Insert an invalid/unknown status value directly into the map
-        repo.atomic_hash_map.insert(id.value, 999); // Invalid status value
+        repo.atomic_hash_map.insert(
+            id.value,
+            JobProcessingStatusRecord {
+                status: JobProcessingStatus::Unknown,
+                retried: 0,
+            },
+        );
 
         // Should return Unknown instead of None or error
         assert_eq!(
@@ -133,5 +193,54 @@ mod tests {
         let all_statuses = repo.find_status_all().await.unwrap();
         assert_eq!(all_statuses.len(), 1);
         assert_eq!(all_statuses[0].1, JobProcessingStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn compare_and_set_restores_only_the_claimed_attempt_and_preserves_cancelling() {
+        let repo = MemoryJobProcessingStatusRepository::new();
+        let id = JobId { value: 2 };
+        let pending = JobProcessingStatusRecord {
+            status: JobProcessingStatus::Pending,
+            retried: 1,
+        };
+        let running = JobProcessingStatusRecord {
+            status: JobProcessingStatus::Running,
+            retried: 1,
+        };
+        let cancelling = JobProcessingStatusRecord {
+            status: JobProcessingStatus::Cancelling,
+            retried: 1,
+        };
+
+        assert_eq!(
+            repo.compare_and_set_status(&id, None, Some(pending))
+                .await
+                .unwrap(),
+            StatusTransitionResult::Applied
+        );
+        assert_eq!(
+            repo.compare_and_set_status(&id, Some(pending), Some(running))
+                .await
+                .unwrap(),
+            StatusTransitionResult::Applied
+        );
+        assert_eq!(
+            repo.compare_and_set_status(&id, Some(running), Some(pending))
+                .await
+                .unwrap(),
+            StatusTransitionResult::Applied
+        );
+        assert_eq!(
+            repo.compare_and_set_status(&id, Some(pending), Some(cancelling))
+                .await
+                .unwrap(),
+            StatusTransitionResult::Applied
+        );
+        assert_eq!(
+            repo.compare_and_set_status(&id, Some(running), Some(pending))
+                .await
+                .unwrap(),
+            StatusTransitionResult::Conflict(Some(cancelling))
+        );
     }
 }

@@ -16,20 +16,44 @@ use command_utils::util::shutdown::ShutdownLock;
 use infra::infra::{
     IdGeneratorWrapper, UseIdGenerator,
     job::rdb::UseRdbChanJobRepository,
-    job::status::UseJobProcessingStatusRepository,
     job::status::rdb::UseRdbJobProcessingStatusIndexRepository,
+    job::status::{
+        JobProcessingStatusRecord, StatusTransitionResult, UseJobProcessingStatusRepository,
+    },
     module::{rdb::RdbChanRepositoryModule, redis::RedisRepositoryModule},
 };
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    JobId, JobProcessingStatus, JobResult, JobResultData, ResultOutput, ResultStatus, StorageType,
-    WorkerData, WorkerId,
+    JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, ResultOutput, ResultStatus,
+    StorageType, WorkerData, WorkerId,
 };
 
 pub mod chan;
 pub mod rdb;
 pub mod redis;
 pub mod redis_run_after;
+
+pub enum DispatchEligibility {
+    Execute,
+    Cancelled(Box<JobResult>),
+    Skip,
+}
+
+/// Ensures every result that reaches the result processor has an identifier.
+pub fn ensure_job_result_id(
+    id_generator: &IdGeneratorWrapper,
+    result: &mut JobResult,
+) -> Result<JobResultId> {
+    if let Some(id) = result.id {
+        Ok(id)
+    } else {
+        let id = JobResultId {
+            value: id_generator.generate_id()?,
+        };
+        result.id = Some(id);
+        Ok(id)
+    }
+}
 
 /// Determine if job status should be cleaned up based on error type
 pub fn should_cleanup_status_on_error(err: &anyhow::Error) -> bool {
@@ -105,12 +129,33 @@ pub trait JobDispatcher:
         }
     }
 
+    /// Finalize a cancellation result consistently across queue backends.
+    async fn process_cancelled_dispatch_result(
+        &self,
+        cancelled_result: JobResult,
+        worker_data: &WorkerData,
+        job_id: &JobId,
+    ) -> Result<JobResult> {
+        let (result, completion_rx) = self
+            .result_processor()
+            .process_result(cancelled_result, None, worker_data.clone())
+            .await?;
+        if let Some(rx) = completion_rx
+            && rx.await.is_err()
+        {
+            tracing::warn!(
+                "stream completion sender dropped for cancelled job {:?}",
+                job_id
+            );
+        }
+        Ok(result)
+    }
+
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
         Self: Send + Sync + 'static;
 
-    /// Check cancellation status and return cancellation result if job is marked for cancellation
-    /// This method provides common cancellation detection logic for all dispatchers
+    /// Claims a pending queue attempt or makes a stale/cancelled delivery inert.
     async fn check_cancellation_status(
         &self,
         job_id: &JobId,
@@ -118,123 +163,135 @@ pub trait JobDispatcher:
         worker_data: &WorkerData,
         job_metadata: std::collections::HashMap<String, String>,
         job_data: &proto::jobworkerp::data::JobData,
-    ) -> Result<Option<JobResult>> {
-        let status = self
+    ) -> Result<DispatchEligibility> {
+        let record = self
             .job_processing_status_repository()
-            .find_status(job_id)
+            .find_status_record(job_id)
             .await?;
 
         tracing::debug!(
             "check_cancellation_status: job {} has status {:?}",
             job_id.value,
-            status
+            record
         );
 
-        match status {
-            Some(JobProcessingStatus::Pending) => {
-                // Normal state: continue normal execution
-                tracing::debug!(
-                    "Job {} is in expected Pending state, proceeding with execution",
-                    job_id.value
-                );
-                Ok(None)
-            }
-            Some(JobProcessingStatus::Cancelling) => {
-                // Cancellation requested: skip execution and create cancellation result
+        let record = match record {
+            Some(record) if record.retried == job_data.retried => record,
+            Some(record) => {
                 tracing::info!(
-                    "Job {} marked for cancellation, skipping execution",
-                    job_id.value
+                    "Skipping stale job {} attempt {} because live attempt is {}",
+                    job_id.value,
+                    job_data.retried,
+                    record.retried
                 );
+                return Ok(DispatchEligibility::Skip);
+            }
+            None => return Ok(DispatchEligibility::Skip),
+        };
 
-                // Resolve job params (merge worker defaults with per-job overrides)
-                use command_utils::util::datetime;
-                let resolved =
-                    app::app::job::resolve_job_params(worker_data, job_data.overrides.as_ref());
-                #[allow(deprecated)]
-                let job_result_data = JobResultData {
-                    job_id: Some(*job_id),
-                    status: ResultStatus::Cancelled as i32,
-                    output: Some(ResultOutput {
-                        items: b"Job was cancelled before execution".to_vec(),
+        match record.status {
+            JobProcessingStatus::Pending => match self
+                .job_processing_status_repository()
+                .compare_and_set_status(
+                    job_id,
+                    Some(record),
+                    Some(JobProcessingStatusRecord {
+                        status: JobProcessingStatus::Running,
+                        retried: job_data.retried,
                     }),
-                    start_time: datetime::now_millis(),
-                    end_time: datetime::now_millis(),
-                    worker_id: Some(*worker_id),
-                    args: job_data.args.clone(),
-                    uniq_key: job_data.uniq_key.clone(),
-                    retried: job_data.retried,
-                    max_retry: 0, // No retry on cancellation
-                    priority: job_data.priority,
-                    timeout: job_data.timeout,
-                    streaming_type: job_data.streaming_type,
-                    enqueue_time: job_data.enqueue_time,
-                    run_after_time: job_data.run_after_time,
-                    response_type: resolved.response_type,
-                    // Cancellation is a failure-path; store_success is effectively unused
-                    // but we use the resolved value for consistency with other fields.
-                    store_success: resolved.store_success,
-                    store_failure: resolved.store_failure,
-                    worker_name: worker_data.name.clone(),
-                    using: job_data.using.clone(),
-                    broadcast_results: resolved.broadcast_results,
-                    // Cancellation is handled by status (Cancelled); build_retry_job()
-                    // returns None for non-ErrorAndRetry status regardless of policy.
-                    resolved_retry_policy: resolved.retry_policy,
-                };
-
-                let cancelled_result = JobResult {
-                    id: Some(proto::jobworkerp::data::JobResultId {
-                        value: self.id_generator().generate_id()?,
-                    }),
-                    data: Some(job_result_data),
-                    metadata: job_metadata,
-                };
-
-                Ok(Some(cancelled_result))
-            }
-            Some(JobProcessingStatus::Running) => {
-                // Abnormal state: already running on another worker, prevent duplicate execution
-                tracing::error!(
-                    "Job {} is already in Running state, preventing duplicate execution",
-                    job_id.value
-                );
-                Err(
-                    jobworkerp_base::error::JobWorkerError::RuntimeError(format!(
-                        "Job {} is already running",
-                        job_id.value
-                    ))
-                    .into(),
                 )
-            }
-            Some(JobProcessingStatus::WaitResult) => {
-                // Abnormal state: already waiting for result
-                tracing::error!(
-                    "Job {} is already in WaitResult state, preventing duplicate execution",
-                    job_id.value
-                );
-                Err(
-                    jobworkerp_base::error::JobWorkerError::RuntimeError(format!(
-                        "Job {} is already waiting for result",
-                        job_id.value
-                    ))
-                    .into(),
+                .await?
+            {
+                StatusTransitionResult::Applied => Ok(DispatchEligibility::Execute),
+                StatusTransitionResult::Conflict(Some(conflict))
+                    if conflict.status == JobProcessingStatus::Cancelling
+                        && conflict.retried == job_data.retried =>
+                {
+                    self.cancelled_dispatch_eligibility(
+                        job_id,
+                        worker_id,
+                        worker_data,
+                        job_metadata,
+                        job_data,
+                    )
+                    .await
+                }
+                StatusTransitionResult::Conflict(_) => Ok(DispatchEligibility::Skip),
+            },
+            JobProcessingStatus::Cancelling => {
+                self.cancelled_dispatch_eligibility(
+                    job_id,
+                    worker_id,
+                    worker_data,
+                    job_metadata,
+                    job_data,
                 )
+                .await
             }
-            Some(JobProcessingStatus::Unknown) => {
-                tracing::warn!(
-                    "Job {} has unknown status, proceeding with execution",
-                    job_id.value
-                );
-                Ok(None)
-            }
-            None => {
-                tracing::warn!(
-                    "Job {} has no status record, proceeding with execution",
-                    job_id.value
-                );
-                Ok(None)
-            }
+            JobProcessingStatus::Running
+            | JobProcessingStatus::WaitResult
+            | JobProcessingStatus::Unknown => Ok(DispatchEligibility::Skip),
         }
+    }
+
+    async fn cancelled_dispatch_eligibility(
+        &self,
+        job_id: &JobId,
+        worker_id: &WorkerId,
+        worker_data: &WorkerData,
+        job_metadata: std::collections::HashMap<String, String>,
+        job_data: &proto::jobworkerp::data::JobData,
+    ) -> Result<DispatchEligibility> {
+        // Cancellation requested: skip execution and create cancellation result
+        tracing::info!(
+            "Job {} marked for cancellation, skipping execution",
+            job_id.value
+        );
+
+        // Resolve job params (merge worker defaults with per-job overrides)
+        use command_utils::util::datetime;
+        let resolved = app::app::job::resolve_job_params(worker_data, job_data.overrides.as_ref());
+        #[allow(deprecated)]
+        let job_result_data = JobResultData {
+            job_id: Some(*job_id),
+            status: ResultStatus::Cancelled as i32,
+            output: Some(ResultOutput {
+                items: b"Job was cancelled before execution".to_vec(),
+            }),
+            start_time: datetime::now_millis(),
+            end_time: datetime::now_millis(),
+            worker_id: Some(*worker_id),
+            args: job_data.args.clone(),
+            uniq_key: job_data.uniq_key.clone(),
+            retried: job_data.retried,
+            max_retry: 0, // No retry on cancellation
+            priority: job_data.priority,
+            timeout: job_data.timeout,
+            streaming_type: job_data.streaming_type,
+            enqueue_time: job_data.enqueue_time,
+            run_after_time: job_data.run_after_time,
+            response_type: resolved.response_type,
+            // Cancellation is a failure-path; store_success is effectively unused
+            // but we use the resolved value for consistency with other fields.
+            store_success: resolved.store_success,
+            store_failure: resolved.store_failure,
+            worker_name: worker_data.name.clone(),
+            using: job_data.using.clone(),
+            broadcast_results: resolved.broadcast_results,
+            // Cancellation is handled by status (Cancelled); build_retry_job()
+            // returns None for non-ErrorAndRetry status regardless of policy.
+            resolved_retry_policy: resolved.retry_policy,
+        };
+
+        let cancelled_result = JobResult {
+            id: Some(proto::jobworkerp::data::JobResultId {
+                value: self.id_generator().generate_id()?,
+            }),
+            data: Some(job_result_data),
+            metadata: job_metadata,
+        };
+
+        Ok(DispatchEligibility::Cancelled(Box::new(cancelled_result)))
     }
 }
 // TODO divide into three traits (redis, rdb and redis+rdb)
@@ -436,5 +493,31 @@ impl JobDispatcher for RdbChanJobDispatcherImpl {
     {
         RdbJobDispatcher::dispatch_jobs(&self.rdb_job_dispatcher, lock.clone())?;
         ChanJobDispatcher::dispatch_jobs(&self.chan_job_dispatcher, lock)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_job_result_id;
+    use infra::infra::IdGeneratorWrapper;
+    use proto::jobworkerp::data::{JobResult, JobResultId};
+
+    #[test]
+    fn ensure_job_result_id_generates_only_when_missing() {
+        let generator = IdGeneratorWrapper::new_mock();
+        let mut missing = JobResult::default();
+        let generated = ensure_job_result_id(&generator, &mut missing).unwrap();
+        assert_eq!(missing.id, Some(generated));
+
+        let existing = JobResultId { value: 42 };
+        let mut result = JobResult {
+            id: Some(existing),
+            ..Default::default()
+        };
+        assert_eq!(
+            ensure_job_result_id(&generator, &mut result).unwrap(),
+            existing
+        );
+        assert_eq!(result.id, Some(existing));
     }
 }

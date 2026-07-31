@@ -142,7 +142,10 @@ mod rdb_chan_indexing_integration_tests {
             let deleted = app.delete_job(&job_id).await?;
             assert!(deleted);
 
-            assert_eq!(status_repo.find_status(&job_id).await.unwrap(), None);
+            assert_eq!(
+                status_repo.find_status(&job_id).await.unwrap(),
+                Some(JobProcessingStatus::Cancelling)
+            );
 
             // Step 4: Verify RDB index status (should be logically deleted)
             tracing::info!("Step 4: Verify RDB index status");
@@ -157,14 +160,9 @@ mod rdb_chan_indexing_integration_tests {
                 .await?;
 
             match row_result {
-                Some(Some(timestamp)) => {
-                    tracing::info!(
-                        deleted_at = timestamp,
-                        "Job logically deleted in RDB at timestamp"
-                    );
-                }
+                Some(Some(_)) => panic!("CANCELLING job must not be logically deleted yet"),
                 Some(None) => {
-                    panic!("Job row exists but deleted_at is NULL (should be set by cleanup_job)");
+                    tracing::info!("CANCELLING job remains in RDB index until result processing");
                 }
                 None => {
                     panic!("Job row does not exist in RDB index");

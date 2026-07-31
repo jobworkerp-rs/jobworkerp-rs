@@ -371,7 +371,7 @@ Database schema:
 | | LOG_USE_STDOUT | Whether to output logs to stdout (boolean) | true |
 | | OTLP_ADDR | Retrieve request metrics using otlp | - |
 | **Storage Settings** | STORAGE_TYPE | Standalone: Single instance, Scalable: Multiple instances | Standalone |
-| | JOB_QUEUE_EXPIRE_JOB_RESULT_SECONDS | Maximum wait time for worker.broadcast_results=true | 3600 |
+| | JOB_QUEUE_EXPIRE_JOB_RESULT_SECONDS | Retention time for completed results when `worker.broadcast_results=true`; it does not limit active result streams or Direct response waits | 3600 |
 | | JOB_QUEUE_FETCH_INTERVAL | Interval for periodic fetch of jobs stored in RDB | 1000 |
 | | STORAGE_RESTORE_AT_STARTUP | Flag for restoring jobs after crashes | false |
 | **gRPC Settings** | GRPC_ADDR | gRPC server address:port | [::1]:9000 |

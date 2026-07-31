@@ -215,6 +215,8 @@ pub trait RdbJobDispatcher:
             })
             .transpose()?;
         let (grabbed, rdb_execution) = if let Some(permit) = &start_permit {
+            // TODO(#311): Couple this RDB execution claim to the authoritative
+            // processing status so Delete can distinguish queued and running work.
             let resolved = app::app::job::resolve_job_params(&w, job_data.overrides.as_ref());
             let repository = RdbJobStatusExecutionRepository::new(Arc::new(
                 self.rdb_job_repository().db_pool().clone(),
@@ -271,7 +273,8 @@ pub trait RdbJobDispatcher:
                         )
                         .into());
                     }
-                    let res = self.run_job(&runner_data, &wid, &w, job).await;
+                    let mut res = self.run_job(&runner_data, &wid, &w, job).await;
+                    super::ensure_job_result_id(self.id_generator(), &mut res.0)?;
                     tracing::debug!(
                         "job completed. result: {}",
                         proto::log_ext::JobResultSummary(&res.0)
