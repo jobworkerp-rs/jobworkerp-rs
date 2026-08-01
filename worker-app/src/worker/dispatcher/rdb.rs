@@ -310,7 +310,7 @@ pub trait RdbJobDispatcher:
         {
             super::DispatchPreflight::Execute => {}
             super::DispatchPreflight::Skip => return Ok(None),
-            super::DispatchPreflight::Completed(result) => return Ok(Some(result)),
+            super::DispatchPreflight::Completed(result) => return Ok(Some(*result)),
         }
         let start_permit = if let Some(session) = self.worker_instance_session() {
             if let Some(permit) = session.acquire_start_permit() {

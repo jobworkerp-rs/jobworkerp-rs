@@ -338,7 +338,7 @@ pub trait ChanJobDispatcher:
         {
             super::DispatchPreflight::Execute => {}
             super::DispatchPreflight::Skip => return Ok(JobResult::default()),
-            super::DispatchPreflight::Completed(result) => return Ok(result),
+            super::DispatchPreflight::Completed(result) => return Ok(*result),
         }
 
         let resolved =

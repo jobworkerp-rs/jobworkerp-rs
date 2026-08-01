@@ -42,7 +42,7 @@ pub enum DispatchEligibility {
 pub(crate) enum DispatchPreflight {
     Execute,
     Skip,
-    Completed(JobResult),
+    Completed(Box<JobResult>),
 }
 
 pub(crate) async fn resolve_dispatch_preflight<D>(
@@ -60,6 +60,7 @@ where
         DispatchEligibility::Cancelled(result) => dispatcher
             .process_cancelled_dispatch_result(*result, worker_data, job_id)
             .await
+            .map(Box::new)
             .map(DispatchPreflight::Completed),
     }
 }
