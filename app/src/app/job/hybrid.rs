@@ -201,7 +201,7 @@ impl HybridJobAppImpl {
                             &w,
                             StreamingType::None,
                             false,
-                            PendingStatusPublication::Create,
+                            PendingStatusPublication::NewEnqueue,
                         )
                         .await?;
                     }
@@ -298,7 +298,7 @@ impl HybridJobAppImpl {
                     w,
                     streaming_type,
                     false,
-                    PendingStatusPublication::Create,
+                    PendingStatusPublication::NewEnqueue,
                 )
                 .await
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
@@ -347,7 +347,7 @@ impl HybridJobAppImpl {
                                 w,
                                 streaming_type,
                                 false,
-                                PendingStatusPublication::Create,
+                                PendingStatusPublication::NewEnqueue,
                             )
                             .await
                         }
@@ -387,7 +387,7 @@ impl HybridJobAppImpl {
                         w,
                         streaming_type,
                         false,
-                        PendingStatusPublication::Create,
+                        PendingStatusPublication::NewEnqueue,
                     )
                     .await
                 }
@@ -650,7 +650,7 @@ impl JobApp for HybridJobAppImpl {
                 &w,
                 StreamingType::None,
                 true,
-                PendingStatusPublication::AlreadyClaimedForRetry,
+                PendingStatusPublication::Retry,
             )
             .await?;
         super::load_result_to_outcome(worker_id, result)
@@ -751,7 +751,7 @@ impl JobApp for HybridJobAppImpl {
                     w,
                     streaming_type,
                     false,
-                    PendingStatusPublication::Create,
+                    PendingStatusPublication::NewEnqueue,
                 )
                 .await
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
@@ -789,7 +789,7 @@ impl JobApp for HybridJobAppImpl {
                                 w,
                                 streaming_type,
                                 false,
-                                PendingStatusPublication::Create,
+                                PendingStatusPublication::NewEnqueue,
                             )
                             .await
                         }
@@ -818,7 +818,7 @@ impl JobApp for HybridJobAppImpl {
                         w,
                         streaming_type,
                         false,
-                        PendingStatusPublication::Create,
+                        PendingStatusPublication::NewEnqueue,
                     )
                     .await
                 }
@@ -1039,7 +1039,7 @@ impl JobApp for HybridJobAppImpl {
                         &w,
                         streaming_type,
                         false,
-                        PendingStatusPublication::AlreadyClaimedForRetry,
+                        PendingStatusPublication::Retry,
                     )
                     .await
                     .map(|_| true)

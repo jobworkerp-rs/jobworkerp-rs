@@ -137,13 +137,15 @@ pub struct ResolvedJobParams {
 /// Re-recording it with an upsert could resurrect a concurrent cancellation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PendingStatusPublication {
-    Create,
-    AlreadyClaimedForRetry,
+    /// The enqueue operation creates PENDING and compensates if publication fails.
+    NewEnqueue,
+    /// The retry transition already owns PENDING through a CAS.
+    Retry,
 }
 
 impl PendingStatusPublication {
     fn creates_status(self) -> bool {
-        matches!(self, Self::Create)
+        matches!(self, Self::NewEnqueue)
     }
 }
 

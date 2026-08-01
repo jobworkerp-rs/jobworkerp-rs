@@ -621,13 +621,8 @@ impl JobApp for RdbChanJobAppImpl {
         };
         let job = super::build_load_job(job_id, worker_id, timeout_ms);
         // Drive the load on the worker side and wait for its Direct response.
-        self.enqueue_job_sync_enqueue_only(
-            &job,
-            &w,
-            true,
-            PendingStatusPublication::AlreadyClaimedForRetry,
-        )
-        .await?;
+        self.enqueue_job_sync_enqueue_only(&job, &w, true, PendingStatusPublication::Retry)
+            .await?;
         let total_timeout = job.data.as_ref().map(|d| d.timeout).filter(|t| *t > 0);
         let (result, _stream) = self
             ._wait_job_for_direct_response(&job_id, total_timeout, false)
@@ -814,7 +809,7 @@ impl JobApp for RdbChanJobAppImpl {
         // can ever receive a result. Drop the output receiver and stop the
         // pre-started result waiter before returning the enqueue error.
         let job_id = match self
-            .enqueue_job_sync_enqueue_only(&job, &w, false, PendingStatusPublication::Create)
+            .enqueue_job_sync_enqueue_only(&job, &w, false, PendingStatusPublication::NewEnqueue)
             .await
         {
             Ok(job_id) => job_id,
@@ -897,7 +892,7 @@ impl JobApp for RdbChanJobAppImpl {
                         job,
                         &w,
                         false,
-                        PendingStatusPublication::AlreadyClaimedForRetry,
+                        PendingStatusPublication::Retry,
                     )
                     .await
                     .map(|_| true)
@@ -1516,7 +1511,7 @@ where
         // wait phases keeps this method's behavior identical while letting
         // `enqueue_job_with_channel` reuse the enqueue phase and defer the wait.
         let job_id = self
-            .enqueue_job_sync_enqueue_only(job, worker, false, PendingStatusPublication::Create)
+            .enqueue_job_sync_enqueue_only(job, worker, false, PendingStatusPublication::NewEnqueue)
             .await?;
         let resolved =
             resolve_job_params(worker, job.data.as_ref().and_then(|d| d.overrides.as_ref()));
