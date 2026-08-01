@@ -611,6 +611,11 @@ pub(crate) trait JobCancellationLifecycle: UseJobProcessingStatusRepository {
         Ok(PendingCancellationDisposition::AwaitQueuedDelivery)
     }
 
+    /// Removes an RDB-only job that is visible before its PENDING status is published.
+    async fn cancel_unpublished_rdb_job(&self, _id: &JobId) -> Result<bool> {
+        Ok(false)
+    }
+
     async fn record_pending_cancellation_completion(&self, _id: &JobId) {}
 
     async fn cancel_job_lifecycle(&self, id: &JobId) -> Result<bool> {
@@ -619,7 +624,7 @@ pub(crate) trait JobCancellationLifecycle: UseJobProcessingStatusRepository {
             .find_status_record(id)
             .await?
         else {
-            return Ok(false);
+            return self.cancel_unpublished_rdb_job(id).await;
         };
         if record.status == JobProcessingStatus::Unknown {
             return Ok(false);

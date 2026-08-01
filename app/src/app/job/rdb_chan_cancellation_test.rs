@@ -99,7 +99,7 @@ mod rdb_chan_cancellation_tests {
     }
 
     #[test]
-    fn test_cancel_pending_scheduled_job_removes_rdb_entry() -> Result<()> {
+    fn test_cancel_unpublished_scheduled_job_removes_rdb_entry() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let app_module = create_rdb_chan_test_app(true, false).await?;
             let app = &app_module.job_app;
@@ -161,6 +161,10 @@ mod rdb_chan_cancellation_tests {
                 status_repo.find_status(&job_id).await?,
                 Some(JobProcessingStatus::Pending)
             );
+            // Simulate Delete racing after the RDB row is committed but before
+            // the producer publishes its initial PENDING status.
+            status_repo.delete_status(&job_id).await?;
+            assert_eq!(status_repo.find_status(&job_id).await?, None);
 
             assert!(app.delete_job(&job_id).await?);
 

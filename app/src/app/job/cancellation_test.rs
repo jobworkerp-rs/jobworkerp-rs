@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cancel_pending_scheduled_job_removes_rdb_entry() -> Result<()> {
+    fn test_cancel_unpublished_scheduled_job_removes_rdb_entry() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
             let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
@@ -242,6 +242,11 @@ mod tests {
                     .await?,
                 Some(JobProcessingStatus::Pending)
             );
+            // Simulate Delete racing after the RDB row is committed but before
+            // the producer publishes its initial PENDING status.
+            app.job_processing_status_repository()
+                .delete_status(&job_id)
+                .await?;
 
             assert!(app.delete_job(&job_id).await?);
 

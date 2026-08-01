@@ -512,6 +512,17 @@ impl JobCancellationLifecycle for RdbChanJobAppImpl {
         }
     }
 
+    async fn cancel_unpublished_rdb_job(&self, id: &JobId) -> Result<bool> {
+        let Some(job) = self.rdb_job_repository().find(id).await? else {
+            return Ok(false);
+        };
+        if !is_rdb_only_pending_job(&job, self.worker_app(), self.is_run_after_job(&job)).await? {
+            return Ok(false);
+        }
+
+        self.rdb_job_repository().delete(id).await
+    }
+
     async fn record_pending_cancellation_completion(&self, id: &JobId) {
         if let Some(index_repo) = self.job_status_index_repository.as_ref()
             && let Err(error) = index_repo.mark_deleted_by_job_id(id).await
