@@ -45,6 +45,10 @@ enum RetryTransitionOutcome {
     NotClaimed,
 }
 
+fn retry_attempt_is_current(current: JobProcessingStatusRecord, result: &JobResultData) -> bool {
+    current.retried == result.retried
+}
+
 impl Tracing for ResultProcessorImpl {}
 impl ResultProcessorImpl {
     pub fn new(
@@ -277,6 +281,15 @@ impl ResultProcessorImpl {
         let Some(current) = repository.find_status_record(job_id).await? else {
             return Ok(RetryTransitionOutcome::NotClaimed);
         };
+        if !retry_attempt_is_current(current, data) {
+            tracing::info!(
+                job_id = job_id.value,
+                result_retried = data.retried,
+                current_retried = current.retried,
+                "Ignoring stale retry result for a newer job attempt"
+            );
+            return Ok(RetryTransitionOutcome::NotClaimed);
+        }
         if current.status == proto::jobworkerp::data::JobProcessingStatus::Cancelling {
             Self::make_cancelled(data);
             return Ok(RetryTransitionOutcome::Cancelled);
@@ -331,6 +344,7 @@ impl UseRunnerApp for ResultProcessorImpl {
         self.app_module.runner_app.clone()
     }
 }
+
 impl JobBuilder for ResultProcessorImpl {}
 
 impl UseWorkerConfig for ResultProcessorImpl {
@@ -352,3 +366,35 @@ pub trait UseResultProcessor {
 //        &self.id_generator
 //    }
 //}
+
+#[cfg(test)]
+mod retry_transition_tests {
+    use super::*;
+    use proto::jobworkerp::data::JobProcessingStatus;
+
+    #[test]
+    fn stale_result_cannot_transition_a_newer_attempt_to_pending() {
+        let current = JobProcessingStatusRecord {
+            status: JobProcessingStatus::Running,
+            retried: 2,
+        };
+        let result = JobResultData {
+            retried: 1,
+            ..Default::default()
+        };
+        assert!(!retry_attempt_is_current(current, &result));
+    }
+
+    #[test]
+    fn current_result_can_transition_its_own_attempt_to_pending() {
+        let current = JobProcessingStatusRecord {
+            status: JobProcessingStatus::Running,
+            retried: 1,
+        };
+        let result = JobResultData {
+            retried: 1,
+            ..Default::default()
+        };
+        assert!(retry_attempt_is_current(current, &result));
+    }
+}
