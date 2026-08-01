@@ -566,6 +566,8 @@ pub(crate) async fn reset_index_to_pending_for_retry(
 ///
 /// Status ownership is identical for the channel and Redis-backed apps; only
 /// cleanup, cancellation notification, and optional index persistence differ.
+const MAX_CANCELLATION_STATUS_TRANSITION_ATTEMPTS: usize = 3;
+
 #[async_trait]
 pub(crate) trait JobCancellationLifecycle: UseJobProcessingStatusRepository {
     async fn cleanup_cancelled_job(&self, id: &JobId) -> Result<()>;
@@ -575,7 +577,7 @@ pub(crate) trait JobCancellationLifecycle: UseJobProcessingStatusRepository {
     async fn record_cancelling_index(&self, _id: &JobId) {}
 
     async fn cancel_job_lifecycle(&self, id: &JobId) -> Result<bool> {
-        let Some(record) = self
+        let Some(mut record) = self
             .job_processing_status_repository()
             .find_status_record(id)
             .await?
@@ -585,38 +587,50 @@ pub(crate) trait JobCancellationLifecycle: UseJobProcessingStatusRepository {
         if record.status == JobProcessingStatus::Unknown {
             return Ok(false);
         }
-        if record.status == JobProcessingStatus::Cancelling {
-            return Ok(true);
-        }
+        for _ in 0..MAX_CANCELLATION_STATUS_TRANSITION_ATTEMPTS {
+            if record.status == JobProcessingStatus::Unknown {
+                return Ok(false);
+            }
+            if record.status == JobProcessingStatus::Cancelling {
+                return Ok(true);
+            }
 
-        let cancelling = JobProcessingStatusRecord {
-            status: JobProcessingStatus::Cancelling,
-            retried: record.retried,
-        };
-        if !matches!(
-            self.job_processing_status_repository()
+            let cancelling = JobProcessingStatusRecord {
+                status: JobProcessingStatus::Cancelling,
+                retried: record.retried,
+            };
+            match self
+                .job_processing_status_repository()
                 .compare_and_set_status(id, Some(record), Some(cancelling))
-                .await?,
-            StatusTransitionResult::Applied
-        ) {
-            return Ok(matches!(
-                self.job_processing_status_repository()
-                    .find_status_record(id)
-                    .await?,
-                Some(JobProcessingStatusRecord {
-                    status: JobProcessingStatus::Cancelling,
-                    ..
-                })
-            ));
+                .await?
+            {
+                StatusTransitionResult::Applied => {
+                    self.record_cancelling_index(id).await;
+                    if record.status == JobProcessingStatus::Pending {
+                        self.cleanup_cancelled_job(id).await?;
+                    } else {
+                        self.broadcast_cancelled_job(id).await?;
+                    }
+                    return Ok(true);
+                }
+                StatusTransitionResult::Conflict(Some(current)) => {
+                    // Retry against the authoritative state: a dispatcher may
+                    // have claimed PENDING as RUNNING while Delete was in flight.
+                    record = current;
+                }
+                StatusTransitionResult::Conflict(None) => return Ok(false),
+            }
         }
 
-        self.record_cancelling_index(id).await;
-        if record.status == JobProcessingStatus::Pending {
-            self.cleanup_cancelled_job(id).await?;
-        } else {
-            self.broadcast_cancelled_job(id).await?;
-        }
-        Ok(true)
+        Ok(matches!(
+            self.job_processing_status_repository()
+                .find_status_record(id)
+                .await?,
+            Some(JobProcessingStatusRecord {
+                status: JobProcessingStatus::Cancelling,
+                ..
+            })
+        ))
     }
 }
 
@@ -1114,5 +1128,137 @@ mod resolve_tests {
 
         // no result is treated as a timeout
         assert!(load_result_to_outcome(&wid, None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod cancellation_lifecycle_tests {
+    use super::*;
+    use infra::infra::job::status::JobProcessingStatusRepository;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Mutex;
+
+    #[derive(Debug)]
+    struct PendingToRunningConflictRepository {
+        record: Mutex<JobProcessingStatusRecord>,
+        compare_count: AtomicUsize,
+    }
+
+    impl PendingToRunningConflictRepository {
+        fn new() -> Self {
+            Self {
+                record: Mutex::new(JobProcessingStatusRecord {
+                    status: JobProcessingStatus::Pending,
+                    retried: 0,
+                }),
+                compare_count: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl JobProcessingStatusRepository for PendingToRunningConflictRepository {
+        async fn upsert_status(&self, _id: &JobId, _status: &JobProcessingStatus) -> Result<bool> {
+            unreachable!("the cancellation lifecycle only uses compare_and_set_status")
+        }
+
+        async fn delete_status(&self, _id: &JobId) -> Result<bool> {
+            unreachable!("the cancellation lifecycle only uses compare_and_set_status")
+        }
+
+        async fn find_status_all(&self) -> Result<Vec<(JobId, JobProcessingStatus)>> {
+            unreachable!("the cancellation lifecycle only reads one status record")
+        }
+
+        async fn find_status(&self, _id: &JobId) -> Result<Option<JobProcessingStatus>> {
+            unreachable!("the cancellation lifecycle only reads one status record")
+        }
+
+        async fn find_status_record(
+            &self,
+            _id: &JobId,
+        ) -> Result<Option<JobProcessingStatusRecord>> {
+            Ok(Some(*self.record.lock().await))
+        }
+
+        async fn compare_and_set_status(
+            &self,
+            _id: &JobId,
+            expected: Option<JobProcessingStatusRecord>,
+            next: Option<JobProcessingStatusRecord>,
+        ) -> Result<StatusTransitionResult> {
+            let mut record = self.record.lock().await;
+            if self.compare_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                *record = JobProcessingStatusRecord {
+                    status: JobProcessingStatus::Running,
+                    retried: 0,
+                };
+                return Ok(StatusTransitionResult::Conflict(Some(*record)));
+            }
+            assert_eq!(
+                expected,
+                Some(JobProcessingStatusRecord {
+                    status: JobProcessingStatus::Running,
+                    retried: 0,
+                })
+            );
+            *record = next.expect("cancellation must retain a status record");
+            Ok(StatusTransitionResult::Applied)
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestCancellationLifecycle {
+        repository: Arc<PendingToRunningConflictRepository>,
+        cleanup_count: AtomicUsize,
+        broadcast_count: AtomicUsize,
+    }
+
+    impl UseJobProcessingStatusRepository for TestCancellationLifecycle {
+        fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
+            self.repository.clone()
+        }
+    }
+
+    #[async_trait]
+    impl JobCancellationLifecycle for TestCancellationLifecycle {
+        async fn cleanup_cancelled_job(&self, _id: &JobId) -> Result<()> {
+            self.cleanup_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn broadcast_cancelled_job(&self, _id: &JobId) -> Result<()> {
+            self.broadcast_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_retries_after_pending_to_running_conflict() {
+        let repository = Arc::new(PendingToRunningConflictRepository::new());
+        let lifecycle = TestCancellationLifecycle {
+            repository: repository.clone(),
+            cleanup_count: AtomicUsize::new(0),
+            broadcast_count: AtomicUsize::new(0),
+        };
+
+        assert!(
+            lifecycle
+                .cancel_job_lifecycle(&JobId { value: 1 })
+                .await
+                .unwrap()
+        );
+        assert_eq!(lifecycle.cleanup_count.load(Ordering::SeqCst), 0);
+        assert_eq!(lifecycle.broadcast_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            repository
+                .find_status_record(&JobId { value: 1 })
+                .await
+                .unwrap(),
+            Some(JobProcessingStatusRecord {
+                status: JobProcessingStatus::Cancelling,
+                retried: 0,
+            })
+        );
     }
 }
