@@ -39,35 +39,28 @@ pub struct ResultProcessorImpl {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RetryTransitionOutcome {
-    Pending,
-    Cancelled,
-    Stale,
-    NotClaimed,
+enum RetryTransitionDecision {
+    Requeue,
+    CompleteCancelled,
+    CompleteWithoutClaim,
+    IgnoreStale,
 }
 
 fn retry_attempt_is_current(current: JobProcessingStatusRecord, result: &JobResultData) -> bool {
     current.retried == result.retried
 }
 
-fn retry_attempt_ownership_outcome(
+fn retry_attempt_ownership_decision(
     current: JobProcessingStatusRecord,
     result: &JobResultData,
-) -> Option<RetryTransitionOutcome> {
+) -> Option<RetryTransitionDecision> {
     if !retry_attempt_is_current(current, result) {
-        return Some(RetryTransitionOutcome::Stale);
+        return Some(RetryTransitionDecision::IgnoreStale);
     }
     if current.status == proto::jobworkerp::data::JobProcessingStatus::Cancelling {
-        return Some(RetryTransitionOutcome::Cancelled);
+        return Some(RetryTransitionDecision::CompleteCancelled);
     }
     None
-}
-
-fn retry_transition_requires_completion(outcome: RetryTransitionOutcome) -> bool {
-    matches!(
-        outcome,
-        RetryTransitionOutcome::Cancelled | RetryTransitionOutcome::NotClaimed
-    )
 }
 
 impl Tracing for ResultProcessorImpl {}
@@ -187,17 +180,16 @@ impl ResultProcessorImpl {
         // need to retry
         if let Some(j) = jopt {
             match self.transition_retry_to_pending_or_cancel(dat, &j).await? {
-                RetryTransitionOutcome::Pending => {}
-                outcome @ (RetryTransitionOutcome::Cancelled
-                | RetryTransitionOutcome::NotClaimed) => {
-                    debug_assert!(retry_transition_requires_completion(outcome));
+                RetryTransitionDecision::Requeue => {}
+                RetryTransitionDecision::CompleteCancelled
+                | RetryTransitionDecision::CompleteWithoutClaim => {
                     return self
                         .job_app()
                         .complete_job(id, dat, stream)
                         .await
                         .map(|(_, rx)| rx);
                 }
-                RetryTransitionOutcome::Stale => {
+                RetryTransitionDecision::IgnoreStale => {
                     tracing::info!(
                         job_id = ?dat.job_id,
                         retried = dat.retried,
@@ -288,11 +280,7 @@ impl ResultProcessorImpl {
                     && record.retried == data.retried
         );
         if cancelled {
-            data.status = ResultStatus::Cancelled as i32;
-            data.output = Some(ResultOutput {
-                items: b"Job was cancelled while retrying".to_vec(),
-            });
-            data.max_retry = 0;
+            Self::mark_retry_cancelled(&mut data);
         }
         Ok(data)
     }
@@ -301,20 +289,20 @@ impl ResultProcessorImpl {
         &self,
         data: &mut JobResultData,
         retry_job: &proto::jobworkerp::data::Job,
-    ) -> Result<RetryTransitionOutcome> {
+    ) -> Result<RetryTransitionDecision> {
         let Some(job_id) = data.job_id.as_ref() else {
-            return Ok(RetryTransitionOutcome::Pending);
+            return Ok(RetryTransitionDecision::Requeue);
         };
         let Some(next_data) = retry_job.data.as_ref() else {
-            return Ok(RetryTransitionOutcome::Pending);
+            return Ok(RetryTransitionDecision::Requeue);
         };
         let repository = self.app_module.job_processing_status_repository();
         let Some(current) = repository.find_status_record(job_id).await? else {
-            return Ok(RetryTransitionOutcome::NotClaimed);
+            return Ok(RetryTransitionDecision::CompleteWithoutClaim);
         };
-        if let Some(outcome) = retry_attempt_ownership_outcome(current, data) {
-            match outcome {
-                RetryTransitionOutcome::Stale => {
+        if let Some(decision) = retry_attempt_ownership_decision(current, data) {
+            match decision {
+                RetryTransitionDecision::IgnoreStale => {
                     tracing::info!(
                         job_id = job_id.value,
                         result_retried = data.retried,
@@ -322,10 +310,11 @@ impl ResultProcessorImpl {
                         "Ignoring stale retry result for a newer job attempt"
                     );
                 }
-                RetryTransitionOutcome::Cancelled => Self::make_cancelled(data),
-                RetryTransitionOutcome::Pending | RetryTransitionOutcome::NotClaimed => {}
+                RetryTransitionDecision::CompleteCancelled => Self::mark_retry_cancelled(data),
+                RetryTransitionDecision::Requeue
+                | RetryTransitionDecision::CompleteWithoutClaim => {}
             }
-            return Ok(outcome);
+            return Ok(decision);
         }
         let next = JobProcessingStatusRecord {
             status: proto::jobworkerp::data::JobProcessingStatus::Pending,
@@ -335,20 +324,22 @@ impl ResultProcessorImpl {
             .compare_and_set_status(job_id, Some(current), Some(next))
             .await?
         {
-            StatusTransitionResult::Applied => Ok(RetryTransitionOutcome::Pending),
+            StatusTransitionResult::Applied => Ok(RetryTransitionDecision::Requeue),
             StatusTransitionResult::Conflict(Some(record))
                 if record.status == proto::jobworkerp::data::JobProcessingStatus::Cancelling
                     && record.retried == data.retried =>
             {
-                Self::make_cancelled(data);
-                Ok(RetryTransitionOutcome::Cancelled)
+                Self::mark_retry_cancelled(data);
+                Ok(RetryTransitionDecision::CompleteCancelled)
             }
-            StatusTransitionResult::Conflict(Some(_)) => Ok(RetryTransitionOutcome::Stale),
-            StatusTransitionResult::Conflict(None) => Ok(RetryTransitionOutcome::NotClaimed),
+            StatusTransitionResult::Conflict(Some(_)) => Ok(RetryTransitionDecision::IgnoreStale),
+            StatusTransitionResult::Conflict(None) => {
+                Ok(RetryTransitionDecision::CompleteWithoutClaim)
+            }
         }
     }
 
-    fn make_cancelled(data: &mut JobResultData) {
+    fn mark_retry_cancelled(data: &mut JobResultData) {
         data.status = ResultStatus::Cancelled as i32;
         data.output = Some(ResultOutput {
             items: b"Job was cancelled while retrying".to_vec(),
@@ -445,11 +436,8 @@ mod retry_transition_tests {
         };
 
         assert_eq!(
-            retry_attempt_ownership_outcome(current, &result),
-            Some(RetryTransitionOutcome::Stale)
+            retry_attempt_ownership_decision(current, &result),
+            Some(RetryTransitionDecision::IgnoreStale)
         );
-        assert!(!retry_transition_requires_completion(
-            RetryTransitionOutcome::Stale
-        ));
     }
 }

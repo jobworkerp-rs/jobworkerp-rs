@@ -2,8 +2,8 @@ use super::super::JobBuilder;
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::{
     JobApp, JobCacheKeys, JobCancellationLifecycle, PendingCancellationDisposition,
-    PendingStatusPublication, is_rdb_only_pending_job, resolve_and_validate_job_params,
-    resolve_job_params,
+    PendingStatusPublication, remove_pending_rdb_job, remove_unpublished_rdb_only_job,
+    resolve_and_validate_job_params, resolve_job_params,
 };
 use crate::app::{UseWorkerConfig, WorkerConfig};
 use crate::module::AppConfigModule;
@@ -487,40 +487,20 @@ impl JobCancellationLifecycle for RdbChanJobAppImpl {
         &self,
         id: &JobId,
     ) -> Result<PendingCancellationDisposition> {
-        let rdb_only = match self.rdb_job_repository().find(id).await? {
-            Some(job) => {
-                is_rdb_only_pending_job(&job, self.worker_app(), self.is_run_after_job(&job))
-                    .await?
-            }
-            None => false,
-        };
-
         // RDB dispatch does not yet claim the live status before execution.
         // Removing the queued row prevents a cancelled job from being fetched.
         // RDB-only jobs finalize below; backup jobs retain CANCELLING for chan delivery.
-        match self.rdb_job_repository().delete(id).await {
-            Ok(true) if rdb_only => Ok(PendingCancellationDisposition::FinalizedWithoutDelivery),
-            Ok(_) => Ok(PendingCancellationDisposition::AwaitQueuedDelivery),
-            Err(error) => {
-                tracing::warn!(
-                    job_id = id.value,
-                    ?error,
-                    "Failed to remove pending RDB queue entry during cancellation"
-                );
-                Ok(PendingCancellationDisposition::AwaitQueuedDelivery)
-            }
-        }
+        remove_pending_rdb_job(self.rdb_job_repository(), self.worker_app(), id, |job| {
+            self.is_run_after_job(job)
+        })
+        .await
     }
 
     async fn cancel_unpublished_rdb_job(&self, id: &JobId) -> Result<bool> {
-        let Some(job) = self.rdb_job_repository().find(id).await? else {
-            return Ok(false);
-        };
-        if !is_rdb_only_pending_job(&job, self.worker_app(), self.is_run_after_job(&job)).await? {
-            return Ok(false);
-        }
-
-        self.rdb_job_repository().delete(id).await
+        remove_unpublished_rdb_only_job(self.rdb_job_repository(), self.worker_app(), id, |job| {
+            self.is_run_after_job(job)
+        })
+        .await
     }
 
     async fn record_pending_cancellation_completion(&self, id: &JobId) {

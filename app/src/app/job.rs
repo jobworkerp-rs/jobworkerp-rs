@@ -30,6 +30,7 @@ use infra::infra::{
     UseJobQueueConfig,
     job::{
         queue::redis::RedisJobQueueRepository,
+        rdb::{RdbChanJobRepositoryImpl, RdbJobRepository},
         redis::{RedisJobRepository, UseRedisJobRepository, schedule::RedisJobScheduleRepository},
         status::{
             JobProcessingStatusRecord, StatusTransitionResult, UseJobProcessingStatusRepository,
@@ -596,6 +597,53 @@ pub(crate) async fn is_rdb_only_pending_job(
         .is_some_and(|data| {
             data.periodic_interval > 0 || data.queue_type == QueueType::DbOnly as i32
         }))
+}
+
+pub(crate) async fn remove_pending_rdb_job<F>(
+    repository: &RdbChanJobRepositoryImpl,
+    worker_app: &Arc<dyn WorkerApp + 'static>,
+    id: &JobId,
+    is_run_after: F,
+) -> Result<PendingCancellationDisposition>
+where
+    F: FnOnce(&Job) -> bool,
+{
+    let rdb_only = match repository.find(id).await? {
+        Some(job) => is_rdb_only_pending_job(&job, worker_app, is_run_after(&job)).await?,
+        None => false,
+    };
+
+    match repository.delete(id).await {
+        Ok(true) if rdb_only => Ok(PendingCancellationDisposition::FinalizedWithoutDelivery),
+        Ok(_) => Ok(PendingCancellationDisposition::AwaitQueuedDelivery),
+        Err(error) => {
+            tracing::warn!(
+                job_id = id.value,
+                ?error,
+                "Failed to remove pending RDB queue entry during cancellation"
+            );
+            Ok(PendingCancellationDisposition::AwaitQueuedDelivery)
+        }
+    }
+}
+
+pub(crate) async fn remove_unpublished_rdb_only_job<F>(
+    repository: &RdbChanJobRepositoryImpl,
+    worker_app: &Arc<dyn WorkerApp + 'static>,
+    id: &JobId,
+    is_run_after: F,
+) -> Result<bool>
+where
+    F: FnOnce(&Job) -> bool,
+{
+    let Some(job) = repository.find(id).await? else {
+        return Ok(false);
+    };
+    if !is_rdb_only_pending_job(&job, worker_app, is_run_after(&job)).await? {
+        return Ok(false);
+    }
+
+    repository.delete(id).await
 }
 
 #[async_trait]

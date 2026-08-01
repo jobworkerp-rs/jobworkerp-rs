@@ -327,17 +327,18 @@ pub trait ChanJobDispatcher:
             return Ok(result);
         }
 
-        match self
-            .check_cancellation_status(&jid, &wid, &wdat, metadata.clone(), &jdat)
-            .await?
+        match super::resolve_dispatch_preflight(
+            self,
+            self.check_cancellation_status(&jid, &wid, &wdat, metadata.clone(), &jdat)
+                .await?,
+            &wdat,
+            &jid,
+        )
+        .await?
         {
-            super::DispatchEligibility::Execute => {}
-            super::DispatchEligibility::Skip => return Ok(JobResult::default()),
-            super::DispatchEligibility::Cancelled(cancelled_result) => {
-                return self
-                    .process_cancelled_dispatch_result(*cancelled_result, &wdat, &jid)
-                    .await;
-            }
+            super::DispatchPreflight::Execute => {}
+            super::DispatchPreflight::Skip => return Ok(JobResult::default()),
+            super::DispatchPreflight::Completed(result) => return Ok(result),
         }
 
         let resolved =

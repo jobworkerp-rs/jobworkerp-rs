@@ -299,18 +299,18 @@ pub trait RdbJobDispatcher:
 
         let job_id = job.id.as_ref().expect("validated job ID");
         let job_data = job.data.as_ref().expect("validated job data");
-        match self
-            .check_rdb_cancellation_status(job_id, &wid, &w, job.metadata.clone(), job_data)
-            .await?
+        match super::resolve_dispatch_preflight(
+            self,
+            self.check_rdb_cancellation_status(job_id, &wid, &w, job.metadata.clone(), job_data)
+                .await?,
+            &w,
+            job_id,
+        )
+        .await?
         {
-            super::DispatchEligibility::Execute => {}
-            super::DispatchEligibility::Skip => return Ok(None),
-            super::DispatchEligibility::Cancelled(cancelled_result) => {
-                let result = self
-                    .process_cancelled_dispatch_result(*cancelled_result, &w, job_id)
-                    .await?;
-                return Ok(Some(result));
-            }
+            super::DispatchPreflight::Execute => {}
+            super::DispatchPreflight::Skip => return Ok(None),
+            super::DispatchPreflight::Completed(result) => return Ok(Some(result)),
         }
         let start_permit = if let Some(session) = self.worker_instance_session() {
             if let Some(permit) = session.acquire_start_permit() {

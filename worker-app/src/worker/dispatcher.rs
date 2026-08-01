@@ -39,6 +39,31 @@ pub enum DispatchEligibility {
     Skip,
 }
 
+pub(crate) enum DispatchPreflight {
+    Execute,
+    Skip,
+    Completed(JobResult),
+}
+
+pub(crate) async fn resolve_dispatch_preflight<D>(
+    dispatcher: &D,
+    eligibility: DispatchEligibility,
+    worker_data: &WorkerData,
+    job_id: &JobId,
+) -> Result<DispatchPreflight>
+where
+    D: JobDispatcher + ?Sized,
+{
+    match eligibility {
+        DispatchEligibility::Execute => Ok(DispatchPreflight::Execute),
+        DispatchEligibility::Skip => Ok(DispatchPreflight::Skip),
+        DispatchEligibility::Cancelled(result) => dispatcher
+            .process_cancelled_dispatch_result(*result, worker_data, job_id)
+            .await
+            .map(DispatchPreflight::Completed),
+    }
+}
+
 /// Ensures every result that reaches the result processor has an identifier.
 pub fn ensure_job_result_id(
     id_generator: &IdGeneratorWrapper,
