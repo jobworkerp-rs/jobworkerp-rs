@@ -10,7 +10,9 @@ mod tests {
     use super::super::hybrid::tests::create_test_app;
     use crate::app::worker::UseWorkerApp;
     use anyhow::Result;
+    use command_utils::util::datetime;
     use infra::infra::UseIdGenerator;
+    use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
     use infra::infra::job::status::UseJobProcessingStatusRepository;
     use infra_utils::infra::test::TEST_RUNTIME;
     use jobworkerp_base::codec::UseProstCodec;
@@ -181,6 +183,75 @@ mod tests {
             assert!(cancelled);
 
             tracing::info!("test_delete_job_calls_cancel_functionality completed successfully");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_pending_scheduled_job_removes_rdb_entry() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let (app, _) = create_test_app(true).await?;
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            )?;
+            let worker = WorkerData {
+                name: "hybrid_scheduled_cancellation_worker".to_string(),
+                description: "scheduled cancellation".to_string(),
+                runner_id: Some(TEST_RUNNER_ID),
+                runner_settings,
+                channel: None,
+                response_type: ResponseType::NoResult as i32,
+                periodic_interval: 0,
+                retry_policy: None,
+                queue_type: QueueType::Normal as i32,
+                store_failure: false,
+                store_success: false,
+                use_static: false,
+                broadcast_results: false,
+            };
+            let worker_id = app.worker_app().create(&worker).await?;
+            let args =
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                })?;
+
+            let (job_id, result, _) = app
+                .enqueue_job(
+                    Arc::new(HashMap::new()),
+                    Some(&worker_id),
+                    None,
+                    args,
+                    None,
+                    datetime::now_millis() + 60_000,
+                    0,
+                    0,
+                    None,
+                    StreamingType::None,
+                    None,
+                    None,
+                )
+                .await?;
+
+            assert!(result.is_none());
+            assert!(app.rdb_job_repository().find(&job_id).await?.is_some());
+            assert_eq!(
+                app.job_processing_status_repository()
+                    .find_status(&job_id)
+                    .await?,
+                Some(JobProcessingStatus::Pending)
+            );
+
+            assert!(app.delete_job(&job_id).await?);
+
+            assert!(app.rdb_job_repository().find(&job_id).await?.is_none());
+            assert_eq!(
+                app.job_processing_status_repository()
+                    .find_status(&job_id)
+                    .await?,
+                None
+            );
             Ok(())
         })
     }

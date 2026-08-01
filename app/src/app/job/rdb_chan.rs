@@ -1,8 +1,9 @@
 use super::super::JobBuilder;
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::{
-    JobApp, JobCacheKeys, JobCancellationLifecycle, PendingStatusPublication,
-    resolve_and_validate_job_params, resolve_job_params,
+    JobApp, JobCacheKeys, JobCancellationLifecycle, PendingCancellationDisposition,
+    PendingStatusPublication, is_rdb_only_pending_job, resolve_and_validate_job_params,
+    resolve_job_params,
 };
 use crate::app::{UseWorkerConfig, WorkerConfig};
 use crate::module::AppConfigModule;
@@ -480,6 +481,46 @@ impl RdbChanJobAppImpl {
 impl JobCancellationLifecycle for RdbChanJobAppImpl {
     async fn broadcast_cancelled_job(&self, id: &JobId) -> Result<()> {
         self.broadcast_job_cancellation(id).await
+    }
+
+    async fn remove_pending_rdb_queue_entry(
+        &self,
+        id: &JobId,
+    ) -> Result<PendingCancellationDisposition> {
+        let rdb_only = match self.rdb_job_repository().find(id).await? {
+            Some(job) => {
+                is_rdb_only_pending_job(&job, self.worker_app(), self.is_run_after_job(&job))
+                    .await?
+            }
+            None => false,
+        };
+
+        // RDB dispatch does not yet claim the live status before execution.
+        // Removing the queued row prevents a cancelled job from being fetched.
+        // RDB-only jobs finalize below; backup jobs retain CANCELLING for chan delivery.
+        match self.rdb_job_repository().delete(id).await {
+            Ok(true) if rdb_only => Ok(PendingCancellationDisposition::FinalizedWithoutDelivery),
+            Ok(_) => Ok(PendingCancellationDisposition::AwaitQueuedDelivery),
+            Err(error) => {
+                tracing::warn!(
+                    job_id = id.value,
+                    ?error,
+                    "Failed to remove pending RDB queue entry during cancellation"
+                );
+                Ok(PendingCancellationDisposition::AwaitQueuedDelivery)
+            }
+        }
+    }
+
+    async fn record_pending_cancellation_completion(&self, id: &JobId) {
+        if let Some(index_repo) = self.job_status_index_repository.as_ref()
+            && let Err(error) = index_repo.mark_deleted_by_job_id(id).await
+        {
+            tracing::warn!(
+                "Failed to mark cancelled RDB-only job {} as deleted in index: {error:?}",
+                id.value
+            );
+        }
     }
 
     async fn record_cancelling_index(&self, id: &JobId) {

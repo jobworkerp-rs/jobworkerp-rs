@@ -19,6 +19,7 @@ pub mod rdb_chan_cancellation_test;
 #[cfg(test)]
 pub mod rdb_chan_indexing_integration_test;
 use super::JobBuilder;
+use super::worker::WorkerApp;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -568,11 +569,49 @@ pub(crate) async fn reset_index_to_pending_for_retry(
 /// cleanup, cancellation notification, and optional index persistence differ.
 const MAX_CANCELLATION_STATUS_TRANSITION_ATTEMPTS: usize = 3;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingCancellationDisposition {
+    AwaitQueuedDelivery,
+    FinalizedWithoutDelivery,
+}
+
+pub(crate) async fn is_rdb_only_pending_job(
+    job: &Job,
+    worker_app: &Arc<dyn WorkerApp + 'static>,
+    is_run_after: bool,
+) -> Result<bool> {
+    if is_run_after {
+        return Ok(true);
+    }
+
+    let Some(worker_id) = job.data.as_ref().and_then(|data| data.worker_id.as_ref()) else {
+        return Ok(false);
+    };
+
+    // RDB-only workers do not have a queue delivery that can finalize CANCELLING.
+    Ok(worker_app
+        .find(worker_id)
+        .await?
+        .and_then(|worker| worker.data)
+        .is_some_and(|data| {
+            data.periodic_interval > 0 || data.queue_type == QueueType::DbOnly as i32
+        }))
+}
+
 #[async_trait]
 pub(crate) trait JobCancellationLifecycle: UseJobProcessingStatusRepository {
     async fn broadcast_cancelled_job(&self, id: &JobId) -> Result<()>;
 
     async fn record_cancelling_index(&self, _id: &JobId) {}
+
+    async fn remove_pending_rdb_queue_entry(
+        &self,
+        _id: &JobId,
+    ) -> Result<PendingCancellationDisposition> {
+        Ok(PendingCancellationDisposition::AwaitQueuedDelivery)
+    }
+
+    async fn record_pending_cancellation_completion(&self, _id: &JobId) {}
 
     async fn cancel_job_lifecycle(&self, id: &JobId) -> Result<bool> {
         let Some(mut record) = self
@@ -604,7 +643,16 @@ pub(crate) trait JobCancellationLifecycle: UseJobProcessingStatusRepository {
             {
                 StatusTransitionResult::Applied => {
                     self.record_cancelling_index(id).await;
-                    if record.status != JobProcessingStatus::Pending {
+                    if record.status == JobProcessingStatus::Pending {
+                        if self.remove_pending_rdb_queue_entry(id).await?
+                            == PendingCancellationDisposition::FinalizedWithoutDelivery
+                        {
+                            self.record_pending_cancellation_completion(id).await;
+                            self.job_processing_status_repository()
+                                .delete_status(id)
+                                .await?;
+                        }
+                    } else {
                         self.broadcast_cancelled_job(id).await?;
                     }
                     // A queued delivery observes CANCELLING and publishes a
@@ -1207,6 +1255,7 @@ mod cancellation_lifecycle_tests {
     struct TestCancellationLifecycle {
         repository: Arc<PendingToRunningConflictRepository>,
         broadcast_count: AtomicUsize,
+        pending_rdb_removal_count: AtomicUsize,
     }
 
     impl UseJobProcessingStatusRepository for TestCancellationLifecycle {
@@ -1221,6 +1270,15 @@ mod cancellation_lifecycle_tests {
             self.broadcast_count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+
+        async fn remove_pending_rdb_queue_entry(
+            &self,
+            _id: &JobId,
+        ) -> Result<PendingCancellationDisposition> {
+            self.pending_rdb_removal_count
+                .fetch_add(1, Ordering::SeqCst);
+            Ok(PendingCancellationDisposition::AwaitQueuedDelivery)
+        }
     }
 
     #[tokio::test]
@@ -1229,6 +1287,7 @@ mod cancellation_lifecycle_tests {
         let lifecycle = TestCancellationLifecycle {
             repository: repository.clone(),
             broadcast_count: AtomicUsize::new(0),
+            pending_rdb_removal_count: AtomicUsize::new(0),
         };
 
         assert!(
@@ -1236,6 +1295,10 @@ mod cancellation_lifecycle_tests {
                 .cancel_job_lifecycle(&JobId { value: 1 })
                 .await
                 .unwrap()
+        );
+        assert_eq!(
+            lifecycle.pending_rdb_removal_count.load(Ordering::SeqCst),
+            0
         );
         assert_eq!(lifecycle.broadcast_count.load(Ordering::SeqCst), 1);
         assert_eq!(
@@ -1256,6 +1319,7 @@ mod cancellation_lifecycle_tests {
         let lifecycle = TestCancellationLifecycle {
             repository: repository.clone(),
             broadcast_count: AtomicUsize::new(0),
+            pending_rdb_removal_count: AtomicUsize::new(0),
         };
 
         assert!(
@@ -1263,6 +1327,10 @@ mod cancellation_lifecycle_tests {
                 .cancel_job_lifecycle(&JobId { value: 2 })
                 .await
                 .unwrap()
+        );
+        assert_eq!(
+            lifecycle.pending_rdb_removal_count.load(Ordering::SeqCst),
+            1
         );
         assert_eq!(lifecycle.broadcast_count.load(Ordering::SeqCst), 0);
         assert_eq!(
