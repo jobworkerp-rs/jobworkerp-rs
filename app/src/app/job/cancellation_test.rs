@@ -336,8 +336,9 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(
-                status, None,
-                "PENDING job status should be deleted after cancellation"
+                status,
+                Some(JobProcessingStatus::Cancelling),
+                "PENDING cancellation must remain visible until dispatcher finalization"
             );
 
             tracing::info!("test_delete_pending_job_status_verification completed successfully");

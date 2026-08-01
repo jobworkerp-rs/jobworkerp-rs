@@ -89,7 +89,7 @@ mod rdb_chan_cancellation_tests {
             assert!(cancelled);
 
             let status = status_repo.find_status(&job_id).await.unwrap();
-            assert_eq!(status, None);
+            assert_eq!(status, Some(JobProcessingStatus::Cancelling));
 
             tracing::info!("test_cancel_pending_job_rdb_chan completed successfully");
             Ok(())
@@ -142,7 +142,7 @@ mod rdb_chan_cancellation_tests {
             assert!(cancelled);
 
             let status = status_repo.find_status(&job_id).await.unwrap();
-            assert_eq!(status, None);
+            assert_eq!(status, Some(JobProcessingStatus::Cancelling));
 
             tracing::info!("test_cancel_job_pending_states completed successfully");
             Ok(())
@@ -225,7 +225,7 @@ mod rdb_chan_cancellation_tests {
     /// - PENDING → Delete → JobResult NOT generated (not executed yet)
     /// - Job record is deleted from queue
     #[test]
-    fn test_delete_pending_job_no_result_generated() -> Result<()> {
+    fn test_delete_pending_job_is_finalized_by_dispatcher() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let app_module = create_rdb_chan_test_app(true, false).await?;
             let app = &app_module.job_app;
@@ -296,14 +296,11 @@ mod rdb_chan_cancellation_tests {
             assert!(cancelled, "PENDING job deletion should succeed");
 
             let status = status_repo.find_status(&job_id).await.unwrap();
-            assert_eq!(status, None, "Job status should be deleted");
-
-            // IMPORTANT: According to spec-job-service-simplified.md:223:
-            // PENDING deletion does NOT generate JobResult (job was not executed yet)
-            // This is verified implicitly by:
-            // 1. delete_job() returned true (deletion succeeded)
-            // 2. Job status is None (removed from queue)
-            // 3. No JobResult is created (implementation behavior - cannot test directly without repository access)
+            assert_eq!(
+                status,
+                Some(JobProcessingStatus::Cancelling),
+                "Job status must remain until the queued delivery publishes Cancelled"
+            );
 
             tracing::info!("test_delete_pending_job_no_result_generated completed successfully");
             Ok(())
@@ -380,7 +377,7 @@ mod rdb_chan_cancellation_tests {
                 .memory_job_processing_status_repository
                 .as_ref();
 
-            // Test 1: PENDING → Delete succeeds, status removed
+            // Test 1: PENDING → CANCELLING until queued dispatch finalizes it.
             let pending_job_id = JobId { value: 91111 };
             status_repo
                 .upsert_status(&pending_job_id, &JobProcessingStatus::Pending)
@@ -389,8 +386,8 @@ mod rdb_chan_cancellation_tests {
             assert!(result, "PENDING job deletion should succeed");
             assert_eq!(
                 status_repo.find_status(&pending_job_id).await.unwrap(),
-                None,
-                "PENDING job status should be removed"
+                Some(JobProcessingStatus::Cancelling),
+                "PENDING cancellation must remain for queued dispatch"
             );
 
             // Test 2: RUNNING → CANCELLING, retained until result processing.
@@ -529,8 +526,8 @@ mod rdb_chan_cancellation_tests {
             assert!(result, "PENDING job should be cancellable");
             assert_eq!(
                 status_repo.find_status(&pending_id).await?,
-                None,
-                "PENDING job should be cleaned up"
+                Some(JobProcessingStatus::Cancelling),
+                "PENDING cancellation must be finalized by queued dispatch"
             );
 
             // Test 2: RUNNING should be cancellable

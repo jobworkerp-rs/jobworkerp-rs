@@ -501,10 +501,6 @@ impl HybridJobAppImpl {
 
 #[async_trait]
 impl JobCancellationLifecycle for HybridJobAppImpl {
-    async fn cleanup_cancelled_job(&self, id: &JobId) -> Result<()> {
-        self.cleanup_job(id).await
-    }
-
     async fn broadcast_cancelled_job(&self, id: &JobId) -> Result<()> {
         self.broadcast_job_cancellation(id).await
     }

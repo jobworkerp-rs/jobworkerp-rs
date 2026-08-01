@@ -129,55 +129,27 @@ mod hybrid_indexing_integration_tests {
             let deleted = app.delete_job(&job_id).await?;
             assert!(deleted);
 
-            assert_eq!(status_repo.find_status(&job_id).await.unwrap(), None);
+            assert_eq!(
+                status_repo.find_status(&job_id).await.unwrap(),
+                Some(JobProcessingStatus::Cancelling)
+            );
 
             // Step 3: Verify RDB index status (should be logically deleted)
             // Wait for the best-effort CANCELLING index update. Cleanup is deferred
             // until result processing, so `deleted_at` must remain NULL here.
             // MySQL may have more latency than SQLite
             tracing::info!("Step 3: Verify RDB index status");
-            let query = "SELECT deleted_at FROM job_processing_status WHERE job_id = ?";
-
-            let mut deleted_at_result = None;
-            for attempt in 0..10 {
-                tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
-
-                // fetch_optional returns None if row doesn't exist
-                // The column deleted_at itself can be NULL, so we need Option<Option<i64>>
-                let row_result: Option<Option<i64>> = sqlx::query_scalar(query)
-                    .bind(job_id.value)
-                    .fetch_optional(rdb_pool)
-                    .await?;
-
-                match row_result {
-                    Some(Some(timestamp)) => {
-                        deleted_at_result = Some(timestamp);
-                        break;
-                    }
-                    Some(None) => {
-                        tracing::debug!(
-                            attempt,
-                            "Job row exists but deleted_at is still NULL, retrying..."
-                        );
-                        continue;
-                    }
-                    None => {
-                        panic!("Job row does not exist in RDB index");
-                    }
-                }
-            }
-
-            match deleted_at_result {
-                Some(timestamp) => {
-                    tracing::info!(
-                        deleted_at = timestamp,
-                        "Job logically deleted in RDB at timestamp"
-                    );
-                }
-                None => {
-                    panic!("Job row exists but deleted_at is still NULL after retries");
-                }
-            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let query = "SELECT status, deleted_at FROM job_processing_status WHERE job_id = ?";
+            let row: Option<(i32, Option<i64>)> = sqlx::query_as(query)
+                .bind(job_id.value)
+                .fetch_optional(rdb_pool)
+                .await?;
+            assert_eq!(
+                row,
+                Some((JobProcessingStatus::Cancelling as i32, None)),
+                "Pending cancellation must remain indexed until queued dispatch finalizes it"
+            );
 
             tracing::info!(
                 "test_async_indexing_cancelling_transition_hybrid completed successfully"

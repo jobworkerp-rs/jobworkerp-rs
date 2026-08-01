@@ -570,8 +570,6 @@ const MAX_CANCELLATION_STATUS_TRANSITION_ATTEMPTS: usize = 3;
 
 #[async_trait]
 pub(crate) trait JobCancellationLifecycle: UseJobProcessingStatusRepository {
-    async fn cleanup_cancelled_job(&self, id: &JobId) -> Result<()>;
-
     async fn broadcast_cancelled_job(&self, id: &JobId) -> Result<()>;
 
     async fn record_cancelling_index(&self, _id: &JobId) {}
@@ -606,11 +604,11 @@ pub(crate) trait JobCancellationLifecycle: UseJobProcessingStatusRepository {
             {
                 StatusTransitionResult::Applied => {
                     self.record_cancelling_index(id).await;
-                    if record.status == JobProcessingStatus::Pending {
-                        self.cleanup_cancelled_job(id).await?;
-                    } else {
+                    if record.status != JobProcessingStatus::Pending {
                         self.broadcast_cancelled_job(id).await?;
                     }
+                    // A queued delivery observes CANCELLING and publishes a
+                    // terminal Cancelled result before complete_job cleans up.
                     return Ok(true);
                 }
                 StatusTransitionResult::Conflict(Some(current)) => {
@@ -1142,16 +1140,18 @@ mod cancellation_lifecycle_tests {
     struct PendingToRunningConflictRepository {
         record: Mutex<JobProcessingStatusRecord>,
         compare_count: AtomicUsize,
+        transition_to_running_on_first_compare: bool,
     }
 
     impl PendingToRunningConflictRepository {
-        fn new() -> Self {
+        fn new(transition_to_running_on_first_compare: bool) -> Self {
             Self {
                 record: Mutex::new(JobProcessingStatusRecord {
                     status: JobProcessingStatus::Pending,
                     retried: 0,
                 }),
                 compare_count: AtomicUsize::new(0),
+                transition_to_running_on_first_compare,
             }
         }
     }
@@ -1188,20 +1188,16 @@ mod cancellation_lifecycle_tests {
             next: Option<JobProcessingStatusRecord>,
         ) -> Result<StatusTransitionResult> {
             let mut record = self.record.lock().await;
-            if self.compare_count.fetch_add(1, Ordering::SeqCst) == 0 {
+            if self.transition_to_running_on_first_compare
+                && self.compare_count.fetch_add(1, Ordering::SeqCst) == 0
+            {
                 *record = JobProcessingStatusRecord {
                     status: JobProcessingStatus::Running,
                     retried: 0,
                 };
                 return Ok(StatusTransitionResult::Conflict(Some(*record)));
             }
-            assert_eq!(
-                expected,
-                Some(JobProcessingStatusRecord {
-                    status: JobProcessingStatus::Running,
-                    retried: 0,
-                })
-            );
+            assert_eq!(expected, Some(*record));
             *record = next.expect("cancellation must retain a status record");
             Ok(StatusTransitionResult::Applied)
         }
@@ -1210,7 +1206,6 @@ mod cancellation_lifecycle_tests {
     #[derive(Debug)]
     struct TestCancellationLifecycle {
         repository: Arc<PendingToRunningConflictRepository>,
-        cleanup_count: AtomicUsize,
         broadcast_count: AtomicUsize,
     }
 
@@ -1222,11 +1217,6 @@ mod cancellation_lifecycle_tests {
 
     #[async_trait]
     impl JobCancellationLifecycle for TestCancellationLifecycle {
-        async fn cleanup_cancelled_job(&self, _id: &JobId) -> Result<()> {
-            self.cleanup_count.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-
         async fn broadcast_cancelled_job(&self, _id: &JobId) -> Result<()> {
             self.broadcast_count.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -1235,10 +1225,9 @@ mod cancellation_lifecycle_tests {
 
     #[tokio::test]
     async fn cancellation_retries_after_pending_to_running_conflict() {
-        let repository = Arc::new(PendingToRunningConflictRepository::new());
+        let repository = Arc::new(PendingToRunningConflictRepository::new(true));
         let lifecycle = TestCancellationLifecycle {
             repository: repository.clone(),
-            cleanup_count: AtomicUsize::new(0),
             broadcast_count: AtomicUsize::new(0),
         };
 
@@ -1248,11 +1237,37 @@ mod cancellation_lifecycle_tests {
                 .await
                 .unwrap()
         );
-        assert_eq!(lifecycle.cleanup_count.load(Ordering::SeqCst), 0);
         assert_eq!(lifecycle.broadcast_count.load(Ordering::SeqCst), 1);
         assert_eq!(
             repository
                 .find_status_record(&JobId { value: 1 })
+                .await
+                .unwrap(),
+            Some(JobProcessingStatusRecord {
+                status: JobProcessingStatus::Cancelling,
+                retried: 0,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_cancellation_is_retained_for_dispatch_finalization() {
+        let repository = Arc::new(PendingToRunningConflictRepository::new(false));
+        let lifecycle = TestCancellationLifecycle {
+            repository: repository.clone(),
+            broadcast_count: AtomicUsize::new(0),
+        };
+
+        assert!(
+            lifecycle
+                .cancel_job_lifecycle(&JobId { value: 2 })
+                .await
+                .unwrap()
+        );
+        assert_eq!(lifecycle.broadcast_count.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            repository
+                .find_status_record(&JobId { value: 2 })
                 .await
                 .unwrap(),
             Some(JobProcessingStatusRecord {
