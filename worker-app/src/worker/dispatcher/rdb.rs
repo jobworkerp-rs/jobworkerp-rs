@@ -46,7 +46,8 @@ use std::time::Duration;
 // for rdb run_after, periodic job dispatching
 #[async_trait]
 pub trait RdbJobDispatcher:
-    UseJobResultApp
+    JobDispatcher
+    + UseJobResultApp
     + UseIdGenerator
     + UseRdbChanJobRepository
     + UseResultProcessor
@@ -204,6 +205,19 @@ pub trait RdbJobDispatcher:
 
         let job_id = job.id.as_ref().expect("validated job ID");
         let job_data = job.data.as_ref().expect("validated job data");
+        match self
+            .check_rdb_cancellation_status(job_id, &wid, &w, job.metadata.clone(), job_data)
+            .await?
+        {
+            super::DispatchEligibility::Execute => {}
+            super::DispatchEligibility::Skip => return Ok(None),
+            super::DispatchEligibility::Cancelled(cancelled_result) => {
+                let result = self
+                    .process_cancelled_dispatch_result(*cancelled_result, &w, job_id)
+                    .await?;
+                return Ok(Some(result));
+            }
+        }
         let start_permit = self
             .worker_instance_session()
             .map(|session| {
@@ -215,8 +229,8 @@ pub trait RdbJobDispatcher:
             })
             .transpose()?;
         let (grabbed, rdb_execution) = if let Some(permit) = &start_permit {
-            // TODO(#311): Couple this RDB execution claim to the authoritative
-            // processing status so Delete can distinguish queued and running work.
+            // The live status is claimed before this durable execution claim.
+            // #311 remains responsible for making both claims one transaction.
             let resolved = app::app::job::resolve_job_params(&w, job_data.overrides.as_ref());
             let repository = RdbJobStatusExecutionRepository::new(Arc::new(
                 self.rdb_job_repository().db_pool().clone(),
@@ -432,9 +446,7 @@ impl infra::infra::job::status::UseJobProcessingStatusRepository for RdbJobDispa
     fn job_processing_status_repository(
         &self,
     ) -> Arc<dyn infra::infra::job::status::JobProcessingStatusRepository> {
-        // RdbJobDispatcher typically doesn't use job processing status, hence dummy implementation
-        // If actual status needed, retrieve appropriate repository from app_module
-        Arc::new(infra::infra::job::status::memory::MemoryJobProcessingStatusRepository::new())
+        self.app_module.job_processing_status_repository()
     }
 }
 
@@ -444,8 +456,11 @@ impl infra::infra::job::status::rdb::UseRdbJobProcessingStatusIndexRepository
     fn rdb_job_processing_status_index_repository(
         &self,
     ) -> Option<Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>> {
-        // RdbJobDispatcher doesn't use RDB job processing status index
-        None
+        self.app_module
+            .repositories
+            .rdb_module
+            .as_ref()
+            .and_then(|module| module.rdb_job_processing_status_index_repository.clone())
     }
 }
 

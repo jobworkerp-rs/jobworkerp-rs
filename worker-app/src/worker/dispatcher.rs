@@ -164,6 +164,26 @@ pub trait JobDispatcher:
         job_metadata: std::collections::HashMap<String, String>,
         job_data: &proto::jobworkerp::data::JobData,
     ) -> Result<DispatchEligibility> {
+        self.check_cancellation_status_with_missing_status(
+            job_id,
+            worker_id,
+            worker_data,
+            job_metadata,
+            job_data,
+            false,
+        )
+        .await
+    }
+
+    async fn check_cancellation_status_with_missing_status(
+        &self,
+        job_id: &JobId,
+        worker_id: &WorkerId,
+        worker_data: &WorkerData,
+        job_metadata: std::collections::HashMap<String, String>,
+        job_data: &proto::jobworkerp::data::JobData,
+        execute_when_status_missing: bool,
+    ) -> Result<DispatchEligibility> {
         let record = self
             .job_processing_status_repository()
             .find_status_record(job_id)
@@ -186,6 +206,7 @@ pub trait JobDispatcher:
                 );
                 return Ok(DispatchEligibility::Skip);
             }
+            None if execute_when_status_missing => return Ok(DispatchEligibility::Execute),
             None => return Ok(DispatchEligibility::Skip),
         };
 
@@ -232,6 +253,27 @@ pub trait JobDispatcher:
             | JobProcessingStatus::WaitResult
             | JobProcessingStatus::Unknown => Ok(DispatchEligibility::Skip),
         }
+    }
+
+    /// RDB-dispatched jobs created before live status publication are allowed
+    /// to execute, while jobs with a status use the regular CAS claim path.
+    async fn check_rdb_cancellation_status(
+        &self,
+        job_id: &JobId,
+        worker_id: &WorkerId,
+        worker_data: &WorkerData,
+        job_metadata: std::collections::HashMap<String, String>,
+        job_data: &proto::jobworkerp::data::JobData,
+    ) -> Result<DispatchEligibility> {
+        self.check_cancellation_status_with_missing_status(
+            job_id,
+            worker_id,
+            worker_data,
+            job_metadata,
+            job_data,
+            true,
+        )
+        .await
     }
 
     async fn cancelled_dispatch_eligibility(
@@ -498,9 +540,80 @@ impl JobDispatcher for RdbChanJobDispatcherImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_job_result_id;
+    use super::*;
+    use anyhow::Result;
+    use async_trait::async_trait;
     use infra::infra::IdGeneratorWrapper;
-    use proto::jobworkerp::data::{JobResult, JobResultId};
+    use infra::infra::job::status::memory::MemoryJobProcessingStatusRepository;
+    use infra::infra::job::status::rdb::UseRdbJobProcessingStatusIndexRepository;
+    use infra::infra::job::status::{
+        JobProcessingStatusRepository, UseJobProcessingStatusRepository,
+    };
+    use proto::jobworkerp::data::{JobProcessingStatus, JobResult, JobResultId, WorkerData};
+
+    struct TestDispatcher {
+        id_generator: IdGeneratorWrapper,
+        status_repository: Arc<MemoryJobProcessingStatusRepository>,
+    }
+
+    impl TestDispatcher {
+        fn new() -> Self {
+            Self {
+                id_generator: IdGeneratorWrapper::new_mock(),
+                status_repository: Arc::new(MemoryJobProcessingStatusRepository::new()),
+            }
+        }
+    }
+
+    impl UseJobProcessingStatusRepository for TestDispatcher {
+        fn job_processing_status_repository(
+            &self,
+        ) -> Arc<dyn infra::infra::job::status::JobProcessingStatusRepository> {
+            self.status_repository.clone()
+        }
+    }
+
+    impl UseRdbJobProcessingStatusIndexRepository for TestDispatcher {
+        fn rdb_job_processing_status_index_repository(
+            &self,
+        ) -> Option<Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>>
+        {
+            None
+        }
+    }
+
+    impl UseIdGenerator for TestDispatcher {
+        fn id_generator(&self) -> &IdGeneratorWrapper {
+            &self.id_generator
+        }
+    }
+
+    impl UseResultProcessor for TestDispatcher {
+        fn result_processor(&self) -> &super::super::result_processor::ResultProcessorImpl {
+            panic!("status claim tests do not process results")
+        }
+    }
+
+    #[async_trait]
+    impl JobDispatcher for TestDispatcher {
+        fn dispatch_jobs(&'static self, _lock: ShutdownLock) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn worker_data() -> WorkerData {
+        WorkerData {
+            name: "rdb-claim-test".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn job_data() -> proto::jobworkerp::data::JobData {
+        proto::jobworkerp::data::JobData {
+            retried: 0,
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn ensure_job_result_id_generates_only_when_missing() {
@@ -519,5 +632,77 @@ mod tests {
             existing
         );
         assert_eq!(result.id, Some(existing));
+    }
+
+    #[tokio::test]
+    async fn rdb_claim_allows_statusless_legacy_jobs() {
+        let dispatcher = TestDispatcher::new();
+        let job_id = JobId { value: 1 };
+        let worker_id = WorkerId { value: 1 };
+        assert!(matches!(
+            dispatcher
+                .check_rdb_cancellation_status(
+                    &job_id,
+                    &worker_id,
+                    &worker_data(),
+                    Default::default(),
+                    &job_data(),
+                )
+                .await
+                .unwrap(),
+            DispatchEligibility::Execute
+        ));
+    }
+
+    #[tokio::test]
+    async fn rdb_claim_transitions_pending_and_returns_cancelling_jobs() {
+        let dispatcher = TestDispatcher::new();
+        let job_id = JobId { value: 2 };
+        let worker_id = WorkerId { value: 1 };
+        dispatcher
+            .status_repository
+            .upsert_status(&job_id, &JobProcessingStatus::Pending)
+            .await
+            .unwrap();
+        assert!(matches!(
+            dispatcher
+                .check_rdb_cancellation_status(
+                    &job_id,
+                    &worker_id,
+                    &worker_data(),
+                    Default::default(),
+                    &job_data(),
+                )
+                .await
+                .unwrap(),
+            DispatchEligibility::Execute
+        ));
+        assert_eq!(
+            dispatcher
+                .status_repository
+                .find_status(&job_id)
+                .await
+                .unwrap(),
+            Some(JobProcessingStatus::Running)
+        );
+
+        dispatcher
+            .status_repository
+            .upsert_status(&job_id, &JobProcessingStatus::Cancelling)
+            .await
+            .unwrap();
+        assert!(matches!(
+            dispatcher
+                .check_rdb_cancellation_status(
+                    &job_id,
+                    &worker_id,
+                    &worker_data(),
+                    Default::default(),
+                    &job_data(),
+                )
+                .await
+                .unwrap(),
+            DispatchEligibility::Cancelled(_)
+        ));
     }
 }
