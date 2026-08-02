@@ -327,23 +327,18 @@ pub trait ChanJobDispatcher:
             return Ok(result);
         }
 
-        if let Some(cancelled_result) = self
-            .check_cancellation_status(&jid, &wid, &wdat, metadata.clone(), &jdat)
-            .await?
+        match super::resolve_dispatch_preflight(
+            self,
+            self.check_cancellation_status(&jid, &wid, &wdat, metadata.clone(), &jdat)
+                .await?,
+            &wdat,
+            &jid,
+        )
+        .await?
         {
-            let (result, completion_rx) = self
-                .result_processor()
-                .process_result(cancelled_result, None, wdat)
-                .await?;
-            if let Some(rx) = completion_rx
-                && rx.await.is_err()
-            {
-                tracing::warn!(
-                    "stream completion sender dropped for cancelled job {:?}",
-                    &jid
-                );
-            }
-            return Ok(result);
+            super::DispatchPreflight::Execute => {}
+            super::DispatchPreflight::Skip => return Ok(JobResult::default()),
+            super::DispatchPreflight::Completed(result) => return Ok(*result),
         }
 
         let resolved =
@@ -361,9 +356,6 @@ pub trait ChanJobDispatcher:
                 .await?
             {
                 // change status to running
-                self.job_processing_status_repository()
-                    .upsert_status(&jid, &JobProcessingStatus::Running)
-                    .await?;
 
                 // Index RUNNING status in RDB (if enabled) with full metadata including start_time
                 if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
@@ -403,9 +395,6 @@ pub trait ChanJobDispatcher:
             }
         } else {
             // change status to running
-            self.job_processing_status_repository()
-                .upsert_status(&jid, &JobProcessingStatus::Running)
-                .await?;
 
             // Index RUNNING status in RDB (if enabled) with full metadata including start_time
             if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
@@ -442,9 +431,10 @@ pub trait ChanJobDispatcher:
         let enqueue_time_for_indexing = jdat.enqueue_time;
         let is_streamable_for_indexing = jdat.streaming_type != 0;
         let broadcast_results_for_indexing = resolved.broadcast_results;
+        let attempt_for_status = jdat.retried;
 
         // run job (load-only requests were handled and returned above)
-        let r = self
+        let mut r = self
                 .run_job(
                     &runner_data,
                     &wid,
@@ -456,12 +446,22 @@ pub trait ChanJobDispatcher:
                     },
                 )
                 .await;
+            super::ensure_job_result_id(self.id_generator(), &mut r.0)?;
             // TODO execute and return result to result channel.
             tracing::trace!("send result id: {:?}, data: {:?}", &r.0.id, &r.0.data);
             // change status to wait handling result (skip for Direct response)
             if resolved.response_type != ResponseType::Direct as i32 {
-                self.job_processing_status_repository()
-                    .upsert_status(&jid, &JobProcessingStatus::WaitResult)
+                let running = infra::infra::job::status::JobProcessingStatusRecord {
+                    status: JobProcessingStatus::Running,
+                    retried: attempt_for_status,
+                };
+                let wait_result = infra::infra::job::status::JobProcessingStatusRecord {
+                    status: JobProcessingStatus::WaitResult,
+                    retried: attempt_for_status,
+                };
+                let _ = self
+                    .job_processing_status_repository()
+                    .compare_and_set_status(&jid, Some(running), Some(wait_result))
                     .await?;
 
                 // Index WAIT_RESULT status in RDB (if enabled) with full metadata

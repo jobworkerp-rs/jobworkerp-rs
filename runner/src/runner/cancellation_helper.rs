@@ -5,7 +5,11 @@
 
 use super::cancellation::{CancellationSetupResult, RunnerCancellationManager};
 use anyhow::Result;
-use proto::jobworkerp::data::{JobData, JobId, JobResult};
+use command_utils::util::datetime;
+use proto::jobworkerp::data::{
+    JobData, JobId, JobResult, JobResultData, ResultOutput, ResultStatus,
+};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -51,7 +55,37 @@ impl CancelMonitoringHelper {
                     "Job {} was already cancelled before execution",
                     job_id.value
                 );
-                Ok(None)
+                #[allow(deprecated)]
+                Ok(Some(JobResult {
+                    id: None,
+                    data: Some(JobResultData {
+                        job_id: Some(job_id),
+                        status: ResultStatus::Cancelled as i32,
+                        output: Some(ResultOutput {
+                            items: b"Job was cancelled before execution".to_vec(),
+                        }),
+                        start_time: datetime::now_millis(),
+                        end_time: datetime::now_millis(),
+                        worker_id: job_data.worker_id,
+                        args: job_data.args.clone(),
+                        uniq_key: job_data.uniq_key.clone(),
+                        retried: job_data.retried,
+                        max_retry: 0,
+                        priority: job_data.priority,
+                        timeout: job_data.timeout,
+                        streaming_type: job_data.streaming_type,
+                        enqueue_time: job_data.enqueue_time,
+                        run_after_time: job_data.run_after_time,
+                        response_type: 0,
+                        store_success: false,
+                        store_failure: false,
+                        worker_name: String::new(),
+                        using: job_data.using.clone(),
+                        broadcast_results: false,
+                        resolved_retry_policy: None,
+                    }),
+                    metadata: HashMap::new(),
+                }))
             }
         }
     }

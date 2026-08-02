@@ -10,7 +10,9 @@ mod tests {
     use super::super::hybrid::tests::create_test_app;
     use crate::app::worker::UseWorkerApp;
     use anyhow::Result;
+    use command_utils::util::datetime;
     use infra::infra::UseIdGenerator;
+    use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
     use infra::infra::job::status::UseJobProcessingStatusRepository;
     use infra_utils::infra::test::TEST_RUNTIME;
     use jobworkerp_base::codec::UseProstCodec;
@@ -186,6 +188,80 @@ mod tests {
     }
 
     #[test]
+    fn test_cancel_unpublished_scheduled_job_removes_rdb_entry() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let (app, _) = create_test_app(true).await?;
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            )?;
+            let worker = WorkerData {
+                name: "hybrid_scheduled_cancellation_worker".to_string(),
+                description: "scheduled cancellation".to_string(),
+                runner_id: Some(TEST_RUNNER_ID),
+                runner_settings,
+                channel: None,
+                response_type: ResponseType::NoResult as i32,
+                periodic_interval: 0,
+                retry_policy: None,
+                queue_type: QueueType::Normal as i32,
+                store_failure: false,
+                store_success: false,
+                use_static: false,
+                broadcast_results: false,
+            };
+            let worker_id = app.worker_app().create(&worker).await?;
+            let args =
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                })?;
+
+            let (job_id, result, _) = app
+                .enqueue_job(
+                    Arc::new(HashMap::new()),
+                    Some(&worker_id),
+                    None,
+                    args,
+                    None,
+                    datetime::now_millis() + 60_000,
+                    0,
+                    0,
+                    None,
+                    StreamingType::None,
+                    None,
+                    None,
+                )
+                .await?;
+
+            assert!(result.is_none());
+            assert!(app.rdb_job_repository().find(&job_id).await?.is_some());
+            assert_eq!(
+                app.job_processing_status_repository()
+                    .find_status(&job_id)
+                    .await?,
+                Some(JobProcessingStatus::Pending)
+            );
+            // Simulate Delete racing after the RDB row is committed but before
+            // the producer publishes its initial PENDING status.
+            app.job_processing_status_repository()
+                .delete_status(&job_id)
+                .await?;
+
+            assert!(app.delete_job(&job_id).await?);
+
+            assert!(app.rdb_job_repository().find(&job_id).await?.is_none());
+            assert_eq!(
+                app.job_processing_status_repository()
+                    .find_status(&job_id)
+                    .await?,
+                None
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_cancel_running_job_hybrid() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
@@ -224,7 +300,7 @@ mod tests {
             let test_cases = vec![
                 (JobProcessingStatus::Pending, true),
                 (JobProcessingStatus::Running, true),
-                (JobProcessingStatus::WaitResult, false), // Can't cancel waiting results
+                (JobProcessingStatus::WaitResult, true), // Prevent retry after Delete
             ];
 
             for (initial_status, should_cancel) in test_cases {
@@ -336,8 +412,9 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(
-                status, None,
-                "PENDING job status should be deleted after cancellation"
+                status,
+                Some(JobProcessingStatus::Cancelling),
+                "PENDING cancellation must remain visible until dispatcher finalization"
             );
 
             tracing::info!("test_delete_pending_job_status_verification completed successfully");
@@ -430,8 +507,9 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(
-                status, None,
-                "RUNNING job status should be deleted after cancellation"
+                status,
+                Some(JobProcessingStatus::Cancelling),
+                "RUNNING job status should remain cancelling until result processing"
             );
 
             tracing::info!("test_delete_running_job_cancellation_broadcast completed successfully");
@@ -439,12 +517,8 @@ mod tests {
         })
     }
 
-    /// Sprint 3 Enhancement: Verify WAIT_RESULT job cancellation rejection
-    /// Test Case 3: WAIT_RESULT状態のJobキャンセル不可
-    /// - Verify that delete returns false
-    /// - Verify that status remains unchanged
     #[test]
-    fn test_delete_wait_result_job_rejection() -> Result<()> {
+    fn test_delete_wait_result_job_marks_cancelling() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
@@ -468,24 +542,19 @@ mod tests {
                 "Job should be in WAIT_RESULT status"
             );
 
-            // Attempt to cancel WAIT_RESULT job (should fail)
+            // Cancellation must win over a possible retry decision.
             let result = app.delete_job(&job_id).await?;
-            assert!(
-                !result,
-                "WAIT_RESULT job cancellation should fail (return false)"
-            );
+            assert!(result);
 
-            // This is the expected behavior after fix: status should be preserved
             let status = app
                 .job_processing_status_repository()
                 .find_status(&job_id)
                 .await
                 .unwrap();
-            // Fixed implementation preserves the status record
             assert_eq!(
                 status,
-                Some(JobProcessingStatus::WaitResult),
-                "WAIT_RESULT job status should be preserved when cancellation fails"
+                Some(JobProcessingStatus::Cancelling),
+                "WAIT_RESULT must become cancelling before retry is considered"
             );
 
             tracing::info!("test_delete_wait_result_job_rejection completed successfully");

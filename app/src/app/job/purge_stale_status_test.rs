@@ -651,6 +651,66 @@ mod purge_stale_status_tests {
         })
     }
 
+    /// Retry publication must not recreate a live status after Delete has
+    /// removed it, nor overwrite a concurrent cancellation request.
+    #[test]
+    fn test_update_job_does_not_restore_cancelled_live_status() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app_module = create_rdb_chan_test_app(true, true).await?;
+            let app = &app_module.job_app;
+            let status_repo = app_module
+                .repositories
+                .rdb_module
+                .as_ref()
+                .expect("RDB module should exist")
+                .memory_job_processing_status_repository
+                .clone();
+
+            let worker_id = app_module
+                .worker_app
+                .create(&test_worker_data("retry_preserves_cancellation"))
+                .await?;
+            let args =
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                })?;
+            let (job_id, _, _) = app
+                .enqueue_job(
+                    Arc::new(HashMap::new()),
+                    Some(&worker_id),
+                    None,
+                    args,
+                    None,
+                    0,
+                    0,
+                    0,
+                    None,
+                    StreamingType::None,
+                    None,
+                    None,
+                )
+                .await?;
+            let job = app
+                .find_job(&job_id)
+                .await?
+                .expect("queued job should be available for retry publication");
+
+            status_repo.delete_status(&job_id).await?;
+            app.update_job(&job).await?;
+            assert_eq!(status_repo.find_status(&job_id).await?, None);
+
+            status_repo
+                .upsert_status(&job_id, &JobProcessingStatus::Cancelling)
+                .await?;
+            app.update_job(&job).await?;
+            assert_eq!(
+                status_repo.find_status(&job_id).await?,
+                Some(JobProcessingStatus::Cancelling)
+            );
+            Ok(())
+        })
+    }
+
     /// `job` row remains (e.g. DbOnly / periodic / future run_after) but the
     /// live status SoT has no entry — must NOT be purged. This guards against
     /// deleting search-index rows for jobs that are still queued.

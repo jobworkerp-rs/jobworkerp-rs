@@ -19,6 +19,7 @@ pub mod rdb_chan_cancellation_test;
 #[cfg(test)]
 pub mod rdb_chan_indexing_integration_test;
 use super::JobBuilder;
+use super::worker::WorkerApp;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -29,12 +30,14 @@ use infra::infra::{
     UseJobQueueConfig,
     job::{
         queue::redis::RedisJobQueueRepository,
+        rdb::{RdbChanJobRepositoryImpl, RdbJobRepository},
         redis::{RedisJobRepository, UseRedisJobRepository, schedule::RedisJobScheduleRepository},
-        status::UseJobProcessingStatusRepository,
+        status::{
+            JobProcessingStatusRecord, StatusTransitionResult, UseJobProcessingStatusRepository,
+        },
     },
 };
 use jobworkerp_base::error::JobWorkerError;
-use proto::calculate_direct_response_timeout_ms;
 use proto::jobworkerp::data::{
     Job, JobData, JobExecutionOverrides, JobId, JobProcessingStatus, JobResult, JobResultData,
     JobResultId, QueueType, ResponseType, ResultOutputItem, ResultStatus, RetryPolicy,
@@ -126,6 +129,24 @@ pub struct ResolvedJobParams {
     pub store_failure: bool,
     pub broadcast_results: bool,
     pub retry_policy: Option<RetryPolicy>,
+}
+
+/// Describes who owns publishing a job's initial PENDING status.
+///
+/// A retry has already atomically claimed PENDING before it reaches a queue.
+/// Re-recording it with an upsert could resurrect a concurrent cancellation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingStatusPublication {
+    /// The enqueue operation creates PENDING and compensates if publication fails.
+    NewEnqueue,
+    /// The retry transition already owns PENDING through a CAS.
+    Retry,
+}
+
+impl PendingStatusPublication {
+    fn creates_status(self) -> bool {
+        matches!(self, Self::NewEnqueue)
+    }
 }
 
 /// Default wait for a load-only job when the caller does not specify one.
@@ -545,6 +566,175 @@ pub(crate) async fn reset_index_to_pending_for_retry(
     }
 }
 
+/// Backend hooks for the shared user-initiated cancellation lifecycle.
+///
+/// Status ownership is identical for the channel and Redis-backed apps; only
+/// cleanup, cancellation notification, and optional index persistence differ.
+const MAX_CANCELLATION_STATUS_TRANSITION_ATTEMPTS: usize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingCancellationDisposition {
+    AwaitQueuedDelivery,
+    FinalizedWithoutDelivery,
+}
+
+pub(crate) async fn is_rdb_only_pending_job(
+    job: &Job,
+    worker_app: &Arc<dyn WorkerApp + 'static>,
+    is_run_after: bool,
+) -> Result<bool> {
+    if is_run_after {
+        return Ok(true);
+    }
+
+    let Some(worker_id) = job.data.as_ref().and_then(|data| data.worker_id.as_ref()) else {
+        return Ok(false);
+    };
+
+    // RDB-only workers do not have a queue delivery that can finalize CANCELLING.
+    Ok(worker_app
+        .find(worker_id)
+        .await?
+        .and_then(|worker| worker.data)
+        .is_some_and(|data| {
+            data.periodic_interval > 0 || data.queue_type == QueueType::DbOnly as i32
+        }))
+}
+
+pub(crate) async fn remove_pending_rdb_job<F>(
+    repository: &RdbChanJobRepositoryImpl,
+    worker_app: &Arc<dyn WorkerApp + 'static>,
+    id: &JobId,
+    is_run_after: F,
+) -> Result<PendingCancellationDisposition>
+where
+    F: FnOnce(&Job) -> bool,
+{
+    let rdb_only = match repository.find(id).await? {
+        Some(job) => is_rdb_only_pending_job(&job, worker_app, is_run_after(&job)).await?,
+        None => false,
+    };
+
+    match repository.delete(id).await {
+        Ok(true) if rdb_only => Ok(PendingCancellationDisposition::FinalizedWithoutDelivery),
+        Ok(_) => Ok(PendingCancellationDisposition::AwaitQueuedDelivery),
+        Err(error) => {
+            tracing::warn!(
+                job_id = id.value,
+                ?error,
+                "Failed to remove pending RDB queue entry during cancellation"
+            );
+            Ok(PendingCancellationDisposition::AwaitQueuedDelivery)
+        }
+    }
+}
+
+pub(crate) async fn remove_unpublished_rdb_only_job<F>(
+    repository: &RdbChanJobRepositoryImpl,
+    worker_app: &Arc<dyn WorkerApp + 'static>,
+    id: &JobId,
+    is_run_after: F,
+) -> Result<bool>
+where
+    F: FnOnce(&Job) -> bool,
+{
+    let Some(job) = repository.find(id).await? else {
+        return Ok(false);
+    };
+    if !is_rdb_only_pending_job(&job, worker_app, is_run_after(&job)).await? {
+        return Ok(false);
+    }
+
+    repository.delete(id).await
+}
+
+#[async_trait]
+pub(crate) trait JobCancellationLifecycle: UseJobProcessingStatusRepository {
+    async fn broadcast_cancelled_job(&self, id: &JobId) -> Result<()>;
+
+    async fn record_cancelling_index(&self, _id: &JobId) {}
+
+    async fn remove_pending_rdb_queue_entry(
+        &self,
+        _id: &JobId,
+    ) -> Result<PendingCancellationDisposition> {
+        Ok(PendingCancellationDisposition::AwaitQueuedDelivery)
+    }
+
+    /// Removes an RDB-only job that is visible before its PENDING status is published.
+    async fn cancel_unpublished_rdb_job(&self, _id: &JobId) -> Result<bool> {
+        Ok(false)
+    }
+
+    async fn record_pending_cancellation_completion(&self, _id: &JobId) {}
+
+    async fn cancel_job_lifecycle(&self, id: &JobId) -> Result<bool> {
+        let Some(mut record) = self
+            .job_processing_status_repository()
+            .find_status_record(id)
+            .await?
+        else {
+            return self.cancel_unpublished_rdb_job(id).await;
+        };
+        if record.status == JobProcessingStatus::Unknown {
+            return Ok(false);
+        }
+        for _ in 0..MAX_CANCELLATION_STATUS_TRANSITION_ATTEMPTS {
+            if record.status == JobProcessingStatus::Unknown {
+                return Ok(false);
+            }
+            if record.status == JobProcessingStatus::Cancelling {
+                return Ok(true);
+            }
+
+            let cancelling = JobProcessingStatusRecord {
+                status: JobProcessingStatus::Cancelling,
+                retried: record.retried,
+            };
+            match self
+                .job_processing_status_repository()
+                .compare_and_set_status(id, Some(record), Some(cancelling))
+                .await?
+            {
+                StatusTransitionResult::Applied => {
+                    self.record_cancelling_index(id).await;
+                    if record.status == JobProcessingStatus::Pending {
+                        if self.remove_pending_rdb_queue_entry(id).await?
+                            == PendingCancellationDisposition::FinalizedWithoutDelivery
+                        {
+                            self.record_pending_cancellation_completion(id).await;
+                            self.job_processing_status_repository()
+                                .delete_status(id)
+                                .await?;
+                        }
+                    } else {
+                        self.broadcast_cancelled_job(id).await?;
+                    }
+                    // A queued delivery observes CANCELLING and publishes a
+                    // terminal Cancelled result before complete_job cleans up.
+                    return Ok(true);
+                }
+                StatusTransitionResult::Conflict(Some(current)) => {
+                    // Retry against the authoritative state: a dispatcher may
+                    // have claimed PENDING as RUNNING while Delete was in flight.
+                    record = current;
+                }
+                StatusTransitionResult::Conflict(None) => return Ok(false),
+            }
+        }
+
+        Ok(matches!(
+            self.job_processing_status_repository()
+                .find_status_record(id)
+                .await?,
+            Some(JobProcessingStatusRecord {
+                status: JobProcessingStatus::Cancelling,
+                ..
+            })
+        ))
+    }
+}
+
 /// Shared orphaned-only purge logic for hybrid.rs and rdb_chan.rs.
 ///
 /// Walks the candidates produced by `find_stale_job_ids` and asks the caller-
@@ -647,7 +837,7 @@ pub(crate) fn spawn_end_marker_if_needed<P: JobResultPublisher + Clone + Send + 
 }
 
 #[async_trait]
-pub trait RedisJobAppHelper:
+pub(crate) trait RedisJobAppHelper:
     UseRedisJobRepository + JobBuilder + UseJobQueueConfig + UseJobProcessingStatusRepository
 where
     Self: Sized + 'static,
@@ -678,6 +868,7 @@ where
         worker: &WorkerData,
         streaming_type: StreamingType,
         load_only: bool,
+        pending_status_publication: PendingStatusPublication,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -687,6 +878,13 @@ where
         Self: Send + 'static,
     {
         let job_id = job.id.unwrap();
+        let should_record_pending = !load_only && pending_status_publication.creates_status();
+
+        if should_record_pending {
+            self.job_processing_status_repository()
+                .upsert_status(&job_id, &JobProcessingStatus::Pending)
+                .await?;
+        }
 
         // Wait before processing to handle scheduled jobs
         let res = match if self.is_run_after_job(job) {
@@ -706,12 +904,11 @@ where
                 // likewise skips all status management for them. Only the Direct
                 // result is awaited below.
                 if !load_only {
-                    self.job_processing_status_repository()
-                        .upsert_status(&job_id, &JobProcessingStatus::Pending)
-                        .await?;
-
-                    // Call hook after PENDING status is set
-                    self.after_enqueue_to_redis_hook(job_id, job, worker, streaming_type);
+                    // Retry publication already owns a conditional PENDING
+                    // transition, so it must not overwrite a later cancellation.
+                    if pending_status_publication.creates_status() {
+                        self.after_enqueue_to_redis_hook(job_id, job, worker, streaming_type);
+                    }
 
                     // TTL prevents job orphaning when worker fails unexpectedly
                     if worker.queue_type == QueueType::Normal as i32
@@ -759,25 +956,29 @@ where
                     } else {
                         // Non-Internal streaming or no streaming: wait for job completion
                         let request_streaming = streaming_type == StreamingType::Response;
-                        // Calculate total timeout including retries (None means unlimited)
-                        let job_timeout = job.data.as_ref().map(|d| d.timeout).unwrap_or(0);
-                        let total_timeout = calculate_direct_response_timeout_ms(
-                            job_timeout,
-                            resolved.retry_policy.as_ref(),
-                        );
-                        self._wait_job_for_direct_response(
-                            &job_id,
-                            total_timeout,
-                            request_streaming,
-                        )
-                        .await
-                        .map(|(r, stream)| (job_id, Some(r), stream))
+                        self._wait_job_for_direct_response(&job_id, None, request_streaming)
+                            .await
+                            .map(|(r, stream)| (job_id, Some(r), stream))
                     }
                 } else {
                     Ok((job_id, None, None))
                 }
             }
-            Err(e) => Err(e),
+            Err(error) => {
+                if should_record_pending
+                    && let Err(cleanup_error) = self
+                        .job_processing_status_repository()
+                        .delete_status(&job_id)
+                        .await
+                {
+                    tracing::warn!(
+                        job_id = job_id.value,
+                        %cleanup_error,
+                        "failed to remove PENDING status after Redis enqueue failure"
+                    );
+                }
+                Err(error)
+            }
         }?;
         Ok(res)
     }
@@ -1028,5 +1229,174 @@ mod resolve_tests {
 
         // no result is treated as a timeout
         assert!(load_result_to_outcome(&wid, None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod cancellation_lifecycle_tests {
+    use super::*;
+    use infra::infra::job::status::JobProcessingStatusRepository;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Mutex;
+
+    #[derive(Debug)]
+    struct PendingToRunningConflictRepository {
+        record: Mutex<JobProcessingStatusRecord>,
+        compare_count: AtomicUsize,
+        transition_to_running_on_first_compare: bool,
+    }
+
+    impl PendingToRunningConflictRepository {
+        fn new(transition_to_running_on_first_compare: bool) -> Self {
+            Self {
+                record: Mutex::new(JobProcessingStatusRecord {
+                    status: JobProcessingStatus::Pending,
+                    retried: 0,
+                }),
+                compare_count: AtomicUsize::new(0),
+                transition_to_running_on_first_compare,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl JobProcessingStatusRepository for PendingToRunningConflictRepository {
+        async fn upsert_status(&self, _id: &JobId, _status: &JobProcessingStatus) -> Result<bool> {
+            unreachable!("the cancellation lifecycle only uses compare_and_set_status")
+        }
+
+        async fn delete_status(&self, _id: &JobId) -> Result<bool> {
+            unreachable!("the cancellation lifecycle only uses compare_and_set_status")
+        }
+
+        async fn find_status_all(&self) -> Result<Vec<(JobId, JobProcessingStatus)>> {
+            unreachable!("the cancellation lifecycle only reads one status record")
+        }
+
+        async fn find_status(&self, _id: &JobId) -> Result<Option<JobProcessingStatus>> {
+            unreachable!("the cancellation lifecycle only reads one status record")
+        }
+
+        async fn find_status_record(
+            &self,
+            _id: &JobId,
+        ) -> Result<Option<JobProcessingStatusRecord>> {
+            Ok(Some(*self.record.lock().await))
+        }
+
+        async fn compare_and_set_status(
+            &self,
+            _id: &JobId,
+            expected: Option<JobProcessingStatusRecord>,
+            next: Option<JobProcessingStatusRecord>,
+        ) -> Result<StatusTransitionResult> {
+            let mut record = self.record.lock().await;
+            if self.transition_to_running_on_first_compare
+                && self.compare_count.fetch_add(1, Ordering::SeqCst) == 0
+            {
+                *record = JobProcessingStatusRecord {
+                    status: JobProcessingStatus::Running,
+                    retried: 0,
+                };
+                return Ok(StatusTransitionResult::Conflict(Some(*record)));
+            }
+            assert_eq!(expected, Some(*record));
+            *record = next.expect("cancellation must retain a status record");
+            Ok(StatusTransitionResult::Applied)
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestCancellationLifecycle {
+        repository: Arc<PendingToRunningConflictRepository>,
+        broadcast_count: AtomicUsize,
+        pending_rdb_removal_count: AtomicUsize,
+    }
+
+    impl UseJobProcessingStatusRepository for TestCancellationLifecycle {
+        fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
+            self.repository.clone()
+        }
+    }
+
+    #[async_trait]
+    impl JobCancellationLifecycle for TestCancellationLifecycle {
+        async fn broadcast_cancelled_job(&self, _id: &JobId) -> Result<()> {
+            self.broadcast_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn remove_pending_rdb_queue_entry(
+            &self,
+            _id: &JobId,
+        ) -> Result<PendingCancellationDisposition> {
+            self.pending_rdb_removal_count
+                .fetch_add(1, Ordering::SeqCst);
+            Ok(PendingCancellationDisposition::AwaitQueuedDelivery)
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_retries_after_pending_to_running_conflict() {
+        let repository = Arc::new(PendingToRunningConflictRepository::new(true));
+        let lifecycle = TestCancellationLifecycle {
+            repository: repository.clone(),
+            broadcast_count: AtomicUsize::new(0),
+            pending_rdb_removal_count: AtomicUsize::new(0),
+        };
+
+        assert!(
+            lifecycle
+                .cancel_job_lifecycle(&JobId { value: 1 })
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            lifecycle.pending_rdb_removal_count.load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(lifecycle.broadcast_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            repository
+                .find_status_record(&JobId { value: 1 })
+                .await
+                .unwrap(),
+            Some(JobProcessingStatusRecord {
+                status: JobProcessingStatus::Cancelling,
+                retried: 0,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_cancellation_is_retained_for_dispatch_finalization() {
+        let repository = Arc::new(PendingToRunningConflictRepository::new(false));
+        let lifecycle = TestCancellationLifecycle {
+            repository: repository.clone(),
+            broadcast_count: AtomicUsize::new(0),
+            pending_rdb_removal_count: AtomicUsize::new(0),
+        };
+
+        assert!(
+            lifecycle
+                .cancel_job_lifecycle(&JobId { value: 2 })
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            lifecycle.pending_rdb_removal_count.load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(lifecycle.broadcast_count.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            repository
+                .find_status_record(&JobId { value: 2 })
+                .await
+                .unwrap(),
+            Some(JobProcessingStatusRecord {
+                status: JobProcessingStatus::Cancelling,
+                retried: 0,
+            })
+        );
     }
 }

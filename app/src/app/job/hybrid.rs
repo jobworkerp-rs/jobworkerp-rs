@@ -4,7 +4,9 @@ use crate::module::AppConfigModule;
 use super::super::JobBuilder;
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::{
-    JobApp, JobCacheKeys, RedisJobAppHelper, resolve_and_validate_job_params, resolve_job_params,
+    JobApp, JobCacheKeys, JobCancellationLifecycle, PendingCancellationDisposition,
+    PendingStatusPublication, RedisJobAppHelper, remove_pending_rdb_job,
+    remove_unpublished_rdb_only_job, resolve_and_validate_job_params, resolve_job_params,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -199,6 +201,7 @@ impl HybridJobAppImpl {
                             &w,
                             StreamingType::None,
                             false,
+                            PendingStatusPublication::NewEnqueue,
                         )
                         .await?;
                     }
@@ -290,8 +293,14 @@ impl HybridJobAppImpl {
                     data: Some(data.to_owned()),
                     metadata: (*metadata).clone(),
                 };
-                self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type, false)
-                    .await
+                self.enqueue_job_to_redis_with_wait_if_needed(
+                    &job,
+                    w,
+                    streaming_type,
+                    false,
+                    PendingStatusPublication::NewEnqueue,
+                )
+                .await
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
                     id: Some(jid),
@@ -338,6 +347,7 @@ impl HybridJobAppImpl {
                                 w,
                                 streaming_type,
                                 false,
+                                PendingStatusPublication::NewEnqueue,
                             )
                             .await
                         }
@@ -372,8 +382,14 @@ impl HybridJobAppImpl {
                     }
                 } else {
                     // instant job (enqueue to redis only)
-                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type, false)
-                        .await
+                    self.enqueue_job_to_redis_with_wait_if_needed(
+                        &job,
+                        w,
+                        streaming_type,
+                        false,
+                        PendingStatusPublication::NewEnqueue,
+                    )
+                    .await
                 }
             }
         } else {
@@ -401,108 +417,7 @@ impl HybridJobAppImpl {
     /// - `Ok(true)`: Cancellation succeeded
     /// - `Ok(false)`: Cancellation failed (job in non-cancellable state)
     pub(crate) async fn cancel_job(&self, id: &JobId) -> Result<bool> {
-        let current_status = self
-            .job_processing_status_repository()
-            .find_status(id)
-            .await?;
-
-        match current_status {
-            Some(JobProcessingStatus::Running) => {
-                // Running → Cancelling state change
-                self.job_processing_status_repository()
-                    .upsert_status(id, &JobProcessingStatus::Cancelling)
-                    .await?;
-
-                // Update RDB index status to CANCELLING (if enabled)
-                if let Some(index_repo) = self.job_status_index_repository.as_ref()
-                    && let Err(e) = index_repo
-                        .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
-                        .await
-                {
-                    tracing::warn!(
-                        "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
-                        id.value,
-                        e
-                    );
-                }
-                // Note: RDB index deleted_at will be set by cleanup_job()
-
-                // Active cancellation of running jobs (broadcast)
-                self.broadcast_job_cancellation(id).await?;
-
-                tracing::info!(
-                    "Job {} marked as cancelling, broadcasting to workers",
-                    id.value
-                );
-
-                // Cleanup job resources
-                self.cleanup_job(id).await?;
-                Ok(true)
-            }
-            Some(JobProcessingStatus::Pending) => {
-                // Pending → Cancelling state change
-                self.job_processing_status_repository()
-                    .upsert_status(id, &JobProcessingStatus::Cancelling)
-                    .await?;
-
-                // Update RDB index status to CANCELLING (if enabled)
-                if let Some(index_repo) = self.job_status_index_repository.as_ref()
-                    && let Err(e) = index_repo
-                        .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
-                        .await
-                {
-                    tracing::warn!(
-                        "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
-                        id.value,
-                        e
-                    );
-                }
-                // Note: RDB index deleted_at will be set by cleanup_job()
-
-                // Broadcast cancellation (handles race conditions)
-                self.broadcast_job_cancellation(id).await?;
-
-                tracing::info!(
-                    "Pending job {} marked as cancelling with broadcast",
-                    id.value
-                );
-
-                // Cleanup job resources
-                self.cleanup_job(id).await?;
-                Ok(true)
-            }
-            Some(JobProcessingStatus::Cancelling) => {
-                tracing::info!("Job {} is already being cancelled", id.value);
-                // Already being cancelled, cleanup anyway
-                self.cleanup_job(id).await?;
-                Ok(true)
-            }
-            Some(JobProcessingStatus::WaitResult) => {
-                // Cannot cancel: preserve status, no changes
-                tracing::info!(
-                    "Job {} is waiting for result processing, cancellation not possible",
-                    id.value
-                );
-                Ok(false)
-            }
-            Some(JobProcessingStatus::Unknown) => {
-                tracing::warn!(
-                    "Job {} has unknown status, cancellation not possible",
-                    id.value
-                );
-                Ok(false)
-            }
-            None => {
-                // Status doesn't exist in Redis (already completed or doesn't exist)
-                // Still cleanup RDB index and other resources (orphaned records)
-                tracing::info!(
-                    "Job {} status not found in Redis, cleaning up RDB index if exists",
-                    id.value
-                );
-                self.cleanup_job(id).await?;
-                Ok(false)
-            }
-        }
+        self.cancel_job_lifecycle(id).await
     }
 
     /// Internal: Unconditional job cleanup (always deletes resources)
@@ -582,6 +497,54 @@ impl HybridJobAppImpl {
             job_id.value
         );
         Ok(())
+    }
+}
+
+#[async_trait]
+impl JobCancellationLifecycle for HybridJobAppImpl {
+    async fn broadcast_cancelled_job(&self, id: &JobId) -> Result<()> {
+        self.broadcast_job_cancellation(id).await
+    }
+
+    async fn remove_pending_rdb_queue_entry(
+        &self,
+        id: &JobId,
+    ) -> Result<PendingCancellationDisposition> {
+        // RDB dispatch does not yet claim the live status before execution.
+        // Removing the queued row prevents a cancelled job from being fetched.
+        // RDB-only jobs finalize below; backup jobs retain CANCELLING for Redis delivery.
+        remove_pending_rdb_job(self.rdb_job_repository(), self.worker_app(), id, |job| {
+            self.is_run_after_job(job)
+        })
+        .await
+    }
+
+    async fn cancel_unpublished_rdb_job(&self, id: &JobId) -> Result<bool> {
+        remove_unpublished_rdb_only_job(self.rdb_job_repository(), self.worker_app(), id, |job| {
+            self.is_run_after_job(job)
+        })
+        .await
+    }
+
+    async fn record_pending_cancellation_completion(&self, id: &JobId) {
+        if let Some(index_repo) = self.job_status_index_repository.as_ref()
+            && let Err(error) = index_repo.mark_deleted_by_job_id(id).await
+        {
+            tracing::warn!(
+                "Failed to mark cancelled RDB-only job {} as deleted in index: {error:?}",
+                id.value
+            );
+        }
+    }
+
+    async fn record_cancelling_index(&self, id: &JobId) {
+        if let Some(index_repo) = self.job_status_index_repository.as_ref()
+            && let Err(error) = index_repo
+                .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
+                .await
+        {
+            tracing::warn!("Failed to index CANCELLING for job {}: {error:?}", id.value);
+        }
     }
 }
 
@@ -682,7 +645,13 @@ impl JobApp for HybridJobAppImpl {
         let job = super::build_load_job(job_id, worker_id, timeout_ms);
         // Enqueue as load-only and wait for the worker's Direct response.
         let (_jid, result, _stream) = self
-            .enqueue_job_to_redis_with_wait_if_needed(&job, &w, StreamingType::None, true)
+            .enqueue_job_to_redis_with_wait_if_needed(
+                &job,
+                &w,
+                StreamingType::None,
+                true,
+                PendingStatusPublication::Retry,
+            )
             .await?;
         super::load_result_to_outcome(worker_id, result)
     }
@@ -777,8 +746,14 @@ impl JobApp for HybridJobAppImpl {
                     data: Some(data.to_owned()),
                     metadata: (*meta).clone(),
                 };
-                self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type, false)
-                    .await
+                self.enqueue_job_to_redis_with_wait_if_needed(
+                    &job,
+                    w,
+                    streaming_type,
+                    false,
+                    PendingStatusPublication::NewEnqueue,
+                )
+                .await
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
                     id: Some(jid),
@@ -814,6 +789,7 @@ impl JobApp for HybridJobAppImpl {
                                 w,
                                 streaming_type,
                                 false,
+                                PendingStatusPublication::NewEnqueue,
                             )
                             .await
                         }
@@ -837,8 +813,14 @@ impl JobApp for HybridJobAppImpl {
                     }
                 } else {
                     // instant job (enqueue to redis only)
-                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type, false)
-                        .await
+                    self.enqueue_job_to_redis_with_wait_if_needed(
+                        &job,
+                        w,
+                        streaming_type,
+                        false,
+                        PendingStatusPublication::NewEnqueue,
+                    )
+                    .await
                 }
             }
         } else {
@@ -936,31 +918,43 @@ impl JobApp for HybridJobAppImpl {
             data: Some(job_data.clone()),
             metadata: (*meta).clone(),
         };
-        let total_timeout =
-            proto::calculate_direct_response_timeout_ms(timeout, resolved.retry_policy.as_ref());
-
         // Subscribe before publishing the job: Redis pub/sub does not retain
         // stream messages, and a fast runner may otherwise publish End before
         // the front-end starts listening.
         let result_stream = if request_streaming {
             Some(
                 self.job_result_pubsub_repository()
-                    .subscribe_result_stream(&jid, total_timeout)
+                    .subscribe_result_stream(&jid, None)
                     .await?,
             )
         } else {
             None
         };
 
-        // Enqueue phase: push to the Redis queue, mark Pending, run the hook,
+        // Enqueue phase: mark Pending, push to the Redis queue, run the hook,
         // and create the TTL record for running-job visibility — everything
         // `enqueue_job_to_redis_with_wait_if_needed` does before it blocks.
-        self.redis_job_repository()
-            .enqueue_job(w.channel.as_ref(), &job)
-            .await?;
         self.job_processing_status_repository()
             .upsert_status(&jid, &JobProcessingStatus::Pending)
             .await?;
+        if let Err(error) = self
+            .redis_job_repository()
+            .enqueue_job(w.channel.as_ref(), &job)
+            .await
+        {
+            if let Err(cleanup_error) = self
+                .job_processing_status_repository()
+                .delete_status(&jid)
+                .await
+            {
+                tracing::warn!(
+                    job_id = jid.value,
+                    %cleanup_error,
+                    "failed to remove PENDING status after Redis enqueue failure"
+                );
+            }
+            return Err(error);
+        }
         self.after_enqueue_to_redis_hook(jid, &job, &w, streaming_type);
         if w.queue_type == QueueType::Normal as i32 {
             let ttl = self.calculate_job_ttl(job_data.timeout);
@@ -973,7 +967,7 @@ impl JobApp for HybridJobAppImpl {
         // it does not borrow `self` and can be returned to the caller.
         let repo = self.redis_job_repository().clone();
         let fut: BoxFuture<'static, _> = Box::pin(async move {
-            repo.wait_for_result_queue_for_response(&jid, total_timeout, false)
+            repo.wait_for_result_queue_for_response(&jid, None, false)
                 .await
                 .map(|(r, _)| Some(r))
         });
@@ -997,15 +991,8 @@ impl JobApp for HybridJobAppImpl {
                 // TODO validate argument types (using Runner)
                 // self.validate_worker_and_job_arg(&w, data.arg.as_ref())?;
 
-                // Restore live status and the search-index row BEFORE either
-                // queue path makes the job grabbable. If the RDB upsert below
-                // were to run first, a worker could pick the job up while the
-                // index row still carried `deleted_at` from the prior
-                // completion — `index_status(Running)` would skip and the
-                // job would never appear in admin search.
-                self.job_processing_status_repository()
-                    .upsert_status(jid, &JobProcessingStatus::Pending)
-                    .await?;
+                // The retry processor has already conditionally created the
+                // live PENDING record. Only restore the secondary index here.
                 // use db queue (run after, periodic, queue_type=DB worker)
                 let use_rdb_queue = is_run_after_job_data
                     || w.periodic_interval > 0
@@ -1047,9 +1034,15 @@ impl JobApp for HybridJobAppImpl {
                     // enqueue to redis for instant job
                     let streaming_type =
                         StreamingType::try_from(data.streaming_type).unwrap_or(StreamingType::None);
-                    self.enqueue_job_to_redis_with_wait_if_needed(job, &w, streaming_type, false)
-                        .await
-                        .map(|_| true)
+                    self.enqueue_job_to_redis_with_wait_if_needed(
+                        job,
+                        &w,
+                        streaming_type,
+                        false,
+                        PendingStatusPublication::Retry,
+                    )
+                    .await
+                    .map(|_| true)
                 } else {
                     Ok(false)
                 };

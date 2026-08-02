@@ -142,7 +142,10 @@ mod rdb_chan_indexing_integration_tests {
             let deleted = app.delete_job(&job_id).await?;
             assert!(deleted);
 
-            assert_eq!(status_repo.find_status(&job_id).await.unwrap(), None);
+            assert_eq!(
+                status_repo.find_status(&job_id).await.unwrap(),
+                Some(JobProcessingStatus::Cancelling)
+            );
 
             // Step 4: Verify RDB index status (should be logically deleted)
             tracing::info!("Step 4: Verify RDB index status");
@@ -157,14 +160,9 @@ mod rdb_chan_indexing_integration_tests {
                 .await?;
 
             match row_result {
-                Some(Some(timestamp)) => {
-                    tracing::info!(
-                        deleted_at = timestamp,
-                        "Job logically deleted in RDB at timestamp"
-                    );
-                }
+                Some(Some(_)) => panic!("CANCELLING job must not be logically deleted yet"),
                 Some(None) => {
-                    panic!("Job row exists but deleted_at is NULL (should be set by cleanup_job)");
+                    tracing::info!("CANCELLING job remains in RDB index until result processing");
                 }
                 None => {
                     panic!("Job row does not exist in RDB index");
@@ -489,7 +487,10 @@ mod rdb_chan_indexing_integration_tests {
             let cancelled = app.delete_job(&job_id).await?;
             assert!(cancelled, "Job cancellation should succeed");
 
-            assert_eq!(status_repo.find_status(&job_id).await?, None);
+            assert_eq!(
+                status_repo.find_status(&job_id).await?,
+                Some(JobProcessingStatus::Cancelling)
+            );
 
             // Wait for async cancellation indexing
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -515,14 +516,15 @@ mod rdb_chan_indexing_integration_tests {
                         JobProcessingStatus::Cancelling as i32,
                         "Cancelled job should have CANCELLING status in RDB index"
                     );
-                    // Job should be logically deleted
                     assert!(
-                        deleted_at.is_some(),
-                        "Cancelled job should be logically deleted in RDB index"
+                        deleted_at.is_none(),
+                        "Queued cancellation remains indexed until dispatcher finalization"
                     );
                 }
                 None => {
-                    panic!("Cancelled job should still exist in RDB index (logically deleted)");
+                    panic!(
+                        "Cancelled job should remain in RDB index until dispatcher finalization"
+                    );
                 }
             }
 

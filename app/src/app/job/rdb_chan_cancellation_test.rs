@@ -6,6 +6,8 @@
 mod rdb_chan_cancellation_tests {
     use crate::module::test::create_rdb_chan_test_app;
     use anyhow::Result;
+    use command_utils::util::datetime;
+    use infra::infra::job::rdb::RdbJobRepository;
     use infra::infra::job::status::JobProcessingStatusRepository;
     use infra_utils::infra::test::TEST_RUNTIME;
     use jobworkerp_base::codec::UseProstCodec;
@@ -89,9 +91,92 @@ mod rdb_chan_cancellation_tests {
             assert!(cancelled);
 
             let status = status_repo.find_status(&job_id).await.unwrap();
-            assert_eq!(status, None);
+            assert_eq!(status, Some(JobProcessingStatus::Cancelling));
 
             tracing::info!("test_cancel_pending_job_rdb_chan completed successfully");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_unpublished_scheduled_job_removes_rdb_entry() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app_module = create_rdb_chan_test_app(true, false).await?;
+            let app = &app_module.job_app;
+            let repositories = app_module
+                .repositories
+                .rdb_module
+                .as_ref()
+                .expect("RDB module should exist");
+            let status_repo = repositories
+                .memory_job_processing_status_repository
+                .as_ref();
+
+            let runner_settings = jobworkerp_base::codec::ProstMessageCodec::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            )?;
+            let worker = WorkerData {
+                name: "scheduled_cancellation_worker".to_string(),
+                description: "scheduled cancellation".to_string(),
+                runner_id: Some(RunnerId { value: 1 }),
+                runner_settings,
+                channel: None,
+                response_type: ResponseType::NoResult as i32,
+                periodic_interval: 0,
+                retry_policy: None,
+                queue_type: QueueType::Normal as i32,
+                store_failure: false,
+                store_success: false,
+                use_static: false,
+                broadcast_results: false,
+            };
+            let worker_id = app_module.worker_app.create(&worker).await?;
+            let args =
+                jobworkerp_base::codec::ProstMessageCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                })?;
+
+            let (job_id, result, _) = app
+                .enqueue_job(
+                    Arc::new(HashMap::new()),
+                    Some(&worker_id),
+                    None,
+                    args,
+                    None,
+                    datetime::now_millis() + 60_000,
+                    0,
+                    0,
+                    None,
+                    StreamingType::None,
+                    None,
+                    None,
+                )
+                .await?;
+
+            assert!(result.is_none());
+            assert!(repositories.job_repository.find(&job_id).await?.is_some());
+            assert_eq!(
+                status_repo.find_status(&job_id).await?,
+                Some(JobProcessingStatus::Pending)
+            );
+            // Simulate Delete racing after the RDB row is committed but before
+            // the producer publishes its initial PENDING status.
+            status_repo.delete_status(&job_id).await?;
+            assert_eq!(status_repo.find_status(&job_id).await?, None);
+
+            assert!(app.delete_job(&job_id).await?);
+
+            assert!(
+                repositories.job_repository.find(&job_id).await?.is_none(),
+                "a cancelled scheduled job must not remain available to the RDB dispatcher"
+            );
+            assert_eq!(
+                status_repo.find_status(&job_id).await?,
+                None,
+                "RDB-only cancellation completes without a queue delivery"
+            );
             Ok(())
         })
     }
@@ -142,7 +227,7 @@ mod rdb_chan_cancellation_tests {
             assert!(cancelled);
 
             let status = status_repo.find_status(&job_id).await.unwrap();
-            assert_eq!(status, None);
+            assert_eq!(status, Some(JobProcessingStatus::Cancelling));
 
             tracing::info!("test_cancel_job_pending_states completed successfully");
             Ok(())
@@ -175,36 +260,15 @@ mod rdb_chan_cancellation_tests {
             assert!(cancelled);
 
             let status = status_repo.find_status(&job_id).await.unwrap();
-            assert_eq!(status, None);
+            assert_eq!(status, Some(JobProcessingStatus::Cancelling));
 
             tracing::info!("test_cancel_running_job_memory completed successfully");
             Ok(())
         })
     }
 
-    /// Test WAIT_RESULT state job cancellation should fail
-    /// According to spec-job-service-simplified.md:186-195, WAIT_RESULT state jobs cannot be cancelled
-    /// to prevent data inconsistency during result processing
-    ///
-    /// # Implementation (Fixed)
-    ///
-    /// **Root Cause (Fixed)**: `delete_job()` now delegates to `cancel_job()` which preserves status
-    /// - See: docs/tasks/delete-job-cleanup-separation-investigation.md
-    ///
-    /// **Expected Behavior** (per spec):
-    /// - WAIT_RESULT cancellation returns `false`
-    /// - Status should be preserved (spec says "変更なし" = no change)
-    ///
-    /// **Current Behavior** (after fix):
-    /// - WAIT_RESULT cancellation returns `false` ✓
-    /// - Status is PRESERVED (WaitResult) ✓
-    ///
-    /// **Fix Applied**:
-    /// - `delete_job()` calls `cancel_job()` which respects job state
-    /// - `complete_job()` calls `cleanup_job()` for unconditional cleanup
-    /// - Status preservation works correctly for WAIT_RESULT state
     #[test]
-    fn test_cancel_wait_result_job_should_fail() -> Result<()> {
+    fn test_cancel_wait_result_job_marks_cancelling() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let app_module = create_rdb_chan_test_app(true, false).await?;
             let app = &app_module.job_app;
@@ -224,19 +288,16 @@ mod rdb_chan_cancellation_tests {
                 .upsert_status(&job_id, &JobProcessingStatus::WaitResult)
                 .await?;
 
-            // Attempt to cancel the job - should fail
+            // Result processing has not committed a terminal result, so cancellation wins.
             let cancelled = app.delete_job(&job_id).await?;
-            assert!(
-                !cancelled,
-                "WAIT_RESULT state job should not be cancellable"
-            );
+            assert!(cancelled);
 
             let status = status_repo.find_status(&job_id).await.unwrap();
 
             assert_eq!(
                 status,
-                Some(JobProcessingStatus::WaitResult),
-                "Status should be preserved when cancellation fails"
+                Some(JobProcessingStatus::Cancelling),
+                "Result processor must observe cancellation before deciding retry"
             );
 
             tracing::info!("test_cancel_wait_result_job_should_fail completed successfully");
@@ -249,7 +310,7 @@ mod rdb_chan_cancellation_tests {
     /// - PENDING → Delete → JobResult NOT generated (not executed yet)
     /// - Job record is deleted from queue
     #[test]
-    fn test_delete_pending_job_no_result_generated() -> Result<()> {
+    fn test_delete_pending_job_is_finalized_by_dispatcher() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let app_module = create_rdb_chan_test_app(true, false).await?;
             let app = &app_module.job_app;
@@ -320,14 +381,11 @@ mod rdb_chan_cancellation_tests {
             assert!(cancelled, "PENDING job deletion should succeed");
 
             let status = status_repo.find_status(&job_id).await.unwrap();
-            assert_eq!(status, None, "Job status should be deleted");
-
-            // IMPORTANT: According to spec-job-service-simplified.md:223:
-            // PENDING deletion does NOT generate JobResult (job was not executed yet)
-            // This is verified implicitly by:
-            // 1. delete_job() returned true (deletion succeeded)
-            // 2. Job status is None (removed from queue)
-            // 3. No JobResult is created (implementation behavior - cannot test directly without repository access)
+            assert_eq!(
+                status,
+                Some(JobProcessingStatus::Cancelling),
+                "Job status must remain until the queued delivery publishes Cancelled"
+            );
 
             tracing::info!("test_delete_pending_job_no_result_generated completed successfully");
             Ok(())
@@ -372,13 +430,11 @@ mod rdb_chan_cancellation_tests {
             let cancelled = app.delete_job(&job_id).await?;
             assert!(cancelled, "RUNNING job cancellation should succeed");
 
-            // In memory environment, status is immediately removed after cancellation
-            // In production, this would transition to CANCELLING, then worker would detect it
-            // and generate JobResult with CANCELLED status
             let status = status_repo.find_status(&job_id).await.unwrap();
             assert_eq!(
-                status, None,
-                "Job status should be removed after cancellation (memory environment)"
+                status,
+                Some(JobProcessingStatus::Cancelling),
+                "Job status should remain cancelling until result processing"
             );
 
             // Note: JobResult generation with CANCELLED status happens during worker execution
@@ -406,7 +462,7 @@ mod rdb_chan_cancellation_tests {
                 .memory_job_processing_status_repository
                 .as_ref();
 
-            // Test 1: PENDING → Delete succeeds, status removed
+            // Test 1: PENDING → CANCELLING until queued dispatch finalizes it.
             let pending_job_id = JobId { value: 91111 };
             status_repo
                 .upsert_status(&pending_job_id, &JobProcessingStatus::Pending)
@@ -415,11 +471,11 @@ mod rdb_chan_cancellation_tests {
             assert!(result, "PENDING job deletion should succeed");
             assert_eq!(
                 status_repo.find_status(&pending_job_id).await.unwrap(),
-                None,
-                "PENDING job status should be removed"
+                Some(JobProcessingStatus::Cancelling),
+                "PENDING cancellation must remain for queued dispatch"
             );
 
-            // Test 2: RUNNING → Cancel succeeds, status removed (transitions to CANCELLING internally)
+            // Test 2: RUNNING → CANCELLING, retained until result processing.
             let running_job_id = JobId { value: 92222 };
             status_repo
                 .upsert_status(&running_job_id, &JobProcessingStatus::Running)
@@ -428,24 +484,21 @@ mod rdb_chan_cancellation_tests {
             assert!(result, "RUNNING job cancellation should succeed");
             assert_eq!(
                 status_repo.find_status(&running_job_id).await.unwrap(),
-                None,
-                "RUNNING job status should be removed after cancellation"
+                Some(JobProcessingStatus::Cancelling),
+                "RUNNING job must retain cancellation state until its result is processed"
             );
 
-            // Test 3: WAIT_RESULT → Cancel fails, status preserved (data inconsistency prevention)
+            // Test 3: WAIT_RESULT → CANCELLING so a retry cannot be enqueued.
             let wait_result_job_id = JobId { value: 93333 };
             status_repo
                 .upsert_status(&wait_result_job_id, &JobProcessingStatus::WaitResult)
                 .await?;
             let result = app.delete_job(&wait_result_job_id).await?;
-            assert!(
-                !result,
-                "WAIT_RESULT job cancellation should fail (to prevent data inconsistency)"
-            );
+            assert!(result);
             assert_eq!(
                 status_repo.find_status(&wait_result_job_id).await.unwrap(),
-                Some(JobProcessingStatus::WaitResult),
-                "WAIT_RESULT status should be preserved on failed cancellation"
+                Some(JobProcessingStatus::Cancelling),
+                "WAIT_RESULT must preserve cancellation for the result processor"
             );
 
             // Test 4: CANCELLING → Already cancelling, should handle gracefully
@@ -454,11 +507,14 @@ mod rdb_chan_cancellation_tests {
                 .upsert_status(&cancelling_job_id, &JobProcessingStatus::Cancelling)
                 .await?;
             let result = app.delete_job(&cancelling_job_id).await?;
-            assert!(result, "CANCELLING job should return true (cleanup)");
+            assert!(
+                result,
+                "CANCELLING job should return true while cancellation is active"
+            );
             assert_eq!(
                 status_repo.find_status(&cancelling_job_id).await.unwrap(),
-                None,
-                "CANCELLING job status should be removed after cleanup"
+                Some(JobProcessingStatus::Cancelling),
+                "Duplicate Delete must not remove the cancellation marker"
             );
 
             tracing::info!("test_delete_job_comprehensive_state_coverage completed successfully");
@@ -555,8 +611,8 @@ mod rdb_chan_cancellation_tests {
             assert!(result, "PENDING job should be cancellable");
             assert_eq!(
                 status_repo.find_status(&pending_id).await?,
-                None,
-                "PENDING job should be cleaned up"
+                Some(JobProcessingStatus::Cancelling),
+                "PENDING cancellation must be finalized by queued dispatch"
             );
 
             // Test 2: RUNNING should be cancellable
@@ -568,21 +624,21 @@ mod rdb_chan_cancellation_tests {
             assert!(result, "RUNNING job should be cancellable");
             assert_eq!(
                 status_repo.find_status(&running_id).await?,
-                None,
-                "RUNNING job should be cleaned up"
+                Some(JobProcessingStatus::Cancelling),
+                "RUNNING job should retain cancellation until result processing"
             );
 
-            // Test 3: WAIT_RESULT should NOT be cancellable (status preserved)
+            // Test 3: WAIT_RESULT becomes CANCELLING so retry cannot win.
             let wait_result_id = JobId { value: 96003 };
             status_repo
                 .upsert_status(&wait_result_id, &JobProcessingStatus::WaitResult)
                 .await?;
             let result = app.cancel_job(&wait_result_id).await?;
-            assert!(!result, "WAIT_RESULT job should NOT be cancellable");
+            assert!(result, "WAIT_RESULT job should be cancellable");
             assert_eq!(
                 status_repo.find_status(&wait_result_id).await?,
-                Some(JobProcessingStatus::WaitResult),
-                "WAIT_RESULT status should be preserved"
+                Some(JobProcessingStatus::Cancelling),
+                "WAIT_RESULT status should retain cancellation"
             );
 
             // Test 4: Non-existent job (None status)

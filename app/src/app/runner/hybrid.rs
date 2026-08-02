@@ -468,6 +468,10 @@ mod test {
                 "../target/debug/libplugin_runner_hello.so",
                 "./target/release/libplugin_runner_hello.so",
                 "../target/release/libplugin_runner_hello.so",
+                "./target/debug/libplugin_runner_hello.dylib",
+                "../target/debug/libplugin_runner_hello.dylib",
+                "./target/release/libplugin_runner_hello.dylib",
+                "../target/release/libplugin_runner_hello.dylib",
             ]
             .into_iter()
             .find(|path| std::path::Path::new(path).is_file())
