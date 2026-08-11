@@ -1,6 +1,6 @@
 pub mod instance;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use app::module::{AppConfigModule, AppModule};
 use app_wrapper::modules::AppWrapperModule;
 use app_wrapper::runner::RunnerFactory;
@@ -11,9 +11,12 @@ use instance::WorkerInstanceManager;
 use jobworkerp_runner::runner::mcp::config::McpConfig;
 use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
 use jobworkerp_runner::runner::{factory::RunnerSpecFactory, plugins::Plugins};
-use mcp_server::{McpHandler, McpServerConfig};
+use mcp_server::{
+    DeferredMcpActivation, McpAuthConfig, McpHandler, McpServerConfig,
+    install_deferred_mcp_activation, read_deferred_activation_secret_from_env,
+};
 use std::sync::Arc;
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, mpsc};
 use worker_app::WorkerModules;
 use worker_app::worker::dispatcher::JobDispatcher;
 use worker_app::worker::instance_session::WorkerInstanceSessionHandle;
@@ -28,6 +31,12 @@ fn is_ag_ui_enabled() -> bool {
             let v = v.trim().to_lowercase();
             v == "true" || v == "1"
         })
+        .unwrap_or(false)
+}
+
+fn is_deferred_mcp_activation_enabled() -> bool {
+    std::env::var("MCP_DEFERRED_ACTIVATION")
+        .map(|value| matches!(value.trim(), "true" | "1"))
         .unwrap_or(false)
 }
 
@@ -276,6 +285,24 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
     let function_app = app_module.function_app.clone();
     let function_set_app = app_module.function_set_app.clone();
     let mcp_config = McpServerConfig::from_env();
+    let deferred_mcp_start = if is_deferred_mcp_activation_enabled() {
+        let auth_config = McpAuthConfig::from_env();
+        if !auth_config.is_usable() {
+            anyhow::bail!("deferred MCP authentication configuration is invalid");
+        }
+        let activation_secret = read_deferred_activation_secret_from_env()?;
+        let bind_addr = std::env::var("MCP_ADDR").unwrap_or_else(|_| MCP_DEFAULT_ADDR.to_string());
+        let (start_tx, start_rx) = mpsc::channel(1);
+        install_deferred_mcp_activation(Arc::new(DeferredMcpActivation::new(
+            activation_secret,
+            auth_config,
+            bind_addr,
+            start_tx,
+        )))?;
+        Some(start_rx)
+    } else {
+        None
+    };
 
     // Check if AG-UI server is enabled
     let ag_ui_enabled = is_ag_ui_enabled();
@@ -325,27 +352,52 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
     // MCP Server future
     let mcp_lock = lock.clone();
     let mut mcp_shutdown_recv = shutdown_recv.clone();
+    let mut deferred_mcp_shutdown_recv = shutdown_recv.clone();
     let mcp_future = async move {
         let bind_addr = std::env::var("MCP_ADDR").unwrap_or_else(|_| MCP_DEFAULT_ADDR.to_string());
-        let handler_factory = move || {
+        let handler_factory = move |config: McpServerConfig| {
             Ok(McpHandler::new(
                 function_app.clone(),
                 function_set_app.clone(),
-                mcp_config.clone(),
+                config,
             ))
         };
-        let shutdown_signal: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
-            Box::pin(async move {
-                let _ = mcp_shutdown_recv.changed().await;
-                tracing::info!("MCP server received shutdown signal");
-            });
-        mcp_server::boot_streamable_http_server(
-            handler_factory,
-            &bind_addr,
-            mcp_lock,
-            Some(shutdown_signal),
-        )
-        .await
+        if let Some(mut start_rx) = deferred_mcp_start {
+            let start = tokio::select! {
+                request = start_rx.recv() => request.ok_or_else(|| anyhow!("deferred MCP activation channel closed"))?,
+                _ = deferred_mcp_shutdown_recv.changed() => {
+                    mcp_lock.unlock();
+                    return Ok(());
+                }
+            };
+            let shutdown_signal: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+                Box::pin(async move {
+                    let _ = mcp_shutdown_recv.changed().await;
+                    tracing::info!("MCP server received shutdown signal");
+                });
+            mcp_server::boot_streamable_http_server_on_listener(
+                move || handler_factory(start.config.clone()),
+                &bind_addr,
+                start.listener,
+                mcp_lock,
+                Some(shutdown_signal),
+                start.auth_config,
+            )
+            .await
+        } else {
+            let shutdown_signal: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+                Box::pin(async move {
+                    let _ = mcp_shutdown_recv.changed().await;
+                    tracing::info!("MCP server received shutdown signal");
+                });
+            mcp_server::boot_streamable_http_server(
+                move || handler_factory(mcp_config.clone()),
+                &bind_addr,
+                mcp_lock,
+                Some(shutdown_signal),
+            )
+            .await
+        }
     };
 
     // Spawn shutdown signal handler (SIGINT + SIGTERM on Unix)

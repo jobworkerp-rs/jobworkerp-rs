@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package jobworkerp.mcp.service;
+
+message ActivateMcpRequest {
+  string secret = 1;
+  string function_set_name = 2;
+}
+
+message ActivateMcpResponse { string mcp_addr = 1; }
+
+service McpActivationService {
+  rpc Activate(ActivateMcpRequest) returns (ActivateMcpResponse);
+}
