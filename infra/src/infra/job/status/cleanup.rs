@@ -101,7 +101,7 @@ mod tests {
             let pool = if cfg!(feature = "mysql") {
                 setup_test_rdb_from("sql/mysql").await
             } else {
-                setup_test_rdb_from("sql/sqlite").await
+                setup_test_rdb_from("sql/migrations/sqlite").await
             };
 
             let config = JobStatusConfig {
@@ -127,7 +127,7 @@ mod tests {
             let pool = if cfg!(feature = "mysql") {
                 setup_test_rdb_from("sql/mysql").await
             } else {
-                setup_test_rdb_from("sql/sqlite").await
+                setup_test_rdb_from("sql/migrations/sqlite").await
             };
 
             let config = JobStatusConfig {

@@ -16,7 +16,11 @@
 
 データベーススキーマ：
 - [MySQL schema](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/infra/sql/mysql/002_worker.sql)
-- [SQLite schema](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/infra/sql/sqlite/002_schema.sql)
+- [SQLite schema（参照用）](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/infra/sql/sqlite/schema.sql)
+
+SQLite は起動時に `infra/sql/migrations/sqlite` の正規 migration を自動適用します。
+リンク先の `schema.sql` は適用済みの完成形を示す参照用ファイルであり、手動適用しないでください。
+既存 DB を更新する場合は [SQLite migration 手順](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/infra/sql/migrations/README.md)に従ってください。
 
 (runnerテーブルには組み込み機能としての固定レコードが存在します)
 

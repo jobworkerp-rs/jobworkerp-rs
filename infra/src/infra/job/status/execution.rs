@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn claim_and_reset_are_guarded_by_the_observed_owner_and_version() {
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query(
                 "INSERT INTO job_processing_status
                  (job_id, worker_id, status, channel, priority, enqueue_time,
@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn rdb_dispatch_grab_and_running_index_commit_together() {
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query(
                 "INSERT INTO job
                  (id, worker_id, args, enqueue_time, grabbed_until_time, run_after_time,

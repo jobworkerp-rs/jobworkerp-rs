@@ -346,7 +346,11 @@ MCPサーバーからの応答はジョブ結果として取得でき、response
 
 データベーススキーマ：
 - [MySQL schema](infra/sql/mysql/002_worker.sql)
-- [SQLite schema](infra/sql/sqlite/002_schema.sql)
+- [SQLite schema（参照用）](infra/sql/sqlite/schema.sql)
+
+SQLite は起動時に `infra/sql/migrations/sqlite` の正規 migration を自動適用します。
+参照用の完成スキーマである `schema.sql` を手動適用しないでください。既存 DB の更新前に
+[migration 手順](infra/sql/migrations/README.md)を確認してください。
 
 (runnerテーブルには組み込み機能としての固定レコードが存在します)
 

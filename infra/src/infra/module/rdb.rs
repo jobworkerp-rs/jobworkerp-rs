@@ -213,7 +213,7 @@ pub mod test {
         let dir = if cfg!(feature = "mysql") {
             "../infra/sql/mysql"
         } else {
-            "../infra/sql/sqlite"
+            "../infra/sql/migrations/sqlite"
         };
         let pool = setup_test_rdb_from(dir).await;
         pool.execute("SELECT 1;").await.expect("test connection");

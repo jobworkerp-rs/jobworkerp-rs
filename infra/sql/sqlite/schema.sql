@@ -76,6 +76,11 @@ CREATE TABLE IF NOT EXISTS `job_result` (
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_result_job_id ON job_result(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_result_status ON job_result(status);
+CREATE INDEX IF NOT EXISTS idx_job_result_start_time ON job_result(start_time);
+CREATE INDEX IF NOT EXISTS idx_job_result_end_time ON job_result(end_time);
+CREATE INDEX IF NOT EXISTS idx_job_result_end_status ON job_result(end_time, status);
+CREATE INDEX IF NOT EXISTS idx_job_result_worker_end ON job_result(worker_id, end_time DESC);
 
 CREATE TABLE IF NOT EXISTS `runner` (
     `id` INTEGER PRIMARY KEY,
@@ -116,7 +121,7 @@ INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`definition`, `type`) 
   'Unified workflow runner with multiple methods: run (execute workflow, default) and create (create workflow worker). Using defaults to run if not specified.',
   'builtin32769', 32769
 ), (
-  -- NOTE: This row is also added via migration 008_add_function_set_selector_runner.sql for existing installations
+  -- Included in the completed schema for SQLite databases.
   8, 'FUNCTION_SET_SELECTOR',
   'Lists available FunctionSets with tool summaries for LLM tool selection. Used as a meta-tool to help LLM discover and select appropriate FunctionSets.',
   'builtin8', 8
@@ -175,7 +180,6 @@ CREATE TABLE IF NOT EXISTS `job_processing_status` (
     -- Timestamp information
     `pending_time` BIGINT,  -- Time when job entered PENDING state (milliseconds)
     `start_time` BIGINT,    -- Time when job entered RUNNING state (milliseconds)
-    `worker_instance_id` BIGINT, -- Logical instance that started RUNNING
 
     -- Real-time output availability
     `is_streamable` BOOLEAN NOT NULL DEFAULT 0,      -- Enqueued via EnqueueForStream
@@ -184,7 +188,8 @@ CREATE TABLE IF NOT EXISTS `job_processing_status` (
     -- Metadata
     `version` BIGINT NOT NULL,  -- Optimistic locking version number
     `deleted_at` BIGINT,        -- Logical deletion timestamp (NULL: active, NOT NULL: deleted)
-    `updated_at` BIGINT NOT NULL  -- Last update timestamp (for sync delay detection)
+    `updated_at` BIGINT NOT NULL,  -- Last update timestamp (for sync delay detection)
+    `worker_instance_id` BIGINT -- Logical instance that started RUNNING
 );
 
 -- Indexes with partial WHERE clause for active records only

@@ -428,7 +428,7 @@ mod test {
                     .await?;
                 pool
             } else {
-                let pool = setup_test_rdb_from("sql/sqlite").await;
+                let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
                 sqlx::query("DELETE FROM function_set;")
                     .execute(pool)
                     .await?;

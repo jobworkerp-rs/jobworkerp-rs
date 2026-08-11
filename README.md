@@ -349,7 +349,12 @@ For information about the MCP server samples used above, refer to the [official 
 
 Database schema:
 - [MySQL schema](infra/sql/mysql/002_worker.sql)
-- [SQLite schema](infra/sql/sqlite/002_schema.sql)
+- [SQLite schema (reference)](infra/sql/sqlite/schema.sql)
+
+SQLite is migrated automatically from `infra/sql/migrations/sqlite` when the
+application starts. The reference schema is for inspection only; do not apply
+`schema.sql` manually. See [the migration procedure](infra/sql/migrations/README.md)
+before upgrading an existing database.
 
 (The runner table contains fixed records as built-in features)
 

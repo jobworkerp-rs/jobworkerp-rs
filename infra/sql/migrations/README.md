@@ -1,251 +1,68 @@
-# 既存環境用DBマイグレーションファイル
+# SQLite migration 手順
 
-このディレクトリには、既存環境（運用中のDB）に対して手動実行するマイグレーションファイルを保管しています。
+このディレクトリの SQLite migration は、アプリケーションに埋め込まれて起動時に
+SQLx が自動適用する正規 migration です。ファイルを個別に `sqlite3` で実行しないでください。
 
-## ⚠️ 重要な注意事項
+## ファイルの役割
 
-**このディレクトリのファイルはsqlxの自動マイグレーション対象外です。**
+- `sqlite/001_base_schema.sql`: 011 の変更直前に相当する初期スキーマ
+- `sqlite/002_worker_instance_rdb_status_recovery.sql`: worker instance の復旧用列と索引
+- `sqlite/003_add_job_result_search_indexes.sql`: JobResult の検索・集計・一括削除用索引
+- `../sqlite/schema.sql`: 全 migration 適用後の完成形を確認する参照用スキーマ
+- `mysql/`: MySQL 用の既存 migration（SQLite の起動時 migration とは別系統）
 
-- 新規環境では`infra/sql/sqlite/002_schema.sql`または`infra/sql/mysql/002_worker.sql`が自動適用される
-- これらのファイルは既存環境に対して**手動で実行**する必要がある
+`schema.sql` は実行用スキーマでも migration の正本でもありません。SQLite の変更は
+連番の migration として追加し、既存ファイルの内容を変更しないでください。
 
-## ディレクトリ構成
+## 既存 SQLite DB の更新手順
 
-```
-infra/sql/
-├── sqlite/
-│   ├── 001_init.sql              # sqlx自動マイグレーション対象
-│   └── 002_schema.sql            # sqlx自動マイグレーション対象（created_at含む）
-├── mysql/
-│   ├── 001_init_mysql.sql        # sqlx自動マイグレーション対象
-│   └── 002_worker.sql            # sqlx自動マイグレーション対象（created_at含む）
-└── migrations/                    # sqlx自動マイグレーション対象外
-    ├── sqlite/
-    │   ├── 003_add_created_at_columns.sql
-    │   ├── rollback_003_add_created_at_columns.sql
-    │   ├── 004_job_processing_status.sql
-    │   ├── rollback_004_job_processing_status.sql
-    │   ├── 005_add_job_result_indexes.sql
-    │   └── rollback_005_add_job_result_indexes.sql
-    └── mysql/
-        ├── 003_add_created_at_columns.sql
-        ├── rollback_003_add_created_at_columns.sql
-        ├── 004_job_processing_status.sql
-        ├── rollback_004_job_processing_status.sql
-        ├── 005_add_job_result_indexes.sql
-        └── rollback_005_add_job_result_indexes.sql
-```
+SQLite は単一プロセス運用を前提とします。更新中に別の worker または frontend を起動しないでください。
 
-## マイグレーション戦略
+この自動移行は、011 より前のすべての SQLite migration が適用済みである DB を対象とします。
+それ以前の migration が未適用の DB はサポート対象外であり、起動前に対応する旧 migration を完了してください。
 
-### 新規環境（開発環境・新規デプロイ）
+1. ジョブの受付を停止し、実行中ジョブが完了またはキャンセルされるまで待ちます。
+2. worker、frontend など JobWorkerP の全プロセスを停止します。
+3. DB と WAL 関連ファイルを同じ時点でバックアップします。
 
-**自動適用される**:
-- SQLite: `002_schema.sql`に`created_at`カラムとインデックスが含まれている
-- MySQL: `002_worker.sql`に`created_at`カラムとインデックスが含まれている
+   ```bash
+   cp data/jobworkerp.db data/jobworkerp.db.backup
+   test ! -e data/jobworkerp.db-wal || cp data/jobworkerp.db-wal data/jobworkerp.db-wal.backup
+   test ! -e data/jobworkerp.db-shm || cp data/jobworkerp.db-shm data/jobworkerp.db-shm.backup
+   ```
 
-### 既存環境（運用中のDB）
+4. 新しいバイナリを起動します。SQLite の正規 migration が自動適用され、適用履歴は
+   `_sqlx_migrations` に記録されます。migration の途中でエラーになった場合はプロセスを停止し、
+   ログのエラーを確認してからバックアップを復元してください。
+5. 起動後、適用履歴と主要な構造を確認します。
 
-**手動実行が必要**:
-- `migrations/`ディレクトリ内のファイルを手動で実行
+   ```bash
+   sqlite3 data/jobworkerp.db \
+     "SELECT version, success FROM _sqlx_migrations ORDER BY version;"
+   sqlite3 data/jobworkerp.db \
+     "PRAGMA table_info(job_processing_status);"
+   sqlite3 data/jobworkerp.db \
+     "PRAGMA index_list(job_processing_status);"
+   ```
 
-## マイグレーション実行手順
+6. ジョブの受付を再開し、worker を起動します。
 
-### MySQL本番環境
+### migration に失敗した場合
 
-```bash
-# 1. バックアップ取得
-mysqldump -u root -p jobworkerp > backup_$(date +%Y%m%d_%H%M%S).sql
+自動修復や `schema.sql` の手動適用は行わないでください。プロセスを停止した状態で
+DB と WAL 関連ファイルを退避し、原因と migration の適用履歴を記録してから、バックアップへ
+復元するか管理者に相談してください。不完全な DB を無理に次の migration へ進めないでください。
 
-# 2. マイグレーション実行
-mysql -u root -p jobworkerp < infra/sql/migrations/mysql/003_add_created_at_columns.sql
+## 新しい migration の追加
 
-# 3. 確認
-mysql -u root -p jobworkerp -e "DESCRIBE runner;" | grep created_at
-mysql -u root -p jobworkerp -e "DESCRIBE worker;" | grep created_at
-mysql -u root -p jobworkerp -e "SHOW INDEX FROM runner WHERE Key_name='idx_runner_created_at';"
-mysql -u root -p jobworkerp -e "SHOW INDEX FROM worker WHERE Key_name='idx_worker_created_at';"
-
-# ロールバック（問題発生時）
-mysql -u root -p jobworkerp < infra/sql/migrations/mysql/rollback_003_add_created_at_columns.sql
-```
-
-### SQLite（既存データ保持が必要な場合）
+1. 現在の migration の最大番号の次に連番を割り当てます。
+2. SQLite で実行できる SQL を追加し、既存データを保持する変更には必要な境界条件を確認します。
+3. `schema.sql` を全 migration 適用後の構造へ更新します。
+4. migration 適用結果と `schema.sql` の一致テストを実行します。
 
 ```bash
-# 1. バックアップ取得
-cp data/jobworkerp.db data/jobworkerp_backup_$(date +%Y%m%d_%H%M%S).db
-
-# 2. マイグレーション実行
-sqlite3 data/jobworkerp.db < infra/sql/migrations/sqlite/003_add_created_at_columns.sql
-
-# 3. 確認
-sqlite3 data/jobworkerp.db "PRAGMA table_info(runner);" | grep created_at
-sqlite3 data/jobworkerp.db "PRAGMA table_info(worker);" | grep created_at
-sqlite3 data/jobworkerp.db "PRAGMA index_list(runner);" | grep idx_runner_created_at
-sqlite3 data/jobworkerp.db "PRAGMA index_list(worker);" | grep idx_worker_created_at
-
-# ロールバック（問題発生時）
-sqlite3 data/jobworkerp.db < infra/sql/migrations/sqlite/rollback_003_add_created_at_columns.sql
+cargo test -p infra --test sqlite_schema_test -- --test-threads=1
 ```
 
-## ファイル一覧
-
-### SQLite
-
-- `sqlite/003_add_created_at_columns.sql`: `created_at`カラムとインデックス追加
-- `sqlite/rollback_003_add_created_at_columns.sql`: ロールバックスクリプト
-- `sqlite/004_job_processing_status.sql`: JobProcessingStatusテーブル作成（Sprint 3）
-- `sqlite/rollback_004_job_processing_status.sql`: ロールバックスクリプト
-- `sqlite/005_add_job_result_indexes.sql`: JobResult検索インデックス追加（Sprint 4）
-- `sqlite/rollback_005_add_job_result_indexes.sql`: ロールバックスクリプト
-
-### MySQL
-
-- `mysql/003_add_created_at_columns.sql`: `created_at`カラムとインデックス追加
-- `mysql/rollback_003_add_created_at_columns.sql`: ロールバックスクリプト
-- `mysql/004_job_processing_status.sql`: JobProcessingStatusテーブル作成（Sprint 3）
-- `mysql/rollback_004_job_processing_status.sql`: ロールバックスクリプト
-
-## マイグレーション内容（003）
-
-### 追加されるカラム
-
-- `runner.created_at`: BIGINT NOT NULL DEFAULT 0 (レコード作成時刻、ミリ秒)
-- `worker.created_at`: BIGINT NOT NULL DEFAULT 0 (レコード作成時刻、ミリ秒)
-
-### ⚠️ created_atカラムの注意事項
-
-#### 既存レコードのcreated_at値
-- **新規レコード**: アプリケーション層で`chrono::Utc::now().timestamp_millis()`を設定
-- **マイグレーション時の既存レコード**: マイグレーション実行時の現在時刻で一括設定
-- **マイグレーション実行後に作成されるレコード**: 正確な作成時刻が設定される
-
-#### 管理画面での影響
-- created_atソート時、マイグレーション実行時刻が基準となる
-- マイグレーション前の古いレコードの正確な作成時刻は不明
-- UI表示推奨: `created_at`をそのまま表示（マイグレーション実行時刻として表示される）
-
-#### マイグレーションSQL実行内容
-マイグレーションSQLで以下が実行されます:
-```sql
--- MySQL
-UPDATE runner SET created_at = UNIX_TIMESTAMP() * 1000 WHERE created_at = 0;
-UPDATE worker SET created_at = UNIX_TIMESTAMP() * 1000 WHERE created_at = 0;
-
--- SQLite
-UPDATE runner SET created_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000 WHERE created_at = 0;
-UPDATE worker SET created_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000 WHERE created_at = 0;
-```
-
-### 追加されるインデックス
-
-**Runnerテーブル**:
-- `idx_runner_type`: 種別フィルタ用
-- `idx_runner_created_at`: 作成日時ソート用
-
-**Workerテーブル**:
-- `idx_worker_runner_id`: Runner別Worker検索用
-- `idx_worker_channel`: チャネル別検索用
-- `idx_worker_periodic_interval`: 定期実行フィルタ用
-- `idx_worker_created_at`: 作成日時ソート用
-
-## マイグレーション内容（004）
-
-### 追加されるテーブル
-
-**job_processing_status**: Job実行状態RDBインデックステーブル
-
-- `job_id`: BIGINT PRIMARY KEY
-- `status`: INT NOT NULL (PENDING=1, RUNNING=2, WAIT_RESULT=3, CANCELLING=4)
-- `worker_id`: BIGINT NOT NULL
-- `channel`: TEXT/VARCHAR(255) NOT NULL
-- `priority`: INT NOT NULL
-- `enqueue_time`: BIGINT NOT NULL
-- `pending_time`: BIGINT (PENDING状態開始時刻)
-- `start_time`: BIGINT (RUNNING状態開始時刻)
-- `is_streamable`: BOOLEAN NOT NULL DEFAULT 0
-- `broadcast_results`: BOOLEAN NOT NULL DEFAULT 0
-- `version`: BIGINT NOT NULL (楽観的ロック用)
-- `deleted_at`: BIGINT (論理削除時刻)
-- `updated_at`: BIGINT NOT NULL
-
-### 追加されるインデックス（5個）
-
-- `idx_jps_status_active`: status別検索（deleted_at IS NULL条件付き）
-- `idx_jps_worker_id_active`: Worker別検索
-- `idx_jps_channel_active`: チャネル別検索
-- `idx_jps_start_time_active`: 実行開始時刻ソート
-- `idx_jps_status_start`: status + start_time複合インデックス
-
-### 有効化条件
-
-- デフォルト: **無効** (`JOB_STATUS_RDB_INDEXING=false`)
-- 大規模環境のみ有効化推奨（100万件以上のJob滞留）
-
-## マイグレーション内容（005）
-
-### 追加されるインデックス（5個）
-
-**job_result**: JobResult検索インデックス（Sprint 4 - JobResultService拡張）
-
-- `idx_job_result_status`: ステータスフィルタ用
-  - 用途: FindListBy/CountByのstatus条件
-- `idx_job_result_start_time`: 開始時刻範囲検索用
-  - 用途: FindListBy/CountByのstart_time_from/to条件
-- `idx_job_result_end_time`: 終了時刻範囲検索用
-  - 用途: FindListBy/CountByのend_time_from/to条件、DeleteBulkのend_time_before条件
-- `idx_job_result_end_status`: 終了時刻+ステータス複合インデックス
-  - 用途: DeleteBulk with end_time_before AND status（例: 古い成功結果のみ削除）
-  - 理由: 一括削除の効率化（時刻とステータスの両方で絞り込み）
-- `idx_job_result_worker_end`: Worker ID+終了時刻降順複合インデックス
-  - 用途: FindListByでworker_id条件 + end_time DESCソート（最新順）
-  - 理由: Worker別クエリでの時刻ソート効率化
-
-### インデックスの効果
-
-- **FindListBy/CountBy**: フィルタリング性能向上（100万件データでも1秒以内）
-- **DeleteBulk**: 一括削除性能向上（古いデータのみ効率的に削除）
-- **Worker別検索**: Worker別のJobResult検索が高速化
-
-### マイグレーション実行例
-
-#### MySQL
-```bash
-# バックアップ取得
-mysqldump -u root -p jobworkerp > backup_$(date +%Y%m%d_%H%M%S).sql
-
-# マイグレーション実行
-mysql -u root -p jobworkerp < infra/sql/migrations/mysql/005_add_job_result_indexes.sql
-
-# 確認
-mysql -u root -p jobworkerp -e "SHOW INDEX FROM job_result;"
-
-# ロールバック（問題発生時）
-mysql -u root -p jobworkerp < infra/sql/migrations/mysql/rollback_005_add_job_result_indexes.sql
-```
-
-#### SQLite
-```bash
-# バックアップ取得
-cp data/jobworkerp.db data/jobworkerp_backup_$(date +%Y%m%d_%H%M%S).db
-
-# マイグレーション実行
-sqlite3 data/jobworkerp.db < infra/sql/migrations/sqlite/005_add_job_result_indexes.sql
-
-# 確認
-sqlite3 data/jobworkerp.db "PRAGMA index_list(job_result);"
-
-# ロールバック（問題発生時）
-sqlite3 data/jobworkerp.db < infra/sql/migrations/sqlite/rollback_005_add_job_result_indexes.sql
-```
-
-## 注意事項
-
-1. **本番環境では必ずバックアップを取得してから実行**
-2. **メンテナンス時間帯に実行を推奨**（深夜2:00-4:00等）
-3. **ロールバックスクリプトも用意されている**
-4. **新規環境ではこれらのファイルは不要**（002スキーマに含まれている）
-5. **このディレクトリのファイルはsqlxの自動マイグレーション対象外**
-6. **004_job_processing_status.sqlはデフォルト無効機能のため、実行は任意**
-7. **005_add_job_result_indexes.sqlはJobResultService拡張機能のため、管理画面実装後に実行**
+migration の履歴を持たない既存 DB は、構造が不完全な場合に自動修復されません。
+更新前バックアップを取得し、migration の適用結果と DB の状態を確認してください。

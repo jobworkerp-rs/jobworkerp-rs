@@ -14,7 +14,11 @@
 
 Database schema:
 - [MySQL schema](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/infra/sql/mysql/002_worker.sql)
-- [SQLite schema](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/infra/sql/sqlite/002_schema.sql)
+- [SQLite schema (reference)](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/infra/sql/sqlite/schema.sql)
+
+SQLite migrations are applied automatically from `infra/sql/migrations/sqlite` at startup.
+The linked `schema.sql` is the completed reference schema and must not be applied manually.
+Before upgrading an existing database, follow the [SQLite migration procedure](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/infra/sql/migrations/README.md).
 
 (The runner table contains fixed records as built-in features)
 

@@ -845,7 +845,7 @@ mod test {
                     .await?;
                 pool
             } else {
-                let pool = setup_test_rdb_from("sql/sqlite").await;
+                let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
                 // delete only not built-in records
                 sqlx::query("DELETE FROM runner WHERE id > 65535;")
                     .execute(pool)
@@ -872,7 +872,7 @@ mod test {
                     .await?;
                 pool
             } else {
-                let pool = setup_test_rdb_from("sql/sqlite").await;
+                let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
                 // delete only not built-in records
                 sqlx::query("DELETE FROM runner WHERE id > 10000 AND type = ?;")
                     .bind(RunnerType::McpServer as i32)
@@ -957,7 +957,7 @@ mod test {
                     .await?;
                 pool
             } else {
-                let pool = setup_test_rdb_from("sql/sqlite").await;
+                let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
                 // delete only not built-in records
                 sqlx::query("DELETE FROM runner WHERE id > 10000 AND type = ?;")
                     .bind(RunnerType::Plugin as i32)
@@ -1035,7 +1035,7 @@ mod test {
                     .await?;
                 pool
             } else {
-                let pool = setup_test_rdb_from("sql/sqlite").await;
+                let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
                 // delete only not built-in records
                 sqlx::query("DELETE FROM runner WHERE id > 10000 AND type = ?;")
                     .bind(RunnerType::McpServer as i32)
@@ -1551,7 +1551,7 @@ mod test {
                     .await?;
                 pool
             } else {
-                let pool = setup_test_rdb_from("sql/sqlite").await;
+                let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
                 // delete only not built-in records
                 sqlx::query("DELETE FROM runner WHERE id > 65535;")
                     .execute(pool)
