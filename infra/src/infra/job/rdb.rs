@@ -1132,7 +1132,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/mysql").await;
+            let pool = setup_test_rdb_from("sql/migrations/mysql").await;
             sqlx::query("DELETE FROM job_execution_overrides;")
                 .execute(pool)
                 .await?;
@@ -1174,7 +1174,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let mysql_pool = setup_test_rdb_from("sql/mysql").await;
+            let mysql_pool = setup_test_rdb_from("sql/migrations/mysql").await;
             sqlx::raw_sql(
                 "SET FOREIGN_KEY_CHECKS = 0; TRUNCATE TABLE job; SET FOREIGN_KEY_CHECKS = 1;",
             )
@@ -1196,7 +1196,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let mysql_pool = setup_test_rdb_from("sql/mysql").await;
+            let mysql_pool = setup_test_rdb_from("sql/migrations/mysql").await;
             sqlx::raw_sql(
                 "SET FOREIGN_KEY_CHECKS = 0; TRUNCATE TABLE job; SET FOREIGN_KEY_CHECKS = 1;",
             )

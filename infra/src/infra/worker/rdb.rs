@@ -2320,7 +2320,7 @@ mod test {
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let rdb_pool = if cfg!(feature = "mysql") {
-                let pool = setup_test_rdb_from("sql/mysql").await;
+                let pool = setup_test_rdb_from("sql/migrations/mysql").await;
                 sqlx::query("TRUNCATE TABLE worker;").execute(pool).await?;
                 pool
             } else {

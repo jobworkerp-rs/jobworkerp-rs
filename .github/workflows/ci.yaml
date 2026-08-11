@@ -201,6 +201,7 @@ jobs:
           rm -f worker-app/test_db.sqlite3*
           cargo build --release --features "mysql"
           cargo test --release --features "mysql" -- --test-threads=1
+          cargo test --release --features "mysql" --test mysql_schema_test -- --ignored --test-threads=1
           cargo clean
         env:
           PLUGINS_RUNNER_DIR: "./target/release/"

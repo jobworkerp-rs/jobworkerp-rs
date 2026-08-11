@@ -211,7 +211,7 @@ pub mod test {
         use memory_utils::chan::ChanBuffer;
 
         let dir = if cfg!(feature = "mysql") {
-            "../infra/sql/mysql"
+            "../infra/sql/migrations/mysql"
         } else {
             "../infra/sql/migrations/sqlite"
         };

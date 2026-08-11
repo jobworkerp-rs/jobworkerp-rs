@@ -99,7 +99,7 @@ mod tests {
     fn test_cleanup_task_creation() {
         TEST_RUNTIME.block_on(async {
             let pool = if cfg!(feature = "mysql") {
-                setup_test_rdb_from("sql/mysql").await
+                setup_test_rdb_from("sql/migrations/mysql").await
             } else {
                 setup_test_rdb_from("sql/migrations/sqlite").await
             };
@@ -125,7 +125,7 @@ mod tests {
     fn test_cleanup_task_graceful_shutdown() {
         TEST_RUNTIME.block_on(async {
             let pool = if cfg!(feature = "mysql") {
-                setup_test_rdb_from("sql/mysql").await
+                setup_test_rdb_from("sql/migrations/mysql").await
             } else {
                 setup_test_rdb_from("sql/migrations/sqlite").await
             };

@@ -722,7 +722,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let mysql_pool = setup_test_rdb_from("sql/mysql").await;
+            let mysql_pool = setup_test_rdb_from("sql/migrations/mysql").await;
             sqlx::query("TRUNCATE TABLE job_result;")
                 .execute(mysql_pool)
                 .await?;
@@ -2299,7 +2299,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/mysql").await;
+            let pool = setup_test_rdb_from("sql/migrations/mysql").await;
             sqlx::query("TRUNCATE TABLE job_result;")
                 .execute(pool)
                 .await?;

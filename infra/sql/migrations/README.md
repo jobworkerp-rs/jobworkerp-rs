@@ -1,4 +1,29 @@
-# SQLite migration 手順
+# RDB migration 手順
+
+## MySQL
+
+MySQL の migration はアプリケーション起動時には自動適用されず、管理者が
+手動で適用します。`infra/sql/mysql/schema.sql` は全 migration 適用後の完成形を
+確認する参照用スキーマで、新規データベースを初期化する場合に使用できます。
+
+`mysql/001_base_schema.sql` は新規データベース用の破壊的な初期化スキーマです。
+既存データベースには適用しないでください。復旧用スキーマ追加前の既存 MySQL は
+このベーススキーマと同等の状態にあることを前提に、次の手順で 002 以降を番号順に適用します。
+
+1. データベースのバックアップを取得し、停止中のアプリケーションから接続がないことを確認します。
+2. `mysql/` の未適用 migration を番号順に確認します。
+3. `mysql -h HOST -u USER -p DATABASE < infra/sql/migrations/mysql/002_worker_instance_rdb_status_recovery.sql` のように各ファイルを適用します。
+4. `SHOW COLUMNS FROM job_processing_status` と `SHOW INDEX FROM job_processing_status` で適用結果を確認します。
+5. アプリケーションを起動し、ジョブ復旧と通常のジョブ処理を確認します。
+
+新規データベースでは、Docker Compose の初期化設定または `schema.sql` を使用して
+完成形を作成できます。既存データベースに `schema.sql` や `001_base_schema.sql`
+を適用するとデータを失うため、必ず番号付き差分だけを適用してください。
+
+新しい MySQL migration を追加する場合は、現在の最大番号の次に連番を割り当て、
+完成形の `schema.sql` とスナップショット一致テストも更新します。
+
+## SQLite
 
 このディレクトリの SQLite migration は、アプリケーションに埋め込まれて起動時に
 SQLx が自動適用する正規 migration です。ファイルを個別に `sqlite3` で実行しないでください。
