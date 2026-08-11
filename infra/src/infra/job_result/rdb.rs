@@ -708,7 +708,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let sqlite_pool = setup_test_rdb_from("sql/sqlite").await;
+            let sqlite_pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;")
                 .execute(sqlite_pool)
                 .await?;
@@ -722,7 +722,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let mysql_pool = setup_test_rdb_from("sql/mysql").await;
+            let mysql_pool = setup_test_rdb_from("sql/migrations/mysql").await;
             sqlx::query("TRUNCATE TABLE job_result;")
                 .execute(mysql_pool)
                 .await?;
@@ -1825,7 +1825,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_find_list_by_worker_ids(pool).await
         })
@@ -1837,7 +1837,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_find_list_by_statuses(pool).await
         })
@@ -1849,7 +1849,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_find_list_by_time_range(pool).await
         })
@@ -1861,7 +1861,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_find_list_by_priorities(pool).await
         })
@@ -1873,7 +1873,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_find_list_by_uniq_key(pool).await
         })
@@ -1885,7 +1885,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_find_list_by_pagination(pool).await
         })
@@ -1897,7 +1897,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_find_list_by_sort(pool).await
         })
@@ -1909,7 +1909,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_count_by_worker_ids(pool).await
         })
@@ -1921,7 +1921,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_count_by_statuses(pool).await
         })
@@ -1933,7 +1933,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_count_by_time_range(pool).await
         })
@@ -1945,7 +1945,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_delete_bulk_by_time(pool).await
         })
@@ -1957,7 +1957,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_delete_bulk_by_status(pool).await
         })
@@ -1969,7 +1969,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_delete_bulk_safety_checks(pool).await
         })
@@ -1981,7 +1981,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_delete_bulk_transaction_rollback(pool).await
         })
@@ -1995,7 +1995,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_delete_bulk_enforces_24h_protection_without_time_filter(pool).await
         })
@@ -2007,7 +2007,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_delete_bulk_explicit_time_within_24h_rejected(pool).await
         })
@@ -2019,7 +2019,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_delete_bulk_old_data_with_status_filter_succeeds(pool).await
         })
@@ -2031,7 +2031,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_delete_bulk_mixed_recent_and_old_data(pool).await
         })
@@ -2257,7 +2257,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_execution_overrides;")
                 .execute(pool)
                 .await?;
@@ -2272,7 +2272,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_execution_overrides;")
                 .execute(pool)
                 .await?;
@@ -2287,7 +2287,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_streaming_type_all_values(pool).await
         })
@@ -2299,7 +2299,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/mysql").await;
+            let pool = setup_test_rdb_from("sql/migrations/mysql").await;
             sqlx::query("TRUNCATE TABLE job_result;")
                 .execute(pool)
                 .await?;

@@ -954,9 +954,9 @@ mod tests {
 
     async fn setup_test_db() -> &'static RdbPool {
         let pool = if cfg!(feature = "mysql") {
-            setup_test_rdb_from("sql/mysql").await
+            setup_test_rdb_from("sql/migrations/mysql").await
         } else {
-            setup_test_rdb_from("sql/sqlite").await
+            setup_test_rdb_from("sql/migrations/sqlite").await
         };
 
         // Apply migration if not already applied

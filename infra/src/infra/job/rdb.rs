@@ -1024,7 +1024,7 @@ mod test {
     fn retry_upsert_and_status_reset_commit_together() -> Result<()> {
         use infra_utils::infra::test::{TEST_RUNTIME, setup_test_rdb_from};
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_processing_status;").execute(pool).await?;
             sqlx::query("DELETE FROM job_execution_overrides;").execute(pool).await?;
             sqlx::query("DELETE FROM job;").execute(pool).await?;
@@ -1075,7 +1075,7 @@ mod test {
     fn recovery_retry_upsert_requires_and_consumes_the_claim() -> Result<()> {
         use infra_utils::infra::test::{TEST_RUNTIME, setup_test_rdb_from};
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_processing_status;").execute(pool).await?;
             sqlx::query("DELETE FROM job_execution_overrides;").execute(pool).await?;
             sqlx::query("DELETE FROM job;").execute(pool).await?;
@@ -1115,7 +1115,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_execution_overrides;")
                 .execute(pool)
                 .await?;
@@ -1132,7 +1132,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/mysql").await;
+            let pool = setup_test_rdb_from("sql/migrations/mysql").await;
             sqlx::query("DELETE FROM job_execution_overrides;")
                 .execute(pool)
                 .await?;
@@ -1149,7 +1149,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let sqlite_pool = setup_test_rdb_from("sql/sqlite").await;
+            let sqlite_pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job;").execute(sqlite_pool).await?;
             _test_repository(sqlite_pool).await?;
             _test_find_id_set_in_instant(sqlite_pool).await
@@ -1162,7 +1162,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let sqlite_pool = setup_test_rdb_from("sql/sqlite").await;
+            let sqlite_pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job;").execute(sqlite_pool).await?;
             _test_streaming_type_all_values(sqlite_pool).await
         })
@@ -1174,7 +1174,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let mysql_pool = setup_test_rdb_from("sql/mysql").await;
+            let mysql_pool = setup_test_rdb_from("sql/migrations/mysql").await;
             sqlx::raw_sql(
                 "SET FOREIGN_KEY_CHECKS = 0; TRUNCATE TABLE job; SET FOREIGN_KEY_CHECKS = 1;",
             )
@@ -1196,7 +1196,7 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let mysql_pool = setup_test_rdb_from("sql/mysql").await;
+            let mysql_pool = setup_test_rdb_from("sql/migrations/mysql").await;
             sqlx::raw_sql(
                 "SET FOREIGN_KEY_CHECKS = 0; TRUNCATE TABLE job; SET FOREIGN_KEY_CHECKS = 1;",
             )

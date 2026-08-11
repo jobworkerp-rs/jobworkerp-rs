@@ -375,7 +375,7 @@ mod test {
     fn test_sqlite() -> Result<()> {
         use infra_utils::infra::test::{setup_test_rdb_from, truncate_tables};
         TEST_RUNTIME.block_on(async {
-            let sqlite_pool = setup_test_rdb_from("sql/sqlite").await;
+            let sqlite_pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             truncate_tables(
                 sqlite_pool,
                 vec!["job_execution_overrides", "job", "worker", "job_result"],
@@ -391,7 +391,7 @@ mod test {
     fn test_mysql() -> Result<()> {
         use infra_utils::infra::test::{setup_test_rdb_from, truncate_tables};
         TEST_RUNTIME.block_on(async {
-            let mysql_pool = setup_test_rdb_from("sql/mysql").await;
+            let mysql_pool = setup_test_rdb_from("sql/migrations/mysql").await;
             truncate_tables(
                 mysql_pool,
                 vec!["job_execution_overrides", "job", "worker", "job_result"],
@@ -403,11 +403,15 @@ mod test {
 
     #[test]
     fn test_fetch_timeouted_backup_jobs() -> Result<()> {
-        use infra_utils::infra::test::{setup_test_rdb, truncate_tables};
+        use infra_utils::infra::test::{setup_test_rdb_from, truncate_tables};
         use proto::jobworkerp::data::JobData;
         use proto::jobworkerp::data::WorkerId;
         TEST_RUNTIME.block_on(async {
-            let rdb_pool = setup_test_rdb().await;
+            let rdb_pool = if cfg!(feature = "mysql") {
+                setup_test_rdb_from("sql/migrations/mysql").await
+            } else {
+                setup_test_rdb_from("sql/migrations/sqlite").await
+            };
             truncate_tables(
                 rdb_pool,
                 vec!["job_execution_overrides", "job", "worker", "job_result"],

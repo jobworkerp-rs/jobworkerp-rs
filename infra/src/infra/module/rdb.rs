@@ -211,9 +211,9 @@ pub mod test {
         use memory_utils::chan::ChanBuffer;
 
         let dir = if cfg!(feature = "mysql") {
-            "../infra/sql/mysql"
+            "../infra/sql/migrations/mysql"
         } else {
-            "../infra/sql/sqlite"
+            "../infra/sql/migrations/sqlite"
         };
         let pool = setup_test_rdb_from(dir).await;
         pool.execute("SELECT 1;").await.expect("test connection");

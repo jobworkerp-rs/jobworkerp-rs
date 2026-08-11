@@ -277,7 +277,7 @@ mod tests {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/sqlite").await;
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
             sqlx::query("DELETE FROM job_execution_overrides;")
                 .execute(pool)
                 .await?;
@@ -293,7 +293,7 @@ mod tests {
         use infra_utils::infra::test::TEST_RUNTIME;
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_rdb_from("sql/mysql").await;
+            let pool = setup_test_rdb_from("sql/migrations/mysql").await;
             sqlx::query("DELETE FROM job_execution_overrides;")
                 .execute(pool)
                 .await?;

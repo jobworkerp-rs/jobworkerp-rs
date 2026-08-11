@@ -422,13 +422,13 @@ mod test {
         use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
             let rdb_pool = if cfg!(feature = "mysql") {
-                let pool = setup_test_rdb_from("sql/mysql").await;
+                let pool = setup_test_rdb_from("sql/migrations/mysql").await;
                 sqlx::query("TRUNCATE TABLE function_set;")
                     .execute(pool)
                     .await?;
                 pool
             } else {
-                let pool = setup_test_rdb_from("sql/sqlite").await;
+                let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
                 sqlx::query("DELETE FROM function_set;")
                     .execute(pool)
                     .await?;
