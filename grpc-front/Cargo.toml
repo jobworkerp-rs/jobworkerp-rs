@@ -18,7 +18,6 @@ jobworkerp-base = { path = "../base" }
 jobworkerp-runner = { path = "../runner" }
 infra = { path = "../infra" }
 app = { path = "../app" }
-mcp-server = { path = "../mcp-server" }
 
 anyhow = { workspace = true }
 async-stream = { workspace = true }

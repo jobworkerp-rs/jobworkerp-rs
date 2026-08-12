@@ -5,7 +5,6 @@ pub mod job;
 pub mod job_restore;
 pub mod job_result;
 pub mod job_status;
-pub mod mcp_activation;
 pub mod runner;
 pub mod validation;
 pub mod worker;

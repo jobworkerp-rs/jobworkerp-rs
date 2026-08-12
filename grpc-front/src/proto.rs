@@ -22,11 +22,6 @@ pub mod jobworkerp {
             tonic::include_proto!("jobworkerp.function.service");
         }
     }
-    pub mod mcp {
-        pub mod service {
-            tonic::include_proto!("jobworkerp.mcp.service");
-        }
-    }
     pub mod data {
         use proto::jobworkerp::data;
         pub type Priority = data::Priority;

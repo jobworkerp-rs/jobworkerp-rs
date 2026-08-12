@@ -43,7 +43,6 @@ dotenvy = { workspace = true }
 jobworkerp-runner = { path = "../runner" }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 tokio-test = "0.4"
 app = { path = "../app", features = ["test-utils"] }
 

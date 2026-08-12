@@ -1,5 +1,4 @@
 use crate::handler::McpHandler;
-use crate::McpAuthConfig;
 use anyhow::Result;
 use axum::{
     Router,
@@ -46,12 +45,12 @@ impl TokenStore {
         }
     }
 
-    /// Create TokenStore from the resolved one-time token file configuration.
-    pub fn from_auth_config(config: &McpAuthConfig) -> Self {
-        match config {
-            McpAuthConfig::Enabled { token } => Self::new(vec![token.clone()]),
-            McpAuthConfig::Disabled | McpAuthConfig::Unavailable { .. } => Self::new(Vec::new()),
-        }
+    /// Create TokenStore from MCP_AUTH_TOKENS environment variable
+    pub fn from_env() -> Self {
+        let tokens = std::env::var("MCP_AUTH_TOKENS")
+            .map(|s| s.split(',').map(|t| t.trim().to_string()).collect())
+            .unwrap_or_else(|_| vec!["demo-token".to_string()]);
+        Self::new(tokens)
     }
 
     pub fn is_valid(&self, token: &str) -> bool {
@@ -165,33 +164,7 @@ pub async fn boot_streamable_http_server<F>(
 where
     F: Fn() -> Result<McpHandler, std::io::Error> + Send + Sync + 'static,
 {
-    let auth_config = McpAuthConfig::from_env();
-    if !auth_config.is_usable() {
-        anyhow::bail!("MCP authentication configuration is invalid");
-    }
-    boot_streamable_http_server_with_auth(
-        handler_factory,
-        bind_addr,
-        lock,
-        shutdown_signal,
-        auth_config,
-        None,
-    )
-    .await
-}
-
-pub async fn boot_streamable_http_server_with_auth<F>(
-    handler_factory: F,
-    bind_addr: &str,
-    lock: ShutdownLock,
-    shutdown_signal: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
-    auth_config: McpAuthConfig,
-    listener: Option<tokio::net::TcpListener>,
-) -> Result<()>
-where
-    F: Fn() -> Result<McpHandler, std::io::Error> + Send + Sync + 'static,
-{
-    let token_store = Arc::new(TokenStore::from_auth_config(&auth_config));
+    let token_store = Arc::new(TokenStore::from_env());
     let allowed_hosts = AllowedHostsSetting::from_env();
 
     // Create MCP service with StreamableHttpService.
@@ -244,10 +217,7 @@ where
         .merge(protected_mcp);
 
     // Start server
-    let listener = match listener {
-        Some(listener) => listener,
-        None => tokio::net::TcpListener::bind(bind_addr).await?,
-    };
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     tracing::info!("MCP Streamable HTTP Server started on {}", bind_addr);
 
     // Use provided shutdown signal or create internal one
@@ -277,28 +247,6 @@ where
     lock.unlock();
 
     Ok(())
-}
-
-pub async fn boot_streamable_http_server_on_listener<F>(
-    handler_factory: F,
-    bind_addr: &str,
-    listener: tokio::net::TcpListener,
-    lock: ShutdownLock,
-    shutdown_signal: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
-    auth_config: McpAuthConfig,
-) -> Result<()>
-where
-    F: Fn() -> Result<McpHandler, std::io::Error> + Send + Sync + 'static,
-{
-    boot_streamable_http_server_with_auth(
-        handler_factory,
-        bind_addr,
-        lock,
-        shutdown_signal,
-        auth_config,
-        Some(listener),
-    )
-    .await
 }
 
 #[cfg(test)]

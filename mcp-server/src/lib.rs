@@ -58,16 +58,9 @@
 //! - `MCP_AUTH_TOKENS`: Valid tokens, comma-separated (default: demo-token)
 
 pub mod config;
-pub mod activation;
 pub mod handler;
 pub mod server;
 
 pub use config::McpServerConfig;
-pub use activation::{
-    DeferredMcpActivation, DeferredMcpStartRequest, McpAuthConfig, activate_deferred_mcp,
-    install_deferred_mcp_activation, read_deferred_activation_secret_from_env,
-};
 pub use handler::McpHandler;
-pub use server::{
-    boot_stdio_server, boot_streamable_http_server, boot_streamable_http_server_on_listener,
-};
+pub use server::{boot_stdio_server, boot_streamable_http_server};
