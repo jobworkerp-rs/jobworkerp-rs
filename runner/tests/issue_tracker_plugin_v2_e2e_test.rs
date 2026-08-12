@@ -18,6 +18,31 @@ use tempfile::TempDir;
 
 const ISSUE_TRACKER_PLUGIN: &str = "IssueTrackerRunner";
 const METHOD_COUNT: usize = 21;
+// This table is deliberately independent from the plugin descriptor. It
+// catches a method key being wired to a different handler family.
+const EXPECTED_HANDLER_FAMILIES: [(&str, &str); METHOD_COUNT] = [
+    ("get_contract_info", "read"),
+    ("get_issue", "read"),
+    ("list_issues", "read"),
+    ("list_ready_issues", "read"),
+    ("list_issue_comments", "read"),
+    ("list_issue_history", "read"),
+    ("get_artifact", "artifacts"),
+    ("list_artifacts", "artifacts"),
+    ("get_operation", "read"),
+    ("create_issue", "writes"),
+    ("update_issue", "writes"),
+    ("transition_issue", "writes"),
+    ("claim_issue", "claims"),
+    ("heartbeat_issue_claim", "claims"),
+    ("release_issue_claim", "claims"),
+    ("reconcile_expired_claim", "claims"),
+    ("add_issue_relation", "relations"),
+    ("remove_issue_relation", "relations"),
+    ("add_issue_comment", "relations"),
+    ("create_backup", "artifacts"),
+    ("export_issues", "artifacts"),
+];
 const EXPECTED_METHODS: [(&str, &str, &str); METHOD_COUNT] = [
     (
         "get_contract_info",
@@ -240,6 +265,97 @@ struct ContractInfo {
     method_keys: Vec<String>,
 }
 
+#[derive(Message)]
+struct WriteContext {
+    #[prost(message, optional, tag = "1")]
+    request: Option<RequestContext>,
+    #[prost(string, tag = "2")]
+    operation_id: String,
+    #[prost(string, tag = "3")]
+    reason: String,
+}
+#[derive(Message)]
+struct RequestContext {
+    #[prost(message, optional, tag = "1")]
+    caller: Option<ActorContext>,
+    #[prost(string, tag = "2")]
+    correlation_id: String,
+}
+#[derive(Message)]
+struct ActorContext {
+    #[prost(message, optional, tag = "1")]
+    actor: Option<ActorRef>,
+}
+#[derive(Message)]
+struct ActorRef {
+    #[prost(string, tag = "1")]
+    actor_id: String,
+}
+#[derive(Message)]
+struct IssueDraft {
+    #[prost(string, tag = "1")]
+    title: String,
+    #[prost(int32, tag = "3")]
+    kind: i32,
+    #[prost(int32, tag = "4")]
+    priority: i32,
+    #[prost(int32, tag = "10")]
+    creation_basis: i32,
+    #[prost(int32, tag = "11")]
+    confirmation_status: i32,
+}
+#[derive(Message)]
+struct CreateIssueArgs {
+    #[prost(message, optional, tag = "1")]
+    context: Option<WriteContext>,
+    #[prost(string, tag = "2")]
+    issue_id: String,
+    #[prost(message, optional, tag = "3")]
+    issue: Option<IssueDraft>,
+}
+#[derive(Message)]
+struct ClaimIssueArgs {
+    #[prost(message, optional, tag = "1")]
+    context: Option<WriteContext>,
+    #[prost(string, tag = "2")]
+    issue_id: String,
+    #[prost(uint64, optional, tag = "3")]
+    expected_revision: Option<u64>,
+}
+#[derive(Message)]
+struct AddIssueRelationArgs {
+    #[prost(message, optional, tag = "1")]
+    context: Option<WriteContext>,
+    #[prost(int32, tag = "3")]
+    kind: i32,
+    #[prost(string, tag = "4")]
+    source_issue_id: String,
+    #[prost(uint64, optional, tag = "5")]
+    source_revision: Option<u64>,
+    #[prost(string, tag = "6")]
+    target_issue_id: String,
+    #[prost(uint64, optional, tag = "7")]
+    target_revision: Option<u64>,
+}
+#[derive(Message)]
+struct AddIssueCommentArgs {
+    #[prost(message, optional, tag = "1")]
+    context: Option<WriteContext>,
+    #[prost(string, tag = "2")]
+    issue_id: String,
+    #[prost(uint64, optional, tag = "3")]
+    revision: Option<u64>,
+    #[prost(string, tag = "4")]
+    comment_id: String,
+    #[prost(string, tag = "5")]
+    body: String,
+}
+#[derive(Message)]
+struct CreateBackupArgs {
+    #[prost(message, optional, tag = "1")]
+    context: Option<WriteContext>,
+}
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -344,6 +460,31 @@ fn declared_primary_message(proto: &str) -> Option<&str> {
     proto.split("message ").nth(1)?.split_whitespace().next()
 }
 
+fn write_context(operation_id: &str) -> WriteContext {
+    WriteContext {
+        request: Some(RequestContext {
+            caller: Some(ActorContext {
+                actor: Some(ActorRef {
+                    actor_id: "host-e2e".into(),
+                }),
+            }),
+            correlation_id: operation_id.into(),
+        }),
+        operation_id: operation_id.into(),
+        reason: "host integration test".into(),
+    }
+}
+
+async fn run_success(runner: &mut impl RunnerTrait, method: &str, args: Vec<u8>) -> Result<()> {
+    let (result, _) = runner.run(&args, HashMap::new(), Some(method)).await;
+    match TypedMethodResult::decode(result?.as_slice())?.outcome {
+        Some(typed_method_result::Outcome::Success(_)) => Ok(()),
+        Some(typed_method_result::Outcome::Error(_)) | None => {
+            bail!("{method} must return a concrete success outcome")
+        }
+    }
+}
+
 #[tokio::test]
 async fn issue_tracker_v2_cdylib_exposes_contract_and_routes_typed_calls() -> Result<()> {
     let plugin_path = build_issue_tracker_cdylib()?;
@@ -404,6 +545,13 @@ async fn issue_tracker_v2_cdylib_exposes_contract_and_routes_typed_calls() -> Re
             .is_object()
         );
     }
+    assert_eq!(EXPECTED_HANDLER_FAMILIES.len(), schemas.len());
+    for (method, family) in EXPECTED_HANDLER_FAMILIES {
+        assert!(
+            schemas.contains_key(method),
+            "{method} must remain in the fixed {family} handler family"
+        );
+    }
 
     let data_root = TempDir::new()?;
     runner.load(plugin_settings(data_root.path())?).await?;
@@ -429,6 +577,74 @@ async fn issue_tracker_v2_cdylib_exposes_contract_and_routes_typed_calls() -> Re
         metadata.get("contract"),
         Some(&"lookback-issue/v1".to_owned())
     );
+
+    // Each production handler family has a valid request that must make it
+    // through the host V2 boundary and produce its concrete success result.
+    let issue_a = "00000000-0000-4000-8000-000000000001";
+    let issue_b = "00000000-0000-4000-8000-000000000002";
+    let create = |issue_id: &str, op: &str| {
+        CreateIssueArgs {
+            context: Some(write_context(op)),
+            issue_id: issue_id.into(),
+            issue: Some(IssueDraft {
+                title: format!("issue {issue_id}"),
+                kind: 1,
+                priority: 3,
+                creation_basis: 1,
+                confirmation_status: 1,
+            }),
+        }
+        .encode_to_vec()
+    };
+    run_success(&mut runner, "create_issue", create(issue_a, "create-a")).await?;
+    run_success(&mut runner, "create_issue", create(issue_b, "create-b")).await?;
+    run_success(
+        &mut runner,
+        "claim_issue",
+        ClaimIssueArgs {
+            context: Some(write_context("claim-a")),
+            issue_id: issue_a.into(),
+            expected_revision: Some(0),
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    run_success(
+        &mut runner,
+        "add_issue_relation",
+        AddIssueRelationArgs {
+            context: Some(write_context("relate")),
+            kind: 3,
+            source_issue_id: issue_a.into(),
+            source_revision: Some(1),
+            target_issue_id: issue_b.into(),
+            target_revision: Some(0),
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    run_success(
+        &mut runner,
+        "add_issue_comment",
+        AddIssueCommentArgs {
+            context: Some(write_context("comment")),
+            issue_id: issue_b.into(),
+            revision: Some(1),
+            comment_id: "00000000-0000-4000-8000-000000000003".into(),
+            body: "host-routed".into(),
+        }
+        .encode_to_vec(),
+    )
+    .await?;
+    run_success(
+        &mut runner,
+        "create_backup",
+        CreateBackupArgs {
+            context: Some(write_context("backup")),
+        }
+        .encode_to_vec(),
+    )
+    .await?;
 
     // Route every advertised `using` value through the host. Empty protobuf
     // requests are valid wire values; methods needing fields respond with
