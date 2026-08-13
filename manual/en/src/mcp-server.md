@@ -55,7 +55,8 @@ Streamable HTTP transport, suitable for browser-based clients or HTTP proxy conn
 |----------|-------------|---------|
 | `MCP_ADDR` | Bind address | `127.0.0.1:8000` |
 | `MCP_AUTH_ENABLED` | Enable Bearer authentication | `false` |
-| `MCP_AUTH_TOKENS` | Valid tokens, comma-separated | `demo-token` |
+| `MCP_AUTH_TOKEN_FILE` | Preferred private `0600` regular file with one non-empty token; consumed and removed at startup. Takes precedence over `MCP_AUTH_TOKENS`. | - |
+| `MCP_AUTH_TOKENS` | Alternative valid tokens, comma-separated, for local or otherwise non-secret-managed use. Required only when `MCP_AUTH_TOKEN_FILE` is unset. | - |
 | `MCP_ALLOWED_HOSTS` | Allowed `Host` header values, comma-separated (DNS rebinding protection). Use `*` to disable validation | `localhost,127.0.0.1,::1` |
 
 > **DNS rebinding protection**: rmcp 2.x validates the inbound `Host` header by default and only accepts loopback hosts. When deploying behind a reverse proxy or binding to a public interface, set `MCP_ALLOWED_HOSTS` to your actual hostnames (e.g. `example.com,example.com:8080`). `MCP_ALLOWED_HOSTS=*` disables validation entirely and is not recommended for public deployments.
@@ -152,6 +153,18 @@ When `MCP_STREAMING=true`, results from long-running jobs are streamed server-si
 
 ```bash
 export MCP_AUTH_ENABLED=true
+token_file="$(mktemp)"
+chmod 600 "$token_file"
+printf '%s' 'replace-with-a-generated-token' > "$token_file"
+export MCP_AUTH_TOKEN_FILE="$token_file"
+./mcp-http
+```
+
+For local use where strict token-file handling is unnecessary, use the legacy
+comma-separated setting instead:
+
+```bash
+export MCP_AUTH_ENABLED=true
 export MCP_AUTH_TOKENS="token1,token2,token3"
 ./mcp-http
 ```
@@ -185,4 +198,4 @@ jobworkerp errors are mapped to MCP error codes:
 
 - **Tools do not appear**: check `MCP_EXCLUDE_RUNNER` / `MCP_EXCLUDE_WORKER`, verify `MCP_SET_NAME` matches an existing FunctionSet, and confirm Runners/Workers are registered in the database.
 - **Server starts but jobs never complete**: in Scalable mode, ensure a Worker process is running and shares the same `STORAGE_TYPE` / `DATABASE_URL` / `REDIS_URL`.
-- **Authentication errors**: with `MCP_AUTH_ENABLED=true`, the client must send an `Authorization: Bearer <token>` header whose token is listed in `MCP_AUTH_TOKENS`.
+- **Authentication errors**: with `MCP_AUTH_ENABLED=true`, the client must send an `Authorization: Bearer <token>` header matching the token in `MCP_AUTH_TOKEN_FILE`, or one of the comma-separated tokens in `MCP_AUTH_TOKENS` when no token file is configured.

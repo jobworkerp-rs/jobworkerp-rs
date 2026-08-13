@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // functions
                 "../proto/protobuf/jobworkerp/function/service/function.proto",
                 "../proto/protobuf/jobworkerp/function/service/function_set.proto",
+                "../proto/protobuf/jobworkerp/mcp/service/activation.proto",
             ],
             &["../proto/protobuf/"],
         )

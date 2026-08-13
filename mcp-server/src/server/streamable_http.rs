@@ -1,3 +1,4 @@
+use crate::McpAuthConfig;
 use crate::handler::McpHandler;
 use anyhow::Result;
 use axum::{
@@ -28,12 +29,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 
 /// Token store for Bearer authentication.
 ///
-/// NOTE: This is a simple implementation for development/demo purposes.
-/// Production deployments should use proper token management with:
-/// - Hashed token storage
-/// - Constant-time comparison
-/// - Rate limiting
-/// - TLS/HTTPS requirement
+/// Tokens are held only in process memory after configuration is resolved.
 pub struct TokenStore {
     valid_tokens: Vec<String>,
 }
@@ -45,16 +41,33 @@ impl TokenStore {
         }
     }
 
-    /// Create TokenStore from MCP_AUTH_TOKENS environment variable
-    pub fn from_env() -> Self {
-        let tokens = std::env::var("MCP_AUTH_TOKENS")
-            .map(|s| s.split(',').map(|t| t.trim().to_string()).collect())
-            .unwrap_or_else(|_| vec!["demo-token".to_string()]);
-        Self::new(tokens)
+    /// Create TokenStore from the resolved authentication configuration.
+    pub fn from_auth_config(config: &McpAuthConfig) -> Self {
+        match config {
+            McpAuthConfig::Enabled { tokens } => Self::new(tokens.clone()),
+            McpAuthConfig::Disabled | McpAuthConfig::Unavailable { .. } => Self::new(Vec::new()),
+        }
     }
 
     pub fn is_valid(&self, token: &str) -> bool {
-        self.valid_tokens.contains(&token.to_string())
+        self.valid_tokens
+            .iter()
+            .any(|candidate| constant_time_eq(candidate.as_bytes(), token.as_bytes()))
+    }
+}
+
+#[derive(Clone)]
+struct McpAuthState {
+    enabled: bool,
+    token_store: Arc<TokenStore>,
+}
+
+impl McpAuthState {
+    fn from_config(config: &McpAuthConfig) -> Self {
+        Self {
+            enabled: matches!(config, McpAuthConfig::Enabled { .. }),
+            token_store: Arc::new(TokenStore::from_auth_config(config)),
+        }
     }
 }
 
@@ -65,24 +78,27 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
         .and_then(|auth| auth.strip_prefix("Bearer ").map(String::from))
 }
 
+fn constant_time_eq(expected: &[u8], actual: &[u8]) -> bool {
+    let mut difference = expected.len() ^ actual.len();
+    for index in 0..expected.len().max(actual.len()) {
+        difference |=
+            usize::from(*expected.get(index).unwrap_or(&0) ^ *actual.get(index).unwrap_or(&0));
+    }
+    difference == 0
+}
+
 async fn auth_middleware(
-    State(token_store): State<Arc<TokenStore>>,
+    State(auth): State<McpAuthState>,
     headers: HeaderMap,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // Check if auth is enabled via environment variable
-    let auth_enabled = std::env::var("MCP_AUTH_ENABLED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(false);
-
-    if !auth_enabled {
+    if !auth.enabled {
         return Ok(next.run(request).await);
     }
 
     match extract_bearer_token(&headers) {
-        Some(token) if token_store.is_valid(&token) => Ok(next.run(request).await),
+        Some(token) if auth.token_store.is_valid(&token) => Ok(next.run(request).await),
         _ => Err(StatusCode::UNAUTHORIZED),
     }
 }
@@ -164,7 +180,33 @@ pub async fn boot_streamable_http_server<F>(
 where
     F: Fn() -> Result<McpHandler, std::io::Error> + Send + Sync + 'static,
 {
-    let token_store = Arc::new(TokenStore::from_env());
+    let auth_config = McpAuthConfig::from_env();
+    if !auth_config.is_usable() {
+        anyhow::bail!("MCP authentication configuration is invalid");
+    }
+    boot_streamable_http_server_with_auth(
+        handler_factory,
+        bind_addr,
+        lock,
+        shutdown_signal,
+        auth_config,
+        None,
+    )
+    .await
+}
+
+pub async fn boot_streamable_http_server_with_auth<F>(
+    handler_factory: F,
+    bind_addr: &str,
+    lock: ShutdownLock,
+    shutdown_signal: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    auth_config: McpAuthConfig,
+    listener: Option<tokio::net::TcpListener>,
+) -> Result<()>
+where
+    F: Fn() -> Result<McpHandler, std::io::Error> + Send + Sync + 'static,
+{
+    let auth_state = McpAuthState::from_config(&auth_config);
     let allowed_hosts = AllowedHostsSetting::from_env();
 
     // Create MCP service with StreamableHttpService.
@@ -202,13 +244,9 @@ where
     let api_routes = Router::new().route("/health", get(health_check));
 
     // Protected MCP routes with optional auth middleware
-    let protected_mcp =
-        Router::new()
-            .nest_service("/mcp", mcp_service)
-            .layer(middleware::from_fn_with_state(
-                token_store.clone(),
-                auth_middleware,
-            ));
+    let protected_mcp = Router::new()
+        .nest_service("/mcp", mcp_service)
+        .layer(middleware::from_fn_with_state(auth_state, auth_middleware));
 
     // Main router
     let app = Router::new()
@@ -217,7 +255,10 @@ where
         .merge(protected_mcp);
 
     // Start server
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+    let listener = match listener {
+        Some(listener) => listener,
+        None => tokio::net::TcpListener::bind(bind_addr).await?,
+    };
     tracing::info!("MCP Streamable HTTP Server started on {}", bind_addr);
 
     // Use provided shutdown signal or create internal one
@@ -249,9 +290,33 @@ where
     Ok(())
 }
 
+pub async fn boot_streamable_http_server_on_listener<F>(
+    handler_factory: F,
+    bind_addr: &str,
+    listener: tokio::net::TcpListener,
+    lock: ShutdownLock,
+    shutdown_signal: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    auth_config: McpAuthConfig,
+) -> Result<()>
+where
+    F: Fn() -> Result<McpHandler, std::io::Error> + Send + Sync + 'static,
+{
+    boot_streamable_http_server_with_auth(
+        handler_factory,
+        bind_addr,
+        lock,
+        shutdown_signal,
+        auth_config,
+        Some(listener),
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::routing::post;
+    use tokio::sync::oneshot;
 
     #[test]
     fn test_token_store() {
@@ -333,5 +398,62 @@ mod tests {
 
         let empty_headers = HeaderMap::new();
         assert_eq!(extract_bearer_token(&empty_headers), None);
+    }
+
+    #[tokio::test]
+    async fn bearer_auth_is_enforced_for_mcp_over_real_http() {
+        async fn test_mcp_handler() -> &'static str {
+            "ok"
+        }
+
+        let app = Router::new().route("/mcp", post(test_mcp_handler)).layer(
+            middleware::from_fn_with_state(
+                McpAuthState::from_config(&McpAuthConfig::Enabled {
+                    tokens: vec!["expected-token".to_string()],
+                }),
+                auth_middleware,
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        let client = reqwest::Client::new();
+        let url = format!("http://{address}/mcp");
+
+        assert_eq!(
+            client.post(&url).send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            client
+                .post(&url)
+                .bearer_auth("wrong-token")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            client
+                .post(&url)
+                .bearer_auth("expected-token")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+
+        let _ = shutdown_tx.send(());
+        server.await.unwrap();
     }
 }

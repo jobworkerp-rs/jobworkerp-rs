@@ -189,11 +189,12 @@ impl ServerHandler for McpHandler {
         _request: InitializeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, McpError> {
-        // Log HTTP request details if available (for debugging/auditing)
+        // Headers can contain credentials, so initialization audit logs keep
+        // only the request method and path.
         if let Some(http_parts) = context.extensions.get::<axum::http::request::Parts>() {
             tracing::info!(
-                headers = ?http_parts.headers,
-                uri = %http_parts.uri,
+                method = %http_parts.method,
+                path = %http_parts.uri.path(),
                 "MCP initialize from HTTP client"
             );
         }

@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package jobworkerp.mcp.service;
+
+// Control surface for activating a deferred MCP HTTP listener.
+service McpActivationService {
+  rpc Activate(ActivateMcpRequest) returns (ActivateMcpResponse);
+}
+
+message ActivateMcpRequest {
+  string secret = 1;
+  string function_set_name = 2;
+}
+
+message ActivateMcpResponse {
+  string mcp_addr = 1;
+}
