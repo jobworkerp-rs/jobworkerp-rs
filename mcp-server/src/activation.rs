@@ -302,6 +302,22 @@ mod tests {
     }
 
     #[test]
+    fn enabled_auth_rejects_an_empty_token_file() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(file.path(), "  \n").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            file.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        )
+        .unwrap();
+
+        let auth = McpAuthConfig::from_enabled_and_sources(true, file.path().to_str(), None);
+        assert!(matches!(auth, McpAuthConfig::Unavailable { .. }));
+        assert!(!file.path().exists());
+    }
+
+    #[test]
     fn enabled_auth_rejects_a_missing_token_file() {
         let auth = McpAuthConfig::from_enabled_and_sources(
             true,

@@ -199,6 +199,8 @@ $ ./target/release/jobworkerp-client job enqueue-workflow -i '/path/to/list' -w 
 - **jq構文** (`${...}`): JSONデータ操作のための標準的なjq式
 - **Liquidテンプレート構文** (`$${...}`): 文字列操作や制御フローのための[Liquid](https://shopify.github.io/liquid/)テンプレート式
 
+> **注意**: `fromjson` は JSON 値のストリームをパースします。Markdown フェンス（`` ```json ... ``` ``）や先頭の無効トークンは JSON ではないため、式は実行時エラーになります。フェンス付きの LLM 出力をパースする前に、フェンスを取り除いてください。
+
 ### 環境変数の参照
 
 jq構文では、jaqクレートの組み込み `env` 関数を通じてプロセスの環境変数を参照できます：
