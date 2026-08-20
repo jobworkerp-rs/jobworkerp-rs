@@ -35,17 +35,21 @@ impl McpHandler {
         }
     }
 
-    async fn ensure_tool_is_in_set(&self, name: &str) -> Result<(), McpError> {
-        let Some(set_name) = self.config.set_name.as_deref() else {
-            return Ok(());
-        };
+    async fn function_set_tools(&self, set_name: &str) -> Result<ListToolsResult, McpError> {
         let functions = self
             .function_set_app
             .find_functions_by_set(set_name)
             .await
             .map_err(Self::map_error)?;
-        let tools = ToolConverter::convert_functions_to_mcp_tools(functions)
-            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        ToolConverter::convert_functions_to_mcp_tools(functions)
+            .map_err(|error| McpError::internal_error(error.to_string(), None))
+    }
+
+    async fn ensure_tool_is_in_set(&self, name: &str) -> Result<(), McpError> {
+        let Some(set_name) = self.config.set_name.as_deref() else {
+            return Ok(());
+        };
+        let tools = self.function_set_tools(set_name).await?;
         if tool_is_listed(&tools, name) {
             Ok(())
         } else {
@@ -93,23 +97,20 @@ impl ServerHandler for McpHandler {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let functions = if let Some(name) = &self.config.set_name {
-            self.function_set_app
-                .find_functions_by_set(name)
-                .await
-                .map_err(Self::map_error)?
+        if let Some(name) = &self.config.set_name {
+            self.function_set_tools(name).await
         } else {
-            self.function_app
+            let functions = self
+                .function_app
                 .find_functions(
                     self.config.exclude_runner_as_tool,
                     self.config.exclude_worker_as_tool,
                 )
                 .await
-                .map_err(Self::map_error)?
-        };
-
-        ToolConverter::convert_functions_to_mcp_tools(functions)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))
+                .map_err(Self::map_error)?;
+            ToolConverter::convert_functions_to_mcp_tools(functions)
+                .map_err(|error| McpError::internal_error(error.to_string(), None))
+        }
     }
 
     async fn call_tool(

@@ -55,7 +55,7 @@ Streamable HTTP transport です。ブラウザベースのクライアントや
 |----------|------|-----------|
 | `MCP_ADDR` | バインドアドレス | `127.0.0.1:8000` |
 | `MCP_AUTH_ENABLED` | Bearer 認証を有効化 | `false` |
-| `MCP_AUTH_TOKEN_FILE` | 推奨設定。非空 token を1つだけ含む所有者専用（`0600`）の通常ファイル。起動時に読み取り後削除され、`MCP_AUTH_TOKENS` より優先されます。 | - |
+| `MCP_AUTH_TOKEN_FILE` | 推奨設定。非空 token を1つだけ含む所有者専用の通常ファイル。Unix では mode `0600` が必要です。起動時に読み取り後削除され、`MCP_AUTH_TOKENS` より優先されます。 | - |
 | `MCP_AUTH_TOKENS` | ローカル利用など厳密なトークンファイル管理が不要な場合の有効なトークン（カンマ区切り）。`MCP_AUTH_TOKEN_FILE` 未設定時のみ必須です。 | - |
 | `MCP_ALLOWED_HOSTS` | 許可する `Host` ヘッダー（カンマ区切り）。DNS リバインディング対策。`*` で検証を無効化 | `localhost,127.0.0.1,::1` |
 

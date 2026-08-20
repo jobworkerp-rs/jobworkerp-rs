@@ -47,7 +47,8 @@ Environment variables:
 - `MCP_ADDR`: Bind address (default: `127.0.0.1:8000`)
 - `MCP_AUTH_ENABLED`: Enable Bearer authentication (default: `false`)
 - `MCP_AUTH_TOKEN_FILE`: Preferred when authentication is enabled. A private
-  `0600` regular file containing one non-empty token; it is consumed and
+  regular file containing one non-empty token; it must have mode `0600` on
+  Unix, and it is consumed and
   removed at startup. Takes precedence over `MCP_AUTH_TOKENS`.
 - `MCP_AUTH_TOKENS`: Alternative comma-separated tokens for local or otherwise
   non-secret-managed use. Required only when `MCP_AUTH_TOKEN_FILE` is unset.

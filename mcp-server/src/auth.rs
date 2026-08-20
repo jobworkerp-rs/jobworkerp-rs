@@ -1,5 +1,7 @@
 // MCP authentication configuration is implemented here.
 use anyhow::{Result, anyhow};
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 /// Resolved external MCP authentication configuration.
@@ -61,48 +63,25 @@ impl McpAuthConfig {
 }
 
 fn read_and_delete_token(path: &Path) -> Result<String> {
-    #[cfg(unix)]
-    {
-        read_and_delete_token_unix(path)
+    let mut file = open_private_token_file(path)?;
+    let mut token = String::new();
+    file.read_to_string(&mut token)
+        .map_err(|error| anyhow!("failed to read MCP auth token file: {error}"))?;
+    drop(file);
+    std::fs::remove_file(path)
+        .map_err(|error| anyhow!("failed to remove MCP auth token file: {error}"))?;
+
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        return Err(anyhow!("MCP auth token file must not be empty"));
     }
-
-    #[cfg(not(unix))]
-    {
-        let metadata = std::fs::symlink_metadata(path)
-            .map_err(|error| anyhow!("failed to inspect MCP auth token file: {error}"))?;
-
-        if metadata.file_type().is_symlink() {
-            return Err(anyhow!("MCP auth token file must not be a symbolic link"));
-        }
-        if !metadata.file_type().is_file() {
-            return Err(anyhow!("MCP auth token file must be a regular file"));
-        }
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if metadata.mode() & 0o777 != 0o600 {
-                return Err(anyhow!("MCP auth token file must have mode 0600"));
-            }
-        }
-
-        let token = std::fs::read_to_string(path)
-            .map_err(|error| anyhow!("failed to read MCP auth token file: {error}"))?;
-        std::fs::remove_file(path)
-            .map_err(|error| anyhow!("failed to remove MCP auth token file: {error}"))?;
-        let token = token.trim().to_string();
-        if token.is_empty() {
-            return Err(anyhow!("MCP auth token file must not be empty"));
-        }
-        Ok(token)
-    }
+    Ok(token)
 }
 
 #[cfg(unix)]
-fn read_and_delete_token_unix(path: &Path) -> Result<String> {
+fn open_private_token_file(path: &Path) -> Result<File> {
     use nix::fcntl::{OFlag, open};
     use nix::sys::stat::Mode;
-    use std::io::Read;
     use std::os::unix::fs::MetadataExt;
 
     let fd = open(
@@ -111,7 +90,7 @@ fn read_and_delete_token_unix(path: &Path) -> Result<String> {
         Mode::empty(),
     )
     .map_err(|error| anyhow!("failed to open MCP auth token file: {error}"))?;
-    let mut file = std::fs::File::from(fd);
+    let file = File::from(fd);
     let metadata = file
         .metadata()
         .map_err(|error| anyhow!("failed to inspect MCP auth token file: {error}"))?;
@@ -122,17 +101,21 @@ fn read_and_delete_token_unix(path: &Path) -> Result<String> {
     if metadata.mode() & 0o777 != 0o600 {
         return Err(anyhow!("MCP auth token file must have mode 0600"));
     }
+    Ok(file)
+}
 
-    let mut token = String::new();
-    file.read_to_string(&mut token)
-        .map_err(|error| anyhow!("failed to read MCP auth token file: {error}"))?;
-    std::fs::remove_file(path)
-        .map_err(|error| anyhow!("failed to remove MCP auth token file: {error}"))?;
-    let token = token.trim().to_string();
-    if token.is_empty() {
-        return Err(anyhow!("MCP auth token file must not be empty"));
+#[cfg(not(unix))]
+fn open_private_token_file(path: &Path) -> Result<File> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| anyhow!("failed to inspect MCP auth token file: {error}"))?;
+
+    if metadata.file_type().is_symlink() {
+        return Err(anyhow!("MCP auth token file must not be a symbolic link"));
     }
-    Ok(token)
+    if !metadata.file_type().is_file() {
+        return Err(anyhow!("MCP auth token file must be a regular file"));
+    }
+    File::open(path).map_err(|error| anyhow!("failed to open MCP auth token file: {error}"))
 }
 
 #[cfg(test)]
@@ -140,16 +123,21 @@ mod tests {
     use super::*;
     use std::fs;
 
-    #[test]
-    fn enabled_auth_reads_and_removes_a_private_token_file() {
+    fn private_token_file(contents: &str) -> tempfile::NamedTempFile {
         let file = tempfile::NamedTempFile::new().unwrap();
-        fs::write(file.path(), "external-token\n").unwrap();
+        fs::write(file.path(), contents).unwrap();
         #[cfg(unix)]
         fs::set_permissions(
             file.path(),
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
         )
         .unwrap();
+        file
+    }
+
+    #[test]
+    fn enabled_auth_reads_and_removes_a_private_token_file() {
+        let file = private_token_file("external-token\n");
 
         let auth = McpAuthConfig::from_enabled_and_sources(true, file.path().to_str(), None);
 
@@ -164,14 +152,7 @@ mod tests {
 
     #[test]
     fn enabled_auth_rejects_an_empty_token_file() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        fs::write(file.path(), "  \n").unwrap();
-        #[cfg(unix)]
-        fs::set_permissions(
-            file.path(),
-            std::os::unix::fs::PermissionsExt::from_mode(0o600),
-        )
-        .unwrap();
+        let file = private_token_file("  \n");
 
         let auth = McpAuthConfig::from_enabled_and_sources(true, file.path().to_str(), None);
         assert!(matches!(auth, McpAuthConfig::Unavailable { .. }));
@@ -229,14 +210,7 @@ mod tests {
 
     #[test]
     fn enabled_auth_prefers_a_token_file_over_legacy_tokens() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        fs::write(file.path(), "file-token\n").unwrap();
-        #[cfg(unix)]
-        fs::set_permissions(
-            file.path(),
-            std::os::unix::fs::PermissionsExt::from_mode(0o600),
-        )
-        .unwrap();
+        let file = private_token_file("file-token\n");
 
         let auth = McpAuthConfig::from_enabled_and_sources(
             true,

@@ -55,8 +55,9 @@
 //! - `MCP_TIMEOUT_SEC`: Request timeout (default: 60)
 //! - `MCP_STREAMING`: Enable streaming responses (default: false)
 //! - `MCP_AUTH_ENABLED`: Enable Bearer authentication (default: false)
-//! - `MCP_AUTH_TOKEN_FILE`: Preferred private `0600` token file when
-//!   authentication is enabled; consumed and removed during startup.
+//! - `MCP_AUTH_TOKEN_FILE`: Preferred private regular token file when
+//!   authentication is enabled; it must have mode `0600` on Unix and is
+//!   consumed and removed during startup.
 //! - `MCP_AUTH_TOKENS`: Alternative comma-separated tokens for local or
 //!   otherwise non-secret-managed use.
 

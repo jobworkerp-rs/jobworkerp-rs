@@ -3641,7 +3641,6 @@ dependencies = [
  "jobworkerp-runner",
  "nix",
  "proto",
- "reqwest 0.13.4",
  "rmcp",
  "serde",
  "serde_json",
@@ -3649,6 +3648,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-util",
+ "tower",
  "tracing",
 ]
 

@@ -184,26 +184,6 @@ where
     if !auth_config.is_usable() {
         anyhow::bail!("MCP authentication configuration is invalid");
     }
-    boot_streamable_http_server_with_auth(
-        handler_factory,
-        bind_addr,
-        lock,
-        shutdown_signal,
-        auth_config,
-    )
-    .await
-}
-
-async fn boot_streamable_http_server_with_auth<F>(
-    handler_factory: F,
-    bind_addr: &str,
-    lock: ShutdownLock,
-    shutdown_signal: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
-    auth_config: McpAuthConfig,
-) -> Result<()>
-where
-    F: Fn() -> Result<McpHandler, std::io::Error> + Send + Sync + 'static,
-{
     let auth_state = McpAuthState::from_config(&auth_config);
     let allowed_hosts = AllowedHostsSetting::from_env();
 
@@ -288,8 +268,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::routing::post;
-    use tokio::sync::oneshot;
+    use axum::{body::Body, routing::post};
+    use tower::ServiceExt;
 
     #[test]
     fn test_token_store() {
@@ -374,7 +354,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bearer_auth_is_enforced_for_mcp_over_real_http() {
+    async fn bearer_auth_is_enforced_for_mcp_requests() {
         async fn test_mcp_handler() -> &'static str {
             "ok"
         }
@@ -387,46 +367,38 @@ mod tests {
                 auth_middleware,
             ),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async move {
-                    let _ = shutdown_rx.await;
-                })
-                .await
-                .unwrap();
-        });
-        let client = reqwest::Client::new();
-        let url = format!("http://{address}/mcp");
-
         assert_eq!(
-            client.post(&url).send().await.unwrap().status(),
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(
-            client
-                .post(&url)
-                .bearer_auth("wrong-token")
-                .send()
+            app.clone()
+                .oneshot(Request::post("/mcp").body(Body::empty()).unwrap())
                 .await
                 .unwrap()
                 .status(),
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(
-            client
-                .post(&url)
-                .bearer_auth("expected-token")
-                .send()
+            app.clone()
+                .oneshot(
+                    Request::post("/mcp")
+                        .header("Authorization", "Bearer wrong-token")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap()
                 .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            app.oneshot(
+                Request::post("/mcp")
+                    .header("Authorization", "Bearer expected-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status(),
             StatusCode::OK
         );
-
-        let _ = shutdown_tx.send(());
-        server.await.unwrap();
     }
 }

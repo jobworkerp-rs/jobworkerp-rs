@@ -55,7 +55,7 @@ Streamable HTTP transport, suitable for browser-based clients or HTTP proxy conn
 |----------|-------------|---------|
 | `MCP_ADDR` | Bind address | `127.0.0.1:8000` |
 | `MCP_AUTH_ENABLED` | Enable Bearer authentication | `false` |
-| `MCP_AUTH_TOKEN_FILE` | Preferred private `0600` regular file with one non-empty token; consumed and removed at startup. Takes precedence over `MCP_AUTH_TOKENS`. | - |
+| `MCP_AUTH_TOKEN_FILE` | Preferred private regular file with one non-empty token; mode `0600` is required on Unix. Consumed and removed at startup. Takes precedence over `MCP_AUTH_TOKENS`. | - |
 | `MCP_AUTH_TOKENS` | Alternative valid tokens, comma-separated, for local or otherwise non-secret-managed use. Required only when `MCP_AUTH_TOKEN_FILE` is unset. | - |
 | `MCP_ALLOWED_HOSTS` | Allowed `Host` header values, comma-separated (DNS rebinding protection). Use `*` to disable validation | `localhost,127.0.0.1,::1` |
 

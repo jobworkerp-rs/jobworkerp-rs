@@ -47,7 +47,7 @@ HTTP transport を使用する MCP Server です。ブラウザベースのク�
 - `MCP_ADDR`: バインドアドレス（デフォルト: `127.0.0.1:8000`）
 - `MCP_AUTH_ENABLED`: Bearer 認証を有効化（デフォルト: `false`）
 - `MCP_AUTH_TOKEN_FILE`: 認証有効時の推奨設定。非空 token を1つだけ含む
-  所有者専用（`0600`）の通常ファイルで、起動時に読み取り後削除されます。
+  所有者専用の通常ファイルで、Unix では mode `0600` が必要です。起動時に読み取り後削除されます。
   `MCP_AUTH_TOKENS` より優先されます。
 - `MCP_AUTH_TOKENS`: ローカル利用など厳密なトークンファイル管理を必要と
   しない場合の、カンマ区切りトークン設定。`MCP_AUTH_TOKEN_FILE` 未設定時のみ必須です。

@@ -22,8 +22,8 @@
 //!
 //! - `MCP_ADDR`: HTTP server bind address (default: 127.0.0.1:8000)
 //! - `MCP_AUTH_ENABLED`: Enable Bearer authentication (default: false)
-//! - `MCP_AUTH_TOKEN_FILE`: Preferred private `0600` file containing one token;
-//!   it is consumed and removed during startup.
+//! - `MCP_AUTH_TOKEN_FILE`: Preferred private regular file containing one token;
+//!   it must have mode `0600` on Unix and is consumed and removed during startup.
 //! - `MCP_AUTH_TOKENS`: Alternative valid tokens, comma-separated, for local
 //!   or otherwise non-secret-managed use.
 //! - `STORAGE_TYPE`: `Standalone` or `Scalable` (Scalable requires Redis)
