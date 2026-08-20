@@ -45,7 +45,8 @@ MCP Server using HTTP transport. Suitable for browser-based clients or HTTP prox
 
 Environment variables:
 - `MCP_ADDR`: Bind address (default: `127.0.0.1:8000`)
-- `MCP_AUTH_ENABLED`: Enable Bearer authentication (default: `false`)
+- `MCP_AUTH_ENABLED`: Enable Bearer authentication with `true` (or disable it
+  with `false`; default: `false`). Any other value prevents startup.
 - `MCP_AUTH_TOKEN_FILE`: Preferred when authentication is enabled. A private
   regular file containing one non-empty token; it must have mode `0600` on
   Unix, and it is consumed and

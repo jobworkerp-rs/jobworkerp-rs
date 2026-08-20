@@ -14,10 +14,22 @@ pub enum McpAuthConfig {
 
 impl McpAuthConfig {
     pub fn from_env() -> Self {
-        let enabled = std::env::var("MCP_AUTH_ENABLED")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(false);
+        let enabled = match std::env::var("MCP_AUTH_ENABLED") {
+            Ok(value) => match parse_auth_enabled(Some(&value)) {
+                Ok(enabled) => enabled,
+                Err(error) => {
+                    return Self::Unavailable {
+                        reason: error.to_string(),
+                    };
+                }
+            },
+            Err(std::env::VarError::NotPresent) => false,
+            Err(error) => {
+                return Self::Unavailable {
+                    reason: format!("failed to read MCP_AUTH_ENABLED: {error}"),
+                };
+            }
+        };
         let path = std::env::var("MCP_AUTH_TOKEN_FILE").ok();
         let tokens = std::env::var("MCP_AUTH_TOKENS").ok();
         Self::from_enabled_and_sources(enabled, path.as_deref(), tokens.as_deref())
@@ -57,9 +69,29 @@ impl McpAuthConfig {
         }
     }
 
-    pub fn is_usable(&self) -> bool {
-        !matches!(self, Self::Unavailable { .. })
+    pub fn into_usable(self) -> Result<Self> {
+        match self {
+            Self::Unavailable { reason } => Err(anyhow!(
+                "MCP authentication configuration is invalid: {reason}"
+            )),
+            config => Ok(config),
+        }
     }
+}
+
+fn parse_auth_enabled(value: Option<&str>) -> Result<bool> {
+    value
+        .map(|value| {
+            value
+                .parse::<bool>()
+                .map_err(|_| anyhow!("MCP_AUTH_ENABLED must be true or false, got {value:?}"))
+        })
+        .transpose()
+        .map(|value| value.unwrap_or(false))
+}
+
+pub fn resolve_mcp_auth_config_from_env() -> Result<McpAuthConfig> {
+    McpAuthConfig::from_env().into_usable()
 }
 
 fn read_and_delete_token(path: &Path) -> Result<String> {
@@ -167,6 +199,21 @@ mod tests {
             None,
         );
         assert!(matches!(auth, McpAuthConfig::Unavailable { .. }));
+    }
+
+    #[test]
+    fn unavailable_auth_configuration_fails_before_server_startup() {
+        let auth = McpAuthConfig::from_enabled_and_sources(true, None, None);
+
+        let error = auth.into_usable().unwrap_err();
+        assert!(error.to_string().contains("MCP_AUTH_TOKEN_FILE"));
+    }
+
+    #[test]
+    fn invalid_auth_enabled_value_is_rejected() {
+        let error = parse_auth_enabled(Some("treu")).unwrap_err();
+
+        assert!(error.to_string().contains("MCP_AUTH_ENABLED"));
     }
 
     #[test]

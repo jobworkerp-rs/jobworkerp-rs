@@ -1,4 +1,4 @@
-use crate::auth::McpAuthConfig;
+use crate::McpAuthConfig;
 use crate::handler::McpHandler;
 use anyhow::Result;
 use axum::{
@@ -180,10 +180,28 @@ pub async fn boot_streamable_http_server<F>(
 where
     F: Fn() -> Result<McpHandler, std::io::Error> + Send + Sync + 'static,
 {
-    let auth_config = McpAuthConfig::from_env();
-    if !auth_config.is_usable() {
-        anyhow::bail!("MCP authentication configuration is invalid");
-    }
+    let auth_config = crate::resolve_mcp_auth_config_from_env()?;
+    boot_streamable_http_server_with_auth_config(
+        handler_factory,
+        bind_addr,
+        lock,
+        shutdown_signal,
+        auth_config,
+    )
+    .await
+}
+
+pub async fn boot_streamable_http_server_with_auth_config<F>(
+    handler_factory: F,
+    bind_addr: &str,
+    lock: ShutdownLock,
+    shutdown_signal: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    auth_config: McpAuthConfig,
+) -> Result<()>
+where
+    F: Fn() -> Result<McpHandler, std::io::Error> + Send + Sync + 'static,
+{
+    let auth_config = auth_config.into_usable()?;
     let auth_state = McpAuthState::from_config(&auth_config);
     let allowed_hosts = AllowedHostsSetting::from_env();
 
