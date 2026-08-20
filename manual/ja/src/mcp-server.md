@@ -89,7 +89,7 @@ stdin/stdout で通信するクライアント（Claude Desktop など）向け�
 | `STORAGE_TYPE` | `Standalone` または `Scalable` | `Standalone` |
 | `DATABASE_URL` | データベース接続 URL | `sqlite://./jobworkerp.db` |
 | `REDIS_URL` | Redis 接続 URL（`Scalable` 時必須） | - |
-| `MCP_SET_NAME` | この FunctionSet 内のツールのみ公開 | - |
+| `MCP_SET_NAME` | この FunctionSet 内のツールのみ公開。未設定または空白のみの場合は FunctionSet による制限なし | - |
 | `MCP_EXCLUDE_RUNNER` | Runner をツールリストから除外 | `false` |
 | `MCP_EXCLUDE_WORKER` | Worker をツールリストから除外 | `false` |
 | `MCP_STREAMING` | ストリーミングジョブの出力を結果に集約 | `false` |

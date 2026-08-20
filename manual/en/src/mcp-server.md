@@ -89,7 +89,7 @@ stdio transport for clients that communicate over stdin/stdout, such as Claude D
 | `STORAGE_TYPE` | `Standalone` or `Scalable` | `Standalone` |
 | `DATABASE_URL` | Database connection URL | `sqlite://./jobworkerp.db` |
 | `REDIS_URL` | Redis connection URL (required for `Scalable`) | - |
-| `MCP_SET_NAME` | Expose only the tools in this FunctionSet | - |
+| `MCP_SET_NAME` | Expose only the tools in this FunctionSet. Unset or whitespace-only values apply no FunctionSet restriction. | - |
 | `MCP_EXCLUDE_RUNNER` | Exclude Runners from the tool list | `false` |
 | `MCP_EXCLUDE_WORKER` | Exclude Workers from the tool list | `false` |
 | `MCP_STREAMING` | Collect streaming job output into the result | `false` |

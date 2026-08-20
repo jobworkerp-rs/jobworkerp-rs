@@ -81,7 +81,7 @@ Claude Desktop での設定例：
 | `STORAGE_TYPE` | `Standalone` または `Scalable` | `Standalone` |
 | `DATABASE_URL` | データベース接続 URL | `sqlite://./jobworkerp.db` |
 | `REDIS_URL` | Redis 接続 URL（Scalable 時必須） | - |
-| `MCP_SET_NAME` | 公開する FunctionSet の名前 | - |
+| `MCP_SET_NAME` | 公開する FunctionSet の名前。未設定または空白のみの場合は FunctionSet による制限なし | - |
 | `MCP_EXCLUDE_RUNNER` | Runner をツールから除外 | `false` |
 | `MCP_EXCLUDE_WORKER` | Worker をツールから除外 | `false` |
 | `MCP_STREAMING` | ストリーミング実行を有効化 | `false` |

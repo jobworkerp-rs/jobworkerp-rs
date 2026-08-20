@@ -1,4 +1,4 @@
-use crate::McpAuthConfig;
+use crate::auth::McpAuthConfig;
 use crate::handler::McpHandler;
 use anyhow::Result;
 use axum::{
@@ -190,18 +190,16 @@ where
         lock,
         shutdown_signal,
         auth_config,
-        None,
     )
     .await
 }
 
-pub async fn boot_streamable_http_server_with_auth<F>(
+async fn boot_streamable_http_server_with_auth<F>(
     handler_factory: F,
     bind_addr: &str,
     lock: ShutdownLock,
     shutdown_signal: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     auth_config: McpAuthConfig,
-    listener: Option<tokio::net::TcpListener>,
 ) -> Result<()>
 where
     F: Fn() -> Result<McpHandler, std::io::Error> + Send + Sync + 'static,
@@ -255,10 +253,7 @@ where
         .merge(protected_mcp);
 
     // Start server
-    let listener = match listener {
-        Some(listener) => listener,
-        None => tokio::net::TcpListener::bind(bind_addr).await?,
-    };
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     tracing::info!("MCP Streamable HTTP Server started on {}", bind_addr);
 
     // Use provided shutdown signal or create internal one
@@ -288,28 +283,6 @@ where
     lock.unlock();
 
     Ok(())
-}
-
-pub async fn boot_streamable_http_server_on_listener<F>(
-    handler_factory: F,
-    bind_addr: &str,
-    listener: tokio::net::TcpListener,
-    lock: ShutdownLock,
-    shutdown_signal: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
-    auth_config: McpAuthConfig,
-) -> Result<()>
-where
-    F: Fn() -> Result<McpHandler, std::io::Error> + Send + Sync + 'static,
-{
-    boot_streamable_http_server_with_auth(
-        handler_factory,
-        bind_addr,
-        lock,
-        shutdown_signal,
-        auth_config,
-        Some(listener),
-    )
-    .await
 }
 
 #[cfg(test)]

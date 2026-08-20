@@ -1,7 +1,6 @@
 use crate::proto::FILE_DESCRIPTOR_SET;
 use crate::proto::jobworkerp::function::service::function_service_server::FunctionServiceServer;
 use crate::proto::jobworkerp::function::service::function_set_service_server::FunctionSetServiceServer;
-use crate::proto::jobworkerp::mcp::service::mcp_activation_service_server::McpActivationServiceServer;
 use crate::proto::jobworkerp::service::job_processing_status_service_server::JobProcessingStatusServiceServer;
 use crate::proto::jobworkerp::service::job_restore_service_server::JobRestoreServiceServer;
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultServiceServer;
@@ -15,7 +14,6 @@ use crate::service::job::JobGrpcImpl;
 use crate::service::job_restore::JobRestoreGrpcImpl;
 use crate::service::job_result::JobResultGrpcImpl;
 use crate::service::job_status::JobProcessingStatusGrpcImpl;
-use crate::service::mcp_activation::McpActivationGrpcImpl;
 use crate::service::runner::RunnerGrpcImpl;
 use crate::service::worker::WorkerGrpcImpl;
 use crate::service::worker_instance::WorkerInstanceGrpcImpl;
@@ -71,7 +69,6 @@ pub async fn start_server_with_shutdown(
         .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
         .build_v1()
         .unwrap();
-    let mcp_activation = McpActivationGrpcImpl::new(app_module.function_set_app.clone());
 
     if use_web {
         Server::builder()
@@ -103,9 +100,6 @@ pub async fn start_server_with_shutdown(
             )))
             .add_service(enable_grpc_web(WorkerInstanceServiceServer::new(
                 WorkerInstanceGrpcImpl::new(app_module),
-            )))
-            .add_service(enable_grpc_web(McpActivationServiceServer::new(
-                mcp_activation,
             )))
             .add_service(reflection)
             .add_service(health_service)
@@ -142,7 +136,6 @@ pub async fn start_server_with_shutdown(
             .add_service(WorkerInstanceServiceServer::new(
                 WorkerInstanceGrpcImpl::new(app_module),
             ))
-            .add_service(McpActivationServiceServer::new(mcp_activation))
             .add_service(reflection)
             .add_service(health_service)
             .serve_with_shutdown(addr, async {

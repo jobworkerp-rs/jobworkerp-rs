@@ -81,7 +81,7 @@ Claude Desktop configuration example:
 | `STORAGE_TYPE` | `Standalone` or `Scalable` | `Standalone` |
 | `DATABASE_URL` | Database connection URL | `sqlite://./jobworkerp.db` |
 | `REDIS_URL` | Redis connection URL (required for Scalable) | - |
-| `MCP_SET_NAME` | FunctionSet name to expose | - |
+| `MCP_SET_NAME` | FunctionSet name to expose. Unset or whitespace-only values apply no FunctionSet restriction. | - |
 | `MCP_EXCLUDE_RUNNER` | Exclude Runners from tools | `false` |
 | `MCP_EXCLUDE_WORKER` | Exclude Workers from tools | `false` |
 | `MCP_STREAMING` | Enable streaming execution | `false` |

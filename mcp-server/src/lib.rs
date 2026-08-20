@@ -51,7 +51,7 @@
 //! - `MCP_ADDR`: HTTP server bind address (default: 127.0.0.1:8000)
 //! - `MCP_EXCLUDE_RUNNER`: Exclude runners from tools (default: false)
 //! - `MCP_EXCLUDE_WORKER`: Exclude workers from tools (default: false)
-//! - `MCP_SET_NAME`: Expose only tools from specific FunctionSet
+//! - `MCP_SET_NAME`: Expose only tools from a specific FunctionSet; unset or blank means no FunctionSet restriction
 //! - `MCP_TIMEOUT_SEC`: Request timeout (default: 60)
 //! - `MCP_STREAMING`: Enable streaming responses (default: false)
 //! - `MCP_AUTH_ENABLED`: Enable Bearer authentication (default: false)
@@ -60,17 +60,11 @@
 //! - `MCP_AUTH_TOKENS`: Alternative comma-separated tokens for local or
 //!   otherwise non-secret-managed use.
 
-pub mod activation;
+mod auth;
 pub mod config;
 pub mod handler;
 pub mod server;
 
-pub use activation::{
-    DeferredMcpActivation, DeferredMcpStartRequest, McpAuthConfig, activate_deferred_mcp,
-    install_deferred_mcp_activation, read_deferred_activation_secret_from_env,
-};
 pub use config::McpServerConfig;
 pub use handler::McpHandler;
-pub use server::{
-    boot_stdio_server, boot_streamable_http_server, boot_streamable_http_server_on_listener,
-};
+pub use server::{boot_stdio_server, boot_streamable_http_server};

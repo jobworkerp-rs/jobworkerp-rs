@@ -2322,7 +2322,6 @@ dependencies = [
  "infra-utils",
  "jobworkerp-base",
  "jobworkerp-runner",
- "mcp-server",
  "prost",
  "proto",
  "regex",
