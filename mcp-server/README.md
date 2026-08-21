@@ -45,8 +45,14 @@ MCP Server using HTTP transport. Suitable for browser-based clients or HTTP prox
 
 Environment variables:
 - `MCP_ADDR`: Bind address (default: `127.0.0.1:8000`)
-- `MCP_AUTH_ENABLED`: Enable Bearer authentication (default: `false`)
-- `MCP_AUTH_TOKENS`: Valid tokens, comma-separated (default: `demo-token`)
+- `MCP_AUTH_ENABLED`: Enable Bearer authentication with `true` (or disable it
+  with `false`; default: `false`). Any other value prevents startup.
+- `MCP_AUTH_TOKEN_FILE`: Preferred when authentication is enabled. A private
+  regular file containing one non-empty token; it must have mode `0600` on
+  Unix, and it is consumed and
+  removed at startup. Takes precedence over `MCP_AUTH_TOKENS`.
+- `MCP_AUTH_TOKENS`: Alternative comma-separated tokens for local or otherwise
+  non-secret-managed use. Required only when `MCP_AUTH_TOKEN_FILE` is unset.
 - `MCP_ALLOWED_HOSTS`: Allowed `Host` header values, comma-separated for DNS rebinding protection (default: `localhost,127.0.0.1,::1`; use `*` to disable validation). Set your hostnames when deploying behind a reverse proxy or on a public interface.
 
 ### mcp-stdio
@@ -77,7 +83,7 @@ Claude Desktop configuration example:
 | `STORAGE_TYPE` | `Standalone` or `Scalable` | `Standalone` |
 | `DATABASE_URL` | Database connection URL | `sqlite://./jobworkerp.db` |
 | `REDIS_URL` | Redis connection URL (required for Scalable) | - |
-| `MCP_SET_NAME` | FunctionSet name to expose | - |
+| `MCP_SET_NAME` | FunctionSet name to expose. Unset or whitespace-only values apply no FunctionSet restriction. | - |
 | `MCP_EXCLUDE_RUNNER` | Exclude Runners from tools | `false` |
 | `MCP_EXCLUDE_WORKER` | Exclude Workers from tools | `false` |
 | `MCP_STREAMING` | Enable streaming execution | `false` |
@@ -136,7 +142,19 @@ The argument shape depends on the tool's target and is reflected directly in eac
 
 ```bash
 export MCP_AUTH_ENABLED=true
-export MCP_AUTH_TOKENS="token1,token2,token3"
+token_file="$(mktemp)"
+chmod 600 "$token_file"
+printf '%s' 'replace-with-a-generated-token' > "$token_file"
+export MCP_AUTH_TOKEN_FILE="$token_file"
+./mcp-http
+```
+
+For local development where strict token-file handling is unnecessary, use
+`MCP_AUTH_TOKENS` instead:
+
+```bash
+export MCP_AUTH_ENABLED=true
+export MCP_AUTH_TOKENS="local-token-1,local-token-2"
 ./mcp-http
 ```
 

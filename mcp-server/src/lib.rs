@@ -51,16 +51,25 @@
 //! - `MCP_ADDR`: HTTP server bind address (default: 127.0.0.1:8000)
 //! - `MCP_EXCLUDE_RUNNER`: Exclude runners from tools (default: false)
 //! - `MCP_EXCLUDE_WORKER`: Exclude workers from tools (default: false)
-//! - `MCP_SET_NAME`: Expose only tools from specific FunctionSet
+//! - `MCP_SET_NAME`: Expose only tools from a specific FunctionSet; unset or blank means no FunctionSet restriction
 //! - `MCP_TIMEOUT_SEC`: Request timeout (default: 60)
 //! - `MCP_STREAMING`: Enable streaming responses (default: false)
-//! - `MCP_AUTH_ENABLED`: Enable Bearer authentication (default: false)
-//! - `MCP_AUTH_TOKENS`: Valid tokens, comma-separated (default: demo-token)
+//! - `MCP_AUTH_ENABLED`: Enable Bearer authentication with `true` or disable it with `false`
+//!   (default: `false`; other values fail startup)
+//! - `MCP_AUTH_TOKEN_FILE`: Preferred private regular token file when
+//!   authentication is enabled; it must have mode `0600` on Unix and is
+//!   consumed and removed during startup.
+//! - `MCP_AUTH_TOKENS`: Alternative comma-separated tokens for local or
+//!   otherwise non-secret-managed use.
 
+mod auth;
 pub mod config;
 pub mod handler;
 pub mod server;
 
+pub use auth::{McpAuthConfig, resolve_mcp_auth_config_from_env};
 pub use config::McpServerConfig;
 pub use handler::McpHandler;
-pub use server::{boot_stdio_server, boot_streamable_http_server};
+pub use server::{
+    boot_stdio_server, boot_streamable_http_server, boot_streamable_http_server_with_auth_config,
+};

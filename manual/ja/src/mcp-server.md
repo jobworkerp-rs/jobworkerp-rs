@@ -54,8 +54,9 @@ Streamable HTTP transport です。ブラウザベースのクライアントや
 | 環境変数 | 説明 | デフォルト |
 |----------|------|-----------|
 | `MCP_ADDR` | バインドアドレス | `127.0.0.1:8000` |
-| `MCP_AUTH_ENABLED` | Bearer 認証を有効化 | `false` |
-| `MCP_AUTH_TOKENS` | 有効なトークン（カンマ区切り） | `demo-token` |
+| `MCP_AUTH_ENABLED` | `true` で Bearer 認証を有効化、`false` で無効化します。それ以外の値では起動に失敗します。 | `false` |
+| `MCP_AUTH_TOKEN_FILE` | 推奨設定。非空 token を1つだけ含む所有者専用の通常ファイル。Unix では mode `0600` が必要です。起動時に読み取り後削除され、`MCP_AUTH_TOKENS` より優先されます。 | - |
+| `MCP_AUTH_TOKENS` | ローカル利用など厳密なトークンファイル管理が不要な場合の有効なトークン（カンマ区切り）。`MCP_AUTH_TOKEN_FILE` 未設定時のみ必須です。 | - |
 | `MCP_ALLOWED_HOSTS` | 許可する `Host` ヘッダー（カンマ区切り）。DNS リバインディング対策。`*` で検証を無効化 | `localhost,127.0.0.1,::1` |
 
 > **DNS リバインディング対策**: rmcp 2.x はデフォルトで受信リクエストの `Host` ヘッダーを検証し、ループバックホストのみを許可します。リバースプロキシ経由やパブリックなインターフェースにバインドしてデプロイする場合は、`MCP_ALLOWED_HOSTS` に実際のホスト名（例: `example.com,example.com:8080`）を設定してください。`MCP_ALLOWED_HOSTS=*` は検証を完全に無効化するため、パブリック環境では推奨しません。
@@ -88,7 +89,7 @@ stdin/stdout で通信するクライアント（Claude Desktop など）向け�
 | `STORAGE_TYPE` | `Standalone` または `Scalable` | `Standalone` |
 | `DATABASE_URL` | データベース接続 URL | `sqlite://./jobworkerp.db` |
 | `REDIS_URL` | Redis 接続 URL（`Scalable` 時必須） | - |
-| `MCP_SET_NAME` | この FunctionSet 内のツールのみ公開 | - |
+| `MCP_SET_NAME` | この FunctionSet 内のツールのみ公開。未設定または空白のみの場合は FunctionSet による制限なし | - |
 | `MCP_EXCLUDE_RUNNER` | Runner をツールリストから除外 | `false` |
 | `MCP_EXCLUDE_WORKER` | Worker をツールリストから除外 | `false` |
 | `MCP_STREAMING` | ストリーミングジョブの出力を結果に集約 | `false` |
@@ -152,6 +153,17 @@ Worker は作成時に設定が確定しているため `settings` は不要で�
 
 ```bash
 export MCP_AUTH_ENABLED=true
+token_file="$(mktemp)"
+chmod 600 "$token_file"
+printf '%s' '生成済みtokenに置き換える' > "$token_file"
+export MCP_AUTH_TOKEN_FILE="$token_file"
+./mcp-http
+```
+
+ローカル利用など、厳密なトークンファイル管理が不要な場合は、従来のカンマ区切り設定を使用できます。
+
+```bash
+export MCP_AUTH_ENABLED=true
 export MCP_AUTH_TOKENS="token1,token2,token3"
 ./mcp-http
 ```
@@ -185,4 +197,4 @@ jobworkerp のエラーは MCP エラーコードにマッピングされます�
 
 - **ツールが表示されない**: `MCP_EXCLUDE_RUNNER` / `MCP_EXCLUDE_WORKER` の設定を確認し、`MCP_SET_NAME` が既存の FunctionSet と一致するか、Runner/Worker がデータベースに登録されているかを確認してください。
 - **サーバーは起動するがジョブが完了しない**: Scalable モードでは、Worker プロセスが起動しており、同じ `STORAGE_TYPE` / `DATABASE_URL` / `REDIS_URL` を共有しているか確認してください。
-- **認証エラー**: `MCP_AUTH_ENABLED=true` のときは、クライアントは `MCP_AUTH_TOKENS` に含まれるトークンで `Authorization: Bearer <token>` ヘッダーを送る必要があります。
+- **認証エラー**: `MCP_AUTH_ENABLED=true` のときは、クライアントは `MCP_AUTH_TOKEN_FILE` の token、またはトークンファイル未設定時の `MCP_AUTH_TOKENS` に含まれる token を用いて、`Authorization: Bearer <token>` ヘッダーを送る必要があります。

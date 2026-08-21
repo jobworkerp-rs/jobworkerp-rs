@@ -373,3 +373,11 @@ mcp-settings.toml
 /memory-store
 /conductor-public
 /external/
+/poc/
+/issue-tracker-server/
+
+/.codex
+/AGENTS.md
+/CLAUDE.md
+/CONTEXT.md
+

@@ -197,6 +197,8 @@ Workflows support two types of variable expansion:
 - **jq syntax** (`${...}`): Standard jq expressions for JSON data manipulation
 - **Liquid template syntax** (`$${...}`): [Liquid](https://shopify.github.io/liquid/) template expressions for string manipulation and control flow
 
+> **Note**: `fromjson` parses a stream of JSON values. Markdown fences (`` ```json ... ``` ``) and other leading invalid tokens are not JSON, so the expression fails at runtime. Strip fences before parsing LLM output.
+
 ### Environment Variable Access
 
 In jq syntax, you can access process environment variables via the built-in `env` function (provided by the jaq crate):

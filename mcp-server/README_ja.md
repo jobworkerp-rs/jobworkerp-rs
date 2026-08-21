@@ -45,8 +45,13 @@ HTTP transport を使用する MCP Server です。ブラウザベースのク�
 
 環境変数：
 - `MCP_ADDR`: バインドアドレス（デフォルト: `127.0.0.1:8000`）
-- `MCP_AUTH_ENABLED`: Bearer 認証を有効化（デフォルト: `false`）
-- `MCP_AUTH_TOKENS`: 有効なトークン（カンマ区切り、デフォルト: `demo-token`）
+- `MCP_AUTH_ENABLED`: `true` で Bearer 認証を有効化、`false` で無効化します
+  （デフォルト: `false`）。それ以外の値では起動に失敗します。
+- `MCP_AUTH_TOKEN_FILE`: 認証有効時の推奨設定。非空 token を1つだけ含む
+  所有者専用の通常ファイルで、Unix では mode `0600` が必要です。起動時に読み取り後削除されます。
+  `MCP_AUTH_TOKENS` より優先されます。
+- `MCP_AUTH_TOKENS`: ローカル利用など厳密なトークンファイル管理を必要と
+  しない場合の、カンマ区切りトークン設定。`MCP_AUTH_TOKEN_FILE` 未設定時のみ必須です。
 - `MCP_ALLOWED_HOSTS`: 許可する `Host` ヘッダー（カンマ区切り、DNS リバインディング対策。デフォルト: `localhost,127.0.0.1,::1`。`*` で検証を無効化）。リバースプロキシ経由やパブリックなインターフェースにバインドする場合はホスト名を設定してください。
 
 ### mcp-stdio
@@ -77,7 +82,7 @@ Claude Desktop での設定例：
 | `STORAGE_TYPE` | `Standalone` または `Scalable` | `Standalone` |
 | `DATABASE_URL` | データベース接続 URL | `sqlite://./jobworkerp.db` |
 | `REDIS_URL` | Redis 接続 URL（Scalable 時必須） | - |
-| `MCP_SET_NAME` | 公開する FunctionSet の名前 | - |
+| `MCP_SET_NAME` | 公開する FunctionSet の名前。未設定または空白のみの場合は FunctionSet による制限なし | - |
 | `MCP_EXCLUDE_RUNNER` | Runner をツールから除外 | `false` |
 | `MCP_EXCLUDE_WORKER` | Worker をツールから除外 | `false` |
 | `MCP_STREAMING` | ストリーミング実行を有効化 | `false` |
@@ -136,7 +141,19 @@ MCP Server は以下の jobworkerp Runner をツールとして公開します�
 
 ```bash
 export MCP_AUTH_ENABLED=true
-export MCP_AUTH_TOKENS="token1,token2,token3"
+token_file="$(mktemp)"
+chmod 600 "$token_file"
+printf '%s' '生成済みtokenに置き換える' > "$token_file"
+export MCP_AUTH_TOKEN_FILE="$token_file"
+./mcp-http
+```
+
+ローカル開発など、厳密なトークンファイル管理が不要な場合は、代わりに
+`MCP_AUTH_TOKENS` を設定します。
+
+```bash
+export MCP_AUTH_ENABLED=true
+export MCP_AUTH_TOKENS="local-token-1,local-token-2"
 ./mcp-http
 ```
 

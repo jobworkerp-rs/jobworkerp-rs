@@ -11,7 +11,7 @@ use instance::WorkerInstanceManager;
 use jobworkerp_runner::runner::mcp::config::McpConfig;
 use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
 use jobworkerp_runner::runner::{factory::RunnerSpecFactory, plugins::Plugins};
-use mcp_server::{McpHandler, McpServerConfig};
+use mcp_server::{McpHandler, McpServerConfig, resolve_mcp_auth_config_from_env};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 use worker_app::WorkerModules;
@@ -232,6 +232,7 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
     let (lock, mut wait) = shutdown::create_lock_and_wait();
 
     let (shutdown_send, shutdown_recv) = tokio::sync::watch::channel(false);
+    let mcp_auth_config = resolve_mcp_auth_config_from_env()?;
 
     let plugins = Arc::new(Plugins::new());
     // load mcp config
@@ -276,7 +277,6 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
     let function_app = app_module.function_app.clone();
     let function_set_app = app_module.function_set_app.clone();
     let mcp_config = McpServerConfig::from_env();
-
     // Check if AG-UI server is enabled
     let ag_ui_enabled = is_ag_ui_enabled();
 
@@ -339,11 +339,12 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
                 let _ = mcp_shutdown_recv.changed().await;
                 tracing::info!("MCP server received shutdown signal");
             });
-        mcp_server::boot_streamable_http_server(
+        mcp_server::boot_streamable_http_server_with_auth_config(
             handler_factory,
             &bind_addr,
             mcp_lock,
             Some(shutdown_signal),
+            mcp_auth_config,
         )
         .await
     };

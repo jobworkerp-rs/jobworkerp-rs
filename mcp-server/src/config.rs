@@ -40,7 +40,7 @@ impl McpServerConfig {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(false),
-            set_name: std::env::var("MCP_SET_NAME").ok(),
+            set_name: normalize_set_name(std::env::var("MCP_SET_NAME").ok()),
             timeout_sec: std::env::var("MCP_TIMEOUT_SEC")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -51,6 +51,10 @@ impl McpServerConfig {
                 .unwrap_or(false),
         }
     }
+}
+
+fn normalize_set_name(value: Option<String>) -> Option<String> {
+    value.filter(|name| !name.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -65,5 +69,16 @@ mod tests {
         assert!(config.set_name.is_none());
         assert_eq!(config.timeout_sec, 60);
         assert!(!config.streaming);
+    }
+
+    #[test]
+    fn empty_or_whitespace_set_name_does_not_restrict_tools() {
+        assert_eq!(normalize_set_name(None), None);
+        assert_eq!(normalize_set_name(Some(String::new())), None);
+        assert_eq!(normalize_set_name(Some(" \t\n ".to_string())), None);
+        assert_eq!(
+            normalize_set_name(Some("public-tools".to_string())),
+            Some("public-tools".to_string())
+        );
     }
 }

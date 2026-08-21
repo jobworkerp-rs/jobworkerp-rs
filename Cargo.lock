@@ -3639,13 +3639,16 @@ dependencies = [
  "infra",
  "jobworkerp-base",
  "jobworkerp-runner",
+ "nix",
  "proto",
  "rmcp",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-test",
  "tokio-util",
+ "tower",
  "tracing",
 ]
 

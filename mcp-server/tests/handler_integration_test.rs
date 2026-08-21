@@ -146,6 +146,16 @@ fn test_config_from_env() {
     assert_eq!(config.timeout_sec, 120);
     assert!(!config.streaming);
 
+    // SAFETY: called in this test before reading the process environment again.
+    unsafe {
+        std::env::set_var("MCP_SET_NAME", " \t ");
+    }
+    let unrestricted_config = McpServerConfig::from_env();
+    assert!(
+        unrestricted_config.set_name.is_none(),
+        "a blank MCP_SET_NAME must not restrict available tools"
+    );
+
     // SAFETY: called in test cleanup
     unsafe {
         std::env::remove_var("MCP_EXCLUDE_RUNNER");
