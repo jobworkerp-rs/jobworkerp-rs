@@ -1335,7 +1335,7 @@ impl CancelMonitoring for CommandRunnerImpl {
             let token = helper.get_cancellation_token().await;
             if !token.is_cancelled() {
                 token.cancel();
-                tracing::info!("CommandRunner: cancellation token signaled");
+                tracing::debug!("CommandRunner: cancellation token signaled");
             }
         }
 

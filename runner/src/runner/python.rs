@@ -492,7 +492,7 @@ impl CancelMonitoring for PythonCommandRunner {
             let token = helper.get_cancellation_token().await;
             if !token.is_cancelled() {
                 token.cancel();
-                tracing::info!("PythonCommandRunner: cancellation token signaled");
+                tracing::debug!("PythonCommandRunner: cancellation token signaled");
             }
         }
 

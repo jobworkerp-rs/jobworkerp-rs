@@ -1264,17 +1264,155 @@ pub trait StreamTaskExecutorTrait<'a>: Send + Sync {
 }
 
 pub struct RaiseTaskExecutor {
-    _workflow_context: Arc<RwLock<WorkflowContext>>,
+    workflow_context: Arc<RwLock<WorkflowContext>>,
     task: workflow::RaiseTask,
 }
 impl RaiseTaskExecutor {
     pub fn new(workflow_context: Arc<RwLock<WorkflowContext>>, task: workflow::RaiseTask) -> Self {
         Self {
-            _workflow_context: workflow_context,
+            workflow_context,
             task,
         }
     }
+
+    async fn raise_position(&self, task_context: &TaskContext) -> String {
+        task_context.position.read().await.as_error_instance()
+    }
+
+    async fn error_field_position(
+        &self,
+        task_context: &TaskContext,
+        field: Option<&str>,
+    ) -> String {
+        let mut position = task_context.position.read().await.clone();
+        position.push("error".to_string());
+        if let Some(field) = field {
+            position.push(field.to_string());
+        }
+        position.as_error_instance()
+    }
+
+    fn execute_error_transform(
+        input: Arc<serde_json::Value>,
+        value: &str,
+        expression: &BTreeMap<String, Arc<serde_json::Value>>,
+    ) -> Result<serde_json::Value, Box<workflow::Error>> {
+        if Self::is_transform_template(value) {
+            // Error fields are strings. Unlike general workflow values, a Liquid
+            // rendering of `true` or `502` must not be reinterpreted as JSON.
+            Self::execute_liquid_template(input, value, expression).map(serde_json::Value::String)
+        } else {
+            Self::execute_transform(input, value, expression)
+        }
+    }
+
+    async fn evaluate_text(
+        &self,
+        task_context: &TaskContext,
+        expression: &BTreeMap<String, Arc<serde_json::Value>>,
+        field: &str,
+        value: Option<&String>,
+    ) -> Result<Option<String>, Box<workflow::Error>> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let evaluated =
+            Self::execute_error_transform(task_context.input.clone(), value, expression);
+        match evaluated {
+            Ok(serde_json::Value::String(value)) => Ok(Some(value)),
+            Ok(value) => Err(workflow::errors::ErrorFactory::new().bad_argument(
+                format!("raise.error.{field} must evaluate to a string"),
+                Some(self.error_field_position(task_context, Some(field)).await),
+                Some(format!("actual value: {value}")),
+            )),
+            Err(mut error) => {
+                let mut position = task_context.position.read().await.clone();
+                position.push("error".to_string());
+                position.push(field.to_string());
+                error.position(&position);
+                Err(error)
+            }
+        }
+    }
+
+    async fn resolve_error(
+        &self,
+        task_context: &TaskContext,
+    ) -> Result<workflow::Error, Box<workflow::Error>> {
+        let expression = <Self as UseExpression>::expression(
+            &*self.workflow_context.read().await,
+            Arc::new(task_context.clone()),
+        )
+        .await;
+        let expression = match expression {
+            Ok(expression) => expression,
+            Err(mut error) => {
+                let position = task_context.position.read().await;
+                error.position(&position);
+                return Err(error);
+            }
+        };
+
+        match &self.task.raise.error {
+            workflow::RaiseTaskError::Error(error) => {
+                let mut error = error.clone();
+                error.title = self
+                    .evaluate_text(task_context, &expression, "title", error.title.as_ref())
+                    .await?;
+                error.detail = self
+                    .evaluate_text(task_context, &expression, "detail", error.detail.as_ref())
+                    .await?;
+                error.instance = Some(self.raise_position(task_context).await);
+                Ok(error)
+            }
+            workflow::RaiseTaskError::RaiseErrorReference(value) => {
+                let value = match Self::execute_error_transform(
+                    task_context.input.clone(),
+                    value,
+                    &expression,
+                ) {
+                    Ok(value) => value,
+                    Err(mut error) => {
+                        let mut position = task_context.position.read().await.clone();
+                        position.push("error".to_string());
+                        error.position(&position);
+                        return Err(error);
+                    }
+                };
+                match value {
+                    serde_json::Value::String(detail) => Ok(workflow::Error {
+                        type_: workflow::UriTemplate(
+                            "https://serverlessworkflow.io/spec/1.0.0/errors/runtime".to_string(),
+                        ),
+                        status: 500,
+                        title: Some("Workflow runtime error".to_string()),
+                        detail: Some(detail),
+                        instance: Some(self.raise_position(task_context).await),
+                    }),
+                    serde_json::Value::Object(value) => {
+                        match serde_json::from_value(serde_json::Value::Object(value)) {
+                            Ok(error) => Ok(error),
+                            Err(error) => Err(workflow::errors::ErrorFactory::new().bad_argument(
+                                "raise.error expression must evaluate to an Error object"
+                                    .to_string(),
+                                Some(self.error_field_position(task_context, None).await),
+                                Some(error.to_string()),
+                            )),
+                        }
+                    }
+                    value => Err(workflow::errors::ErrorFactory::new().bad_argument(
+                        "raise.error must evaluate to a string or Error object".to_string(),
+                        Some(self.error_field_position(task_context, None).await),
+                        Some(format!("actual value: {value}")),
+                    )),
+                }
+            }
+        }
+    }
 }
+impl UseExpression for RaiseTaskExecutor {}
+impl UseExpressionTransformer for RaiseTaskExecutor {}
+impl UseJqAndTemplateTransformer for RaiseTaskExecutor {}
 impl TaskExecutorTrait<'_> for RaiseTaskExecutor {
     async fn execute(
         &self,
@@ -1282,21 +1420,10 @@ impl TaskExecutorTrait<'_> for RaiseTaskExecutor {
         _task_name: &str,
         task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
-        tracing::error!("RaiseTaskExecutor raise error: {:?}", self.task.raise.error);
-        // TODO add detail information to error
-        let pos = task_context.position.clone();
-        let error_instance = {
-            let mut pos_guard = pos.write().await;
-            pos_guard.push("raise".to_string());
-            pos_guard.as_error_instance()
-            // pos_guard is dropped here, releasing the write lock
-        };
-        Err(workflow::errors::ErrorFactory::create(
-            workflow::errors::ErrorCode::Locked,
-            Some(format!("Raise error!: {:?}", self.task.raise.error)),
-            Some(error_instance),
-            None,
-        ))
+        task_context.add_position_name("raise".to_string()).await;
+        let error = self.resolve_error(&task_context).await?;
+        tracing::error!(error = ?error, "RaiseTaskExecutor raised error");
+        Err(Box::new(error))
     }
 }
 
@@ -1357,8 +1484,9 @@ impl ExecutionId {
 mod tests {
     use super::*;
     use crate::workflow::definition::workflow::{
-        Document, FlowDirective, FlowDirectiveEnum, Input, Output, RunJobRunner, RunRunner,
-        RunTask, RunTaskConfiguration, SetTask, Task, TaskList, WorkflowName, WorkflowSchema,
+        Document, Error, FlowDirective, FlowDirectiveEnum, Input, Output, RaiseTask,
+        RaiseTaskConfiguration, RaiseTaskError, RunJobRunner, RunRunner, RunTask,
+        RunTaskConfiguration, SetTask, Task, TaskList, UriTemplate, WorkflowName, WorkflowSchema,
         WorkflowVersion,
     };
     use crate::workflow::execute::context::{JobId, JobResultId, WorkflowStatus};
@@ -1366,6 +1494,217 @@ mod tests {
     use futures::StreamExt;
     use std::str::FromStr;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn raise_task(error: RaiseTaskError) -> RaiseTask {
+        RaiseTask {
+            raise: RaiseTaskConfiguration { error },
+            checkpoint: false,
+            export: None,
+            if_: None,
+            input: None,
+            metadata: serde_json::Map::new(),
+            output: None,
+            then: None,
+            timeout: None,
+        }
+    }
+
+    #[test]
+    fn raise_inline_error_preserves_definition_and_evaluates_text_fields() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let task = raise_task(RaiseTaskError::Error(Error {
+                type_: UriTemplate("https://example.invalid/errors/upstream".to_string()),
+                status: 502,
+                title: Some("$${{{ input.service }}}".to_string()),
+                detail: Some("${ \"requestId=\" + $input.request_id }".to_string()),
+                instance: Some("/configured-instance".to_string()),
+            }));
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let task_context = TaskContext::new_empty();
+
+            let error = RaiseTaskExecutor::new(workflow_context, task)
+                .execute(
+                    Arc::new(opentelemetry::Context::new()),
+                    "raiseTask",
+                    TaskContext {
+                        input: Arc::new(serde_json::json!({
+                            "service": "payments",
+                            "request_id": "req-123"
+                        })),
+                        raw_input: Arc::new(serde_json::json!({
+                            "service": "payments",
+                            "request_id": "req-123"
+                        })),
+                        ..task_context
+                    },
+                )
+                .await
+                .expect_err("raise task must fail");
+
+            assert_eq!(error.status, 502);
+            assert_eq!(error.type_.0, "https://example.invalid/errors/upstream");
+            assert_eq!(error.title.as_deref(), Some("payments"));
+            assert_eq!(error.detail.as_deref(), Some("requestId=req-123"));
+            assert_eq!(error.instance.as_deref(), Some("/raise"));
+        });
+    }
+
+    #[test]
+    fn raise_string_normalizes_literal_and_rethrows_error_expression() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+
+            let literal_error = RaiseTaskExecutor::new(
+                workflow_context.clone(),
+                raise_task(RaiseTaskError::RaiseErrorReference(
+                    "upstream unavailable".to_string(),
+                )),
+            )
+            .execute(
+                Arc::new(opentelemetry::Context::new()),
+                "raiseTask",
+                TaskContext::new_empty(),
+            )
+            .await
+            .expect_err("raise task must fail");
+            assert_eq!(literal_error.status, 500);
+            assert_eq!(
+                literal_error.type_.0,
+                "https://serverlessworkflow.io/spec/1.0.0/errors/runtime"
+            );
+            assert_eq!(
+                literal_error.detail.as_deref(),
+                Some("upstream unavailable")
+            );
+
+            let original = Error {
+                type_: UriTemplate("https://example.invalid/errors/original".to_string()),
+                status: 409,
+                title: Some("Original title".to_string()),
+                detail: Some("Original detail".to_string()),
+                instance: Some("/origin".to_string()),
+            };
+            let task_context = TaskContext::new_empty();
+            task_context
+                .add_context_value(
+                    "error".to_string(),
+                    serde_json::to_value(&original).unwrap(),
+                )
+                .await;
+            let rethrown = RaiseTaskExecutor::new(
+                workflow_context,
+                raise_task(RaiseTaskError::RaiseErrorReference(
+                    "${ $error }".to_string(),
+                )),
+            )
+            .execute(
+                Arc::new(opentelemetry::Context::new()),
+                "raiseTask",
+                task_context,
+            )
+            .await
+            .expect_err("raise task must fail");
+
+            assert_eq!(*rethrown, original);
+        });
+    }
+
+    #[test]
+    fn raise_rejects_non_string_error_values_and_text_fields() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let task_context = TaskContext::new_empty();
+
+            let text_error = RaiseTaskExecutor::new(
+                workflow_context.clone(),
+                raise_task(RaiseTaskError::Error(Error {
+                    type_: UriTemplate("https://example.invalid/errors/test".to_string()),
+                    status: 400,
+                    title: None,
+                    detail: Some("${ 42 }".to_string()),
+                    instance: None,
+                })),
+            )
+            .execute(
+                Arc::new(opentelemetry::Context::new()),
+                "raiseTask",
+                task_context,
+            )
+            .await
+            .expect_err("numeric detail must be rejected");
+            assert_eq!(text_error.status, 400);
+            assert_eq!(
+                text_error.title.as_deref(),
+                Some("raise.error.detail must evaluate to a string")
+            );
+            assert_eq!(text_error.instance.as_deref(), Some("/raise/error/detail"));
+
+            let value_error = RaiseTaskExecutor::new(
+                workflow_context,
+                raise_task(RaiseTaskError::RaiseErrorReference("${ 42 }".to_string())),
+            )
+            .execute(
+                Arc::new(opentelemetry::Context::new()),
+                "raiseTask",
+                TaskContext::new_empty(),
+            )
+            .await
+            .expect_err("numeric raise.error must be rejected");
+            assert_eq!(value_error.status, 400);
+            assert_eq!(
+                value_error.title.as_deref(),
+                Some("raise.error must evaluate to a string or Error object")
+            );
+            assert_eq!(value_error.instance.as_deref(), Some("/raise/error"));
+        });
+    }
+
+    #[test]
+    fn raise_preserves_liquid_rendered_primitives_as_text() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let task_context = TaskContext {
+                input: Arc::new(serde_json::json!({ "status": 502, "retryable": true })),
+                raw_input: Arc::new(serde_json::json!({ "status": 502, "retryable": true })),
+                ..TaskContext::new_empty()
+            };
+
+            let inline_error = RaiseTaskExecutor::new(
+                workflow_context.clone(),
+                raise_task(RaiseTaskError::Error(Error {
+                    type_: UriTemplate("https://example.invalid/errors/test".to_string()),
+                    status: 502,
+                    title: Some("$${{{ input.status }}}".to_string()),
+                    detail: Some("$${{{ input.retryable }}}".to_string()),
+                    instance: None,
+                })),
+            )
+            .execute(
+                Arc::new(opentelemetry::Context::new()),
+                "raiseTask",
+                task_context.clone(),
+            )
+            .await
+            .expect_err("raise task must fail");
+            assert_eq!(inline_error.title.as_deref(), Some("502"));
+            assert_eq!(inline_error.detail.as_deref(), Some("true"));
+
+            let string_error = RaiseTaskExecutor::new(
+                workflow_context,
+                raise_task(RaiseTaskError::RaiseErrorReference(
+                    "$${{{ input.status }}}".to_string(),
+                )),
+            )
+            .execute(
+                Arc::new(opentelemetry::Context::new()),
+                "raiseTask",
+                task_context,
+            )
+            .await
+            .expect_err("raise task must fail");
+            assert_eq!(string_error.detail.as_deref(), Some("502"));
+        });
+    }
 
     fn create_workflow_with_run_task() -> WorkflowSchema {
         let task_map_list = {

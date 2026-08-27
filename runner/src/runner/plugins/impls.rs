@@ -1086,7 +1086,7 @@ impl CancelMonitoring for PluginRunnerWrapperImpl {
             let token = helper.get_cancellation_token().await;
             if !token.is_cancelled() {
                 token.cancel();
-                tracing::info!("PluginRunnerWrapperImpl: cancellation token signaled");
+                tracing::debug!("PluginRunnerWrapperImpl: cancellation token signaled");
             }
         } else {
             tracing::warn!("PluginRunnerWrapperImpl: no cancellation helper available");
@@ -1144,7 +1144,7 @@ impl CancelMonitoring for PluginRunnerWrapperImpl {
             PluginVariantType::MultiMethodV2 => false,
         };
         if cancelled {
-            tracing::info!("PluginRunnerWrapperImpl: plugin cancelled successfully");
+            tracing::debug!("PluginRunnerWrapperImpl: plugin cancelled successfully");
         }
 
         Ok(())

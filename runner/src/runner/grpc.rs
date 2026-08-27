@@ -387,7 +387,7 @@ impl super::cancellation::CancelMonitoring for GrpcRunnerSpecImpl {
             let token = helper.get_cancellation_token().await;
             if !token.is_cancelled() {
                 token.cancel();
-                tracing::info!("GrpcRunnerSpecImpl: cancellation token signaled");
+                tracing::debug!("GrpcRunnerSpecImpl: cancellation token signaled");
             }
         } else {
             tracing::warn!("GrpcRunnerSpecImpl: no cancellation helper available");

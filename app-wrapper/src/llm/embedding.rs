@@ -451,7 +451,7 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMEmbeddingR
             let token = helper.get_cancellation_token().await;
             if !token.is_cancelled() {
                 token.cancel();
-                tracing::info!("LLMEmbeddingRunnerImpl: cancellation token signaled");
+                tracing::debug!("LLMEmbeddingRunnerImpl: cancellation token signaled");
             }
         } else {
             tracing::warn!("LLMEmbeddingRunnerImpl: no cancellation helper available");
