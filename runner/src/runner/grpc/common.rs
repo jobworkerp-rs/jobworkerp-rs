@@ -162,8 +162,10 @@ impl GrpcConnection {
 
             if let Some(ref reflection_client) = self.reflection_client {
                 let services = reflection_client.list_services().await?;
-                tracing::debug!("Available gRPC services: {:?}", services);
-                tracing::info!("Successfully initialized gRPC reflection client");
+                tracing::debug!(
+                    "Successfully initialized gRPC reflection client. Available gRPC services: {:?}",
+                    services
+                );
             }
         }
 

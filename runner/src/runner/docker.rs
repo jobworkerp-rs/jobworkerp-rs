@@ -1087,7 +1087,7 @@ impl super::cancellation::CancelMonitoring for DockerExecRunner {
             let token = helper.get_cancellation_token().await;
             if !token.is_cancelled() {
                 token.cancel();
-                tracing::info!("DockerExecRunner: cancellation token signaled");
+                tracing::debug!("DockerExecRunner: cancellation token signaled");
             }
         } else {
             tracing::warn!("DockerExecRunner: no cancellation helper available");
@@ -1096,7 +1096,7 @@ impl super::cancellation::CancelMonitoring for DockerExecRunner {
         // DockerExecRunner-specific command execution cleanup
         // Commands running via docker exec are automatically stopped by cancellation token
         // Additional cleanup is typically not needed
-        tracing::info!("DockerExecRunner: exec command will be stopped via cancellation token");
+        tracing::debug!("DockerExecRunner: exec command will be stopped via cancellation token");
 
         Ok(())
     }
@@ -1215,7 +1215,7 @@ impl super::cancellation::CancelMonitoring for DockerRunner {
             let token = helper.get_cancellation_token().await;
             if !token.is_cancelled() {
                 token.cancel();
-                tracing::info!("DockerRunner: cancellation token signaled");
+                tracing::debug!("DockerRunner: cancellation token signaled");
             }
         }
 

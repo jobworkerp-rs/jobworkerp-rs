@@ -381,7 +381,7 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for CreateWorkflo
             let token = helper.get_cancellation_token().await;
             if !token.is_cancelled() {
                 token.cancel();
-                tracing::info!("CreateWorkflowRunner: cancellation token signaled");
+                tracing::debug!("CreateWorkflowRunner: cancellation token signaled");
             }
         } else {
             tracing::warn!("CreateWorkflowRunner: no cancellation helper available");

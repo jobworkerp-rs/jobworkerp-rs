@@ -377,7 +377,7 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMChatRunner
             let token = helper.get_cancellation_token().await;
             if !token.is_cancelled() {
                 token.cancel();
-                tracing::info!("LLMChatRunnerImpl: cancellation token signaled");
+                tracing::debug!("LLMChatRunnerImpl: cancellation token signaled");
             }
         } else {
             tracing::warn!("LLMChatRunnerImpl: no cancellation helper available");

@@ -199,6 +199,30 @@ Workflows support two types of variable expansion:
 
 > **Note**: `fromjson` parses a stream of JSON values. Markdown fences (`` ```json ... ``` ``) and other leading invalid tokens are not JSON, so the expression fails at runtime. Strip fences before parsing LLM output.
 
+### Raise Task Errors
+
+`raise.error` accepts a string or an Error object. A string is evaluated as a jq/Liquid expression; if it evaluates to a string, it is raised as the `detail` of a default runtime error (status `500`). If it evaluates to an Error object, that Error is raised unchanged. This enables rethrowing an error captured with `try.catch.as`.
+
+```yaml
+catch:
+  as: error
+  do:
+    - rethrow:
+        raise:
+          error: "${ $error }"
+```
+
+The `title` and `detail` of an inline Error also evaluate runtime expressions. Both must evaluate to strings.
+
+```yaml
+raise:
+  error:
+    type: https://example.invalid/errors/upstream
+    status: 502
+    title: '$${{{ input.service }}}'
+    detail: '${ "requestId=" + $error.detail.requestId }'
+```
+
 ### Environment Variable Access
 
 In jq syntax, you can access process environment variables via the built-in `env` function (provided by the jaq crate):

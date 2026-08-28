@@ -201,6 +201,30 @@ $ ./target/release/jobworkerp-client job enqueue-workflow -i '/path/to/list' -w 
 
 > **注意**: `fromjson` は JSON 値のストリームをパースします。Markdown フェンス（`` ```json ... ``` ``）や先頭の無効トークンは JSON ではないため、式は実行時エラーになります。フェンス付きの LLM 出力をパースする前に、フェンスを取り除いてください。
 
+### Raise タスクのエラー
+
+`raise.error` は文字列または Error オブジェクトを受け取ります。文字列は jq/Liquid 式として評価され、評価結果が文字列なら既定の runtime error（status `500`）の `detail` として送出されます。評価結果が Error オブジェクトなら、その Error をそのまま送出できます。これにより `try.catch.as` で捕捉したエラーを再送出できます。
+
+```yaml
+catch:
+  as: error
+  do:
+    - rethrow:
+        raise:
+          error: "${ $error }"
+```
+
+インライン Error の `title` と `detail` もランタイム式を評価します。いずれも評価結果は文字列でなければなりません。
+
+```yaml
+raise:
+  error:
+    type: https://example.invalid/errors/upstream
+    status: 502
+    title: '$${{{ input.service }}}'
+    detail: '${ "requestId=" + $error.detail.requestId }'
+```
+
 ### 環境変数の参照
 
 jq構文では、jaqクレートの組み込み `env` 関数を通じてプロセスの環境変数を参照できます：
