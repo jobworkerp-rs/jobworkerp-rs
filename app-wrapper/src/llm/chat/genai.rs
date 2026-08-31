@@ -37,6 +37,31 @@ impl ToolCallName for genai::chat::ToolCall {
     }
 }
 
+/// Select the canonical tool calls emitted for a completed chat stream.
+///
+/// OpenAI-compatible streaming adapters expose partial `ToolCallChunk`s whose
+/// arguments are strings while SSE deltas are being accumulated.  The
+/// `StreamEnd` capture is the adapter's finalized representation and must win
+/// whenever it contains tool calls. An empty capture can accompany captured
+/// text, so it must not discard chunks received earlier in the stream.
+fn finalized_stream_tool_calls(
+    captured: Option<Vec<genai::chat::ToolCall>>,
+    fallback: &[genai::chat::ToolCall],
+) -> Vec<ToolCallRequest> {
+    let mut calls = captured
+        .filter(|calls| !calls.is_empty())
+        .unwrap_or_else(|| fallback.to_vec());
+    ToolConverter::retain_non_selector_tools(&mut calls);
+    calls
+        .into_iter()
+        .map(|call| ToolCallRequest {
+            call_id: call.call_id,
+            fn_name: call.fn_name,
+            fn_arguments: call.fn_arguments.to_string(),
+        })
+        .collect()
+}
+
 // Default timeout for tool calls in seconds
 const DEFAULT_TIMEOUT_SEC: u32 = 300;
 
@@ -1438,17 +1463,14 @@ impl GenaiChatService {
                             accumulated_tool_calls.push(tool_chunk.tool_call);
                         }
                         ChatStreamEvent::End(end) => {
-                            ToolConverter::retain_non_selector_tools(&mut accumulated_tool_calls);
-                            // If we have accumulated tool calls, yield them as pending_tool_calls
-                            if !accumulated_tool_calls.is_empty() {
-                                let pending_calls: Vec<ToolCallRequest> = accumulated_tool_calls
-                                    .iter()
-                                    .map(|call| ToolCallRequest {
-                                        call_id: call.call_id.clone(),
-                                        fn_name: call.fn_name.clone(),
-                                        fn_arguments: call.fn_arguments.to_string(),
-                                    })
-                                    .collect();
+                            let captured_tool_calls = end
+                                .captured_tool_calls()
+                                .map(|calls| calls.into_iter().cloned().collect());
+                            let pending_calls = finalized_stream_tool_calls(
+                                captured_tool_calls,
+                                &accumulated_tool_calls,
+                            );
+                            if !pending_calls.is_empty() {
 
                                 let tool_calls_content: Vec<llm_chat_result::message_content::ToolCall> =
                                     pending_calls
@@ -1846,6 +1868,65 @@ mod tests {
         assert_eq!(opts.capture_reasoning_content, Some(true));
         assert_eq!(opts.capture_tool_calls, Some(true));
         assert_eq!(opts.capture_usage, Some(true));
+    }
+
+    #[test]
+    fn finalized_stream_tool_calls_prefers_finalized_object_arguments() {
+        let partial = genai::chat::ToolCall {
+            call_id: "call-1".into(),
+            fn_name: "lookback_recall".into(),
+            fn_arguments: serde_json::json!("{\\\"query\\\":\\\"partial\\\"}"),
+            thought_signatures: None,
+        };
+        let finalized = genai::chat::ToolCall {
+            call_id: "call-1".into(),
+            fn_name: "lookback_recall".into(),
+            fn_arguments: serde_json::json!({"query":"issue tracker"}),
+            thought_signatures: None,
+        };
+
+        let calls = finalized_stream_tool_calls(Some(vec![finalized]), &[partial]);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].call_id, "call-1");
+        assert_eq!(calls[0].fn_name, "lookback_recall");
+        assert_eq!(calls[0].fn_arguments, r#"{"query":"issue tracker"}"#);
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&calls[0].fn_arguments)
+                .unwrap()
+                .is_object()
+        );
+    }
+
+    #[test]
+    fn finalized_stream_tool_calls_uses_partial_calls_only_without_capture() {
+        let partial = genai::chat::ToolCall {
+            call_id: "call-1".into(),
+            fn_name: "lookback_recall".into(),
+            fn_arguments: serde_json::json!({"query":"fallback"}),
+            thought_signatures: None,
+        };
+
+        let calls = finalized_stream_tool_calls(None, &[partial]);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].fn_arguments, r#"{"query":"fallback"}"#);
+    }
+
+    #[test]
+    fn finalized_stream_tool_calls_uses_partial_calls_when_capture_is_empty() {
+        let partial = genai::chat::ToolCall {
+            call_id: "call-1".into(),
+            fn_name: "lookback_recall".into(),
+            fn_arguments: serde_json::json!({"query":"fallback"}),
+            thought_signatures: None,
+        };
+
+        let calls = finalized_stream_tool_calls(Some(vec![]), &[partial]);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].call_id, "call-1");
+        assert_eq!(calls[0].fn_arguments, r#"{"query":"fallback"}"#);
     }
 
     #[test]
