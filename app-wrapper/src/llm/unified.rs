@@ -6,6 +6,7 @@
 use super::chat::LLMChatRunnerImpl;
 use super::completion::LLMCompletionRunnerImpl;
 use super::embedding::LLMEmbeddingRunnerImpl;
+use super::token_count::LLMTokenCountRunnerImpl;
 use anyhow::{Result, anyhow};
 use app::module::AppModule;
 use async_trait::async_trait;
@@ -15,7 +16,7 @@ use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
 };
 use jobworkerp_runner::runner::llm_unified::{
-    LLMUnifiedRunnerSpecImpl, METHOD_CHAT, METHOD_COMPLETION, METHOD_EMBEDDING,
+    LLMUnifiedRunnerSpecImpl, METHOD_CHAT, METHOD_COMPLETION, METHOD_EMBEDDING, METHOD_TOKEN_COUNT,
 };
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use proto::jobworkerp::data::{JobData, JobId, JobResult, ResultOutputItem};
@@ -58,6 +59,7 @@ pub struct LLMUnifiedRunnerImpl {
     completion_runner: LLMCompletionRunnerImpl,
     chat_runner: LLMChatRunnerImpl,
     embedding_runner: LLMEmbeddingRunnerImpl,
+    token_count_runner: LLMTokenCountRunnerImpl,
     spec: LLMUnifiedRunnerSpecImpl,
     cancel_helper: Option<CancelMonitoringHelper>,
 }
@@ -68,6 +70,7 @@ impl LLMUnifiedRunnerImpl {
             completion_runner: LLMCompletionRunnerImpl::new(app_module.clone()),
             chat_runner: LLMChatRunnerImpl::new(app_module.clone()),
             embedding_runner: LLMEmbeddingRunnerImpl::new(app_module),
+            token_count_runner: LLMTokenCountRunnerImpl::new(),
             spec: LLMUnifiedRunnerSpecImpl::new(),
             cancel_helper: None,
         }
@@ -90,6 +93,7 @@ impl LLMUnifiedRunnerImpl {
                 app_module,
                 cancel_helper.clone(),
             ),
+            token_count_runner: LLMTokenCountRunnerImpl::new(),
             spec: LLMUnifiedRunnerSpecImpl::new(),
             cancel_helper: Some(cancel_helper),
         }
@@ -147,7 +151,10 @@ impl RunnerTrait for LLMUnifiedRunnerImpl {
 
         self.completion_runner.load(settings.clone()).await?;
         self.chat_runner.load(settings.clone()).await?;
-        self.embedding_runner.load(settings).await?;
+        self.embedding_runner.load(settings.clone()).await?;
+        // token_count does not contact a provider during load; it only retains
+        // the same runner settings used to resolve a request-time model.
+        self.token_count_runner.load(settings).await?;
         Ok(())
     }
 
@@ -161,6 +168,7 @@ impl RunnerTrait for LLMUnifiedRunnerImpl {
             Ok(METHOD_COMPLETION) => self.completion_runner.run(arg, metadata, None).await,
             Ok(METHOD_CHAT) => self.chat_runner.run(arg, metadata, None).await,
             Ok(METHOD_EMBEDDING) => self.embedding_runner.run(arg, metadata, None).await,
+            Ok(METHOD_TOKEN_COUNT) => self.token_count_runner.run(arg, metadata, None).await,
             Ok(_) => (
                 Err(anyhow!("Internal error: unknown method after validation")),
                 metadata,
@@ -181,6 +189,11 @@ impl RunnerTrait for LLMUnifiedRunnerImpl {
             // Embedding is non-streaming; delegate so the runner returns its
             // own unsupported error.
             Ok(METHOD_EMBEDDING) => self.embedding_runner.run_stream(arg, metadata, None).await,
+            Ok(METHOD_TOKEN_COUNT) => {
+                self.token_count_runner
+                    .run_stream(arg, metadata, None)
+                    .await
+            }
             Ok(_) => Err(anyhow!("Internal error: unknown method after validation")),
             Err(e) => Err(e),
         }
@@ -238,6 +251,7 @@ mod tests {
         assert!(LLMUnifiedRunnerSpecImpl::resolve_method(Some("completion")).is_ok());
         assert!(LLMUnifiedRunnerSpecImpl::resolve_method(Some("chat")).is_ok());
         assert!(LLMUnifiedRunnerSpecImpl::resolve_method(Some("embedding")).is_ok());
+        assert!(LLMUnifiedRunnerSpecImpl::resolve_method(Some("token_count")).is_ok());
         assert!(LLMUnifiedRunnerSpecImpl::resolve_method(None).is_err());
         assert!(LLMUnifiedRunnerSpecImpl::resolve_method(Some("unknown")).is_err());
     }
@@ -287,14 +301,15 @@ mod tests {
     }
 
     #[test]
-    fn test_method_proto_map_has_three_methods() {
+    fn test_method_proto_map_has_four_methods() {
         let spec = LLMUnifiedRunnerSpecImpl::new();
         let methods = spec.method_proto_map();
 
         assert!(methods.contains_key("completion"));
         assert!(methods.contains_key("chat"));
         assert!(methods.contains_key("embedding"));
-        assert_eq!(methods.len(), 3);
+        assert!(methods.contains_key("token_count"));
+        assert_eq!(methods.len(), 4);
 
         // Verify schemas are not empty
         let completion = methods.get("completion").unwrap();
@@ -311,14 +326,15 @@ mod tests {
     }
 
     #[test]
-    fn test_method_json_schema_map_has_three_methods() {
+    fn test_method_json_schema_map_has_four_methods() {
         let spec = LLMUnifiedRunnerSpecImpl::new();
         let schemas = spec.method_json_schema_map();
 
         assert!(schemas.contains_key("completion"));
         assert!(schemas.contains_key("chat"));
         assert!(schemas.contains_key("embedding"));
-        assert_eq!(schemas.len(), 3);
+        assert!(schemas.contains_key("token_count"));
+        assert_eq!(schemas.len(), 4);
 
         // Verify schemas are valid JSON (and embedding is not degraded to "{}")
         for (method_name, schema) in &schemas {

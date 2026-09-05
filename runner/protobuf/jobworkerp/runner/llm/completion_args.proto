@@ -50,7 +50,8 @@ message LLMCompletionArgs {
     }
   }
 
-  // The name of the model (override default in runner settings).
+  // The name of the model. GenAI resolves its effective model from runner
+  // settings; token_count does not introduce a separate override rule.
   optional string model = 1;
 
   // The system prompt to use for the system output.

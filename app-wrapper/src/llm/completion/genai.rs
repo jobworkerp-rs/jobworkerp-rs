@@ -2,12 +2,11 @@ use anyhow::Result;
 use command_utils::trace::impls::GenericOtelClient;
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use genai::Client;
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatStreamEvent, JsonSpec,
     MessageContent as GenaiMessageContent,
 };
-use genai::resolver::{Endpoint, ServiceTargetResolver};
-use genai::{Client, ServiceTarget};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
@@ -65,48 +64,9 @@ pub struct GenaiCompletionService {
 }
 impl GenaiCompletionService {
     pub async fn new(settings: GenaiRunnerSettings) -> Result<Self> {
-        let model_name = settings.model.clone();
-        let endpoint_url = settings.base_url.clone();
-        let target_resolver = ServiceTargetResolver::from_resolver_async_fn(
-            move |_: ServiceTarget| -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<ServiceTarget, genai::resolver::Error>>
-                        + Send,
-                >,
-            > {
-                let model_name = model_name.clone();
-                let endpoint_url = endpoint_url.clone();
-                Box::pin(async move {
-                    let client = Client::default();
-                    let mut service_target = client
-                        .resolve_service_target(&model_name)
-                        .await
-                        .map_err(|e| {
-                            genai::resolver::Error::Custom(format!(
-                                "Failed to resolve service target from model={} : {:#?}",
-                                model_name, e
-                            ))
-                        })?;
-                    if let Some(url) = endpoint_url
-                        && !url.is_empty()
-                    {
-                        let normalized = crate::llm::common::normalize_genai_endpoint_url(&url)
-                            .map_err(|e| {
-                                genai::resolver::Error::Custom(format!(
-                                    "Failed to parse endpoint URL={} : {:#?}",
-                                    url, e
-                                ))
-                            })?;
-                        service_target.endpoint = Endpoint::from_owned(normalized);
-                        tracing::debug!(
-                            "Genai LLM: resolved service target model: {:?}, endpoint: {:?}",
-                            &service_target.model,
-                            &service_target.endpoint,
-                        );
-                    }
-                    Ok(service_target)
-                })
-            },
+        let target_resolver = crate::llm::common::fixed_model_genai_service_target_resolver(
+            settings.model.clone(),
+            settings.base_url.clone(),
         );
         tracing::debug!("=== Genai LLM: target_resolver: {:?}", &target_resolver,);
         // -- Build the new client with this adapter_config
