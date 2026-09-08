@@ -23,6 +23,7 @@ async fn create_test_handler() -> Result<McpHandler> {
         set_name: None,
         timeout_sec: 30,
         streaming: false,
+        grpc_schema_timeout_ms: 5_000,
     };
 
     Ok(McpHandler::new(
@@ -74,6 +75,7 @@ async fn test_handler_with_exclude_runners() {
         set_name: None,
         timeout_sec: 30,
         streaming: false,
+        grpc_schema_timeout_ms: 5_000,
     };
 
     let handler = McpHandler::new(
@@ -103,6 +105,7 @@ async fn test_handler_with_function_set() {
         set_name: Some("test_set".to_string()),
         timeout_sec: 60,
         streaming: true,
+        grpc_schema_timeout_ms: 5_000,
     };
 
     let handler = McpHandler::new(
@@ -138,7 +141,7 @@ fn test_config_from_env() {
         std::env::set_var("MCP_STREAMING", "false");
     }
 
-    let config = McpServerConfig::from_env();
+    let config = McpServerConfig::from_env().unwrap();
 
     assert!(config.exclude_runner_as_tool);
     assert!(config.exclude_worker_as_tool);
@@ -150,7 +153,7 @@ fn test_config_from_env() {
     unsafe {
         std::env::set_var("MCP_SET_NAME", " \t ");
     }
-    let unrestricted_config = McpServerConfig::from_env();
+    let unrestricted_config = McpServerConfig::from_env().unwrap();
     assert!(
         unrestricted_config.set_name.is_none(),
         "a blank MCP_SET_NAME must not restrict available tools"
@@ -181,6 +184,7 @@ async fn test_list_tools_returns_runners() {
         set_name: None,
         timeout_sec: 30,
         streaming: false,
+        grpc_schema_timeout_ms: 5_000,
     };
 
     // Create handler to ensure it's properly configured
@@ -258,6 +262,7 @@ async fn test_streaming_config_affects_handler() {
         set_name: None,
         timeout_sec: 30,
         streaming: false,
+        grpc_schema_timeout_ms: 5_000,
     };
 
     let handler_no_streaming = McpHandler::new(
@@ -273,6 +278,7 @@ async fn test_streaming_config_affects_handler() {
         set_name: None,
         timeout_sec: 30,
         streaming: true,
+        grpc_schema_timeout_ms: 5_000,
     };
 
     let handler_streaming = McpHandler::new(

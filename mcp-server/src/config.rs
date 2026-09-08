@@ -1,3 +1,4 @@
+use anyhow::{Result, anyhow};
 use serde::Deserialize;
 
 /// Configuration for MCP Server
@@ -13,6 +14,8 @@ pub struct McpServerConfig {
     pub timeout_sec: u32,
     /// Enable streaming responses
     pub streaming: bool,
+    /// Timeout for descriptor acquisition used while publishing fixed gRPC tools.
+    pub grpc_schema_timeout_ms: u64,
 }
 
 impl Default for McpServerConfig {
@@ -24,14 +27,15 @@ impl Default for McpServerConfig {
             timeout_sec: 60,
             // Most runners are non-streaming; opt in explicitly via MCP_STREAMING.
             streaming: false,
+            grpc_schema_timeout_ms: 5_000,
         }
     }
 }
 
 impl McpServerConfig {
     /// Create configuration from environment variables
-    pub fn from_env() -> Self {
-        Self {
+    pub fn from_env() -> Result<Self> {
+        Ok(Self {
             exclude_runner_as_tool: std::env::var("MCP_EXCLUDE_RUNNER")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -49,8 +53,26 @@ impl McpServerConfig {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(false),
-        }
+            grpc_schema_timeout_ms: parse_grpc_schema_timeout(
+                std::env::var("MCP_GRPC_SCHEMA_TIMEOUT_MS").ok(),
+            )?,
+        })
     }
+}
+
+fn parse_grpc_schema_timeout(value: Option<String>) -> Result<u64> {
+    let Some(value) = value else {
+        return Ok(5_000);
+    };
+    let timeout = value.parse::<u64>().map_err(|_| {
+        anyhow!("MCP_GRPC_SCHEMA_TIMEOUT_MS must be a positive integer in milliseconds")
+    })?;
+    if timeout == 0 {
+        return Err(anyhow!(
+            "MCP_GRPC_SCHEMA_TIMEOUT_MS must be a positive integer in milliseconds"
+        ));
+    }
+    Ok(timeout)
 }
 
 fn normalize_set_name(value: Option<String>) -> Option<String> {
@@ -80,5 +102,13 @@ mod tests {
             normalize_set_name(Some("public-tools".to_string())),
             Some("public-tools".to_string())
         );
+    }
+
+    #[test]
+    fn grpc_schema_timeout_rejects_zero_and_non_numbers() {
+        assert_eq!(parse_grpc_schema_timeout(None).unwrap(), 5_000);
+        assert_eq!(parse_grpc_schema_timeout(Some("1".to_string())).unwrap(), 1);
+        assert!(parse_grpc_schema_timeout(Some("0".to_string())).is_err());
+        assert!(parse_grpc_schema_timeout(Some("bad".to_string())).is_err());
     }
 }

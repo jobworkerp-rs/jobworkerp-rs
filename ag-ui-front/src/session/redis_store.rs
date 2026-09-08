@@ -308,64 +308,68 @@ mod tests {
         }
     }
 
+    fn test_run_id(prefix: &str) -> String {
+        format!("{prefix}_{}", uuid::Uuid::new_v4())
+    }
+
     // Integration tests require running Redis instance
 
     #[tokio::test]
     async fn test_redis_store_and_retrieve_event() {
         let pool = create_test_pool().await;
         let store = RedisEventStore::new(pool, 100, 3600);
-        let run_id = "test_run_store_1";
+        let run_id = test_run_id("test_run_store");
 
         // Clean up before test
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
 
         let event = create_test_event(1);
-        store.store_event(run_id, 0, event.clone()).await;
+        store.store_event(&run_id, 0, event.clone()).await;
 
-        let events = store.get_all_events(run_id).await;
+        let events = store.get_all_events(&run_id).await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, 0);
 
         // Cleanup
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
     }
 
     #[tokio::test]
     async fn test_redis_get_events_since() {
         let pool = create_test_pool().await;
         let store = RedisEventStore::new(pool, 100, 3600);
-        let run_id = "test_run_since_1";
+        let run_id = test_run_id("test_run_since");
 
         // Clean up before test
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
 
         for i in 0..5 {
-            store.store_event(run_id, i, create_test_event(i)).await;
+            store.store_event(&run_id, i, create_test_event(i)).await;
         }
 
-        let events = store.get_events_since(run_id, 2).await;
+        let events = store.get_events_since(&run_id, 2).await;
         assert_eq!(events.len(), 2); // Events 3 and 4
         assert_eq!(events[0].0, 3);
         assert_eq!(events[1].0, 4);
 
         // Cleanup
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
     }
 
     #[tokio::test]
     async fn test_redis_max_events_limit() {
         let pool = create_test_pool().await;
         let store = RedisEventStore::new(pool, 3, 3600);
-        let run_id = "test_run_limit_1";
+        let run_id = test_run_id("test_run_limit");
 
         // Clean up before test
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
 
         for i in 0..5 {
-            store.store_event(run_id, i, create_test_event(i)).await;
+            store.store_event(&run_id, i, create_test_event(i)).await;
         }
 
-        let events = store.get_all_events(run_id).await;
+        let events = store.get_all_events(&run_id).await;
         assert_eq!(events.len(), 3);
         // Should keep the last 3 events (2, 3, 4)
         assert_eq!(events[0].0, 2);
@@ -373,21 +377,21 @@ mod tests {
         assert_eq!(events[2].0, 4);
 
         // Cleanup
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
     }
 
     #[tokio::test]
     async fn test_redis_clear_events() {
         let pool = create_test_pool().await;
         let store = RedisEventStore::new(pool, 100, 3600);
-        let run_id = "test_run_clear_1";
+        let run_id = test_run_id("test_run_clear");
 
-        store.store_event(run_id, 0, create_test_event(0)).await;
-        store.store_event(run_id, 1, create_test_event(1)).await;
+        store.store_event(&run_id, 0, create_test_event(0)).await;
+        store.store_event(&run_id, 1, create_test_event(1)).await;
 
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
 
-        let events = store.get_all_events(run_id).await;
+        let events = store.get_all_events(&run_id).await;
         assert!(events.is_empty());
     }
 
@@ -395,59 +399,59 @@ mod tests {
     async fn test_redis_get_latest_event_id() {
         let pool = create_test_pool().await;
         let store = RedisEventStore::new(pool, 100, 3600);
-        let run_id = "test_run_latest_1";
+        let run_id = test_run_id("test_run_latest");
 
         // Clean up before test
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
 
-        assert!(store.get_latest_event_id(run_id).await.is_none());
+        assert!(store.get_latest_event_id(&run_id).await.is_none());
 
-        store.store_event(run_id, 5, create_test_event(5)).await;
-        store.store_event(run_id, 10, create_test_event(10)).await;
-        store.store_event(run_id, 7, create_test_event(7)).await;
+        store.store_event(&run_id, 5, create_test_event(5)).await;
+        store.store_event(&run_id, 10, create_test_event(10)).await;
+        store.store_event(&run_id, 7, create_test_event(7)).await;
 
         // Should return the highest event ID
-        let latest = store.get_latest_event_id(run_id).await;
+        let latest = store.get_latest_event_id(&run_id).await;
         assert_eq!(latest, Some(10));
 
         // Cleanup
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
     }
 
     #[tokio::test]
     async fn test_redis_multiple_runs() {
         let pool = create_test_pool().await;
         let store = RedisEventStore::new(pool, 100, 3600);
-        let run_id_1 = "test_multi_run_1";
-        let run_id_2 = "test_multi_run_2";
+        let run_id_1 = test_run_id("test_multi_run_1");
+        let run_id_2 = test_run_id("test_multi_run_2");
 
         // Clean up before test
-        store.clear_events(run_id_1).await;
-        store.clear_events(run_id_2).await;
+        store.clear_events(&run_id_1).await;
+        store.clear_events(&run_id_2).await;
 
-        store.store_event(run_id_1, 0, create_test_event(0)).await;
-        store.store_event(run_id_1, 1, create_test_event(1)).await;
-        store.store_event(run_id_2, 0, create_test_event(10)).await;
+        store.store_event(&run_id_1, 0, create_test_event(0)).await;
+        store.store_event(&run_id_1, 1, create_test_event(1)).await;
+        store.store_event(&run_id_2, 0, create_test_event(10)).await;
 
-        let events_1 = store.get_all_events(run_id_1).await;
-        let events_2 = store.get_all_events(run_id_2).await;
+        let events_1 = store.get_all_events(&run_id_1).await;
+        let events_2 = store.get_all_events(&run_id_2).await;
 
         assert_eq!(events_1.len(), 2);
         assert_eq!(events_2.len(), 1);
 
         // Cleanup
-        store.clear_events(run_id_1).await;
-        store.clear_events(run_id_2).await;
+        store.clear_events(&run_id_1).await;
+        store.clear_events(&run_id_2).await;
     }
 
     #[tokio::test]
     async fn test_redis_store_different_event_types() {
         let pool = create_test_pool().await;
         let store = RedisEventStore::new(pool, 100, 3600);
-        let run_id = "test_run_types_1";
+        let run_id = test_run_id("test_run_types");
 
         // Clean up before test
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
 
         let run_started = AgUiEvent::RunStarted {
             run_id: "run_1".to_string(),
@@ -469,11 +473,11 @@ mod tests {
             timestamp: None,
         };
 
-        store.store_event(run_id, 0, run_started).await;
-        store.store_event(run_id, 1, step_started).await;
-        store.store_event(run_id, 2, state_snapshot).await;
+        store.store_event(&run_id, 0, run_started).await;
+        store.store_event(&run_id, 1, step_started).await;
+        store.store_event(&run_id, 2, state_snapshot).await;
 
-        let events = store.get_all_events(run_id).await;
+        let events = store.get_all_events(&run_id).await;
         assert_eq!(events.len(), 3);
 
         // Verify event types
@@ -482,7 +486,7 @@ mod tests {
         assert!(matches!(events[2].1, AgUiEvent::StateSnapshot { .. }));
 
         // Cleanup
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
     }
 
     /// Test concurrent writes to verify Lua script atomicity.
@@ -494,10 +498,13 @@ mod tests {
         let pool = create_test_pool().await;
         let max_events = 50;
         let store = std::sync::Arc::new(RedisEventStore::new(pool, max_events, 3600));
-        let run_id = "test_concurrent_writes_1";
+        // Redis integration tests can run in separate processes against the
+        // same server. A unique key prevents another invocation from clearing
+        // this set while its concurrent writes are still in progress.
+        let run_id = test_run_id("test_concurrent_writes");
 
         // Clean up before test
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
 
         // Spawn multiple tasks that write events concurrently
         let num_tasks = 10;
@@ -525,7 +532,7 @@ mod tests {
         }
 
         // Verify results
-        let events = store.get_all_events(run_id).await;
+        let events = store.get_all_events(&run_id).await;
 
         // Should have exactly max_events (or total_events if less than max)
         let expected_count = std::cmp::min(max_events, total_events);
@@ -555,7 +562,7 @@ mod tests {
         }
 
         // Cleanup
-        store.clear_events(run_id).await;
+        store.clear_events(&run_id).await;
     }
 
     /// Test that concurrent writes from multiple "runs" don't interfere with each other.
@@ -566,18 +573,19 @@ mod tests {
 
         let num_runs = 5;
         let events_per_run = 15;
+        // Keep this invocation isolated from concurrently running test
+        // processes that share the same Redis server.
+        let run_prefix = test_run_id("test_concurrent_runs");
 
         // Clean up before test
         for i in 0..num_runs {
-            store
-                .clear_events(&format!("test_concurrent_run_{}", i))
-                .await;
+            store.clear_events(&format!("{run_prefix}_{i}")).await;
         }
 
         let mut handles = Vec::new();
         for run_idx in 0..num_runs {
             let store_clone = store.clone();
-            let run_id = format!("test_concurrent_run_{}", run_idx);
+            let run_id = format!("{run_prefix}_{run_idx}");
             handles.push(tokio::spawn(async move {
                 for i in 0..events_per_run {
                     let event = create_test_event(i as u64);
@@ -593,7 +601,7 @@ mod tests {
 
         // Verify each run has exactly max_events
         for run_idx in 0..num_runs {
-            let run_id = format!("test_concurrent_run_{}", run_idx);
+            let run_id = format!("{run_prefix}_{run_idx}");
             let events = store.get_all_events(&run_id).await;
             assert_eq!(
                 events.len(),

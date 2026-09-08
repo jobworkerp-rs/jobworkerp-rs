@@ -81,17 +81,12 @@ async fn main() -> Result<()> {
 
     let function_app = app_module.function_app.clone();
     let function_set_app = app_module.function_set_app.clone();
-    let mcp_config = McpServerConfig::from_env();
+    let mcp_config = McpServerConfig::from_env()?;
 
     let bind_addr = std::env::var("MCP_ADDR").unwrap_or_else(|_| "127.0.0.1:8000".to_string());
 
-    let handler_factory = move || {
-        Ok(McpHandler::new(
-            function_app.clone(),
-            function_set_app.clone(),
-            mcp_config.clone(),
-        ))
-    };
+    let handler = McpHandler::new_resolved(function_app, function_set_app, mcp_config).await;
+    let handler_factory = move || Ok(handler.clone());
 
     // Create shutdown lock for standalone mode
     let (lock, mut wait) = shutdown::create_lock_and_wait();

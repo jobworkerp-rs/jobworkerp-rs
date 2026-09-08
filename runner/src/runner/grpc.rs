@@ -1,4 +1,5 @@
 pub mod common;
+pub mod contract;
 pub mod proto_source;
 pub mod streaming;
 pub mod unary;

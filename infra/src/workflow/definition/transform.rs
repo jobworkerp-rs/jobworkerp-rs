@@ -365,6 +365,11 @@ mod test_use_jq_and_template_transformer {
         let result =
             DefaultTransformer::execute_liquid_template(input.clone(), template, &context).unwrap();
         assert_eq!(result, "1hoge");
+
+        let template = "$${{{ key | plus: 1 }}}";
+        let result =
+            DefaultTransformer::execute_liquid_template(input, template, &context).unwrap();
+        assert_eq!(result, "2");
     }
 
     #[test]

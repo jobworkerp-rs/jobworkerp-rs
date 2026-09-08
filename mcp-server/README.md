@@ -88,6 +88,8 @@ Claude Desktop configuration example:
 | `MCP_EXCLUDE_WORKER` | Exclude Workers from tools | `false` |
 | `MCP_STREAMING` | Enable streaming execution | `false` |
 | `MCP_TIMEOUT_SEC` | Tool execution timeout in seconds | - |
+| `MCP_GRPC_SCHEMA_TIMEOUT_MS` | Fixed gRPC descriptor lookup timeout; zero or a non-integer prevents startup | `5000` |
+| `MCP_INSTRUCTIONS` | Server-wide initialize instructions used when the selected FunctionSet description is blank | Built-in text |
 
 ## Architecture
 

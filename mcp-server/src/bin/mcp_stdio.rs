@@ -96,9 +96,9 @@ async fn main() -> Result<()> {
 
     let function_app = app_module.function_app.clone();
     let function_set_app = app_module.function_set_app.clone();
-    let mcp_config = McpServerConfig::from_env();
+    let mcp_config = McpServerConfig::from_env()?;
 
-    let handler = McpHandler::new(function_app, function_set_app, mcp_config);
+    let handler = McpHandler::new_resolved(function_app, function_set_app, mcp_config).await;
 
     mcp_server::boot_stdio_server(handler).await?;
 

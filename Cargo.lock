@@ -346,6 +346,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arraydeque"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
+
+[[package]]
 name = "asn1-rs"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2345,6 +2351,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "command-utils 0.1.0 (git+https://github.com/sutr-app/command-utils.git?branch=main)",
  "futures",
  "prost",
@@ -3633,13 +3640,17 @@ dependencies = [
  "app",
  "app-wrapper",
  "axum",
+ "base64 0.22.1",
  "command-utils 0.1.0",
  "dotenvy",
  "futures",
  "infra",
  "jobworkerp-base",
  "jobworkerp-runner",
+ "jsonschema",
  "nix",
+ "prost",
+ "prost-reflect",
  "proto",
  "rmcp",
  "serde",
@@ -3648,8 +3659,10 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-util",
+ "tonic",
  "tower",
  "tracing",
+ "yaml-rust2",
 ]
 
 [[package]]
@@ -8034,6 +8047,17 @@ name = "yada"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aed111bd9e48a802518765906cbdadf0b45afb72b9c81ab049a3b86252adffdd"
+
+[[package]]
+name = "yaml-rust2"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b36710ce3a279cfce8465dbab826f161675a262950b922cb2c3663852dfe9eb0"
+dependencies = [
+ "arraydeque",
+ "encoding_rs",
+ "hashlink",
+]
 
 [[package]]
 name = "yasna"
