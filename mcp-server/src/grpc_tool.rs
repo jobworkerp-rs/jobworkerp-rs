@@ -1089,7 +1089,9 @@ fn grpc_result_schema(
     );
     output_properties.insert(
         "message".to_string(),
-        serde_json::json!({"type":["string", "null"]}),
+        // Some MCP clients do not support JSON Schema's array form of `type`.
+        // Keep the same string-or-null contract in the broadly supported form.
+        serde_json::json!({"anyOf":[{"type":"string"}, {"type":"null"}]}),
     );
     output_properties.insert(
         "bodyEncoding".to_string(),
@@ -1171,6 +1173,45 @@ mod tests {
             unary["oneOf"][0]["properties"]["output"]["properties"]["code"]["const"],
             0
         );
+    }
+
+    #[test]
+    fn result_schema_message_accepts_only_string_null_or_omission() {
+        let schema = serde_json::Value::Object(grpc_result_schema(
+            serde_json::json!({"type":"object"}),
+            GrpcMethodKind::Unary,
+        ));
+        assert_eq!(
+            schema["properties"]["output"]["properties"]["message"],
+            serde_json::json!({"anyOf":[{"type":"string"}, {"type":"null"}]})
+        );
+        let validator = jsonschema::draft202012::new(&schema).unwrap();
+        let output = |message: Option<serde_json::Value>| {
+            let mut output = serde_json::json!({
+                "code": 0,
+                "metadata": {},
+                "bodyEncoding": "json",
+                "body": {}
+            });
+            if let Some(message) = message {
+                output
+                    .as_object_mut()
+                    .expect("result output is an object")
+                    .insert("message".to_string(), message);
+            }
+            serde_json::json!({"output": output})
+        };
+
+        assert!(validator.is_valid(&output(Some(serde_json::json!("completed")))));
+        assert!(validator.is_valid(&output(Some(serde_json::Value::Null))));
+        assert!(validator.is_valid(&output(None)));
+        for invalid_message in [
+            serde_json::json!(1),
+            serde_json::json!(true),
+            serde_json::json!({"detail":"unexpected"}),
+        ] {
+            assert!(!validator.is_valid(&output(Some(invalid_message))));
+        }
     }
 
     #[test]
