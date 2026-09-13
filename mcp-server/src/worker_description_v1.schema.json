@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JobWorkerP 構造化説明 v1",
+  "description": "worker.description を YAML から JSON 相当の値へ変換した後に検証する規範 schema。RPC 定義との整合性は別途検証する。",
+  "type": "object",
+  "required": ["format", "version", "description"],
+  "additionalProperties": false,
+  "properties": {
+    "format": {"const": "jobworkerp-description"},
+    "version": {"type": "integer", "const": 1},
+    "description": {
+      "type": "string",
+      "description": "tool 全体の用途、前提条件、操作順序、結果の解釈、副作用や再試行時の注意。空・空白のみの場合は runner method 説明を使用する。"
+    },
+    "rpc": {
+      "$ref": "#/$defs/nonBlankString",
+      "description": "期待する固定 RPC 名。指定時は先頭の / の有無を正規化して照合する。"
+    },
+    "parameters": {
+      "type": "object",
+      "description": "最上位入力 field の canonical JSON 名から注釈への対応表。キーの存在は descriptor と照合する。",
+      "additionalProperties": {"$ref": "#/$defs/parameterAnnotation"}
+    }
+  },
+  "$defs": {
+    "nonBlankString": {"type": "string", "pattern": "\\S"},
+    "parameterAnnotation": {
+      "type": "object",
+      "required": ["description"],
+      "additionalProperties": false,
+      "properties": {
+        "description": {"$ref": "#/$defs/nonBlankString"},
+        "examples": {
+          "type": "array",
+          "items": true,
+          "description": "field 単独の値の例。要素の RPC 型適合は別途検証する。未指定は既存例を保持、空配列は削除。"
+        }
+      }
+    }
+  }
+}

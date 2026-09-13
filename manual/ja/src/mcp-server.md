@@ -94,6 +94,8 @@ stdin/stdout で通信するクライアント（Claude Desktop など）向け�
 | `MCP_EXCLUDE_WORKER` | Worker をツールリストから除外 | `false` |
 | `MCP_STREAMING` | ストリーミングジョブの出力を結果に集約 | `false` |
 | `MCP_TIMEOUT_SEC` | ツール実行のタイムアウト（秒） | - |
+| `MCP_GRPC_SCHEMA_TIMEOUT_MS` | 固定 gRPC の descriptor 取得タイムアウト。0 または整数以外では起動に失敗します。 | `5000` |
+| `MCP_INSTRUCTIONS` | 選択された FunctionSet の description が空白のみの場合に使う、サーバー全体の initialize instructions。 | 組み込み文言 |
 
 ## 公開されるツール
 
@@ -105,6 +107,8 @@ MCP Server は 2 種類のツールを公開します。
 `MCP_EXCLUDE_RUNNER` / `MCP_EXCLUDE_WORKER` でどちらか一方のみを公開したり、`MCP_SET_NAME` で厳選した [FunctionSet](./function.md) のみを公開できます。
 
 複数メソッドを持つ Runner/Worker（MCP/Plugin Runner、`WORKFLOW` Runner の `run`/`create`、`LLM` Runner の `completion`/`chat`）は `名前___メソッド` 形式のツールとして公開されます。例: `mcp-server-fetch___fetch`、`my-workflow-worker___create`。
+
+固定設定された gRPC Worker は、RPC descriptor を解決でき、かつ `response_type=DIRECT` の場合にのみ個別の MCP ツールとして公開されます。`NO_RESULT` の Worker は呼び出し結果を MCP 応答として返せないため公開されません。
 
 ## ツール呼び出し形式
 

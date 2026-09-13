@@ -40,6 +40,9 @@ pub struct EnqueuedFunction {
     pub job_id: proto::jobworkerp::data::JobId,
     pub runner_name: String,
     pub result: Option<serde_json::Value>,
+    /// The untransformed job result, for protocol adapters that need runner
+    /// metadata and binary output rather than the LLM-oriented JSON value.
+    pub raw_result: Option<proto::jobworkerp::data::JobResult>,
     pub is_streaming: bool,
     /// Pre-started result listener for streaming jobs (started immediately after enqueue
     /// to avoid missing pubsub events). None for non-streaming jobs.
@@ -55,6 +58,7 @@ impl std::fmt::Debug for EnqueuedFunction {
             .field("job_id", &self.job_id)
             .field("runner_name", &self.runner_name)
             .field("result", &self.result)
+            .field("raw_result", &self.raw_result.as_ref().map(|_| "..."))
             .field("is_streaming", &self.is_streaming)
             .field("result_handle", &self.result_handle.as_ref().map(|_| "..."))
             .field("using", &self.using)
@@ -1072,6 +1076,7 @@ pub trait FunctionApp:
                 job_id,
                 runner_name,
                 result: None,
+                raw_result: None,
                 is_streaming: true,
                 result_handle: Some(result_handle),
                 using: using_for_result,
@@ -1092,6 +1097,7 @@ pub trait FunctionApp:
                 )
                 .await?;
 
+            let raw_result = job_result.clone();
             let result = if let Some(jr) = job_result {
                 let rid = runner
                     .id
@@ -1117,6 +1123,7 @@ pub trait FunctionApp:
                 job_id,
                 runner_name,
                 result,
+                raw_result,
                 is_streaming: false,
                 result_handle: None,
                 using: using_for_result,
@@ -1248,6 +1255,7 @@ pub trait FunctionApp:
                         job_id,
                         runner_name,
                         result: None,
+                        raw_result: None,
                         is_streaming: true,
                         result_handle: Some(result_handle),
                         using: using_for_result,
@@ -1266,6 +1274,7 @@ pub trait FunctionApp:
                         )
                         .await?;
 
+                    let raw_result = job_result.clone();
                     let result = if let Some(jr) = job_result {
                         match self.extract_job_result_output(jr) {
                             Ok(bytes) => {
@@ -1297,6 +1306,7 @@ pub trait FunctionApp:
                         job_id,
                         runner_name,
                         result,
+                        raw_result,
                         is_streaming: false,
                         result_handle: None,
                         using: using_for_result,

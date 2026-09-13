@@ -94,6 +94,8 @@ stdio transport for clients that communicate over stdin/stdout, such as Claude D
 | `MCP_EXCLUDE_WORKER` | Exclude Workers from the tool list | `false` |
 | `MCP_STREAMING` | Collect streaming job output into the result | `false` |
 | `MCP_TIMEOUT_SEC` | Tool execution timeout (seconds) | - |
+| `MCP_GRPC_SCHEMA_TIMEOUT_MS` | Timeout for fixed gRPC descriptor lookup. Zero or a non-integer prevents startup. | `5000` |
+| `MCP_INSTRUCTIONS` | Server-wide initialize instructions when the selected FunctionSet has no non-blank description. | Built-in text |
 
 ## Exposed Tools
 
@@ -105,6 +107,8 @@ The MCP Server exposes two kinds of tools:
 Use `MCP_EXCLUDE_RUNNER` / `MCP_EXCLUDE_WORKER` to expose only one kind, or `MCP_SET_NAME` to expose a curated [FunctionSet](./function.md).
 
 Runners and Workers that support multiple methods (MCP/Plugin runners, the `WORKFLOW` runner's `run`/`create`, the `LLM` runner's `completion`/`chat`) are exposed as `name___method` tools. For example, `mcp-server-fetch___fetch` or `my-workflow-worker___create`.
+
+A fixed gRPC Worker is exposed as an individual MCP tool only when its RPC descriptor can be resolved and its `response_type` is `DIRECT`. A `NO_RESULT` Worker cannot return a call result to MCP, so it is not exposed.
 
 ## Tool Call Format
 

@@ -8,9 +8,8 @@
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use genai::Client;
 use genai::embed::EmbedOptions;
-use genai::resolver::{Endpoint, ServiceTargetResolver};
-use genai::{Client, ServiceTarget};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
 
 use super::{
@@ -25,35 +24,13 @@ pub struct GenaiEmbeddingService {
 
 impl GenaiEmbeddingService {
     pub async fn new(settings: GenaiRunnerSettings) -> Result<Self> {
-        let endpoint_url = settings.base_url.clone();
         // The resolver must respect the service target genai already built from
         // the *request* model (embedding supports a per-job model override via
         // LlmEmbeddingArgs.model), and only override the endpoint with a custom
         // base URL. Re-resolving from settings.model here would silently ignore
         // the override and send requests to the wrong provider/model.
-        let target_resolver = ServiceTargetResolver::from_resolver_async_fn(
-            move |mut service_target: ServiceTarget| -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<ServiceTarget, genai::resolver::Error>>
-                        + Send,
-                >,
-            > {
-                let endpoint_url = endpoint_url.clone();
-                Box::pin(async move {
-                    if let Some(url) = endpoint_url
-                        && !url.is_empty()
-                    {
-                        let normalized = crate::llm::common::normalize_genai_endpoint_url(&url)
-                            .map_err(|e| {
-                                genai::resolver::Error::Custom(format!(
-                                    "Failed to parse endpoint URL={url} : {e:#?}"
-                                ))
-                            })?;
-                        service_target.endpoint = Endpoint::from_owned(normalized);
-                    }
-                    Ok(service_target)
-                })
-            },
+        let target_resolver = crate::llm::common::request_model_genai_service_target_resolver(
+            settings.base_url.clone(),
         );
         let client = Client::builder()
             .with_service_target_resolver(target_resolver)

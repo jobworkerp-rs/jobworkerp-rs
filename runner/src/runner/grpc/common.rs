@@ -4,7 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use command_utils::protobuf::{ProtobufDescriptor, ProtobufDescriptorLoader};
 use grpc_utils::reflection::GrpcReflectionClient;
 use memory_utils::cache::moka::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
-use prost_reflect::{DescriptorPool, MessageDescriptor};
+use prost_reflect::{DescriptorPool, MessageDescriptor, MethodDescriptor};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -136,6 +136,12 @@ impl GrpcConnection {
         self.settings_metadata = settings.metadata.clone();
         self.settings_timeout = settings.timeout;
         self.settings_as_json = settings.as_json;
+        if let Some(auth_token) = &settings.auth_token
+            && !auth_token.is_empty()
+        {
+            self.auth_token = Some(auth_token.clone());
+            tracing::debug!("Authorization token set for future requests");
+        }
 
         if let Some(proto_source) = &settings.proto {
             let proto = fetch_proto_source(
@@ -149,6 +155,10 @@ impl GrpcConnection {
 
         if self.use_reflection && settings.proto.is_none() {
             let reflection_channel = channel.clone();
+            let mut reflection_metadata = self.settings_metadata.clone();
+            if let Some(token) = &self.auth_token {
+                reflection_metadata.insert("authorization".to_string(), format!("Bearer {token}"));
+            }
             self.reflection_client = Some(
                 GrpcReflectionClient::connect(
                     endpoint,
@@ -156,6 +166,7 @@ impl GrpcConnection {
                     settings
                         .connection_timeout
                         .map(|s| Duration::from_millis(s as u64)),
+                    reflection_metadata,
                 )
                 .await?,
             );
@@ -167,13 +178,6 @@ impl GrpcConnection {
                     services
                 );
             }
-        }
-
-        if let Some(auth_token) = &settings.auth_token
-            && !auth_token.is_empty()
-        {
-            self.auth_token = Some(auth_token.clone());
-            tracing::debug!("Authorization token set for future requests");
         }
 
         self.client = Some(tonic::client::Grpc::new(channel));
@@ -338,6 +342,60 @@ impl GrpcConnection {
         } else {
             Err(anyhow!("No reflection client or descriptor pool available"))
         }
+    }
+
+    /// Resolve the RPC method descriptor from the configured proto or reflection.
+    pub async fn get_method_descriptor(
+        &self,
+        method_path: &str,
+        descriptor_pool: Option<&DescriptorPool>,
+    ) -> Result<MethodDescriptor> {
+        if let Some(pool) = descriptor_pool {
+            return Self::get_method_from_descriptor_pool(pool, method_path);
+        }
+        let (service_name, method_name) = Self::parse_method_path(method_path)?;
+        let reflection = self
+            .reflection_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("No reflection client or descriptor pool available"))?;
+        let pool = reflection
+            .get_service_with_dependencies(&service_name)
+            .await?;
+        let service = pool
+            .get_service_by_name(&service_name)
+            .ok_or_else(|| anyhow!("Service {} not found", service_name))?;
+        service
+            .methods()
+            .find(|method| method.name() == method_name)
+            .ok_or_else(|| {
+                anyhow!(
+                    "Method {} not found in service {}",
+                    method_name,
+                    service_name
+                )
+            })
+    }
+
+    /// Look up a method in an already available descriptor pool without using
+    /// any connection or reflection state.
+    pub(crate) fn get_method_from_descriptor_pool(
+        pool: &DescriptorPool,
+        method_path: &str,
+    ) -> Result<MethodDescriptor> {
+        let (service_name, method_name) = Self::parse_method_path(method_path)?;
+        let service = pool
+            .get_service_by_name(&service_name)
+            .ok_or_else(|| anyhow!("Service {} not found", service_name))?;
+        service
+            .methods()
+            .find(|method| method.name() == method_name)
+            .ok_or_else(|| {
+                anyhow!(
+                    "Method {} not found in service {}",
+                    method_name,
+                    service_name
+                )
+            })
     }
 
     pub async fn get_output_message_descriptor(

@@ -14,6 +14,7 @@
 use super::llm::{LLMCompletionRunnerSpec, LLMCompletionRunnerSpecImpl};
 use super::llm_chat::LLMChatRunnerSpecImpl;
 use super::llm_embedding::{LLMEmbeddingRunnerSpec, LLMEmbeddingRunnerSpecImpl};
+use super::llm_token_count::{LLMTokenCountRunnerSpec, LLMTokenCountRunnerSpecImpl};
 use super::{CollectStreamFuture, RunnerSpec};
 use anyhow::{Result, anyhow};
 use futures::stream::BoxStream;
@@ -26,6 +27,8 @@ pub const METHOD_COMPLETION: &str = "completion";
 pub const METHOD_CHAT: &str = "chat";
 /// Method name for embedding
 pub const METHOD_EMBEDDING: &str = "embedding";
+/// Method name for exact token counting.
+pub const METHOD_TOKEN_COUNT: &str = "token_count";
 
 /// Unified LLM Runner specification implementation
 ///
@@ -36,6 +39,7 @@ pub struct LLMUnifiedRunnerSpecImpl {
     completion_spec: LLMCompletionRunnerSpecImpl,
     chat_spec: LLMChatRunnerSpecImpl,
     embedding_spec: LLMEmbeddingRunnerSpecImpl,
+    token_count_spec: LLMTokenCountRunnerSpecImpl,
 }
 
 impl LLMUnifiedRunnerSpecImpl {
@@ -44,6 +48,7 @@ impl LLMUnifiedRunnerSpecImpl {
             completion_spec: LLMCompletionRunnerSpecImpl::new(),
             chat_spec: LLMChatRunnerSpecImpl::new(),
             embedding_spec: LLMEmbeddingRunnerSpecImpl::new(),
+            token_count_spec: LLMTokenCountRunnerSpecImpl::new(),
         }
     }
 
@@ -55,18 +60,21 @@ impl LLMUnifiedRunnerSpecImpl {
             Some(METHOD_COMPLETION) => Ok(METHOD_COMPLETION),
             Some(METHOD_CHAT) => Ok(METHOD_CHAT),
             Some(METHOD_EMBEDDING) => Ok(METHOD_EMBEDDING),
+            Some(METHOD_TOKEN_COUNT) => Ok(METHOD_TOKEN_COUNT),
             Some(other) => Err(anyhow!(
-                "Unknown method '{}' for LLM runner. Available methods: {}, {}, {}",
+                "Unknown method '{}' for LLM runner. Available methods: {}, {}, {}, {}",
                 other,
                 METHOD_COMPLETION,
                 METHOD_CHAT,
-                METHOD_EMBEDDING
+                METHOD_EMBEDDING,
+                METHOD_TOKEN_COUNT
             )),
             None => Err(anyhow!(
-                "Method specification required for LLM runner. Use '{}', '{}' or '{}'",
+                "Method specification required for LLM runner. Use '{}', '{}', '{}', or '{}'",
                 METHOD_COMPLETION,
                 METHOD_CHAT,
-                METHOD_EMBEDDING
+                METHOD_EMBEDDING,
+                METHOD_TOKEN_COUNT
             )),
         }
     }
@@ -135,6 +143,12 @@ impl RunnerSpec for LLMUnifiedRunnerSpecImpl {
             schemas.insert(METHOD_EMBEDDING.to_string(), embedding);
         }
 
+        if let Some(token_count) = LLMTokenCountRunnerSpec::method_proto_map(&self.token_count_spec)
+            .remove(proto::DEFAULT_METHOD_NAME)
+        {
+            schemas.insert(METHOD_TOKEN_COUNT.to_string(), token_count);
+        }
+
         schemas
     }
 
@@ -148,6 +162,7 @@ impl RunnerSpec for LLMUnifiedRunnerSpecImpl {
         // Embedding uses the RunnerSpec default (from_proto_map), which works
         // because embedding_spec's args_proto is import-resolved.
         let embedding_schemas = RunnerSpec::method_json_schema_map(&self.embedding_spec);
+        let token_count_schemas = RunnerSpec::method_json_schema_map(&self.token_count_spec);
 
         // Map "run" to method-specific names
         if let Some(completion_schema) = completion_schemas.get(proto::DEFAULT_METHOD_NAME) {
@@ -158,6 +173,9 @@ impl RunnerSpec for LLMUnifiedRunnerSpecImpl {
         }
         if let Some(embedding_schema) = embedding_schemas.get(proto::DEFAULT_METHOD_NAME) {
             schemas.insert(METHOD_EMBEDDING.to_string(), embedding_schema.clone());
+        }
+        if let Some(token_count_schema) = token_count_schemas.get(proto::DEFAULT_METHOD_NAME) {
+            schemas.insert(METHOD_TOKEN_COUNT.to_string(), token_count_schema.clone());
         }
 
         schemas
@@ -187,6 +205,7 @@ impl RunnerSpec for LLMUnifiedRunnerSpecImpl {
             // Embedding is non-streaming; use the default RunnerSpec collect
             // (returns the single item / error passthrough).
             Ok(METHOD_EMBEDDING) => self.embedding_spec.collect_stream(stream, using),
+            Ok(METHOD_TOKEN_COUNT) => self.token_count_spec.collect_stream(stream, using),
             Ok(_) => {
                 // Should not reach here due to resolve_method validation
                 Box::pin(
@@ -229,8 +248,12 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("Unknown method 'unknown'"));
-        // Error message must list all three available methods.
+        // Error message must list all available methods.
         assert!(msg.contains("embedding"), "should list embedding: {msg}");
+        assert!(
+            msg.contains("token_count"),
+            "should list token_count: {msg}"
+        );
     }
 
     #[test]
@@ -252,14 +275,15 @@ mod tests {
     }
 
     #[test]
-    fn test_method_proto_map_has_three_methods() {
+    fn test_method_proto_map_has_four_methods() {
         let runner = LLMUnifiedRunnerSpecImpl::new();
         let schemas = runner.method_proto_map();
 
         assert!(schemas.contains_key("completion"));
         assert!(schemas.contains_key("chat"));
         assert!(schemas.contains_key("embedding"));
-        assert_eq!(schemas.len(), 3);
+        assert!(schemas.contains_key("token_count"));
+        assert_eq!(schemas.len(), 4);
 
         // Verify completion method
         let completion = schemas.get("completion").unwrap();
@@ -295,14 +319,15 @@ mod tests {
     }
 
     #[test]
-    fn test_method_json_schema_map_has_three_methods() {
+    fn test_method_json_schema_map_has_four_methods() {
         let runner = LLMUnifiedRunnerSpecImpl::new();
         let schemas = runner.method_json_schema_map();
 
         assert!(schemas.contains_key("completion"));
         assert!(schemas.contains_key("chat"));
         assert!(schemas.contains_key("embedding"));
-        assert_eq!(schemas.len(), 3);
+        assert!(schemas.contains_key("token_count"));
+        assert_eq!(schemas.len(), 4);
 
         // Embedding schema must not be the silent-degradation sentinel.
         let embedding = schemas.get("embedding").unwrap();

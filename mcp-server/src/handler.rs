@@ -1,4 +1,7 @@
 use crate::config::McpServerConfig;
+use crate::grpc_tool::{
+    call_fixed_grpc_tool, call_generic_grpc_tool, fixed_grpc_tools, generic_grpc_output_schema,
+};
 use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
 use app::app::function::{FunctionApp, FunctionAppImpl};
 use app_wrapper::llm::chat::conversion::ToolConverter;
@@ -9,6 +12,7 @@ use rmcp::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// MCP Server Handler that bridges jobworkerp's FunctionApp to MCP protocol.
 ///
@@ -19,6 +23,7 @@ pub struct McpHandler {
     function_app: Arc<FunctionAppImpl>,
     function_set_app: Arc<FunctionSetAppImpl>,
     config: McpServerConfig,
+    instructions: String,
 }
 
 impl McpHandler {
@@ -32,7 +37,42 @@ impl McpHandler {
             function_app,
             function_set_app,
             config,
+            instructions: fallback_instructions(),
         }
+    }
+
+    /// Create a handler with the initialize instructions resolved once for the
+    /// connection/server lifetime. A FunctionSet description is intentionally
+    /// only used when that set is also the configured publication boundary.
+    pub async fn new_resolved(
+        function_app: Arc<FunctionAppImpl>,
+        function_set_app: Arc<FunctionSetAppImpl>,
+        config: McpServerConfig,
+    ) -> Self {
+        let mut handler = Self::new(function_app, function_set_app, config);
+        if let Some(name) = handler.config.set_name.as_deref() {
+            match handler
+                .function_set_app
+                .find_function_set_by_name(name)
+                .await
+            {
+                Ok(Some(set)) => {
+                    if let Some(description) = set.data.map(|data| data.description)
+                        && !description.trim().is_empty()
+                    {
+                        handler.instructions = description;
+                    }
+                }
+                Ok(None) => tracing::warn!(
+                    set_name = name,
+                    "MCP FunctionSet for instructions was not found"
+                ),
+                Err(error) => {
+                    tracing::warn!(set_name = name, error = %error, "failed to resolve MCP FunctionSet instructions")
+                }
+            }
+        }
+        handler
     }
 
     async fn function_set_tools(&self, set_name: &str) -> Result<ListToolsResult, McpError> {
@@ -41,20 +81,99 @@ impl McpHandler {
             .find_functions_by_set(set_name)
             .await
             .map_err(Self::map_error)?;
-        ToolConverter::convert_functions_to_mcp_tools(functions)
-            .map_err(|error| McpError::internal_error(error.to_string(), None))
+        self.project_tools(functions).await
     }
 
-    async fn ensure_tool_is_in_set(&self, name: &str) -> Result<(), McpError> {
-        let Some(set_name) = self.config.set_name.as_deref() else {
-            return Ok(());
-        };
-        let tools = self.function_set_tools(set_name).await?;
-        if tool_is_listed(&tools, name) {
-            Ok(())
-        } else {
-            Err(McpError::method_not_found::<CallToolRequestMethod>())
+    async fn project_tools(
+        &self,
+        functions: Vec<proto::jobworkerp::function::data::FunctionSpecs>,
+    ) -> Result<ListToolsResult, McpError> {
+        let mut tools = Vec::new();
+        let timeout = Duration::from_millis(self.config.grpc_schema_timeout_ms);
+        for function in functions {
+            match fixed_grpc_tools(&self.function_app, &function, timeout)
+                .await
+                .map_err(Self::map_error)?
+            {
+                Some(projected) => tools.extend(projected),
+                None => {
+                    let mut projected = ToolConverter::convert_normal_function(&function);
+                    if proto::jobworkerp::data::RunnerType::try_from(function.runner_type).ok()
+                        == Some(proto::jobworkerp::data::RunnerType::Grpc)
+                    {
+                        for tool in &mut projected {
+                            tool.output_schema = Some(Arc::new(generic_grpc_output_schema()));
+                        }
+                    }
+                    tools.extend(projected);
+                }
+            }
         }
+        Ok(ListToolsResult {
+            tools,
+            next_cursor: None,
+            meta: None,
+        })
+    }
+
+    async fn ensure_tool_is_published(&self, name: &str) -> Result<(), McpError> {
+        // Calling a tool must not resolve every fixed gRPC worker in the
+        // publication set.  Those resolutions may perform independent remote
+        // reflection requests, so only inspect the function that could own
+        // this exact tool name.
+        for function in self.publication_functions().await? {
+            let is_grpc = proto::jobworkerp::data::RunnerType::try_from(function.runner_type).ok()
+                == Some(proto::jobworkerp::data::RunnerType::Grpc);
+            let could_be_fixed = is_grpc && name.starts_with(&format!("{}___", function.name));
+            if could_be_fixed {
+                let timeout = Duration::from_millis(self.config.grpc_schema_timeout_ms);
+                match fixed_grpc_tools(&self.function_app, &function, timeout)
+                    .await
+                    .map_err(Self::map_error)?
+                {
+                    Some(tools) if tools.iter().any(|tool| tool.name == name) => return Ok(()),
+                    Some(_) => continue,
+                    None => {}
+                }
+            }
+            if ToolConverter::convert_normal_function(&function)
+                .iter()
+                .any(|tool| tool.name == name)
+            {
+                return Ok(());
+            }
+        }
+        Err(McpError::method_not_found::<CallToolRequestMethod>())
+    }
+
+    async fn publication_functions(
+        &self,
+    ) -> Result<Vec<proto::jobworkerp::function::data::FunctionSpecs>, McpError> {
+        if let Some(set_name) = self.config.set_name.as_deref() {
+            self.function_set_app
+                .find_functions_by_set(set_name)
+                .await
+                .map_err(Self::map_error)
+        } else {
+            self.function_app
+                .find_functions(
+                    self.config.exclude_runner_as_tool,
+                    self.config.exclude_worker_as_tool,
+                )
+                .await
+                .map_err(Self::map_error)
+        }
+    }
+
+    async fn is_generic_grpc_tool(&self, name: &str) -> Result<bool, McpError> {
+        let functions = self.publication_functions().await?;
+        Ok(functions.into_iter().any(|function| {
+            proto::jobworkerp::data::RunnerType::try_from(function.runner_type).ok()
+                == Some(proto::jobworkerp::data::RunnerType::Grpc)
+                && ToolConverter::convert_normal_function(&function)
+                    .iter()
+                    .any(|tool| tool.name == name)
+        }))
     }
 
     /// Map internal errors to MCP ErrorData
@@ -85,11 +204,7 @@ impl ServerHandler for McpHandler {
         // ServerInfo (InitializeResult) is #[non_exhaustive] in rmcp 2.x; build via constructor.
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::LATEST)
-            .with_instructions(
-                "jobworkerp MCP Server - Asynchronous job processing with various runners. \
-                 Available runners include COMMAND, HTTP_REQUEST, PYTHON_COMMAND, DOCKER, \
-                 LLM, WORKFLOW, GRPC, and custom plugins.",
-            )
+            .with_instructions(self.instructions.clone())
     }
 
     async fn list_tools(
@@ -108,8 +223,7 @@ impl ServerHandler for McpHandler {
                 )
                 .await
                 .map_err(Self::map_error)?;
-            ToolConverter::convert_functions_to_mcp_tools(functions)
-                .map_err(|error| McpError::internal_error(error.to_string(), None))
+            self.project_tools(functions).await
         }
     }
 
@@ -122,7 +236,39 @@ impl ServerHandler for McpHandler {
         // The internal find_runner_by_name_with_mcp() handles the "runner___method" format
         // via divide_names(), so no pre-processing is needed here.
         let name = request.name.as_ref();
-        self.ensure_tool_is_in_set(name).await?;
+        self.ensure_tool_is_published(name).await?;
+
+        let request_meta = request.meta.map(|meta| serde_json::Value::Object(meta.0));
+        let raw_arguments = request.arguments;
+        let arguments = raw_arguments.clone().unwrap_or_default();
+        if let Some(result) = call_fixed_grpc_tool(
+            &self.function_app,
+            name,
+            arguments,
+            request_meta.clone(),
+            Duration::from_millis(self.config.grpc_schema_timeout_ms),
+            self.config.timeout_sec,
+        )
+        .await
+        .map_err(Self::map_error)?
+        {
+            return Ok(result);
+        }
+        let is_generic_grpc = self.is_generic_grpc_tool(name).await?;
+        if is_generic_grpc
+            && let Some(result) = call_generic_grpc_tool(
+                &self.function_app,
+                name,
+                raw_arguments.clone().unwrap_or_default(),
+                request_meta,
+                Duration::from_millis(self.config.grpc_schema_timeout_ms),
+                self.config.timeout_sec,
+            )
+            .await
+            .map_err(Self::map_error)?
+        {
+            return Ok(result);
+        }
 
         // Arguments from the MCP client follow the per-tool schema generated by
         // ToolConverter, which differs by target:
@@ -132,7 +278,7 @@ impl ServerHandler for McpHandler {
         //   workers receive the workflow input directly. Resolved via
         //   prepare_worker_call_arguments().
         // call_function_for_llm() dispatches to the right path by name.
-        let arguments = request.arguments;
+        let arguments = raw_arguments;
 
         let meta = Arc::new(HashMap::new());
 
@@ -170,6 +316,9 @@ impl ServerHandler for McpHandler {
             }
 
             if let Some(e) = last_error {
+                if is_generic_grpc {
+                    return Ok(generic_grpc_error(e));
+                }
                 return Err(Self::map_error(e));
             }
 
@@ -188,19 +337,34 @@ impl ServerHandler for McpHandler {
                 })
             };
 
-            Ok(CallToolResult::success(vec![ContentBlock::json(
-                combined_output,
-            )?]))
+            if is_generic_grpc {
+                Ok(CallToolResult::structured(
+                    serde_json::json!({"output": combined_output}),
+                ))
+            } else {
+                Ok(CallToolResult::success(vec![ContentBlock::json(
+                    combined_output,
+                )?]))
+            }
         } else {
             // Non-streaming execution
             let result = self
                 .function_app
                 .call_function_for_llm(meta, name, arguments, self.config.timeout_sec)
-                .await
-                .map_err(Self::map_error)?;
+                .await;
+            let result = match result {
+                Ok(result) => result,
+                Err(error) if is_generic_grpc => return Ok(generic_grpc_error(error)),
+                Err(error) => return Err(Self::map_error(error)),
+            };
 
-            // Convert the result to MCP CallToolResult
-            Ok(CallToolResult::success(vec![ContentBlock::json(result)?]))
+            if is_generic_grpc {
+                Ok(CallToolResult::structured(
+                    serde_json::json!({"output": result}),
+                ))
+            } else {
+                Ok(CallToolResult::success(vec![ContentBlock::json(result)?]))
+            }
         }
     }
 
@@ -247,38 +411,52 @@ impl ServerHandler for McpHandler {
     }
 }
 
-fn tool_is_listed(tools: &ListToolsResult, name: &str) -> bool {
-    tools.tools.iter().any(|tool| tool.name == name)
+fn fallback_instructions() -> String {
+    std::env::var("MCP_INSTRUCTIONS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            "jobworkerp MCP Server - Asynchronous job processing with various runners. \
+             Available runners include COMMAND, HTTP_REQUEST, PYTHON_COMMAND, DOCKER, \
+             LLM, WORKFLOW, GRPC, and custom plugins."
+                .to_string()
+        })
+}
+
+fn generic_grpc_error(error: anyhow::Error) -> CallToolResult {
+    use jobworkerp_base::error::JobWorkerError;
+
+    let stage = if error
+        .downcast_ref::<JobWorkerError>()
+        .is_some_and(|error| matches!(error, JobWorkerError::InvalidParameter(_)))
+    {
+        "input"
+    } else {
+        "execution"
+    };
+    CallToolResult::structured_error(
+        serde_json::json!({"error":{"stage":stage,"message":error.to_string()}}),
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::tool_is_listed;
-    use rmcp::model::{ListToolsResult, Tool};
-    use std::sync::Arc;
-
-    fn listed(names: &[&str]) -> ListToolsResult {
-        ListToolsResult {
-            tools: names
-                .iter()
-                .map(|name| {
-                    Tool::new(
-                        (*name).to_string(),
-                        String::new(),
-                        Arc::new(Default::default()),
-                    )
-                })
-                .collect(),
-            next_cursor: None,
-            meta: None,
-        }
-    }
+    use super::generic_grpc_error;
+    use jobworkerp_base::error::JobWorkerError;
 
     #[test]
-    fn set_membership_allows_listed_tools_only() {
-        let tools = listed(&["lookback_recall", "lookback_issue_get"]);
-        assert!(tool_is_listed(&tools, "lookback_issue_get"));
-        assert!(!tool_is_listed(&tools, "manager_create_issue"));
-        assert!(!tool_is_listed(&tools, "COMMAND"));
+    fn generic_grpc_invalid_parameter_is_a_tool_input_error() {
+        let result =
+            generic_grpc_error(JobWorkerError::InvalidParameter("bad input".to_string()).into());
+        assert!(result.is_error.unwrap_or_default());
+        assert_eq!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|value| value.get("error"))
+                .and_then(|value| value.get("stage"))
+                .and_then(serde_json::Value::as_str),
+            Some("input")
+        );
     }
 }

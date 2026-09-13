@@ -301,12 +301,13 @@ mod test {
             .unwrap();
         assert_eq!(runner.name(), "LLM");
 
-        // Verify method_proto_map has all three methods
+        // Verify method_proto_map has all unified LLM methods.
         let methods = runner.method_proto_map();
         assert!(methods.contains_key("completion"));
         assert!(methods.contains_key("chat"));
         assert!(methods.contains_key("embedding"));
-        assert_eq!(methods.len(), 3);
+        assert!(methods.contains_key("token_count"));
+        assert_eq!(methods.len(), 4);
     }
 
     #[tokio::test]

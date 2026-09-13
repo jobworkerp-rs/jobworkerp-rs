@@ -54,6 +54,10 @@
 //! - `MCP_SET_NAME`: Expose only tools from a specific FunctionSet; unset or blank means no FunctionSet restriction
 //! - `MCP_TIMEOUT_SEC`: Request timeout (default: 60)
 //! - `MCP_STREAMING`: Enable streaming responses (default: false)
+//! - `MCP_INSTRUCTIONS`: Optional server-wide initialize instructions; a selected
+//!   FunctionSet's non-blank description takes precedence.
+//! - `MCP_GRPC_SCHEMA_TIMEOUT_MS`: Fixed gRPC descriptor lookup timeout in milliseconds
+//!   (default: 5000; zero or a non-integer fails startup)
 //! - `MCP_AUTH_ENABLED`: Enable Bearer authentication with `true` or disable it with `false`
 //!   (default: `false`; other values fail startup)
 //! - `MCP_AUTH_TOKEN_FILE`: Preferred private regular token file when
@@ -64,7 +68,10 @@
 
 mod auth;
 pub mod config;
+mod description;
+mod grpc_tool;
 pub mod handler;
+mod proto_schema;
 pub mod server;
 
 pub use auth::{McpAuthConfig, resolve_mcp_auth_config_from_env};

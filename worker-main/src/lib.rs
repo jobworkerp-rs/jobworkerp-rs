@@ -276,7 +276,7 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
     // MCP Handler setup
     let function_app = app_module.function_app.clone();
     let function_set_app = app_module.function_set_app.clone();
-    let mcp_config = McpServerConfig::from_env();
+    let mcp_config = McpServerConfig::from_env()?;
     // Check if AG-UI server is enabled
     let ag_ui_enabled = is_ag_ui_enabled();
 
@@ -327,13 +327,8 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
     let mut mcp_shutdown_recv = shutdown_recv.clone();
     let mcp_future = async move {
         let bind_addr = std::env::var("MCP_ADDR").unwrap_or_else(|_| MCP_DEFAULT_ADDR.to_string());
-        let handler_factory = move || {
-            Ok(McpHandler::new(
-                function_app.clone(),
-                function_set_app.clone(),
-                mcp_config.clone(),
-            ))
-        };
+        let handler = McpHandler::new_resolved(function_app, function_set_app, mcp_config).await;
+        let handler_factory = move || Ok(handler.clone());
         let shutdown_signal: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
             Box::pin(async move {
                 let _ = mcp_shutdown_recv.changed().await;
