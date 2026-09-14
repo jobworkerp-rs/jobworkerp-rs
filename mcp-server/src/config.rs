@@ -3,6 +3,8 @@ use serde::Deserialize;
 
 use crate::proto_schema;
 
+pub use proto_schema::DEFAULT_PROTO_SCHEMA_MAX_DEPTH;
+
 /// Configuration for MCP Server
 #[derive(Clone, Debug, Deserialize)]
 pub struct McpServerConfig {
@@ -137,7 +139,10 @@ mod tests {
 
     #[test]
     fn proto_schema_max_depth_uses_default_or_configured_value() {
-        assert_eq!(parse_proto_schema_max_depth(None).unwrap(), 8);
+        assert_eq!(
+            parse_proto_schema_max_depth(None).unwrap(),
+            proto_schema::DEFAULT_PROTO_SCHEMA_MAX_DEPTH
+        );
         assert_eq!(
             parse_proto_schema_max_depth(Some("3".to_string())).unwrap(),
             3
