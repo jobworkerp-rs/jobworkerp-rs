@@ -1,6 +1,6 @@
 # Workflow Runner
 
-The Workflow Runner is a feature that allows executing multiple jobs in a defined order or executing reusable workflows. It conforms to the workflow logic construction methods of [Serverless Workflow](https://serverlessworkflow.io/) ([DSL Specification v1.0.0](https://github.com/serverlessworkflow/specification/blob/v1.0.0/dsl.md)) — sequential task execution, branching, loops, error handling, and runtime expressions — while extending them as a custom DSL integrated with the jobworkerp-rs job execution platform. ([jobworkerp-rs Extended Schema](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/runner/schema/workflow.yaml))
+The Workflow Runner is a feature that allows executing multiple jobs in a defined order or executing reusable workflows. It conforms to the workflow logic construction methods of [Open Workflow](https://open-workflow-specification.org/) ([DSL Specification v1.0.0](https://github.com/open-workflow-specification/specification/blob/v1.0.0/dsl.md)) — sequential task execution, branching, loops, error handling, and runtime expressions — while extending them as a custom DSL integrated with the jobworkerp-rs job execution platform. ([jobworkerp-rs Extended Schema](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/runner/schema/workflow.yaml))
 
 ## WORKFLOW Runner (Unified)
 
@@ -314,19 +314,20 @@ do:
 
 ## Schema Definition
 
-- [Serverless Workflow DSL Specification v1.0.0](https://github.com/serverlessworkflow/specification/blob/v1.0.0/dsl.md) - The base official DSL specification
-- [Serverless Workflow DSL Reference v1.0.0](https://github.com/serverlessworkflow/specification/blob/v1.0.0/dsl-reference.md) - Detailed reference for official DSL tasks and properties
+- [Open Workflow DSL Specification v1.0.0](https://github.com/open-workflow-specification/specification/blob/v1.0.0/dsl.md) - The base official DSL specification
+- [Open Workflow DSL Reference v1.0.0](https://github.com/open-workflow-specification/specification/blob/v1.0.0/dsl-reference.md) - Detailed reference for official DSL tasks and properties
+- [Open Workflow Schema v1.0.0](https://open-workflow-specification.org/schemas/1.0.0/workflow.json) - The official JSON Schema
 - [jobworkerp-rs Extended Schema (runner/schema/workflow.yaml)](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/runner/schema/workflow.yaml) - Schema definition with jobworkerp-rs-specific extensions
 
 ## Creating Workflows with Agent Skill
 
-By installing the [jobworkerp-workflow-plugin](https://github.com/jobworkerp-rs/jobworkerp-workflow-plugin) in [Claude Code](https://docs.anthropic.com/en/docs/claude-code), the `/jobworkerp-workflow` Skill becomes available. This Skill allows you to describe workflow requirements in natural language and automatically generate YAML definitions compliant with jobworkerp-rs Custom Serverless Workflow DSL v1.0.0.
+By installing the [jobworkerp-workflow-plugin](https://github.com/jobworkerp-rs/jobworkerp-workflow-plugin) in [Claude Code](https://docs.anthropic.com/en/docs/claude-code), the `/jobworkerp-workflow` Skill becomes available. This Skill allows you to describe workflow requirements in natural language and automatically generate YAML definitions compliant with jobworkerp-rs Custom Open Workflow DSL v1.0.0.
 
 The Skill references DSL specifications including function/runner/worker task definitions, runner settings/arguments schemas, jq/Liquid variable expansion, flow control (for, switch, fork), and error handling (try-catch) to generate accurate workflows.
 
 For setup instructions, see the [jobworkerp-workflow-plugin repository](https://github.com/jobworkerp-rs/jobworkerp-workflow-plugin).
 
-## Differences from the Official Serverless Workflow Specification
+## Differences from the Official Open Workflow Specification
 
 The jobworkerp-rs workflow DSL adopts the logic construction aspects of the official specification, but does not conform to its ecosystem or operational features.
 
@@ -343,7 +344,7 @@ The jobworkerp-rs workflow DSL adopts the logic construction aspects of the offi
 - `run.shell`: `withMemoryMonitoring`, `treatNonzeroAsError`, and `successExitCodes` are jobworkerp extensions. They affect monitoring and exit-code-to-task-failure handling.
 - `run.container`: `timeoutSec`, `treatNonzeroAsError`, and `successExitCodes` are jobworkerp extensions. They affect job timeout and exit-code-to-task-failure handling.
 - `await` is a common run option available on **every** `run.*` instance (`run.runner`, `run.function`, `run.worker`, `run.script`, `run.workflow`, `run.shell`, `run.container`). `await: false` enqueues the job fire-and-forget without waiting and continues with the current task input as the task output. The default is `await: true`. (Under `useStreaming: true`, `await: false` is rejected because streaming must collect a runner result.)
-- `return` is available on the process tasks `run.script`, `run.shell`, and `run.container` because those produce a process result `{code, stdout, stderr}`; runner / function / worker / workflow have runner-defined output types and reject `return`. `return` accepts `stdout`, `stderr`, `code`, `all`, and `none`; the default is `stdout` (the **raw stdout string**), and `return: all` produces `{code, stdout, stderr}`. For `run.script`, the default `stdout` returns the raw stdout text as-is — it is no longer auto-parsed as JSON, matching the Serverless Workflow v1.0.0 process-result contract. To consume structured output, have the script print JSON and parse the returned string, or use `return: all`.
+- `return` is available on the process tasks `run.script`, `run.shell`, and `run.container` because those produce a process result `{code, stdout, stderr}`; runner / function / worker / workflow have runner-defined output types and reject `return`. `return` accepts `stdout`, `stderr`, `code`, `all`, and `none`; the default is `stdout` (the **raw stdout string**), and `return: all` produces `{code, stdout, stderr}`. For `run.script`, the default `stdout` returns the raw stdout text as-is — it is no longer auto-parsed as JSON, matching the Open Workflow v1.0.0 process-result contract. To consume structured output, have the script print JSON and parse the returned string, or use `return: all`.
   - Exit-code handling differs between the process tasks. `run.shell` / `run.container` accept the `treatNonzeroAsError` and `successExitCodes` extensions and, by default, do **not** fail on a non-zero exit, so `return: code` and the `code` field of `return: all` can observe non-zero exit codes. `run.script` has no such option: a non-zero exit always fails the task before `return` is applied, so for scripts `return: code` / `return: all` only ever observe a successful exit (`0`).
 - `run.script`: streaming is not supported (the PYTHON_COMMAND runner has no streaming output), so a script task must run with `useStreaming: false` (the default). It still runs inside a streaming workflow when its own `useStreaming` is false.
 - `run.workflow`: `workflowData` / `workflowUrl` are jobworkerp extensions for specifying the nested workflow source. The official workflow process reference form is not implemented here. The parent workflow context is inherited implicitly; `workflowContext` is not a DSL field.

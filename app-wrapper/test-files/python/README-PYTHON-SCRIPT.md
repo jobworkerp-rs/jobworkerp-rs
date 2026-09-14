@@ -1,6 +1,6 @@
 # Python Script Workflow Examples
 
-このディレクトリには、Serverless Workflow v1.0.0 の Script process を使用したPythonスクリプト実行の例が含まれています。
+このディレクトリには、Open Workflow v1.0.0 の Script process を使用したPythonスクリプト実行の例が含まれています。
 
 ## 📁 ファイル一覧
 
@@ -316,7 +316,7 @@ arguments:
 - **実装ガイド**: `github/docs/workflow/script-process-security.md`
 - **セキュリティテスト**: `github/app-wrapper/tests/script_security_tests.rs`
 - **E2Eテスト**: `github/app-wrapper/tests/script_runner_e2e_test.rs`
-- **Serverless Workflow Spec**: https://serverlessworkflow.io/
+- **Open Workflow Spec**: https://open-workflow-specification.org/schemas/1.0.0/workflow.json
 
 ## ⚠️ 注意事項
 

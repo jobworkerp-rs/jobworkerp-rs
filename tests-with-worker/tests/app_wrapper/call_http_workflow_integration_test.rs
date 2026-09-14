@@ -1,4 +1,4 @@
-//! Integration test for Serverless Workflow `call: http`.
+//! Integration test for Open Workflow `call: http`.
 //!
 //! Run with:
 //! ```sh

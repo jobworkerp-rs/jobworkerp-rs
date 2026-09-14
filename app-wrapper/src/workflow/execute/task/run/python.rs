@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-/// Python script task executor implementing Serverless Workflow v1.0.0 script process
+/// Python script task executor implementing Open Workflow v1.0.0 script process
 pub struct PythonTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
     task_timeout: Duration,
@@ -74,7 +74,7 @@ impl PythonTaskExecutor {
     /// Convert script configuration to PYTHON_COMMAND arguments
     ///
     /// This method evaluates runtime expressions in arguments and injects them
-    /// as Python global variables, following Serverless Workflow v1.0.0 spec.
+    /// as Python global variables, following Open Workflow v1.0.0 spec.
     async fn to_python_command_args(
         &self,
         script_config: &workflow::ScriptConfiguration,
@@ -184,7 +184,7 @@ impl PythonTaskExecutor {
     }
 }
 
-/// Shape a `PythonCommandResult` into the Serverless Workflow v1.0.0 process
+/// Shape a `PythonCommandResult` into the Open Workflow v1.0.0 process
 /// result `{code, stdout, stderr}` and apply `return`, reusing the same adapter
 /// as run.shell / run.container so all run process tasks behave identically.
 /// `return: stdout` (the default) yields the raw stdout string — script output

@@ -1,4 +1,4 @@
-//! Integration test for Serverless Workflow `call: grpc`.
+//! Integration test for Open Workflow `call: grpc`.
 //!
 //! Run with:
 //! ```sh

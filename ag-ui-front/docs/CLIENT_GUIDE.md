@@ -137,7 +137,7 @@ Authorization: Bearer <token>
 // Inline workflow
 {
   "type": "workflow_inline",
-  "workflow": { /* Serverless Workflow YAML/JSON */ }
+  "workflow": { /* Open Workflow YAML/JSON */ }
 }
 
 // Resume from checkpoint

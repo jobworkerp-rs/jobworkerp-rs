@@ -1,7 +1,7 @@
 //! MCP-only projection of fixed gRPC workers.
 
 use crate::description::{self, ParsedDescription};
-use crate::proto_schema::{message_to_protojson_schema, oneof_exclusion_constraints};
+use crate::proto_schema::{message_to_protojson_schema_with_depth, oneof_exclusion_constraints};
 use anyhow::Result;
 use app::app::function::{EnqueuedFunction, FunctionApp, FunctionAppImpl};
 use app::app::worker::UseWorkerApp;
@@ -703,6 +703,7 @@ pub async fn fixed_grpc_tools(
     function_app: &FunctionAppImpl,
     function: &FunctionSpecs,
     timeout: Duration,
+    proto_schema_max_depth: usize,
 ) -> Result<Option<Vec<Tool>>> {
     if RunnerType::try_from(function.runner_type).ok() != Some(RunnerType::Grpc) {
         return Ok(None);
@@ -746,7 +747,10 @@ pub async fn fixed_grpc_tools(
         tracing::warn!(worker = %worker.name, method, "fixed gRPC RPC shape does not match the worker's exposed methods");
         return Ok(Some(Vec::new()));
     }
-    let input_schema = match message_to_protojson_schema(&contract.input) {
+    let input_schema = match message_to_protojson_schema_with_depth(
+        &contract.input,
+        proto_schema_max_depth,
+    ) {
         Ok(schema) => schema,
         Err(error) => {
             tracing::warn!(worker = %worker.name, error = %error, "fixed gRPC worker has an unsafe input schema and is excluded from MCP tools");
@@ -758,7 +762,10 @@ pub async fn fixed_grpc_tools(
         return Ok(Some(Vec::new()));
     };
     add_proto_field_aliases(&mut input_schema, &contract.input);
-    let output = match message_to_protojson_schema(&contract.output) {
+    let output = match message_to_protojson_schema_with_depth(
+        &contract.output,
+        proto_schema_max_depth,
+    ) {
         Ok(schema) => schema,
         Err(error) => {
             tracing::warn!(worker = %worker.name, error = %error, "fixed gRPC worker has an unsafe output schema and is excluded from MCP tools");
@@ -1059,15 +1066,9 @@ fn non_blank_or(value: &str, fallback: &str) -> String {
 }
 
 fn grpc_result_schema(
-    mut body_schema: serde_json::Value,
+    body_schema: serde_json::Value,
     kind: GrpcMethodKind,
 ) -> serde_json::Map<String, serde_json::Value> {
-    // A nested schema with local `$defs` needs its own resource identifier;
-    // otherwise `#/$defs/...` resolves against the outer result wrapper.
-    if body_schema.get("$defs").is_some() {
-        body_schema["$id"] =
-            serde_json::Value::String("urn:jobworkerp:mcp:protobuf-response-body".to_string());
-    }
     let body_key = match kind {
         GrpcMethodKind::Unary => "body",
         GrpcMethodKind::ServerStreaming => "bodies",

@@ -24,6 +24,7 @@ async fn create_test_handler() -> Result<McpHandler> {
         timeout_sec: 30,
         streaming: false,
         grpc_schema_timeout_ms: 5_000,
+        proto_schema_max_depth: 8,
     };
 
     Ok(McpHandler::new(
@@ -76,6 +77,7 @@ async fn test_handler_with_exclude_runners() {
         timeout_sec: 30,
         streaming: false,
         grpc_schema_timeout_ms: 5_000,
+        proto_schema_max_depth: 8,
     };
 
     let handler = McpHandler::new(
@@ -106,6 +108,7 @@ async fn test_handler_with_function_set() {
         timeout_sec: 60,
         streaming: true,
         grpc_schema_timeout_ms: 5_000,
+        proto_schema_max_depth: 8,
     };
 
     let handler = McpHandler::new(
@@ -185,6 +188,7 @@ async fn test_list_tools_returns_runners() {
         timeout_sec: 30,
         streaming: false,
         grpc_schema_timeout_ms: 5_000,
+        proto_schema_max_depth: 8,
     };
 
     // Create handler to ensure it's properly configured
@@ -263,6 +267,7 @@ async fn test_streaming_config_affects_handler() {
         timeout_sec: 30,
         streaming: false,
         grpc_schema_timeout_ms: 5_000,
+        proto_schema_max_depth: 8,
     };
 
     let handler_no_streaming = McpHandler::new(
@@ -279,6 +284,7 @@ async fn test_streaming_config_affects_handler() {
         timeout_sec: 30,
         streaming: true,
         grpc_schema_timeout_ms: 5_000,
+        proto_schema_max_depth: 8,
     };
 
     let handler_streaming = McpHandler::new(

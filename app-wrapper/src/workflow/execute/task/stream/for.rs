@@ -1176,7 +1176,7 @@ mod tests {
                                     "fail_item": {
                                         "raise": {
                                             "error": {
-                                                "type": "https://serverlessworkflow.io/errors/generic",
+                                                "type": "https://open-workflow-specification.org/spec/1.0.0/errors/runtime",
                                                 "status": 500,
                                                 "title": "Intentional error for testing"
                                             }
@@ -1433,7 +1433,7 @@ mod tests {
                                     "fail_item": {
                                         "raise": {
                                             "error": {
-                                                "type": "https://serverlessworkflow.io/errors/generic",
+                                                "type": "https://open-workflow-specification.org/spec/1.0.0/errors/runtime",
                                                 "status": 500,
                                                 "title": "Intentional error for testing"
                                             }
@@ -1856,7 +1856,7 @@ mod tests {
                                     "fail_item": {
                                         "raise": {
                                             "error": {
-                                                "type": "https://serverlessworkflow.io/errors/generic",
+                                                "type": "https://open-workflow-specification.org/spec/1.0.0/errors/runtime",
                                                 "status": 500,
                                                 "title": "Intentional break error for testing"
                                             }
@@ -2808,7 +2808,7 @@ mod tests {
                                         "if": "${ $index == 1 }",
                                         "raise": {
                                             "error": {
-                                                "type": "https://serverlessworkflow.io/errors/generic",
+                                                "type": "https://open-workflow-specification.org/spec/1.0.0/errors/runtime",
                                                 "status": 500,
                                                 "title": "test failure"
                                             }
@@ -3002,7 +3002,7 @@ mod tests {
                                         "if": "${ $index == 0 }",
                                         "raise": {
                                             "error": {
-                                                "type": "https://serverlessworkflow.io/errors/generic",
+                                                "type": "https://open-workflow-specification.org/spec/1.0.0/errors/runtime",
                                                 "status": 500,
                                                 "title": "fail"
                                             }
@@ -3162,7 +3162,7 @@ mod tests {
                                             "if": "${ $index == 1 }",
                                             "raise": {
                                                 "error": {
-                                                    "type": "https://serverlessworkflow.io/errors/generic",
+                                                    "type": "https://open-workflow-specification.org/spec/1.0.0/errors/runtime",
                                                     "status": 500,
                                                     "title": "fail"
                                                 }

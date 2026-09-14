@@ -4,7 +4,7 @@
 
 ## 概要
 
-Workflow Runnerは、定義された順序で複数のジョブを実行したり、再利用可能なワークフローを実行したりするための機能です。この機能は[Serverless Workflow](https://serverlessworkflow.io/) (v1.0.0)をベースにしており、機能の削除およびjobworkerp-rs独自の拡張機能(run taskのrunner, worker)が追加されています。([詳細(schema)](runner/schema/workflow.yaml))
+Workflow Runnerは、定義された順序で複数のジョブを実行したり、再利用可能なワークフローを実行したりするための機能です。この機能は[Open Workflow](https://open-workflow-specification.org/) (v1.0.0)をベースにしており、機能の削除およびjobworkerp-rs独自の拡張機能(run taskのrunner, worker)が追加されています。([詳細(schema)](runner/schema/workflow.yaml))
 
 ## WORKFLOW ランナー（統合版）
 

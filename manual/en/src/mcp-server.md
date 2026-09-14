@@ -95,6 +95,7 @@ stdio transport for clients that communicate over stdin/stdout, such as Claude D
 | `MCP_STREAMING` | Collect streaming job output into the result | `false` |
 | `MCP_TIMEOUT_SEC` | Tool execution timeout (seconds) | - |
 | `MCP_GRPC_SCHEMA_TIMEOUT_MS` | Timeout for fixed gRPC descriptor lookup. Zero or a non-integer prevents startup. | `5000` |
+| `MCP_PROTO_SCHEMA_MAX_DEPTH` | Maximum inline expansion depth for nested messages in tool JSON schemas. Zero or a non-integer prevents startup. | `8` |
 | `MCP_INSTRUCTIONS` | Server-wide initialize instructions when the selected FunctionSet has no non-blank description. | Built-in text |
 
 ## Exposed Tools

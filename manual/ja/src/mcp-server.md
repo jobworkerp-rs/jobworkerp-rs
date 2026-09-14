@@ -95,6 +95,7 @@ stdin/stdout で通信するクライアント（Claude Desktop など）向け�
 | `MCP_STREAMING` | ストリーミングジョブの出力を結果に集約 | `false` |
 | `MCP_TIMEOUT_SEC` | ツール実行のタイムアウト（秒） | - |
 | `MCP_GRPC_SCHEMA_TIMEOUT_MS` | 固定 gRPC の descriptor 取得タイムアウト。0 または整数以外では起動に失敗します。 | `5000` |
+| `MCP_PROTO_SCHEMA_MAX_DEPTH` | ツールの JSON Schema におけるネストメッセージのインライン展開最大深さ。0 または整数以外では起動に失敗します。 | `8` |
 | `MCP_INSTRUCTIONS` | 選択された FunctionSet の description が空白のみの場合に使う、サーバー全体の initialize instructions。 | 組み込み文言 |
 
 ## 公開されるツール

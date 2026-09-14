@@ -2,7 +2,7 @@
 
 [Japanese ver.](WORKFLOW_ja.md)
 
-The Workflow Runner is a feature that allows executing multiple jobs in a defined order or executing reusable workflows. This feature is based on [Serverless Workflow](https://serverlessworkflow.io/) (v1.0.0), with some features removed and jobworkerp-rs-specific extensions added (runner and worker for run tasks). ([Details (schema)](runner/schema/workflow.yaml))
+The Workflow Runner is a feature that allows executing multiple jobs in a defined order or executing reusable workflows. This feature is based on [Open Workflow](https://open-workflow-specification.org/) (v1.0.0), with some features removed and jobworkerp-rs-specific extensions added (runner and worker for run tasks). ([Details (schema)](runner/schema/workflow.yaml))
 
 ## WORKFLOW Runner (Unified)
 

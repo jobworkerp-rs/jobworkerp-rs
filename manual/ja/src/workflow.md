@@ -2,7 +2,7 @@
 
 ## 概要
 
-Workflow Runnerは、定義された順序で複数のジョブを実行したり、再利用可能なワークフローを実行したりするための機能です。[Serverless Workflow](https://serverlessworkflow.io/) ([DSL仕様 v1.0.0](https://github.com/serverlessworkflow/specification/blob/v1.0.0/dsl.md))のワークフローロジック構築方法（タスクの順序実行、分岐、ループ、エラーハンドリング等のフロー制御とランタイム式）に準拠しつつ、jobworkerp-rs独自のジョブ実行基盤に統合した拡張DSLです。([jobworkerp-rs拡張スキーマ](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/runner/schema/workflow.yaml))
+Workflow Runnerは、定義された順序で複数のジョブを実行したり、再利用可能なワークフローを実行したりするための機能です。[Open Workflow](https://open-workflow-specification.org/) ([DSL仕様 v1.0.0](https://github.com/open-workflow-specification/specification/blob/v1.0.0/dsl.md))のワークフローロジック構築方法（タスクの順序実行、分岐、ループ、エラーハンドリング等のフロー制御とランタイム式）に準拠しつつ、jobworkerp-rs独自のジョブ実行基盤に統合した拡張DSLです。([jobworkerp-rs拡張スキーマ](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/runner/schema/workflow.yaml))
 
 ## WORKFLOW ランナー（統合版）
 
@@ -316,19 +316,20 @@ do:
 
 ## スキーマ定義
 
-- [Serverless Workflow DSL仕様 v1.0.0](https://github.com/serverlessworkflow/specification/blob/v1.0.0/dsl.md) - ベースとなる公式DSL仕様
-- [Serverless Workflow DSLリファレンス v1.0.0](https://github.com/serverlessworkflow/specification/blob/v1.0.0/dsl-reference.md) - 公式DSLの各タスク・プロパティの詳細リファレンス
+- [Open Workflow DSL仕様 v1.0.0](https://github.com/open-workflow-specification/specification/blob/v1.0.0/dsl.md) - ベースとなる公式DSL仕様
+- [Open Workflow DSLリファレンス v1.0.0](https://github.com/open-workflow-specification/specification/blob/v1.0.0/dsl-reference.md) - 公式DSLの各タスク・プロパティの詳細リファレンス
+- [Open Workflow Schema v1.0.0](https://open-workflow-specification.org/schemas/1.0.0/workflow.json) - 公式JSON Schema
 - [jobworkerp-rs拡張スキーマ (runner/schema/workflow.yaml)](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/runner/schema/workflow.yaml) - jobworkerp-rs固有の拡張を含むスキーマ定義
 
 ## エージェントSkillによるワークフロー作成
 
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code)に[jobworkerp-workflow-plugin](https://github.com/jobworkerp-rs/jobworkerp-workflow-plugin)をインストールすると、`/jobworkerp-workflow` Skillが利用可能になります。このSkillを使うことで、自然言語でワークフローの要件を記述するだけで、jobworkerp-rs Custom Serverless Workflow DSL v1.0.0に準拠したYAML定義を自動生成できます。
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code)に[jobworkerp-workflow-plugin](https://github.com/jobworkerp-rs/jobworkerp-workflow-plugin)をインストールすると、`/jobworkerp-workflow` Skillが利用可能になります。このSkillを使うことで、自然言語でワークフローの要件を記述するだけで、jobworkerp-rs Custom Open Workflow DSL v1.0.0に準拠したYAML定義を自動生成できます。
 
 Skillはfunction/runner/workerタスク定義、各ランナーの設定・引数スキーマ、jq/Liquid変数展開、フロー制御（for, switch, fork）、エラーハンドリング（try-catch）等のDSL仕様を参照して正確なワークフローを生成します。
 
 セットアップ手順は [jobworkerp-workflow-plugin リポジトリ](https://github.com/jobworkerp-rs/jobworkerp-workflow-plugin) を参照してください。
 
-## 公式Serverless Workflow仕様との違い
+## 公式Open Workflow仕様との違い
 
 jobworkerp-rsのワークフローDSLは、公式仕様のロジック構築部分を採用していますが、エコシステムや運用機能には準拠していません。
 
@@ -345,7 +346,7 @@ jobworkerp-rsのワークフローDSLは、公式仕様のロジック構築部�
 - `run.shell`: `withMemoryMonitoring`、`treatNonzeroAsError`、`successExitCodes` は jobworkerp 拡張です。監視と、終了コードをタスク失敗として扱う条件に影響します。
 - `run.container`: `timeoutSec`、`treatNonzeroAsError`、`successExitCodes` は jobworkerp 拡張です。ジョブタイムアウトと、終了コードをタスク失敗として扱う条件に影響します。
 - `await` は **すべての** `run.*` インスタンス（`run.runner` / `run.function` / `run.worker` / `run.script` / `run.workflow` / `run.shell` / `run.container`）で利用できる共通オプションです。`await: false` は完了を待たずジョブを fire-and-forget で投入し、現在のタスク入力をタスク出力にして続行します。デフォルトは `await: true` です。（`useStreaming: true` の場合、ストリーミングは runner result の収集を前提とするため `await: false` は拒否されます。）
-- `return` は process result `{code, stdout, stderr}` を生成する process タスク（`run.script` / `run.shell` / `run.container`）で利用できます。runner / function / worker / workflow は runner 定義の出力型を持つため `return` を拒否します。`return` は `stdout`、`stderr`、`code`、`all`、`none` を受け付け、デフォルトは `stdout`（**stdout の生文字列**）、`return: all` は `{code, stdout, stderr}` を出力します。`run.script` のデフォルト `stdout` は stdout のテキストをそのまま返します。Serverless Workflow v1.0.0 の process result 契約に合わせ、**JSON への自動パースは行いません**。構造化出力を扱うには、スクリプトで JSON を出力して返り値の文字列をパースするか、`return: all` を使用してください。
+- `return` は process result `{code, stdout, stderr}` を生成する process タスク（`run.script` / `run.shell` / `run.container`）で利用できます。runner / function / worker / workflow は runner 定義の出力型を持つため `return` を拒否します。`return` は `stdout`、`stderr`、`code`、`all`、`none` を受け付け、デフォルトは `stdout`（**stdout の生文字列**）、`return: all` は `{code, stdout, stderr}` を出力します。`run.script` のデフォルト `stdout` は stdout のテキストをそのまま返します。Open Workflow v1.0.0 の process result 契約に合わせ、**JSON への自動パースは行いません**。構造化出力を扱うには、スクリプトで JSON を出力して返り値の文字列をパースするか、`return: all` を使用してください。
   - 終了コードの扱いは process タスク間で異なります。`run.shell` / `run.container` は `treatNonzeroAsError` / `successExitCodes` 拡張を受け付け、デフォルトでは非ゼロ終了をタスク失敗にしません。そのため `return: code` や `return: all` の `code` フィールドで非ゼロの終了コードを取得できます。`run.script` にはこの手段がなく、非ゼロ終了は `return` 適用前に必ずタスク失敗となるため、script の `return: code` / `return: all` で観測できる `code` は成功時（`0`）のみです。
 - `run.script`: streaming は未対応です（PYTHON_COMMAND runner にストリーミング出力がないため）。script タスクは `useStreaming: false`（デフォルト）で実行する必要があります。タスク自身の `useStreaming` が false であれば、streaming 実行中のワークフロー内でも実行できます。
 - `run.workflow`: `workflowData` / `workflowUrl` はネストしたワークフローの source を指定する jobworkerp 拡張です。公式の workflow process 参照形式はここでは未実装です。親 workflow context は暗黙的に引き継がれ、`workflowContext` は DSL field として定義しません。

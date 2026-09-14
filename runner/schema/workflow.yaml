@@ -3,13 +3,13 @@
 #     yq --output-format=json runner/schema/workflow.yaml > runner/schema/workflow.json
 #     cargo typify runner/schema/workflow.json
 #
-$id: urn:jobworkerp-rs:schemas:serverless-workflow:1.0.0-jobworkerp:workflow
+$id: urn:jobworkerp-rs:schemas:open-workflow:1.0.0-jobworkerp:workflow
 $schema: https://json-schema.org/draft/2020-12/schema
 title: WorkflowSchema
 description: >-
   Workflow schema supporting job execution with functions and tools.
-  This is a jobworkerp extension schema based on Serverless Workflow 1.0.0,
-  not the official schema URL.
+  This is a jobworkerp extension schema based on Open Workflow 1.0.0.
+  The official schema is https://open-workflow-specification.org/schemas/1.0.0/workflow.json.
   
   Runtime expressions are supported in fields marked in descriptions:
   - jq syntax: ${.key.subkey} for data access, ${$task.input} for context
@@ -384,7 +384,7 @@ $defs:
     type: object
     $ref: "#/$defs/taskBase"
     title: CallTask
-    description: Invoke a service through a Serverless Workflow call task.
+    description: Invoke a service through an Open Workflow call task.
     required: [call, with]
     unevaluatedProperties: false
     properties:
@@ -747,7 +747,7 @@ $defs:
     type: object
     title: RunScript
     description: |
-      Execute inline or external scripts. This is close to Serverless Workflow
+      Execute inline or external scripts. This is close to Open Workflow
       v1.0.0 run.script. await is supported (await: false runs fire-and-forget),
       and return shapes the process result (stdout/stderr/code/all/none, default
       stdout). Unlike run.shell / run.container, run.script has no

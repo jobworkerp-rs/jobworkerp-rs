@@ -4405,14 +4405,14 @@ impl RunRunner {
         Default::default()
     }
 }
-#[doc = "Execute inline or external scripts. This is close to Serverless Workflow\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\nand return shapes the process result (stdout/stderr/code/all/none, default\nstdout). Unlike run.shell / run.container, run.script has no\ntreatNonzeroAsError / successExitCodes option: a non-zero exit always\nfails the task before return is applied, so return: code / all only\nobserve a successful exit (0).\n"]
+#[doc = "Execute inline or external scripts. This is close to Open Workflow\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\nand return shapes the process result (stdout/stderr/code/all/none, default\nstdout). Unlike run.shell / run.container, run.script has no\ntreatNonzeroAsError / successExitCodes option: a non-zero exit always\nfails the task before return is applied, so return: code / all only\nobserve a successful exit (0).\n"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"RunScript\","]
-#[doc = "  \"description\": \"Execute inline or external scripts. This is close to Serverless Workflow\\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\\nand return shapes the process result (stdout/stderr/code/all/none, default\\nstdout). Unlike run.shell / run.container, run.script has no\\ntreatNonzeroAsError / successExitCodes option: a non-zero exit always\\nfails the task before return is applied, so return: code / all only\\nobserve a successful exit (0).\\n\","]
+#[doc = "  \"description\": \"Execute inline or external scripts. This is close to Open Workflow\\nv1.0.0 run.script. await is supported (await: false runs fire-and-forget),\\nand return shapes the process result (stdout/stderr/code/all/none, default\\nstdout). Unlike run.shell / run.container, run.script has no\\ntreatNonzeroAsError / successExitCodes option: a non-zero exit always\\nfails the task before return is applied, so return: code / all only\\nobserve a successful exit (0).\\n\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"script\""]
@@ -6861,15 +6861,15 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
             })
     }
 }
-#[doc = "Workflow schema supporting job execution with functions and tools. This is a jobworkerp extension schema based on Serverless Workflow 1.0.0, not the official schema URL.\nRuntime expressions are supported in fields marked in descriptions: - jq syntax: ${.key.subkey} for data access, ${$task.input} for context - liquid syntax: $${..} for templates\nAvailable context variables: - Task input data: direct key access via ${.key} (only within current task context) - Task output data: direct key access via ${.key} (only within current task context) - Context vars: set by task.export, setTask (access via $variable_name for jq, {{ variable_name }} for liquid) - Workflow: access via $workflow (e.g., $workflow.input.key, $workflow.id, $workflow.definition, $workflow.context_variables) - Task: access via $task (e.g., $task.definition, $task.input, $task.raw_output, $task.output, $task.flow_directive)"]
+#[doc = "Workflow schema supporting job execution with functions and tools. This is a jobworkerp extension schema based on Open Workflow 1.0.0. The official schema is https://open-workflow-specification.org/schemas/1.0.0/workflow.json.\nRuntime expressions are supported in fields marked in descriptions: - jq syntax: ${.key.subkey} for data access, ${$task.input} for context - liquid syntax: $${..} for templates\nAvailable context variables: - Task input data: direct key access via ${.key} (only within current task context) - Task output data: direct key access via ${.key} (only within current task context) - Context vars: set by task.export, setTask (access via $variable_name for jq, {{ variable_name }} for liquid) - Workflow: access via $workflow (e.g., $workflow.input.key, $workflow.id, $workflow.definition, $workflow.context_variables) - Task: access via $task (e.g., $task.definition, $task.input, $task.raw_output, $task.output, $task.flow_directive)"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"$id\": \"urn:jobworkerp-rs:schemas:serverless-workflow:1.0.0-jobworkerp:workflow\","]
+#[doc = "  \"$id\": \"urn:jobworkerp-rs:schemas:open-workflow:1.0.0-jobworkerp:workflow\","]
 #[doc = "  \"title\": \"WorkflowSchema\","]
-#[doc = "  \"description\": \"Workflow schema supporting job execution with functions and tools. This is a jobworkerp extension schema based on Serverless Workflow 1.0.0, not the official schema URL.\\nRuntime expressions are supported in fields marked in descriptions: - jq syntax: ${.key.subkey} for data access, ${$task.input} for context - liquid syntax: $${..} for templates\\nAvailable context variables: - Task input data: direct key access via ${.key} (only within current task context) - Task output data: direct key access via ${.key} (only within current task context) - Context vars: set by task.export, setTask (access via $variable_name for jq, {{ variable_name }} for liquid) - Workflow: access via $workflow (e.g., $workflow.input.key, $workflow.id, $workflow.definition, $workflow.context_variables) - Task: access via $task (e.g., $task.definition, $task.input, $task.raw_output, $task.output, $task.flow_directive)\","]
+#[doc = "  \"description\": \"Workflow schema supporting job execution with functions and tools. This is a jobworkerp extension schema based on Open Workflow 1.0.0. The official schema is https://open-workflow-specification.org/schemas/1.0.0/workflow.json.\\nRuntime expressions are supported in fields marked in descriptions: - jq syntax: ${.key.subkey} for data access, ${$task.input} for context - liquid syntax: $${..} for templates\\nAvailable context variables: - Task input data: direct key access via ${.key} (only within current task context) - Task output data: direct key access via ${.key} (only within current task context) - Context vars: set by task.export, setTask (access via $variable_name for jq, {{ variable_name }} for liquid) - Workflow: access via $workflow (e.g., $workflow.input.key, $workflow.id, $workflow.definition, $workflow.context_variables) - Task: access via $task (e.g., $task.definition, $task.input, $task.raw_output, $task.output, $task.flow_directive)\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"do\","]

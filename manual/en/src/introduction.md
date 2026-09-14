@@ -7,7 +7,7 @@ The job worker system is used to process CPU-intensive, I/O-intensive, and long-
 Using gRPC, you can define [Workers](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/proto/protobuf/jobworkerp/service/worker.proto), register [Jobs](https://github.com/jobworkerp-rs/jobworkerp-rs/blob/main/proto/protobuf/jobworkerp/service/job.proto) for task execution, and retrieve execution results.
 Per-channel parallelism control and scheduled execution allow you to distribute and schedule system resource load.
 Processing capabilities can be extended through plugins.
-It also provides [Serverless Workflow](https://serverlessworkflow.io/)-based [workflow execution](workflow.md) with LLM integration and streaming support, [MCP proxy](runners/mcp-proxy.md) for using external MCP server tools as Runners, and an MCP server mode that exposes Workers as MCP tools to external LLM applications.
+It also provides [Open Workflow](https://open-workflow-specification.org/)-based [workflow execution](workflow.md) with LLM integration and streaming support, [MCP proxy](runners/mcp-proxy.md) for using external MCP server tools as Runners, and an MCP server mode that exposes Workers as MCP tools to external LLM applications.
 
 ## Architecture Overview
 
