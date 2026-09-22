@@ -605,7 +605,7 @@ async fn prepare_streaming_job(
             )
         }
 
-        // Serverless Workflow-style/jobworkerp extension aliases backed by
+        // Open Workflow-style/jobworkerp extension aliases backed by
         // existing jobworkerp runners.
         workflow::RunTaskConfiguration::Shell(_)
         | workflow::RunTaskConfiguration::Container(_)

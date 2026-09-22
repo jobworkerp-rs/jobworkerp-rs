@@ -91,9 +91,14 @@ impl McpHandler {
         let mut tools = Vec::new();
         let timeout = Duration::from_millis(self.config.grpc_schema_timeout_ms);
         for function in functions {
-            match fixed_grpc_tools(&self.function_app, &function, timeout)
-                .await
-                .map_err(Self::map_error)?
+            match fixed_grpc_tools(
+                &self.function_app,
+                &function,
+                timeout,
+                self.config.proto_schema_max_depth,
+            )
+            .await
+            .map_err(Self::map_error)?
             {
                 Some(projected) => tools.extend(projected),
                 None => {
@@ -127,9 +132,14 @@ impl McpHandler {
             let could_be_fixed = is_grpc && name.starts_with(&format!("{}___", function.name));
             if could_be_fixed {
                 let timeout = Duration::from_millis(self.config.grpc_schema_timeout_ms);
-                match fixed_grpc_tools(&self.function_app, &function, timeout)
-                    .await
-                    .map_err(Self::map_error)?
+                match fixed_grpc_tools(
+                    &self.function_app,
+                    &function,
+                    timeout,
+                    self.config.proto_schema_max_depth,
+                )
+                .await
+                .map_err(Self::map_error)?
                 {
                     Some(tools) if tools.iter().any(|tool| tool.name == name) => return Ok(()),
                     Some(_) => continue,

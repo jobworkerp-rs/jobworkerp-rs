@@ -1,6 +1,10 @@
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 
+use crate::proto_schema;
+
+pub use proto_schema::DEFAULT_PROTO_SCHEMA_MAX_DEPTH;
+
 /// Configuration for MCP Server
 #[derive(Clone, Debug, Deserialize)]
 pub struct McpServerConfig {
@@ -16,6 +20,8 @@ pub struct McpServerConfig {
     pub streaming: bool,
     /// Timeout for descriptor acquisition used while publishing fixed gRPC tools.
     pub grpc_schema_timeout_ms: u64,
+    /// Maximum inline expansion depth for nested messages in tool JSON schemas.
+    pub proto_schema_max_depth: usize,
 }
 
 impl Default for McpServerConfig {
@@ -28,6 +34,7 @@ impl Default for McpServerConfig {
             // Most runners are non-streaming; opt in explicitly via MCP_STREAMING.
             streaming: false,
             grpc_schema_timeout_ms: 5_000,
+            proto_schema_max_depth: proto_schema::DEFAULT_PROTO_SCHEMA_MAX_DEPTH,
         }
     }
 }
@@ -56,6 +63,9 @@ impl McpServerConfig {
             grpc_schema_timeout_ms: parse_grpc_schema_timeout(
                 std::env::var("MCP_GRPC_SCHEMA_TIMEOUT_MS").ok(),
             )?,
+            proto_schema_max_depth: parse_proto_schema_max_depth(
+                std::env::var("MCP_PROTO_SCHEMA_MAX_DEPTH").ok(),
+            )?,
         })
     }
 }
@@ -73,6 +83,21 @@ fn parse_grpc_schema_timeout(value: Option<String>) -> Result<u64> {
         ));
     }
     Ok(timeout)
+}
+
+fn parse_proto_schema_max_depth(value: Option<String>) -> Result<usize> {
+    let Some(value) = value else {
+        return Ok(proto_schema::DEFAULT_PROTO_SCHEMA_MAX_DEPTH);
+    };
+    let depth = value
+        .parse::<usize>()
+        .map_err(|_| anyhow!("MCP_PROTO_SCHEMA_MAX_DEPTH must be a positive integer"))?;
+    if depth == 0 {
+        return Err(anyhow!(
+            "MCP_PROTO_SCHEMA_MAX_DEPTH must be a positive integer"
+        ));
+    }
+    Ok(depth)
 }
 
 fn normalize_set_name(value: Option<String>) -> Option<String> {
@@ -110,5 +135,20 @@ mod tests {
         assert_eq!(parse_grpc_schema_timeout(Some("1".to_string())).unwrap(), 1);
         assert!(parse_grpc_schema_timeout(Some("0".to_string())).is_err());
         assert!(parse_grpc_schema_timeout(Some("bad".to_string())).is_err());
+    }
+
+    #[test]
+    fn proto_schema_max_depth_uses_default_or_configured_value() {
+        assert_eq!(
+            parse_proto_schema_max_depth(None).unwrap(),
+            proto_schema::DEFAULT_PROTO_SCHEMA_MAX_DEPTH
+        );
+        assert_eq!(
+            parse_proto_schema_max_depth(Some("3".to_string())).unwrap(),
+            3
+        );
+        assert!(parse_proto_schema_max_depth(Some("0".to_string())).is_err());
+        assert!(parse_proto_schema_max_depth(Some("abc".to_string())).is_err());
+        assert!(parse_proto_schema_max_depth(Some("-1".to_string())).is_err());
     }
 }

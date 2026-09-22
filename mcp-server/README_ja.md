@@ -88,6 +88,7 @@ Claude Desktop での設定例：
 | `MCP_STREAMING` | ストリーミング実行を有効化 | `false` |
 | `MCP_TIMEOUT_SEC` | ツール実行のタイムアウト秒数 | - |
 | `MCP_GRPC_SCHEMA_TIMEOUT_MS` | 固定 gRPC の descriptor 取得タイムアウト。0 または整数以外では起動に失敗 | `5000` |
+| `MCP_PROTO_SCHEMA_MAX_DEPTH` | ツールの JSON Schema におけるネストメッセージのインライン展開最大深さ。0 または整数以外では起動に失敗 | `8` |
 | `MCP_INSTRUCTIONS` | 選択した FunctionSet description が空白の場合に使う、サーバー全体の initialize instructions | 組み込み文言 |
 
 ## アーキテクチャ

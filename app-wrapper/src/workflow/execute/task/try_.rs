@@ -287,7 +287,7 @@ impl TryTaskExecutor {
                 if let Some(backoff) = backoff {
                     // TODO backoff structure is not defined in the spec
                     // only use as constant backoff
-                    // https://github.com/serverlessworkflow/specification/blob/main/dsl-reference.md#backoff
+                    // https://github.com/open-workflow-specification/specification/blob/main/dsl-reference.md#backoff
                     tracing::warn!(
                         "Backoff: {:?}, but unimplemented now. consider as constant 1 second",
                         backoff
@@ -904,7 +904,7 @@ mod tests {
             let context = result.unwrap();
             let output = &*context.output;
 
-            // According to Serverless Workflow spec, catch.do should only execute on error
+            // According to the Open Workflow spec, catch.do should only execute on error
             // Therefore, output should be "try_output", not "catch_executed"
             assert_eq!(
                 *output,

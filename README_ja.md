@@ -8,7 +8,7 @@ jobworkerp-rs は、Rustで実装されたスケーラブルなジョブワー�
 ジョブワーカーシステムは、CPU負荷やI/O負荷の高いタスクを非同期に処理するために利用する。
 gRPCをつかって処理内容となる[Worker](proto/protobuf/jobworkerp/service/worker.proto)の定義・処理実行のための[Job](proto/protobuf/jobworkerp/service/job.proto)の登録、実行結果の取得などを実行できる。
 プラグイン形式で処理を拡張できる。
-また、[Serverless Workflow](https://serverlessworkflow.io/)ベースのワークフロー実行（LLM統合・ストリーミング対応）、外部MCPサーバーのツールをRunnerとして利用するMCPプロキシ、Workerを外部LLMアプリケーションにMCPツールとして公開するMCPサーバーモードを提供する。
+また、[Open Workflow](https://open-workflow-specification.org/)ベースのワークフロー実行（LLM統合・ストリーミング対応）、外部MCPサーバーのツールをRunnerとして利用するMCPプロキシ、Workerを外部LLMアプリケーションにMCPツールとして公開するMCPサーバーモードを提供する。
 
 ## アーキテクチャ概要
 

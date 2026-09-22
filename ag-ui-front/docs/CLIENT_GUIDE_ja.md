@@ -137,7 +137,7 @@ Authorization: Bearer <token>
 // インラインワークフロー
 {
   "type": "workflow_inline",
-  "workflow": { /* Serverless Workflow YAML/JSON */ }
+  "workflow": { /* Open Workflow YAML/JSON */ }
 }
 
 // チェックポイントからの再開

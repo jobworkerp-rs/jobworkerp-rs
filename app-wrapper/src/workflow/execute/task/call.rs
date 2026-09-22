@@ -1,6 +1,6 @@
 //! `call` task executor.
 //!
-//! Dispatches a Serverless Workflow `call` task to the matching protocol
+//! Dispatches an Open Workflow `call` task to the matching protocol
 //! adapter. The HTTP-specific logic lives in [`http`] and the gRPC-specific
 //! logic in [`grpc`]; both are adapter conversions onto existing built-in
 //! runners (HTTP_REQUEST / GRPC). Shared concerns — expression/secret
@@ -189,7 +189,7 @@ impl CallTaskExecutor {
         Self::inject_metadata_from_context(&mut metadata, &cx);
         let worker_data = WorkerData {
             name: worker_name.to_string(),
-            description: "Serverless Workflow call task temporary worker".to_string(),
+            description: "Open Workflow call task temporary worker".to_string(),
             runner_id: Some(rid),
             runner_settings: settings,
             queue_type: QueueType::Normal as i32,

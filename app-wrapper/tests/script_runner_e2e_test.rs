@@ -106,7 +106,7 @@ async fn execute_script_workflow(
 }
 
 /// Parse a script's stdout (the default `return: stdout`) as JSON.
-/// Per Serverless Workflow v1.0.0, `return: stdout` yields the raw stdout
+/// Per Open Workflow v1.0.0, `return: stdout` yields the raw stdout
 /// string, so tests whose scripts `print(json.dumps(...))` must parse it here.
 fn parse_script_json_output(output: &serde_json::Value) -> Result<serde_json::Value> {
     let stdout = output

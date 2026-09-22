@@ -1382,7 +1382,8 @@ impl RaiseTaskExecutor {
                 match value {
                     serde_json::Value::String(detail) => Ok(workflow::Error {
                         type_: workflow::UriTemplate(
-                            "https://serverlessworkflow.io/spec/1.0.0/errors/runtime".to_string(),
+                            "https://open-workflow-specification.org/spec/1.0.0/errors/runtime"
+                                .to_string(),
                         ),
                         status: 500,
                         title: Some("Workflow runtime error".to_string()),
@@ -1570,7 +1571,7 @@ mod tests {
             assert_eq!(literal_error.status, 500);
             assert_eq!(
                 literal_error.type_.0,
-                "https://serverlessworkflow.io/spec/1.0.0/errors/runtime"
+                "https://open-workflow-specification.org/spec/1.0.0/errors/runtime"
             );
             assert_eq!(
                 literal_error.detail.as_deref(),
