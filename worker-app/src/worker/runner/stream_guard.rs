@@ -31,8 +31,10 @@ use std::time::Duration;
 /// not introduce a new configuration knob. `idle_window == 0` should be
 /// handled by the caller (skip wrapping).
 pub struct IdleTimeoutStream<T> {
-    stream: BoxStream<'static, T>,
-    on_timeout: Option<Box<dyn FnOnce() + Send>>,
+    stream: Option<BoxStream<'static, T>>,
+    on_timeout: Option<IdleTimeoutCallback>,
+    timeout_future: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    drop_inner_on_timeout: bool,
     /// Item the caller wants emitted right after `on_timeout` fires. Lets
     /// downstream code observe an "I gave up here" sentinel (for
     /// `ResultOutputItem` streams: an End trailer with error metadata)
@@ -58,8 +60,12 @@ pub struct IdleTimeoutStream<T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdleState {
     Running,
+    FiringTimeout,
     Done,
 }
+
+type IdleTimeoutCallback =
+    Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + 'static>;
 
 impl<T> IdleTimeoutStream<T> {
     pub fn new(
@@ -89,9 +95,38 @@ impl<T> IdleTimeoutStream<T> {
         on_timeout: impl FnOnce() + Send + 'static,
         on_timeout_item: Option<T>,
     ) -> Self {
+        let callback: IdleTimeoutCallback = Box::new(move || Box::pin(async move { on_timeout() }));
+        Self::with_timeout_callback(stream, idle_window, callback, on_timeout_item, false)
+    }
+
+    /// Variant that completes an asynchronous timeout action before emitting
+    /// the sentinel and dropping the stalled inner stream.
+    pub fn with_async_timeout_item<F, Fut>(
+        stream: BoxStream<'static, T>,
+        idle_window: Duration,
+        on_timeout: F,
+        on_timeout_item: Option<T>,
+    ) -> Self
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let callback: IdleTimeoutCallback = Box::new(move || Box::pin(on_timeout()));
+        Self::with_timeout_callback(stream, idle_window, callback, on_timeout_item, true)
+    }
+
+    fn with_timeout_callback(
+        stream: BoxStream<'static, T>,
+        idle_window: Duration,
+        on_timeout: IdleTimeoutCallback,
+        on_timeout_item: Option<T>,
+        drop_inner_on_timeout: bool,
+    ) -> Self {
         Self {
-            stream,
-            on_timeout: Some(Box::new(on_timeout)),
+            stream: Some(stream),
+            on_timeout: Some(on_timeout),
+            timeout_future: None,
+            drop_inner_on_timeout,
             on_timeout_item,
             idle_window,
             sleep: Box::pin(tokio::time::sleep(idle_window)),
@@ -112,7 +147,14 @@ impl<T: Unpin> Stream for IdleTimeoutStream<T> {
         if self.state == IdleState::Done {
             return Poll::Ready(None);
         }
-        match Pin::new(&mut self.stream).poll_next(cx) {
+        if self.state == IdleState::FiringTimeout {
+            return Self::poll_timeout(self, cx);
+        }
+        let stream_result = match self.stream.as_mut() {
+            Some(stream) => Pin::new(stream).poll_next(cx),
+            None => Poll::Ready(None),
+        };
+        match stream_result {
             Poll::Ready(Some(item)) => {
                 // Got progress: reset the idle timer to the full window.
                 let new_deadline = tokio::time::Instant::now() + self.idle_window;
@@ -121,6 +163,7 @@ impl<T: Unpin> Stream for IdleTimeoutStream<T> {
                 Poll::Ready(Some(item))
             }
             Poll::Ready(None) => {
+                self.on_timeout.take();
                 self.state = IdleState::Done;
                 Poll::Ready(None)
             }
@@ -131,18 +174,34 @@ impl<T: Unpin> Stream for IdleTimeoutStream<T> {
                         self.idle_window,
                         self.chunks_observed
                     );
-                    if let Some(cb) = self.on_timeout.take() {
-                        cb();
+                    self.state = IdleState::FiringTimeout;
+                    if let Some(callback) = self.on_timeout.take() {
+                        self.timeout_future = Some(callback());
                     }
-                    // If the caller seeded an `on_timeout_item`, surface
-                    // it now so the consumer can tell a stall apart from
-                    // an EOF; otherwise terminate immediately.
-                    self.state = IdleState::Done;
-                    Poll::Ready(self.on_timeout_item.take())
+                    Self::poll_timeout(self, cx)
                 }
                 Poll::Pending => Poll::Pending,
             },
         }
+    }
+}
+
+impl<T: Unpin> IdleTimeoutStream<T> {
+    fn poll_timeout(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
+        let this = self.as_mut().get_mut();
+        if let Some(timeout_future) = this.timeout_future.as_mut()
+            && timeout_future.as_mut().poll(cx).is_pending()
+        {
+            return Poll::Pending;
+        }
+        this.timeout_future.take();
+
+        if this.drop_inner_on_timeout {
+            // Sandbox resource guards must run before a pooled slot is released.
+            this.stream.take();
+        }
+        this.state = IdleState::Done;
+        Poll::Ready(this.on_timeout_item.take())
     }
 }
 
@@ -267,6 +326,58 @@ impl<T> Drop for StreamWithCancelGuard<T> {
                 "StreamWithCancelGuard dropped with active cancel guard - emergency release"
             );
         }
+    }
+}
+
+/// Stream wrapper that unregisters a client feed sender on completion or drop.
+pub struct StreamWithFeedGuard<T> {
+    stream: BoxStream<'static, T>,
+    registration: Option<FeedSenderGuard>,
+}
+
+/// Owns a registered sender until the execution stream finishes or is abandoned.
+pub struct FeedSenderGuard {
+    on_unregister: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl FeedSenderGuard {
+    pub fn new(on_unregister: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            on_unregister: Some(Box::new(on_unregister)),
+        }
+    }
+}
+
+impl Drop for FeedSenderGuard {
+    fn drop(&mut self) {
+        if let Some(on_unregister) = self.on_unregister.take() {
+            on_unregister();
+        }
+    }
+}
+
+impl<T> StreamWithFeedGuard<T> {
+    pub fn new(stream: BoxStream<'static, T>, on_complete: impl FnOnce() + Send + 'static) -> Self {
+        Self::with_registration(stream, FeedSenderGuard::new(on_complete))
+    }
+
+    pub fn with_registration(stream: BoxStream<'static, T>, registration: FeedSenderGuard) -> Self {
+        Self {
+            stream,
+            registration: Some(registration),
+        }
+    }
+}
+
+impl<T> Stream for StreamWithFeedGuard<T> {
+    type Item = T;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let result = Pin::new(&mut self.stream).poll_next(cx);
+        if matches!(result, Poll::Ready(None)) && self.registration.take().is_some() {
+            tracing::debug!("Client feed sender unregistered after stream completion");
+        }
+        result
     }
 }
 
@@ -445,6 +556,118 @@ mod tests {
             drop(guard_stream);
             assert!(called.load(std::sync::atomic::Ordering::SeqCst));
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn feed_guard_unregisters_once_on_completion_and_drop() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            let completed = Arc::new(AtomicUsize::new(0));
+            let callback_count = completed.clone();
+            let stream = Box::pin(stream::iter(vec![1, 2]));
+            let mut guarded = StreamWithFeedGuard::new(stream, move || {
+                callback_count.fetch_add(1, Ordering::SeqCst);
+            });
+
+            assert_eq!(guarded.next().await, Some(1));
+            assert_eq!(guarded.next().await, Some(2));
+            assert_eq!(guarded.next().await, None);
+            drop(guarded);
+            assert_eq!(completed.load(Ordering::SeqCst), 1);
+
+            let callback_count = completed.clone();
+            let guarded = StreamWithFeedGuard::new(Box::pin(stream::pending::<i32>()), move || {
+                callback_count.fetch_add(1, Ordering::SeqCst);
+            });
+            drop(guarded);
+            assert_eq!(completed.load(Ordering::SeqCst), 2);
+
+            let callback_count = completed.clone();
+            let failed_handoff = FeedSenderGuard::new(move || {
+                callback_count.fetch_add(1, Ordering::SeqCst);
+            });
+            drop(failed_handoff);
+            assert_eq!(
+                completed.load(Ordering::SeqCst),
+                3,
+                "a sender registered before a failed stream handoff must be removed"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn async_idle_timeout_callback_finishes_before_timeout_item() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use futures::StreamExt;
+            use std::sync::atomic::{AtomicBool, Ordering};
+
+            let signalled = Arc::new(AtomicBool::new(false));
+            let callback_flag = signalled.clone();
+            let mut stream = IdleTimeoutStream::with_async_timeout_item(
+                Box::pin(stream::pending()),
+                Duration::from_millis(1),
+                move || async move {
+                    tokio::task::yield_now().await;
+                    callback_flag.store(true, Ordering::SeqCst);
+                },
+                Some(7),
+            );
+
+            assert_eq!(stream.next().await, Some(7));
+            assert!(signalled.load(Ordering::SeqCst));
+            assert_eq!(stream.next().await, None);
+            Ok(())
+        })
+    }
+
+    struct DropPending(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Stream for DropPending {
+        type Item = u8;
+
+        fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Pending
+        }
+    }
+
+    impl Drop for DropPending {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn sync_idle_timeout_preserves_legacy_inner_lifetime_but_async_drops_before_end() -> Result<()>
+    {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use futures::StreamExt;
+            use std::sync::atomic::{AtomicBool, Ordering};
+
+            let sync_dropped = Arc::new(AtomicBool::new(false));
+            let mut sync_timeout = IdleTimeoutStream::with_timeout_item(
+                Box::pin(DropPending(sync_dropped.clone())),
+                Duration::from_millis(1),
+                || {},
+                Some(1),
+            );
+            assert_eq!(sync_timeout.next().await, Some(1));
+            assert!(!sync_dropped.load(Ordering::SeqCst));
+            drop(sync_timeout);
+            assert!(sync_dropped.load(Ordering::SeqCst));
+
+            let async_dropped = Arc::new(AtomicBool::new(false));
+            let mut async_timeout = IdleTimeoutStream::with_async_timeout_item(
+                Box::pin(DropPending(async_dropped.clone())),
+                Duration::from_millis(1),
+                || async {},
+                Some(2),
+            );
+            assert_eq!(async_timeout.next().await, Some(2));
+            assert!(async_dropped.load(Ordering::SeqCst));
             Ok(())
         })
     }

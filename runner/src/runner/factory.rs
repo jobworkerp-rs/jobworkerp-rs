@@ -13,6 +13,7 @@ use super::{
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
     request::RequestRunner,
+    sandbox::SandboxRunner,
     slack::SlackPostMessageRunner,
     workflow_unified::WorkflowUnifiedRunnerSpecImpl,
 };
@@ -175,6 +176,9 @@ impl RunnerSpecFactory {
                 Some(Box::new(WorkflowUnifiedRunnerSpecImpl::new())
                     as Box<dyn RunnerSpec + Send + Sync>)
             }
+            Some(RunnerType::Sandbox) => {
+                Some(Box::new(SandboxRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
+            }
             _ => match self.mcp_clients.as_ref().connect_server(name).await {
                 Ok(server) => {
                     tracing::debug!("MCP server found: {}", &name);
@@ -269,6 +273,49 @@ mod test {
             .await
             .unwrap();
         assert_eq!(runner.name(), "COMMAND");
+    }
+
+    #[tokio::test]
+    async fn sandbox_spec_factory_exposes_both_streaming_methods() {
+        use command_utils::protobuf::ProtobufDescriptor;
+
+        let factory = RunnerSpecFactory::new(
+            Arc::new(Plugins::new()),
+            Arc::new(McpServerFactory::default()),
+        );
+        let runner = factory
+            .create_runner_spec_by_name(RunnerType::Sandbox.as_str_name(), false)
+            .await
+            .expect("the built-in SANDBOX runner must be discoverable");
+        assert_eq!(runner.name(), RunnerType::Sandbox.as_str_name());
+        let settings_proto = runner.runner_settings_proto();
+        assert_eq!(
+            ProtobufDescriptor::new(&settings_proto)
+                .unwrap()
+                .get_messages()[0]
+                .name(),
+            "SandboxRunnerSettings"
+        );
+        let methods = runner.method_proto_map();
+        assert_eq!(methods.len(), 2);
+        for (method, expects_client_input) in [("run", false), ("run_with_client", true)] {
+            let schema = &methods[method];
+            assert_eq!(schema.require_client_stream, expects_client_input);
+            assert_eq!(
+                ProtobufDescriptor::new(&schema.args_proto)
+                    .unwrap()
+                    .get_messages()[0]
+                    .name(),
+                "SandboxExecArgs"
+            );
+            assert_eq!(
+                ProtobufDescriptor::new(&schema.result_proto)
+                    .unwrap()
+                    .get_messages()[0]
+                    .name(),
+                "SandboxExecResult"
+            );
+        }
     }
 
     #[tokio::test]

@@ -8,9 +8,12 @@ pub mod stream_guard;
 mod integration_tests;
 
 use self::map::UseRunnerPoolMap;
-use self::pool::RunnerPoolManagerImpl;
+use self::pool::{RunnerHandle, RunnerPoolManagerImpl};
 use self::result::RunnerResultHandler;
-use self::stream_guard::{IdleTimeoutStream, StreamWithCancelGuard, StreamWithPoolGuard};
+use self::stream_guard::{
+    FeedSenderGuard, IdleTimeoutStream, StreamWithCancelGuard, StreamWithFeedGuard,
+    StreamWithPoolGuard,
+};
 use anyhow::Result;
 use anyhow::anyhow;
 use app_wrapper::runner::UseRunnerFactory;
@@ -32,8 +35,9 @@ use proto::jobworkerp::data::{
 };
 use result::ResultOutputEnum;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::{panic::AssertUnwindSafe, time::Duration};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing;
 
@@ -108,6 +112,72 @@ async fn cancellation_token_from_runner(
     Some(helper.get_cancellation_token().await)
 }
 
+fn set_sandbox_job_context(
+    runner: &mut Box<dyn CancellableRunner + Send + Sync>,
+    job_id: Option<&proto::jobworkerp::data::JobId>,
+) -> Result<()> {
+    if let Some(sandbox) = pool::sandbox_runner_mut(&mut **runner) {
+        let job_id =
+            job_id.ok_or_else(|| anyhow!("SANDBOX execution requires a trusted job ID"))?;
+        sandbox.set_job_context(*job_id);
+    }
+    Ok(())
+}
+
+fn register_client_feed_sender(
+    runner: &mut Box<dyn CancellableRunner + Send + Sync>,
+    using: Option<&str>,
+    job_id: Option<&proto::jobworkerp::data::JobId>,
+    register: impl FnOnce(i64, mpsc::Sender<FeedData>),
+) -> Result<Option<i64>> {
+    if !runner.supports_client_stream(using) {
+        return Ok(None);
+    }
+
+    let Some(job_id) = job_id else {
+        tracing::warn!("feed_sender exists but job_id is None; skipping feed registration");
+        return Ok(None);
+    };
+    let Some(sender) = runner.setup_client_stream_channel(using) else {
+        return Ok(None);
+    };
+    register(job_id.value, sender);
+    Ok(Some(job_id.value))
+}
+
+fn register_client_feed_sender_guard(
+    runner: &mut Box<dyn CancellableRunner + Send + Sync>,
+    using: Option<&str>,
+    job_id: Option<&proto::jobworkerp::data::JobId>,
+    register: impl FnOnce(i64, mpsc::Sender<FeedData>),
+    unregister: impl FnOnce(i64) + Send + 'static,
+) -> Result<Option<FeedSenderGuard>> {
+    let registered_job_id = register_client_feed_sender(runner, using, job_id, register)?;
+    Ok(registered_job_id.map(|id| FeedSenderGuard::new(move || unregister(id))))
+}
+
+fn should_skip_idle_timeout(is_sandbox: bool, using: Option<&str>) -> bool {
+    is_sandbox && using == Some("run_with_client")
+}
+
+fn sandbox_idle_timeout_item(window: Duration) -> ResultOutputItem {
+    let trailer = proto::stream_error::build_stream_error_trailer(
+        HashMap::new(),
+        "TIMEOUT",
+        format!(
+            "Sandbox command was idle until its Worker timeout ({}ms)",
+            window.as_millis()
+        ),
+        "SANDBOX",
+    )
+    .expect("fixed SANDBOX timeout error fields satisfy the stream error contract");
+    ResultOutputItem {
+        item: Some(proto::jobworkerp::data::result_output_item::Item::End(
+            trailer,
+        )),
+    }
+}
+
 /// Idle-timeout window for stream drain.
 ///
 /// V2 plugins hand the BoxStream back before producing a chunk
@@ -124,28 +194,34 @@ fn idle_window_from(job_data: Option<&proto::jobworkerp::data::JobData>) -> Opti
         .map(Duration::from_millis)
 }
 
-/// Wrap a stream with an inter-chunk idle timeout that fires
-/// `token.cancel()` synchronously when the window elapses.
+/// Wrap a stream with its Runner-specific inter-chunk idle timeout result.
 ///
-/// `token` must be acquired before the stream starts being drained
-/// (typically while the runner mutex is still held by `run_job`), so the
-/// timeout callback never has to re-enter the runner's lock. That
-/// matters for `use_static=true`: `StreamWithPoolGuard` releases the
-/// pool slot synchronously when `IdleTimeoutStream` yields `None`, and
-/// if cancellation were running on a separate task it could lose the
-/// race against the next job that grabs the same runner — leaving the
-/// previous plugin's `variant.write()` lock un-cancelled. Firing
-/// `token.cancel()` (a lock-free atomic + waker) from the poll thread
-/// guarantees the cancellation observation point precedes the pool
-/// return.
+/// SANDBOX uses its active execution handle to mark the timeout and stop the
+/// VM command before the synthetic common error End is delivered. Other
+/// Runners keep the existing synchronous cancellation-token behavior and
+/// plugin-specific timeout metadata.
 fn maybe_idle_timeout_wrap(
     stream: BoxStream<'static, ResultOutputItem>,
     idle_window: Option<Duration>,
     cancel_token: Option<CancellationToken>,
+    sandbox_runner: Option<RunnerHandle>,
 ) -> BoxStream<'static, ResultOutputItem> {
     let Some(window) = idle_window else {
         return stream;
     };
+    if let Some(sandbox_runner) = sandbox_runner {
+        return Box::pin(IdleTimeoutStream::with_async_timeout_item(
+            stream,
+            window,
+            move || async move {
+                let mut runner = sandbox_runner.lock().await;
+                if let Some(sandbox) = pool::sandbox_runner_mut(&mut **runner) {
+                    sandbox.signal_idle_timeout().await;
+                }
+            },
+            Some(sandbox_idle_timeout_item(window)),
+        ));
+    }
     let Some(token) = cancel_token else {
         // No cancellation channel available — wrapping would only delay
         // the stalled stream without being able to wake the plugin.
@@ -186,6 +262,22 @@ fn maybe_idle_timeout_wrap(
         },
         Some(timeout_item),
     ))
+}
+
+fn maybe_wrap_stream_idle_timeout(
+    stream: BoxStream<'static, ResultOutputItem>,
+    skip_idle_timeout: bool,
+    idle_window: Option<Duration>,
+    cancel_token: Option<CancellationToken>,
+    sandbox_runner: Option<RunnerHandle>,
+) -> BoxStream<'static, ResultOutputItem> {
+    // A V2 runner may hand off before emitting data, so the timeout protects the later drain.
+    // Client-fed SANDBOX commands can pause for input without producing output.
+    if skip_idle_timeout {
+        stream
+    } else {
+        maybe_idle_timeout_wrap(stream, idle_window, cancel_token, sandbox_runner)
+    }
 }
 
 // execute runner
@@ -244,7 +336,7 @@ pub trait JobRunner:
         } else {
             // Non-static: instantiate and load() to verify the settings, then drop.
             self.runner_pool_map()
-                .get_non_static_runner(runner_data, worker_data)
+                .get_non_static_runner(runner_data, worker_data, worker_id)
                 .await
                 .map(|_runner| ())
         };
@@ -303,35 +395,43 @@ pub trait JobRunner:
                         let mut r = runner.lock().await;
                         tracing::debug!("static runner found (streaming): {:?}", r.name());
 
+                        if let Err(error) = set_sandbox_job_context(&mut r, job.id.as_ref()) {
+                            drop(r);
+                            return (
+                                self.handle_error_option(worker_data, job, Some(error)),
+                                None,
+                            );
+                        }
+
                         // Check feed support and set up feed channel
                         let using = job.data.as_ref().and_then(|d| d.using.clone());
                         let using_ref = using.as_deref();
-                        let feed_sender = if r.supports_client_stream(using_ref) {
-                            r.setup_client_stream_channel(using_ref)
-                        } else {
-                            None
-                        };
+                        let is_sandbox = pool::sandbox_runner_mut(&mut **r).is_some();
+                        let skip_idle_timeout = should_skip_idle_timeout(is_sandbox, using_ref);
 
-                        let job_id_value = job.id.as_ref().map(|id| id.value);
-
-                        // Register feed sender before run_job_inner to avoid race condition
-                        let registered_feed_job_id = match (feed_sender, job_id_value) {
-                            (Some(sender), Some(id)) => {
-                                self.register_feed_sender(id, sender);
-                                Some(id)
-                            }
-                            (Some(_), None) => {
-                                tracing::warn!(
-                                    "feed_sender exists but job_id is None; skipping feed registration"
+                        // Register client input before run_stream starts or creates a VM.
+                        let feed_registration = match register_client_feed_sender_guard(
+                            &mut r,
+                            using_ref,
+                            job.id.as_ref(),
+                            |id, sender| self.register_feed_sender(id, sender),
+                            |id| self.unregister_feed_sender(id),
+                        ) {
+                            Ok(registration) => registration,
+                            Err(error) => {
+                                drop(r);
+                                return (
+                                    self.handle_error_option(worker_data, job, Some(error)),
+                                    None,
                                 );
-                                None
                             }
-                            _ => None,
                         };
 
                         // Capture the data needed for the idle-timeout
                         // window before `job` is moved into run_job_inner.
                         let idle_window = idle_window_from(job.data.as_ref());
+                        let sandbox_runner_for_idle =
+                            (is_sandbox && !skip_idle_timeout).then(|| runner.as_ref().clone());
                         let (job_result, stream, outcome) =
                             self.run_job_inner(worker_data, job, &mut r).await;
                         let detach =
@@ -354,32 +454,25 @@ pub trait JobRunner:
                         drop(r); // unlock
 
                         let final_stream = if let Some(s) = stream {
-                            // Wrap with an inter-chunk idle timeout when the
-                            // job specifies one. V2 plugins now hand the
-                            // BoxStream back before producing any chunk
-                            // (see run_stream_v2), so the original
-                            // tokio::select! in `run_and_stream` only guards
-                            // the initial handoff. Without this idle guard,
-                            // a plugin that stalls mid-drain (e.g. whisper
-                            // after its final feed) would hold the static
-                            // runner pool slot forever.
-                            let s = maybe_idle_timeout_wrap(s, idle_window, cancel_token_for_idle);
-                            if let Some(id) = registered_feed_job_id {
+                            let s = maybe_wrap_stream_idle_timeout(
+                                s,
+                                skip_idle_timeout,
+                                idle_window,
+                                cancel_token_for_idle,
+                                sandbox_runner_for_idle,
+                            );
+                            if let Some(feed_registration) = feed_registration {
                                 Some(Box::pin(StreamWithPoolGuard::with_on_complete(
                                     s,
                                     runner,
-                                    move || self.unregister_feed_sender(id),
+                                    move || drop(feed_registration),
                                 )) as BoxStream<'static, _>)
                             } else {
                                 Some(Box::pin(StreamWithPoolGuard::new(s, runner))
                                     as BoxStream<'static, _>)
                             }
                         } else {
-                            // No stream returned (cancellation, error, etc.):
-                            // clean up feed sender registration immediately
-                            if let Some(id) = registered_feed_job_id {
-                                self.unregister_feed_sender(id);
-                            }
+                            // Dropping the registration guard unregisters failed handoffs.
                             // A timed-out plugin keeps its lock on a blocking thread,
                             // so discard the instance instead of returning it to the pool.
                             detach_runner_if(detach, runner);
@@ -391,6 +484,14 @@ pub trait JobRunner:
                         // Non-streaming: Existing behavior (immediate Pool return)
                         let mut r = runner.lock().await;
                         tracing::debug!("static runner found (non-streaming): {:?}", r.name());
+
+                        if let Err(error) = set_sandbox_job_context(&mut r, job.id.as_ref()) {
+                            drop(r);
+                            return (
+                                self.handle_error_option(worker_data, job, Some(error)),
+                                None,
+                            );
+                        }
 
                         let (job_result, stream, outcome) =
                             self.run_job_inner(worker_data, job, &mut r).await;
@@ -410,11 +511,19 @@ pub trait JobRunner:
         } else {
             let rres = self
                 .runner_pool_map()
-                .get_non_static_runner(runner_data, worker_data)
+                .get_non_static_runner(runner_data, worker_data, worker_id)
                 .await;
             match rres {
                 Ok(runner) => {
                     tracing::debug!("non-static runner found: {:?}", runner.name());
+
+                    let mut runner = runner;
+                    if let Err(error) = set_sandbox_job_context(&mut runner, job.id.as_ref()) {
+                        return (
+                            self.handle_error_option(worker_data, job, Some(error)),
+                            None,
+                        );
+                    }
 
                     // Streaming determination
                     let is_streaming = job
@@ -423,39 +532,62 @@ pub trait JobRunner:
                         .is_some_and(|data| data.streaming_type != 0);
 
                     if is_streaming {
-                        // Streaming: Clone CancelHelper using type-safe access.
-                        // The helper clone shares the same underlying
-                        // `Arc<Mutex<RunnerCancellationManager>>`, so a
-                        // token published later via `setup_cancellation_monitoring`
-                        // is visible to every clone — we only need to
-                        // defer the *token value* read until setup has
-                        // run (see the run_job_inner-completed read below).
-                        let cancel_helper = runner.clone_cancel_helper_for_stream();
+                        let runner: RunnerHandle = Arc::new(Mutex::new(runner));
+                        let mut runner_guard = runner.lock().await;
+                        // The helper clone shares the monitor set up inside run_job_inner.
+                        let cancel_helper = runner_guard.clone_cancel_helper_for_stream();
                         let cancel_helper_for_idle = cancel_helper.clone();
 
-                        let mut runner = runner;
+                        let using = job.data.as_ref().and_then(|d| d.using.as_deref());
+                        let is_sandbox = pool::sandbox_runner_mut(&mut **runner_guard).is_some();
+                        let skip_idle_timeout = should_skip_idle_timeout(is_sandbox, using);
+                        let feed_registration = match register_client_feed_sender_guard(
+                            &mut runner_guard,
+                            using,
+                            job.id.as_ref(),
+                            |id, sender| self.register_feed_sender(id, sender),
+                            |id| self.unregister_feed_sender(id),
+                        ) {
+                            Ok(registration) => registration,
+                            Err(error) => {
+                                drop(runner_guard);
+                                return (
+                                    self.handle_error_option(worker_data, job, Some(error)),
+                                    None,
+                                );
+                            }
+                        };
+
                         // Capture idle-window before `job` is moved.
                         let idle_window = idle_window_from(job.data.as_ref());
                         // Non-static runners are not pooled, so timeout detach does not apply.
-                        let (job_result, stream, _outcome) =
-                            self.run_job_inner(worker_data, job, &mut runner).await;
+                        let (job_result, stream, _outcome) = self
+                            .run_job_inner(worker_data, job, &mut runner_guard)
+                            .await;
 
-                        // Resolve the token AFTER run_job_inner so we get
-                        // the real cancellation channel published by
-                        // `setup_cancellation_monitoring_if_supported` and
-                        // not the throw-away `unwrap_or_default()` token
-                        // an earlier read would return. The idle-timeout
-                        // callback must run synchronously (no spawn, no
-                        // re-lock) so the cancel happens before any
-                        // downstream cleanup observes the stream end.
+                        // Resolve the token only after cancellation monitoring has been set up.
                         let cancel_token_for_idle = match cancel_helper_for_idle.as_ref() {
                             Some(h) => Some(h.get_cancellation_token().await),
                             None => None,
                         };
+                        let sandbox_runner_for_idle =
+                            (is_sandbox && !skip_idle_timeout).then(|| runner.clone());
+                        drop(runner_guard);
 
                         let final_stream = if let Some(stream) = stream {
-                            let stream =
-                                maybe_idle_timeout_wrap(stream, idle_window, cancel_token_for_idle);
+                            let mut stream = maybe_wrap_stream_idle_timeout(
+                                stream,
+                                skip_idle_timeout,
+                                idle_window,
+                                cancel_token_for_idle,
+                                sandbox_runner_for_idle,
+                            );
+                            if let Some(feed_registration) = feed_registration {
+                                stream = Box::pin(StreamWithFeedGuard::with_registration(
+                                    stream,
+                                    feed_registration,
+                                ));
+                            }
                             if let Some(cancel_helper) = cancel_helper {
                                 Some(Box::pin(StreamWithCancelGuard::new(stream, cancel_helper))
                                     as BoxStream<'static, _>)
@@ -463,13 +595,13 @@ pub trait JobRunner:
                                 Some(stream)
                             }
                         } else {
+                            // Dropping the registration guard unregisters failed handoffs.
                             None
                         };
 
                         (job_result, final_stream)
                     } else {
                         // Non-streaming: Existing behavior
-                        let mut runner = runner;
                         // Non-static runners are not pooled, so timeout detach does not apply.
                         let (job_result, stream, _outcome) =
                             self.run_job_inner(worker_data, job, &mut runner).await;
@@ -1043,6 +1175,235 @@ pub(crate) mod tests {
         assert!(data.broadcast_results);
         assert_eq!(data.worker_name, worker.name);
     }
+
+    #[test]
+    fn sandbox_preload_context_uses_worker_identity_without_a_job() {
+        let worker_id = WorkerId { value: 7301 };
+        let mut runner: Box<dyn CancellableRunner + Send + Sync> =
+            Box::new(jobworkerp_runner::runner::sandbox::SandboxRunner::new());
+
+        super::pool::set_sandbox_worker_context(&mut runner, &worker_id, true).unwrap();
+
+        let sandbox = super::pool::sandbox_runner_mut(&mut *runner).unwrap();
+        let debug = format!("{sandbox:?}");
+        assert!(debug.contains("worker_id: Some(7301)"));
+        assert!(debug.contains("mode: Some(Static)"));
+        assert!(debug.contains("job_id: None"));
+    }
+
+    #[test]
+    fn non_static_sandbox_job_context_uses_trusted_ids_and_requires_job_id() {
+        let worker_id = WorkerId { value: 7302 };
+        let job_id = JobId { value: 9102 };
+        let mut runner: Box<dyn CancellableRunner + Send + Sync> =
+            Box::new(jobworkerp_runner::runner::sandbox::SandboxRunner::new());
+
+        super::pool::set_sandbox_worker_context(&mut runner, &worker_id, false).unwrap();
+        set_sandbox_job_context(&mut runner, Some(&job_id)).unwrap();
+
+        let sandbox = super::pool::sandbox_runner_mut(&mut *runner).unwrap();
+        let debug = format!("{sandbox:?}");
+        assert!(debug.contains("worker_id: Some(7302)"));
+        assert!(debug.contains("job_id: Some(9102)"));
+        assert!(debug.contains("mode: Some(NonStatic)"));
+
+        let mut missing_job_runner: Box<dyn CancellableRunner + Send + Sync> =
+            Box::new(jobworkerp_runner::runner::sandbox::SandboxRunner::new());
+        super::pool::set_sandbox_worker_context(&mut missing_job_runner, &worker_id, false)
+            .unwrap();
+        assert!(set_sandbox_job_context(&mut missing_job_runner, None).is_err());
+        assert!(
+            format!(
+                "{:?}",
+                super::pool::sandbox_runner_mut(&mut *missing_job_runner).unwrap()
+            )
+            .contains("job_id: None")
+        );
+    }
+
+    #[tokio::test]
+    async fn non_static_client_feed_is_registered_before_execution_setup() {
+        let worker_id = WorkerId { value: 7303 };
+        let job_id = JobId { value: 9103 };
+        let mut runner: Box<dyn CancellableRunner + Send + Sync> =
+            Box::new(jobworkerp_runner::runner::sandbox::SandboxRunner::new());
+        super::pool::set_sandbox_worker_context(&mut runner, &worker_id, false).unwrap();
+        set_sandbox_job_context(&mut runner, Some(&job_id)).unwrap();
+
+        let (registered_sender, mut sender_rx) = mpsc::channel(1);
+        let registered = register_client_feed_sender(
+            &mut runner,
+            Some("run_with_client"),
+            Some(&job_id),
+            move |id, sender| {
+                assert_eq!(id, job_id.value);
+                registered_sender.try_send(sender).unwrap();
+            },
+        )
+        .unwrap();
+        assert_eq!(registered, Some(job_id.value));
+
+        let sender = sender_rx.recv().await.unwrap();
+        sender
+            .send(FeedData {
+                data: b"early input".to_vec(),
+                is_final: false,
+            })
+            .await
+            .unwrap();
+        let mut registered_non_client = false;
+        assert_eq!(
+            register_client_feed_sender(&mut runner, Some("run"), Some(&job_id), |_, _| {
+                registered_non_client = true
+            },)
+            .unwrap(),
+            None
+        );
+        assert!(!registered_non_client);
+    }
+
+    #[test]
+    fn client_feed_registration_guard_unregisters_on_drop_and_skips_missing_job_id() {
+        use std::sync::Mutex as StdMutex;
+
+        let worker_id = WorkerId { value: 7304 };
+        let job_id = JobId { value: 9104 };
+        let mut runner: Box<dyn CancellableRunner + Send + Sync> =
+            Box::new(jobworkerp_runner::runner::sandbox::SandboxRunner::new());
+        super::pool::set_sandbox_worker_context(&mut runner, &worker_id, false).unwrap();
+        set_sandbox_job_context(&mut runner, Some(&job_id)).unwrap();
+
+        let registered_job_ids = Arc::new(StdMutex::new(Vec::new()));
+        let unregistered_job_ids = Arc::new(StdMutex::new(Vec::new()));
+        let registered = Arc::clone(&registered_job_ids);
+        let unregistered = Arc::clone(&unregistered_job_ids);
+        let registration = register_client_feed_sender_guard(
+            &mut runner,
+            Some("run_with_client"),
+            Some(&job_id),
+            move |id, _sender| registered.lock().unwrap().push(id),
+            move |id| unregistered.lock().unwrap().push(id),
+        )
+        .unwrap()
+        .expect("client feed registration should return a cleanup guard");
+
+        assert_eq!(*registered_job_ids.lock().unwrap(), vec![job_id.value]);
+        assert!(unregistered_job_ids.lock().unwrap().is_empty());
+        drop(registration);
+        assert_eq!(*unregistered_job_ids.lock().unwrap(), vec![job_id.value]);
+
+        let registration = register_client_feed_sender_guard(
+            &mut runner,
+            Some("run_with_client"),
+            None,
+            |_, _| panic!("feed registration must be skipped without a job ID"),
+            |_| panic!("there must be no registration to clean up without a job ID"),
+        )
+        .unwrap();
+        assert!(registration.is_none());
+    }
+
+    #[test]
+    fn sandbox_client_stream_alone_skips_the_worker_idle_timeout() {
+        assert!(should_skip_idle_timeout(true, Some("run_with_client")));
+        assert!(!should_skip_idle_timeout(true, Some("run")));
+        assert!(!should_skip_idle_timeout(false, Some("run_with_client")));
+        assert!(!should_skip_idle_timeout(true, None));
+    }
+
+    #[tokio::test]
+    async fn sandbox_client_stream_idle_wrapper_selection_leaves_pending_stream_unwrapped() {
+        use futures::StreamExt;
+
+        let runner = Arc::new(Mutex::new(Box::new(
+            jobworkerp_runner::runner::sandbox::SandboxRunner::new(),
+        )
+            as Box<dyn CancellableRunner + Send + Sync>));
+        let mut stream = maybe_wrap_stream_idle_timeout(
+            Box::pin(futures::stream::pending()),
+            true,
+            Some(Duration::from_millis(1)),
+            None,
+            Some(runner),
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), stream.next())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn sandbox_idle_timeout_emits_common_timeout_end_without_plugin_key() {
+        use futures::StreamExt;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let runner: Arc<Mutex<Box<dyn CancellableRunner + Send + Sync>>> = Arc::new(Mutex::new(
+            Box::new(jobworkerp_runner::runner::sandbox::SandboxRunner::new()),
+        ));
+        let stream = maybe_wrap_stream_idle_timeout(
+            Box::pin(futures::stream::pending()),
+            false,
+            Some(Duration::from_millis(1)),
+            None,
+            Some(runner),
+        );
+        let items = tokio::time::timeout(Duration::from_secs(1), stream.collect::<Vec<_>>())
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1);
+        let Some(proto::jobworkerp::data::result_output_item::Item::End(trailer)) =
+            items[0].item.as_ref()
+        else {
+            panic!("idle timeout must emit an End item");
+        };
+        assert!(matches!(
+            proto::stream_error::parse_stream_error(trailer),
+            proto::stream_error::StreamErrorOutcome::Error(error)
+                if error.code == "TIMEOUT" && error.origin == "SANDBOX"
+        ));
+        assert!(
+            !trailer
+                .metadata
+                .contains_key(jobworkerp_runner::runner::plugins::impls::V2_STREAM_ERROR_META_KEY)
+        );
+    }
+
+    #[tokio::test]
+    async fn normal_runner_idle_timeout_keeps_legacy_plugin_metadata() {
+        use futures::StreamExt;
+
+        let token = CancellationToken::new();
+        let stream = maybe_wrap_stream_idle_timeout(
+            Box::pin(futures::stream::pending()),
+            false,
+            Some(Duration::from_millis(1)),
+            Some(token.clone()),
+            None,
+        );
+        let items = tokio::time::timeout(Duration::from_secs(1), stream.collect::<Vec<_>>())
+            .await
+            .unwrap();
+        assert!(token.is_cancelled());
+        let Some(proto::jobworkerp::data::result_output_item::Item::End(trailer)) =
+            items[0].item.as_ref()
+        else {
+            panic!("idle timeout must emit an End item");
+        };
+        assert!(
+            trailer
+                .metadata
+                .contains_key(jobworkerp_runner::runner::plugins::impls::V2_STREAM_ERROR_META_KEY)
+        );
+        assert!(
+            !trailer
+                .metadata
+                .contains_key(proto::stream_error::STREAM_ERROR_METADATA_KEY)
+        );
+    }
+
     impl JobRunner for MockJobRunner {
         fn register_feed_sender(&self, _job_id: i64, _sender: mpsc::Sender<FeedData>) {}
 
@@ -1066,6 +1427,25 @@ pub(crate) mod tests {
 
         let ok: Result<()> = Ok(());
         assert_eq!(outcome_of(&ok), RunnerOutcome::Normal);
+    }
+
+    #[test]
+    fn idle_timeout_window_is_disabled_at_zero_and_keeps_positive_boundary() {
+        let no_timeout = JobData {
+            timeout: 0,
+            ..Default::default()
+        };
+        let minimum_timeout = JobData {
+            timeout: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(idle_window_from(None), None);
+        assert_eq!(idle_window_from(Some(&no_timeout)), None);
+        assert_eq!(
+            idle_window_from(Some(&minimum_timeout)),
+            Some(Duration::from_millis(1))
+        );
     }
 
     #[allow(dead_code)]
