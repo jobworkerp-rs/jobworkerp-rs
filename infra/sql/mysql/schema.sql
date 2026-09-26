@@ -128,7 +128,10 @@ INSERT IGNORE INTO runner (id, name, description, definition, type) VALUES
    'builtin8', 8),
   (32770, 'GRPC',
    'Unified gRPC runner with multiple methods: unary (gRPC unary call, default) and streaming (gRPC server streaming call). Using defaults to unary if not specified.',
-   'builtin32770', 32770);
+   'builtin32770', 32770),
+  (32771, 'SANDBOX',
+   'Executes commands in a local microsandbox microVM.',
+   'builtin32771', 32771);
 
 CREATE TABLE `function_set` (
   `id` BIGINT(10) PRIMARY KEY,

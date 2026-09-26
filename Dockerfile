@@ -2,6 +2,8 @@
 # Requires pre-built binary at ./target/release/all-in-one
 # For local development with full build, use `Dockerfile.full` instead
 
+FROM ghcr.io/superradcompany/microsandbox:0.7.2 AS microsandbox-runtime
+
 # Admin UI Build Stage
 FROM node:20-slim AS ui-builder
 
@@ -25,13 +27,18 @@ RUN pnpm build
 # Runtime Stage
 FROM nvcr.io/nvidia/cuda:13.1.2-cudnn-runtime-ubuntu24.04
 
-RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y libssl3 libcurl4 libgomp1 docker.io docker-compose nginx gosu protobuf-compiler \
+RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y libssl3 libcurl4 libgomp1 libcap-ng0 docker.io docker-compose nginx gosu protobuf-compiler \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 RUN adduser --system --group jobworkerp
 
-RUN mkdir -p /home/jobworkerp && chown jobworkerp:jobworkerp /home/jobworkerp
+RUN mkdir -p /home/jobworkerp/.microsandbox && chown -R jobworkerp:jobworkerp /home/jobworkerp
 RUN mkdir -p /home/jobworkerp/plugins && chown jobworkerp:jobworkerp /home/jobworkerp/plugins
+COPY --from=microsandbox-runtime /usr/local/bin/msb /usr/local/bin/msb
+COPY --from=microsandbox-runtime /usr/local/lib/libkrunfw.so.5.6.1 /usr/local/lib/libkrunfw.so.5.6.1
+ENV MSB_HOME=/home/jobworkerp/.microsandbox \
+    MSB_PATH=/usr/local/bin/msb \
+    MSB_LIBKRUNFW_PATH=/usr/local/lib/libkrunfw.so.5.6.1
 ENV LD_LIBRARY_PATH=/home/jobworkerp/plugins:/home/jobworkerp/data/plugin/runner:/home/jobworkerp/data/plugin/cuda_runner:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 RUN /sbin/ldconfig
 

@@ -6,15 +6,34 @@
 
 ## 前提
 
+既存の DB では新しい migration を適用してから再起動してください。`RunnerService/FindList` は Runner の定義を DB から取得します。microsandbox の導入だけでは `SANDBOX` は一覧に表示されません。
+
 - 実行ホストは Linux、KVM、および microsandbox runtime を必要とします。
 - microsandbox Rust SDK 0.7.2 を使用します。runtime の UDP 同時接続数制限が非対応の場合、ネットワークを有効にした VM の起動は失敗します。
 - v1 は microsandbox local backend を対象とします。
 - ネットワークは既定で無効です。必要な通信だけを Worker 設定で許可してください。
 - `use_static=true` では同じ VM を使用したジョブ間でファイルシステムを共有します。異なるテナント、認可境界、秘密情報を扱うジョブを同じ Worker に投入してはいけません。
 
+### ローカル E2E 動作確認
+
+1. `msb doctor` で KVM へのアクセスを確認し、`msb run alpine:3.21 --name <重複しない確認用の名前> -- sh -c 'printf ok'` が動作することを確認します。確認用 VM が残った場合は `msb list` で照合して削除してください。
+2. テスト専用の Redis を用意します。テスト初期化時に Redis の **全 DB に対して `FLUSHALL`** が実行されるため、業務データや別プロセスと共有してはいけません。例: `redis-server --port 16389 --bind 127.0.0.1 --save '' --appendonly no --daemonize yes`。
+3. `TEST_REDIS_URL=redis://127.0.0.1:16389 UV_VENV_CLEAR=1 cargo test -p tests-with-worker --test sandbox_worker_e2e_test -- --ignored --test-threads=1 --nocapture` を実行します。`SANDBOX` が一覧から見つかり、実 worker で VM 内のコマンドが成功して終了・出力が検証されます。CI では実行されません。
+4. 専用 Redis を `redis-cli -p 16389 shutdown nosave` で停止します。テスト用ポートを変更した場合は同じポートを指定してください。
+
 `use_static` は `SandboxRunnerSettings` ではなく、Worker 作成時の `worker.data.use_static` に設定します。
 
 ネットワーク許可は Worker 側で設定します。ジョブごとに VM を作る場合は、そのジョブだけネットワークを無効化できます。static Worker は VM を共有するため、ジョブ単位のネットワーク切替はできません。ネットワーク無効の static Worker が必要な場合は、Worker 側で無効にしてください。
+
+### Docker 内で使う場合
+
+all-in-one と worker の GPU／CPU Dockerfile は microsandbox 0.7.2 の `msb` と対応する `libkrunfw` を実行イメージに配置し、`jobworkerp` ユーザー専用の `MSB_HOME` を使います。ホスト側の microsandbox のインストールをコンテナに共有する必要はありません。ただし Dockerfile だけでは KVM を公開できません。SANDBOX を使う環境では、それぞれの Compose override で `/dev/kvm` を渡します。通常の Compose 設定は KVM を要求しません。
+
+1. Docker を動かす Linux ホスト（外側が VM の場合は nested virtualization）に `/dev/kvm` があり、Docker から利用できることを確認します。Docker Desktop 等でデバイスを公開できない環境では local backend は動きません。
+2. 対象の Dockerfile でイメージをビルドします。all-in-one は `docker compose -f docker-compose.yml -f docker-compose-sandbox.yml up -d`、scalable worker は `docker compose -f docker-compose-scalable.yml -f docker-compose-scalable-sandbox.yml up -d` で起動します。起動後、同じ `-f` の組合せで `exec` を行い、all-in-one は `-u jobworkerp jobworkerp-all msb doctor`、worker は `jobworkerp-worker msb doctor` を実行してください。`KVM device` と `KVM access` が成功していることを確認します。
+3. 同じユーザーで `msb run alpine:3.21 --name <重複しない確認用の名前> -- sh -c 'printf "sandbox-ok\n"'` を実行し、microVM 内の出力と終了コードを確認します。確認用 VM の record が残った場合は `msb list` で名前を照合して削除します。実行例は [公式 Docker 手順](https://docs.microsandbox.dev/examples/docker/docker) を参照してください。
+
+ホストの `/dev/kvm` が特定のグループにのみ読み書きを許す場合、`stat -c '%g' /dev/kvm` で **そのデバイスの数値 group ID** を確認し、使う SANDBOX 用 Compose override の対象 service に `group_add: ["<数値 group ID>"]` を追加してください。既存の Docker socket 用グループとは別です。デバイス自体がない環境では `--privileged` を追加しても解決しません。VM image のキャッシュや sandbox database を再起動後も維持したい場合は、`MSB_HOME` に **Worker process ごとの専用 volume** をマウントし、`jobworkerp` が書き込めることを確認してください。異なる Worker process の間で書き込み可能な runtime 状態を共有しないでください。
 
 ## 実行方法
 

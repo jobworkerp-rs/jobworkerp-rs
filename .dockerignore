@@ -35,8 +35,11 @@
 !worker-app/**
 !worker-main/
 !worker-main/**
+# Preserve release executables without sending Rust build caches to Docker.
 !target/
+target/*
 !target/release/
+target/release/*
 !target/release/all-in-one
 !target/release/grpc-front
 !target/release/mcp-http

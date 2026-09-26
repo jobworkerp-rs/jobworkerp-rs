@@ -1,0 +1,4 @@
+services:
+  jobworkerp-all:
+    devices:
+      - /dev/kvm:/dev/kvm

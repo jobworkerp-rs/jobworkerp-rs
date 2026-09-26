@@ -9,6 +9,7 @@ RUN apt-get update && \
         clang \
         pkg-config \
         libssl-dev \
+        libcap-ng-dev \
         protobuf-compiler \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -29,6 +30,9 @@ COPY app-wrapper app-wrapper
 COPY worker-app worker-app
 COPY grpc-front grpc-front
 COPY worker-main worker-main
+COPY mcp-server mcp-server
+COPY ag-ui-front ag-ui-front
+COPY tests-with-worker tests-with-worker
 
 # Build with MySQL feature only (CPU-only, no CUDA)
 RUN cargo build --release --features mysql --bin grpc-front
@@ -44,6 +48,7 @@ RUN apt-get update && \
         ca-certificates \
         libssl3t64 \
         libcurl4t64 \
+        libcap-ng0 \
         protobuf-compiler \
         libgomp1 \
         docker.io \
