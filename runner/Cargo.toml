@@ -20,6 +20,7 @@ command-utils = { path = "../modules/command-utils" }
 memory-utils = { path = "../modules/memory-utils" }
 grpc-utils = { path = "../modules/grpc-utils" }
 jobworkerp-base = { path = "../base" }
+microsandbox = { version = "=0.7.2", default-features = false, features = ["local", "net"] }
 jobworkerp-plugin-abi = { path = "../modules/jobworkerp-plugin-abi" }
 jobworkerp-plugin-abi-macros = { path = "../modules/jobworkerp-plugin-abi-macros" }
 # runner = { path = "../runner" }
@@ -78,6 +79,7 @@ tonic-reflection = { workspace = true }
 prost-reflect = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
@@ -85,7 +87,6 @@ tonic-prost-build = { workspace = true }
 [dev-dependencies]
 rcgen = "0.14"
 tokio-rustls = "0.26"
-uuid = { workspace = true }
 # Self-reference so integration tests can access the test-utils gated module
 # (runner::test_common::mock), reusing the shared MockCancellationManager.
 jobworkerp-runner = { path = ".", features = ["test-utils"] }

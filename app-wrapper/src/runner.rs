@@ -16,6 +16,7 @@ use jobworkerp_runner::runner::{
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
     request::RequestRunner,
+    sandbox::SandboxRunner,
     slack::SlackPostMessageRunner,
 };
 use proto::jobworkerp::data::RunnerType;
@@ -82,6 +83,10 @@ impl RunnerFactory {
             )
                 as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::Docker) => Some(Box::new(DockerRunner::new_with_cancel_monitoring(
+                create_cancel_helper(),
+            ))
+                as Box<dyn CancellableRunner + Send + Sync>),
+            Some(RunnerType::Sandbox) => Some(Box::new(SandboxRunner::new_with_cancel_monitoring(
                 create_cancel_helper(),
             ))
                 as Box<dyn CancellableRunner + Send + Sync>),

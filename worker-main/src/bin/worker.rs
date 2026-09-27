@@ -77,12 +77,16 @@ pub async fn main() -> Result<()> {
     // Spawn shutdown signal handler (SIGINT + SIGTERM on Unix)
     util::shutdown::spawn_shutdown_handler(shutdown_send.clone());
 
-    let jh = tokio::spawn(jobworkerp_main::start_worker_with_session(
+    jobworkerp_main::start_worker_with_session_and_shutdown(
         app_module,
         runner_factory,
-        lock,
+        lock.clone(),
         instance_manager.session(),
-    ));
+        shutdown_recv,
+    )
+    .await?;
+    // The coordinator is installed before releasing the root shutdown lock.
+    lock.unlock();
 
     tracing::info!("wait for processing ...");
     wait.wait().await;
@@ -97,6 +101,5 @@ pub async fn main() -> Result<()> {
 
     tracing::info!("shutdown");
     command_utils::util::tracing::shutdown_tracer_provider();
-    jh.await??;
     Ok(())
 }

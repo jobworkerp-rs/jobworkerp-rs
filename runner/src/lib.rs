@@ -1,3 +1,6 @@
+// Streaming SDK futures nest deeply when the complete workspace is code-generated.
+#![recursion_limit = "256"]
+
 pub mod runner;
 pub mod validation;
 

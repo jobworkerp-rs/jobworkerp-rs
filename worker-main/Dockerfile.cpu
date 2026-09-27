@@ -1,5 +1,7 @@
 # Multi-stage build to ensure GLIBC compatibility
 # Build stage: Use Rust with Debian Trixie (GLIBC 2.41)
+FROM ghcr.io/superradcompany/microsandbox:0.7.2 AS microsandbox-runtime
+
 FROM rust:slim-trixie AS builder
 
 # Install build dependencies
@@ -9,6 +11,7 @@ RUN apt-get update && \
         clang \
         pkg-config \
         libssl-dev \
+        libcap-ng-dev \
         protobuf-compiler \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -29,6 +32,9 @@ COPY app-wrapper app-wrapper
 COPY worker-app worker-app
 COPY grpc-front grpc-front
 COPY worker-main worker-main
+COPY mcp-server mcp-server
+COPY ag-ui-front ag-ui-front
+COPY tests-with-worker tests-with-worker
 
 # Build with MySQL feature only (CPU-only, no CUDA)
 RUN cargo build --release --features mysql --bin worker
@@ -44,6 +50,7 @@ RUN apt-get update && \
         ca-certificates \
         libssl3t64 \
         libcurl4t64 \
+        libcap-ng0 \
         protobuf-compiler \
         libgomp1 \
         docker.io \
@@ -53,8 +60,13 @@ RUN apt-get update && \
 
 RUN useradd -r -s /bin/false jobworkerp
 
-RUN mkdir -p /home/jobworkerp && chown jobworkerp:nogroup /home/jobworkerp
+RUN mkdir -p /home/jobworkerp/.microsandbox && chown -R jobworkerp:nogroup /home/jobworkerp
 RUN mkdir -p /home/jobworkerp/plugins && chown jobworkerp:nogroup /home/jobworkerp/plugins
+COPY --from=microsandbox-runtime /usr/local/bin/msb /usr/local/bin/msb
+COPY --from=microsandbox-runtime /usr/local/lib/libkrunfw.so.5.6.1 /usr/local/lib/libkrunfw.so.5.6.1
+ENV MSB_HOME=/home/jobworkerp/.microsandbox \
+    MSB_PATH=/usr/local/bin/msb \
+    MSB_LIBKRUNFW_PATH=/usr/local/lib/libkrunfw.so.5.6.1
 ENV LD_LIBRARY_PATH=/home/jobworkerp/plugins:/home/jobworkerp/data/plugin/runner
 
 WORKDIR /home/jobworkerp

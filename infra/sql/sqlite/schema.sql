@@ -129,6 +129,10 @@ INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`definition`, `type`) 
   32770, 'GRPC',
   'Unified gRPC runner with multiple methods: unary (gRPC unary call, default) and streaming (gRPC server streaming call). Using defaults to unary if not specified.',
   'builtin32770', 32770
+), (
+  32771, 'SANDBOX',
+  'Executes commands in a local microsandbox microVM.',
+  'builtin32771', 32771
 );
 
 

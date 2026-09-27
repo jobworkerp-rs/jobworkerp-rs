@@ -499,7 +499,22 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(versions, vec![1, 2, 3]);
+        assert_eq!(
+            versions,
+            SQLITE_MIGRATOR
+                .iter()
+                .map(|m| m.version)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM runner WHERE id = 32771 AND name = 'SANDBOX'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM runner WHERE id = 9000")
                 .fetch_one(&pool)
@@ -531,7 +546,13 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(versions, vec![1, 2, 3]);
+        assert_eq!(
+            versions,
+            SQLITE_MIGRATOR
+                .iter()
+                .map(|m| m.version)
+                .collect::<Vec<_>>()
+        );
         let search_index_count = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM sqlite_master \
              WHERE type = 'index' AND name IN (\
@@ -580,6 +601,21 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(versions, vec![1, 2, 3]);
+        assert_eq!(
+            versions,
+            SQLITE_MIGRATOR
+                .iter()
+                .map(|m| m.version)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM runner WHERE id = 32771 AND name = 'SANDBOX'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
     }
 }

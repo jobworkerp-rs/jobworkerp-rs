@@ -8,16 +8,56 @@ use deadpool::{
 };
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::cancellation::CancellableRunner;
-use proto::jobworkerp::data::{RunnerData, WorkerData};
+use jobworkerp_runner::runner::sandbox::{SandboxCleanupRegistry, SandboxMode, SandboxRunner};
+use proto::jobworkerp::data::{RunnerData, WorkerData, WorkerId};
+use std::any::Any;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing;
+
+pub(super) type RunnerHandle = Arc<Mutex<Box<dyn CancellableRunner + Send + Sync>>>;
+
+pub(super) fn sandbox_runner_mut(
+    runner: &mut (dyn CancellableRunner + Send + Sync),
+) -> Option<&mut SandboxRunner> {
+    (runner as &mut dyn Any).downcast_mut::<SandboxRunner>()
+}
+
+pub(super) fn set_sandbox_worker_context(
+    runner: &mut Box<dyn CancellableRunner + Send + Sync>,
+    worker_id: &WorkerId,
+    use_static: bool,
+) -> Result<()> {
+    if let Some(sandbox) = sandbox_runner_mut(&mut **runner) {
+        let mode = if use_static {
+            SandboxMode::Static
+        } else {
+            SandboxMode::NonStatic
+        };
+        sandbox.set_worker_context(*worker_id, mode)?;
+    }
+    Ok(())
+}
+
+pub(super) fn set_sandbox_cleanup_registry(
+    runner: &mut Box<dyn CancellableRunner + Send + Sync>,
+    cleanup_registry: Option<&SandboxCleanupRegistry>,
+) -> Result<()> {
+    if let Some(sandbox) = sandbox_runner_mut(&mut **runner) {
+        let registry = cleanup_registry
+            .ok_or_else(|| anyhow!("SANDBOX requires a process cleanup registry"))?;
+        sandbox.set_cleanup_registry(registry.clone())?;
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 pub struct RunnerPoolManagerImpl {
     runner_data: Arc<RunnerData>,
     worker: Arc<WorkerData>,
     runner_factory: Arc<RunnerFactory>,
+    worker_id: Option<WorkerId>,
+    cleanup_registry: Option<SandboxCleanupRegistry>,
 }
 
 impl RunnerPoolManagerImpl {
@@ -26,10 +66,22 @@ impl RunnerPoolManagerImpl {
         worker: Arc<WorkerData>,
         runner_factory: Arc<RunnerFactory>,
     ) -> Self {
+        Self::new_with_worker_id(runner_data, worker, runner_factory, None, None).await
+    }
+
+    async fn new_with_worker_id(
+        runner_data: Arc<RunnerData>,
+        worker: Arc<WorkerData>,
+        runner_factory: Arc<RunnerFactory>,
+        worker_id: Option<WorkerId>,
+        cleanup_registry: Option<SandboxCleanupRegistry>,
+    ) -> Self {
         Self {
             runner_data,
             worker,
             runner_factory,
+            worker_id,
+            cleanup_registry,
         }
     }
 
@@ -50,10 +102,27 @@ impl RunnerPoolManagerImpl {
             );
         }
     }
+
+    async fn recycle_runner(
+        runner_impl: &mut Box<dyn CancellableRunner + Send + Sync>,
+    ) -> Result<()> {
+        if let Some(sandbox) = sandbox_runner_mut(&mut **runner_impl) {
+            sandbox.verify_before_reuse().await?;
+        } else {
+            runner_impl
+                .as_cancel_monitoring()
+                .request_cancellation()
+                .await
+                .unwrap();
+        }
+
+        Self::reset_for_pooling_if_supported(runner_impl).await;
+        Ok(())
+    }
 }
 
 impl Manager for RunnerPoolManagerImpl {
-    type Type = Arc<Mutex<Box<dyn CancellableRunner + Send + Sync>>>;
+    type Type = RunnerHandle;
     type Error = anyhow::Error;
 
     async fn create(
@@ -67,6 +136,13 @@ impl Manager for RunnerPoolManagerImpl {
                 "runner not found: {:?}",
                 self.runner_data.name
             )))?;
+        if sandbox_runner_mut(&mut *runner).is_some() {
+            set_sandbox_cleanup_registry(&mut runner, self.cleanup_registry.as_ref())?;
+            let worker_id = self.worker_id.as_ref().ok_or_else(|| {
+                anyhow!("static SANDBOX pool creation requires a trusted Worker ID")
+            })?;
+            set_sandbox_worker_context(&mut runner, worker_id, self.worker.use_static)?;
+        }
         runner.load(self.worker.runner_settings.clone()).await?;
         tracing::debug!("runner created in pool: {}", runner.name());
         Ok(Arc::new(Mutex::new(runner)))
@@ -94,17 +170,9 @@ impl Manager for RunnerPoolManagerImpl {
     ) -> RecycleResult<Self::Error> {
         tracing::debug!("runner recycled");
         let mut r = runner.lock().await;
-
-        r.as_cancel_monitoring()
-            .request_cancellation()
+        Self::recycle_runner(&mut r)
             .await
-            .unwrap();
-
-        // Additional: Reset cancellation monitoring state for pooling
-        // This prevents state contamination between jobs in pool environment
-        Self::reset_for_pooling_if_supported(&mut r).await;
-
-        Ok(())
+            .map_err(deadpool::managed::RecycleError::Backend)
     }
 }
 
@@ -119,6 +187,62 @@ impl RunnerFactoryWithPool {
         runner_factory: Arc<RunnerFactory>,
         worker_config: Arc<WorkerConfig>,
     ) -> Result<Self> {
+        Self::new_with_worker_id(
+            runner_data,
+            worker,
+            runner_factory,
+            worker_config,
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub async fn new_for_worker_id(
+        runner_data: Arc<RunnerData>,
+        worker: Arc<WorkerData>,
+        runner_factory: Arc<RunnerFactory>,
+        worker_config: Arc<WorkerConfig>,
+        worker_id: WorkerId,
+    ) -> Result<Self> {
+        Self::new_with_worker_id(
+            runner_data,
+            worker,
+            runner_factory,
+            worker_config,
+            Some(worker_id),
+            None,
+        )
+        .await
+    }
+
+    pub async fn new_for_worker_id_with_cleanup_registry(
+        runner_data: Arc<RunnerData>,
+        worker: Arc<WorkerData>,
+        runner_factory: Arc<RunnerFactory>,
+        worker_config: Arc<WorkerConfig>,
+        worker_id: WorkerId,
+        cleanup_registry: SandboxCleanupRegistry,
+    ) -> Result<Self> {
+        Self::new_with_worker_id(
+            runner_data,
+            worker,
+            runner_factory,
+            worker_config,
+            Some(worker_id),
+            Some(cleanup_registry),
+        )
+        .await
+    }
+
+    async fn new_with_worker_id(
+        runner_data: Arc<RunnerData>,
+        worker: Arc<WorkerData>,
+        runner_factory: Arc<RunnerFactory>,
+        worker_config: Arc<WorkerConfig>,
+        worker_id: Option<WorkerId>,
+        cleanup_registry: Option<SandboxCleanupRegistry>,
+    ) -> Result<Self> {
         if !worker.use_static {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "worker must be static for runner pool: {:?}",
@@ -126,9 +250,14 @@ impl RunnerFactoryWithPool {
             ))
             .into());
         }
-        let manager =
-            RunnerPoolManagerImpl::new(runner_data.clone(), worker.clone(), runner_factory.clone())
-                .await;
+        let manager = RunnerPoolManagerImpl::new_with_worker_id(
+            runner_data.clone(),
+            worker.clone(),
+            runner_factory.clone(),
+            worker_id,
+            cleanup_registry,
+        )
+        .await;
         let max_size = if let Some(c) = worker_config.get_concurrency(worker.channel.as_ref()) {
             Ok(c)
         } else {
@@ -349,6 +478,36 @@ mod tests {
             );
         });
         Ok(())
+    }
+
+    #[test]
+    fn sandbox_recycle_verifies_reusability_without_requesting_cancellation() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let worker_id = proto::jobworkerp::data::WorkerId { value: 7320 };
+            let mut runner: Box<dyn CancellableRunner + Send + Sync> =
+                Box::new(jobworkerp_runner::runner::sandbox::SandboxRunner::new());
+            set_sandbox_worker_context(&mut runner, &worker_id, true)?;
+
+            assert!(
+                RunnerPoolManagerImpl::recycle_runner(&mut runner)
+                    .await
+                    .is_err()
+            );
+            let sandbox = sandbox_runner_mut(&mut *runner).unwrap();
+            assert!(
+                sandbox.is_reusable(),
+                "recycling must verify SANDBOX without marking it cancelled"
+            );
+
+            runner.as_cancel_monitoring().request_cancellation().await?;
+            assert!(
+                RunnerPoolManagerImpl::recycle_runner(&mut runner)
+                    .await
+                    .is_err()
+            );
+            assert!(!sandbox_runner_mut(&mut *runner).unwrap().is_reusable());
+            Ok(())
+        })
     }
 
     /// Pool reset_for_pooling() functionality tests

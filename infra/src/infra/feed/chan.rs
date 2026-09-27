@@ -42,9 +42,9 @@ struct JobFeedState {
 /// Workers register a channel sender when starting a feed-enabled streaming job;
 /// the gRPC handler looks it up to deliver feed data directly.
 ///
-/// Registration invariant: entries are only inserted by `run_job()` for jobs that
-/// satisfy all feed preconditions (Running state, streaming_type != None, use_static,
-/// concurrency == 1, require_client_stream).
+/// Registration invariant: `run_job()` inserts one sender per job ID only when the
+/// selected Runner method supports client streaming. Static/non-static mode and
+/// worker concurrency do not change this per-job session boundary.
 ///
 /// When the publisher (gRPC frontend) runs ahead of the runner's registration
 /// (e.g. the previous job is still holding the static runner pool slot), feeds

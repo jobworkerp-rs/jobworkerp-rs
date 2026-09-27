@@ -151,6 +151,29 @@ fn apply_output_adapter(
     }
 }
 
+fn validate_child_stream_end(
+    runner_name: &str,
+    trailer: Option<&proto::jobworkerp::data::Trailer>,
+) -> Result<()> {
+    if runner_name != "SANDBOX" {
+        return Ok(());
+    }
+
+    let trailer =
+        trailer.ok_or_else(|| anyhow::anyhow!("SANDBOX child stream ended without an End item"))?;
+    match proto::stream_error::parse_stream_error(trailer) {
+        proto::stream_error::StreamErrorOutcome::Missing => Ok(()),
+        proto::stream_error::StreamErrorOutcome::Error(error) => Err(anyhow::anyhow!(
+            "SANDBOX child stream failed ({}): {}",
+            error.code,
+            error.message
+        )),
+        proto::stream_error::StreamErrorOutcome::Malformed(error) => Err(anyhow::anyhow!(
+            "SANDBOX child stream ended with malformed stream_error metadata: {error:?}"
+        )),
+    }
+}
+
 /// Streaming execution must collect a runner result to forward stream items, so
 /// `await: false` (fire-and-forget) is incompatible with `useStreaming: true`.
 /// Reject it uniformly across every run.* instance with one positioned error.
@@ -720,6 +743,7 @@ async fn process_stream(
 
     let mut final_collected_bytes: Option<Vec<u8>> = None;
     let mut all_data_chunks: Vec<Vec<u8>> = Vec::new();
+    let mut end_trailer = None;
 
     // Use timeout for each stream item to prevent hanging indefinitely
     let item_timeout = std::time::Duration::from_secs(handle.timeout_sec as u64);
@@ -742,8 +766,9 @@ async fn process_stream(
                         // Collect all chunks for later aggregation
                         all_data_chunks.push(data);
                     }
-                    Some(Item::End(_trailer)) => {
+                    Some(Item::End(trailer)) => {
                         tracing::debug!("Stream ended for job {}", job_id);
+                        end_trailer = Some(trailer);
                         break;
                     }
                     Some(Item::FinalCollected(data)) => {
@@ -769,6 +794,8 @@ async fn process_stream(
             }
         }
     }
+
+    validate_child_stream_end(&handle.runner_data.name, end_trailer.as_ref())?;
 
     // Prefer FinalCollected (properly aggregated by runner)
     // Otherwise, use runner_spec.collect_stream to properly aggregate Data chunks
@@ -1089,6 +1116,63 @@ mod tests {
         let output = apply_output_adapter(raw.clone(), None).unwrap();
 
         assert_eq!(output, raw);
+    }
+
+    #[test]
+    fn sandbox_stream_with_normal_end_is_accepted() {
+        let trailer = proto::jobworkerp::data::Trailer::default();
+
+        assert!(validate_child_stream_end("SANDBOX", Some(&trailer)).is_ok());
+    }
+
+    #[test]
+    fn sandbox_stream_error_end_is_a_failure() {
+        let trailer = proto::stream_error::build_stream_error_trailer(
+            std::collections::HashMap::new(),
+            "EXECUTION_FAILED",
+            "sandbox execution failed",
+            "SANDBOX",
+        )
+        .unwrap();
+
+        let error = validate_child_stream_end("SANDBOX", Some(&trailer)).unwrap_err();
+
+        assert!(error.to_string().contains("EXECUTION_FAILED"));
+    }
+
+    #[test]
+    fn sandbox_stream_with_malformed_error_end_is_a_failure() {
+        let trailer = proto::jobworkerp::data::Trailer {
+            metadata: std::collections::HashMap::from([(
+                proto::stream_error::STREAM_ERROR_METADATA_KEY.to_string(),
+                "not-json".to_string(),
+            )]),
+        };
+
+        let error = validate_child_stream_end("SANDBOX", Some(&trailer)).unwrap_err();
+
+        assert!(error.to_string().contains("malformed"));
+    }
+
+    #[test]
+    fn sandbox_stream_without_end_is_a_failure() {
+        let error = validate_child_stream_end("SANDBOX", None).unwrap_err();
+
+        assert!(error.to_string().contains("without an End"));
+    }
+
+    #[test]
+    fn legacy_runner_without_end_keeps_its_existing_success_behavior() {
+        assert!(validate_child_stream_end("COMMAND", None).is_ok());
+
+        let trailer = proto::stream_error::build_stream_error_trailer(
+            std::collections::HashMap::new(),
+            "EXECUTION_FAILED",
+            "legacy runner metadata",
+            "COMMAND",
+        )
+        .unwrap();
+        assert!(validate_child_stream_end("COMMAND", Some(&trailer)).is_ok());
     }
 
     #[tokio::test]

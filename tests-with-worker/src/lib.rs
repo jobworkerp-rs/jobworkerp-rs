@@ -19,11 +19,15 @@ use worker_app::worker::dispatcher::JobDispatcher;
 pub struct TestWorkerHandle {
     _lock: shutdown::ShutdownLock,
     _wait: shutdown::ShutdownWait,
+    shutdown_send: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 impl TestWorkerHandle {
     /// Signal shutdown and wait for background tasks (with timeout).
     pub async fn shutdown(mut self) {
+        if let Some(send) = self.shutdown_send.as_ref() {
+            let _ = send.send(true);
+        }
         self._lock.unlock();
         // Dispatcher tasks listen to OS signals, not lock state.
         // Use a short timeout to avoid hanging in tests.
@@ -46,6 +50,20 @@ impl TestWorkerHandle {
 /// `config_module` has correct `StorageType` and `WorkerConfig`.
 /// `create_hybrid_test_app()` satisfies this requirement.
 pub async fn start_test_worker(app_module: Arc<AppModule>) -> Result<TestWorkerHandle> {
+    start_test_worker_inner(app_module, false).await
+}
+
+/// Start a test worker with the production SANDBOX cleanup coordinator.
+pub async fn start_test_worker_with_sandbox(
+    app_module: Arc<AppModule>,
+) -> Result<TestWorkerHandle> {
+    start_test_worker_inner(app_module, true).await
+}
+
+async fn start_test_worker_inner(
+    app_module: Arc<AppModule>,
+    with_sandbox: bool,
+) -> Result<TestWorkerHandle> {
     let (lock, wait) = shutdown::create_lock_and_wait();
 
     let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
@@ -59,7 +77,24 @@ pub async fn start_test_worker(app_module: Arc<AppModule>) -> Result<TestWorkerH
     let config_module = app_module.config_module.clone();
     let id_generator = Arc::new(IdGeneratorWrapper::new());
 
-    let wm = WorkerModules::new(config_module, id_generator, app_module, runner_factory);
+    let (wm, shutdown_send) = if with_sandbox {
+        let (send, recv) = tokio::sync::watch::channel(false);
+        let wm = WorkerModules::new_with_session_and_shutdown(
+            config_module,
+            id_generator,
+            app_module,
+            runner_factory,
+            None,
+            lock.clone(),
+            recv,
+        )?;
+        (wm, Some(send))
+    } else {
+        (
+            WorkerModules::new(config_module, id_generator, app_module, runner_factory),
+            None,
+        )
+    };
 
     // dispatch_jobs requires &'static self, so leak the dispatcher.
     // WARNING: Each call leaks memory. Tests must run with --test-threads=1
@@ -72,5 +107,6 @@ pub async fn start_test_worker(app_module: Arc<AppModule>) -> Result<TestWorkerH
     Ok(TestWorkerHandle {
         _lock: lock,
         _wait: wait,
+        shutdown_send,
     })
 }

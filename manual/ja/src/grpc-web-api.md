@@ -328,7 +328,7 @@ USE_GRPC_WEB=true ./target/release/grpc-front
 
 以下のRunner Typeが利用可能です：
 
-### COMMAND - シェルコマンド実行
+### COMMAND - ホスト上のコマンド実行（シェル構文は自動解釈しない）
 
 **Runner Settings (settings_json):**
 ```json

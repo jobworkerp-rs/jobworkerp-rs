@@ -52,6 +52,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "protobuf/jobworkerp/runner/function_set_selector_settings.proto",
                 "protobuf/jobworkerp/runner/function_set_selector_args.proto",
                 "protobuf/jobworkerp/runner/function_set_selector_result.proto",
+                "protobuf/jobworkerp/runner/sandbox_common.proto",
+                "protobuf/jobworkerp/runner/sandbox_settings.proto",
+                "protobuf/jobworkerp/runner/sandbox_args.proto",
+                "protobuf/jobworkerp/runner/sandbox_result.proto",
             ],
             &["../proto/protobuf/", "protobuf"],
         )

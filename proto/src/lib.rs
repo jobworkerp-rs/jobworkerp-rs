@@ -17,6 +17,7 @@ pub mod jobworkerp {
 }
 
 pub mod log_ext;
+pub mod stream_error;
 
 // for test runner
 tonic::include_proto!("_");

@@ -701,6 +701,44 @@ mod test {
     use proto::jobworkerp::data::StreamingOutputType;
     use std::sync::Arc;
 
+    #[test]
+    fn sandbox_is_discoverable_after_migration() -> Result<()> {
+        use infra_utils::infra::test::{TEST_RUNTIME, setup_test_rdb_from};
+
+        TEST_RUNTIME.block_on(async {
+            let path = if cfg!(feature = "mysql") {
+                "sql/migrations/mysql"
+            } else {
+                "sql/migrations/sqlite"
+            };
+            let pool = setup_test_rdb_from(path).await;
+            let factory = Arc::new(RunnerSpecFactory::new(
+                Arc::new(Plugins::new()),
+                Arc::new(McpServerFactory::default()),
+            ));
+            let repository = RdbRunnerRepositoryImpl::new(
+                pool,
+                factory,
+                Arc::new(crate::infra::IdGeneratorWrapper::new()),
+            );
+            let sandbox = repository
+                .find_by_name("SANDBOX")
+                .await?
+                .expect("SANDBOX must be registered in the runner catalog");
+            assert_eq!(sandbox.id.unwrap().value, RunnerType::Sandbox as i64);
+            let listed = repository
+                .find_list_by(vec![], None, None, None, None, None)
+                .await?;
+            assert!(listed.iter().any(|runner| {
+                runner
+                    .data
+                    .as_ref()
+                    .is_some_and(|data| data.name == "SANDBOX")
+            }));
+            Ok(())
+        })
+    }
+
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let p = Arc::new(RunnerSpecFactory::new(
             Arc::new(Plugins::new()),

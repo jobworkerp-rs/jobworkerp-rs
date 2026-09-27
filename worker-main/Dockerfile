@@ -1,5 +1,7 @@
 # Build the worker in the same Ubuntu release as the runtime image so host
 # toolchains cannot leak into a deployable image.
+FROM ghcr.io/superradcompany/microsandbox:0.7.2 AS microsandbox-runtime
+
 FROM nvcr.io/nvidia/cuda:13.1.2-cudnn-devel-ubuntu24.04 AS builder
 
 ARG CARGO_FEATURES=mysql
@@ -9,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         clang \
         curl \
+        libcap-ng-dev \
         mold \
         pkg-config \
         protobuf-compiler \
@@ -33,6 +36,7 @@ RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y --no-install
         docker.io \
         docker-compose \
         git \
+        libcap-ng0 \
         libcurl4 \
         libgomp1 \
         protobuf-compiler \
@@ -42,8 +46,13 @@ RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y --no-install
 RUN adduser --system jobworkerp \
     && adduser jobworkerp docker
 
-RUN mkdir -p /home/jobworkerp && chown jobworkerp:daemon /home/jobworkerp
+RUN mkdir -p /home/jobworkerp/.microsandbox && chown -R jobworkerp:daemon /home/jobworkerp
 RUN mkdir -p /home/jobworkerp/plugins && chown jobworkerp:daemon /home/jobworkerp/plugins
+COPY --from=microsandbox-runtime /usr/local/bin/msb /usr/local/bin/msb
+COPY --from=microsandbox-runtime /usr/local/lib/libkrunfw.so.5.6.1 /usr/local/lib/libkrunfw.so.5.6.1
+ENV MSB_HOME=/home/jobworkerp/.microsandbox \
+    MSB_PATH=/usr/local/bin/msb \
+    MSB_LIBKRUNFW_PATH=/usr/local/lib/libkrunfw.so.5.6.1
 ENV LD_LIBRARY_PATH=/home/jobworkerp/plugins:/home/jobworkerp/data/plugin/runner:/home/jobworkerp/data/plugin/cuda_runner:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 RUN /sbin/ldconfig
 

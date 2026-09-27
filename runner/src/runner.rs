@@ -75,6 +75,7 @@ pub mod mcp;
 pub mod plugins;
 pub mod python;
 pub mod request;
+pub mod sandbox;
 pub mod slack;
 pub mod timeout_config;
 pub mod workflow_unified;
