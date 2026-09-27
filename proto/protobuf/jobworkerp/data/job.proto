@@ -19,6 +19,8 @@ message JobExecutionOverrides {
   optional bool broadcast_results = 4;
   // # Retry Policy Override
   optional jobworkerp.data.RetryPolicy retry_policy = 5;
+  // # Expected Runner ID Override
+  optional int64 expected_runner_id = 6;
 }
 
 // # Job Data

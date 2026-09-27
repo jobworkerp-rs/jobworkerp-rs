@@ -276,7 +276,15 @@ pub trait RdbJobDispatcher:
                 JobWorkerError::NotFound(format!("failed to get runner_id: {:?}", job)).into(),
             );
         };
-        let runner_data = if let Some(RunnerWithSchema {
+        let scoped_target_changed = super::validate_scoped_runner(
+            job.data.as_ref().expect("job data validated above"),
+            rid,
+        )
+        .is_err();
+        let runner_data = if scoped_target_changed {
+            // Only the claimed mismatch path may consume this placeholder.
+            Ok(proto::jobworkerp::data::RunnerData::default())
+        } else if let Some(RunnerWithSchema {
             id: _,
             data: runner_data,
             ..
@@ -406,6 +414,19 @@ pub trait RdbJobDispatcher:
                                 .to_string(),
                         )
                         .into());
+                    }
+                    if scoped_target_changed {
+                        let result = super::scoped_runner_mismatch_result(
+                            &job,
+                            &w,
+                            proto::jobworkerp::data::JobResultId {
+                                value: self.id_generator().generate_id()?,
+                            },
+                        );
+                        return self
+                            .process_cancelled_dispatch_result(result, &w, job_id)
+                            .await
+                            .map(Some);
                     }
                     let mut res = self.run_job(&runner_data, &wid, &w, job).await;
                     super::ensure_job_result_id(self.id_generator(), &mut res.0)?;

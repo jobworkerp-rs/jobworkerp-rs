@@ -99,6 +99,23 @@ The chat method supports providing tools to the LLM via FunctionSets. The `is_au
 - `is_auto_calling: true` - Automatically execute tools when LLM returns tool calls
 - `is_auto_calling: false` (default) - Return tool calls to client for review/modification before execution
 
+### Agent Skills (chat)
+
+For the `LLM` `chat` method, approved Agent Skills can be disclosed by name and description, then loaded on demand with the internal `activate_skill(name)` tool. Activation returns the full `SKILL.md`; it neither reads references nor runs scripts. See the [Agent Skills specification](https://agentskills.io/specification) for the skill format.
+
+Setup:
+
+1. On existing MySQL deployments, back up and apply `infra/sql/migrations/mysql/004_scoped_tool_expected_runner.sql` **before** upgrading Workers (SQLite migrates on startup). Then **upgrade all job-enqueuing and executing Workers to a skills-aware version**; old workers cannot reject retargeted jobs after enqueue. Restrict Worker, FunctionSet and Runner/Worker management operations to administrators. Deploy reviewed skill directories read-only to every candidate LLM worker node and the nodes running any separate file-reading tool.
+2. Configure `LLM_SKILL_ROOTS` on the Worker processes, for example `{"team":{"local_path":"/opt/jobworkerp/skills/team","resource_path":"/mnt/skills/team"}}`. The absolute `local_path` is visible to the LLM worker; the optional absolute `resource_path` is visible to the external reader (defaults to `local_path`).
+3. Add `"skills":{"root_ids":["team"],"allow_names":["my-skill"]}` to the top level of the LLM Worker settings. Omit `allow_names` to expose all skills in the chosen roots. Existing Workers without `skills` are unchanged.
+4. If skills reference supporting files, separately register a restricted filesystem read tool (for example, an MCP filesystem tool) in a fixed FunctionSet. `COMMAND` can execute arbitrary commands and is not a read-only substitute. See [Function / FunctionSet](function.md) and [MCP proxy](runners/mcp-proxy.md).
+5. In the chat `function_options`, set `use_function_calling=true`; set `function_set_name` when using an external reader; use `is_auto_calling=true` only for non-streaming auto execution. Streaming supports manual tool execution only. Approve pending `activate_skill` calls with the same `call_id`; resolve paths in its instructions relative to the returned `resource_base_dir` and read supporting files only as needed.
+6. Verify the deployment, readability and version on **every** candidate node. A successful Worker `load` only checks one execution node.
+
+While skills are enabled, `auto_select_function_set`, `client_tools_json`, and unrestricted Runner/Worker exposure cannot be combined with them; duplicate exposed tool names are rejected. Manual approval binds the public tool name, not the previously resolved target: a management change may redirect that name to a different unique target in the next job. No per-root user authorization is added; do not enable this feature if non-administrators can reach management operations.
+After revalidation in the same job, enqueuing the old target remains permitted, but dispatch rejects a changed Runner ID. Deploy Runner definitions immutably rather than reusing the same ID for a changed implementation.
+Use non-periodic Workers for external skill tools. Scoped calls disable automatic retries and reject periodic Workers, since subsequent executions would otherwise lose the verified target guard. Failures remain associated with the original `call_id`.
+
 ### FunctionSets
 
 Tools are organized by functionality using FunctionSets. Available built-in function sets correspond to runner types:

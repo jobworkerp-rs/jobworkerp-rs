@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS `job_execution_overrides` (
   `retry_interval` INT DEFAULT NULL,
   `retry_max_interval` INT DEFAULT NULL,
   `retry_max_retry` INT DEFAULT NULL,
-  `retry_basis` REAL DEFAULT NULL
+  `retry_basis` REAL DEFAULT NULL,
+  `expected_runner_id` BIGINT DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS `job_result` (

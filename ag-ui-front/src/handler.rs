@@ -52,6 +52,53 @@ const MAX_NESTED_SUBSCRIPTIONS: usize = 32;
 /// Channel buffer size for nested workflow progress events.
 const NESTED_EVENT_CHANNEL_SIZE: usize = 64;
 
+enum StreamingToolResultDisposition {
+    Emit {
+        events: Vec<AgUiEvent>,
+        emitted_end: bool,
+    },
+    Buffer(ExtractedToolResult),
+    Duplicate,
+}
+
+fn route_streaming_tool_result(
+    call_id: &str,
+    extracted: ExtractedToolResult,
+    sent_tool_call_ids: &std::collections::HashSet<String>,
+    sent_tool_end_ids: &mut std::collections::HashSet<String>,
+    sent_tool_result_ids: &mut std::collections::HashSet<String>,
+    pending_tool_starts: &mut IndexMap<String, ExtractedToolStarted>,
+) -> StreamingToolResultDisposition {
+    if sent_tool_result_ids.contains(call_id) {
+        return StreamingToolResultDisposition::Duplicate;
+    }
+
+    let has_tool_start = pending_tool_starts.shift_remove(call_id).is_some();
+    // Skill activation has no job-backed start event, so use its public call ID
+    // to close the AG-UI call as soon as its result arrives.
+    let is_published_activation =
+        extracted.fn_name == "activate_skill" && sent_tool_call_ids.contains(call_id);
+    if !has_tool_start && !is_published_activation {
+        return StreamingToolResultDisposition::Buffer(extracted);
+    }
+
+    let emitted_end = sent_tool_end_ids.insert(call_id.to_string());
+    let mut events = Vec::with_capacity(if emitted_end { 2 } else { 1 });
+    if emitted_end {
+        events.push(AgUiEvent::tool_call_end(call_id.to_string()));
+    }
+    events.push(AgUiEvent::tool_call_result(
+        call_id.to_string(),
+        extracted.result,
+    ));
+    sent_tool_result_ids.insert(call_id.to_string());
+
+    StreamingToolResultDisposition::Emit {
+        events,
+        emitted_end,
+    }
+}
+
 /// Registry of active workflow executors for cancellation support.
 type ExecutorRegistry = Arc<RwLock<HashMap<String, Arc<WorkflowExecutor>>>>;
 
@@ -1669,34 +1716,44 @@ where
                                 // so only emit END/RESULT here.
                                 let tool_results = extract_tool_execution_results(&ev.data);
                                 for (call_id, extracted) in tool_results {
-                                    if sent_tool_result_ids.contains(call_id.as_str()) {
-                                        continue;
-                                    }
-                                    if let Some(_tool_start) = pending_tool_starts.shift_remove(&call_id) {
-                                        // START/ARGS already emitted; emit END only if it has not
-                                        // been sent earlier (e.g. by handle_llm_tool_approval).
-                                        if sent_tool_end_ids.insert(call_id.clone()) {
-                                            let end_event = AgUiEvent::tool_call_end(call_id.clone());
-                                            let end_eid = Self::encode_event_with_logging(&encoder, &end_event);
-                                            event_store.store_event(&run_id, end_eid, end_event.clone()).await;
-                                            yield (end_eid, end_event);
-                                            session_manager
-                                                .record_emitted_tool_call_end_id(&session_id, &call_id)
-                                                .await;
+                                    match route_streaming_tool_result(
+                                        &call_id,
+                                        extracted,
+                                        &sent_tool_call_ids,
+                                        &mut sent_tool_end_ids,
+                                        &mut sent_tool_result_ids,
+                                        &mut pending_tool_starts,
+                                    ) {
+                                        StreamingToolResultDisposition::Duplicate => {}
+                                        StreamingToolResultDisposition::Buffer(extracted) => {
+                                            // Keep non-job results buffered for the existing completion fallback.
+                                            pending_tool_results.entry(call_id).or_insert(extracted);
                                         }
+                                        StreamingToolResultDisposition::Emit {
+                                            events,
+                                            emitted_end,
+                                        } => {
+                                            for event in events {
+                                                let is_end = matches!(
+                                                    &event,
+                                                    AgUiEvent::ToolCallEnd { .. }
+                                                );
+                                                let event_id = Self::encode_event_with_logging(&encoder, &event);
+                                                event_store
+                                                    .store_event(&run_id, event_id, event.clone())
+                                                    .await;
+                                                yield (event_id, event);
 
-                                        let result_ev = AgUiEvent::tool_call_result(
-                                            call_id.clone(),
-                                            extracted.result,
-                                        );
-                                        let result_eid = Self::encode_event_with_logging(&encoder, &result_ev);
-                                        event_store.store_event(&run_id, result_eid, result_ev.clone()).await;
-                                        yield (result_eid, result_ev);
-
-                                        sent_tool_result_ids.insert(call_id);
-                                    } else {
-                                        // No matching ToolExecutionStarted yet, buffer for later
-                                        pending_tool_results.entry(call_id).or_insert(extracted);
+                                                if emitted_end && is_end {
+                                                    session_manager
+                                                        .record_emitted_tool_call_end_id(
+                                                            &session_id,
+                                                            &call_id,
+                                                        )
+                                                        .await;
+                                                }
+                                            }
+                                        }
                                     }
                                 }
 
@@ -2828,12 +2885,209 @@ fn parse_workflow_context_value(v: serde_json::Value) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    // Note: Full integration tests require AppWrapperModule setup
-    // which is complex. These tests focus on handler construction.
+    use super::{
+        ExtractedToolResult, ExtractedToolStarted, StreamingToolResultDisposition,
+        route_streaming_tool_result,
+    };
+    use crate::events::AgUiEvent;
+    use indexmap::IndexMap;
+    use std::collections::HashSet;
+
+    fn route_result(
+        call_id: &str,
+        fn_name: &str,
+        sent_call_ids: &HashSet<String>,
+        sent_end_ids: &mut HashSet<String>,
+        sent_result_ids: &mut HashSet<String>,
+        pending_starts: &mut IndexMap<String, ExtractedToolStarted>,
+    ) -> StreamingToolResultDisposition {
+        route_streaming_tool_result(
+            call_id,
+            ExtractedToolResult {
+                fn_name: fn_name.to_string(),
+                result: serde_json::json!({"loaded": true}),
+            },
+            sent_call_ids,
+            sent_end_ids,
+            sent_result_ids,
+            pending_starts,
+        )
+    }
+
+    #[test]
+    fn direct_stream_activation_result_is_emitted_as_soon_as_it_arrives() {
+        let call_id = "skill-call";
+        let sent_call_ids = HashSet::from([call_id.to_string()]);
+        let mut sent_end_ids = HashSet::new();
+        let mut sent_result_ids = HashSet::new();
+        let mut pending_starts = IndexMap::new();
+
+        let StreamingToolResultDisposition::Emit {
+            events,
+            emitted_end,
+        } = route_result(
+            call_id,
+            "activate_skill",
+            &sent_call_ids,
+            &mut sent_end_ids,
+            &mut sent_result_ids,
+            &mut pending_starts,
+        )
+        else {
+            panic!("activation result should be emitted without waiting for job completion");
+        };
+
+        assert!(emitted_end);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            AgUiEvent::ToolCallEnd { tool_call_id, .. } if tool_call_id == call_id
+        ));
+        assert!(matches!(
+            &events[1],
+            AgUiEvent::ToolCallResult { tool_call_id, result, .. }
+                if tool_call_id == call_id && *result == serde_json::json!({"loaded": true})
+        ));
+        assert!(pending_starts.is_empty());
+    }
+
+    #[test]
+    fn hitl_activation_result_does_not_repeat_an_end_emitted_on_approval() {
+        let call_id = "approved-skill-call";
+        let sent_call_ids = HashSet::from([call_id.to_string()]);
+        let mut sent_end_ids = HashSet::from([call_id.to_string()]);
+        let mut sent_result_ids = HashSet::new();
+        let mut pending_starts = IndexMap::new();
+
+        let StreamingToolResultDisposition::Emit {
+            events,
+            emitted_end,
+        } = route_result(
+            call_id,
+            "activate_skill",
+            &sent_call_ids,
+            &mut sent_end_ids,
+            &mut sent_result_ids,
+            &mut pending_starts,
+        )
+        else {
+            panic!("approved activation result should be emitted immediately");
+        };
+
+        assert!(!emitted_end);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            AgUiEvent::ToolCallResult { tool_call_id, .. } if tool_call_id == call_id
+        ));
+    }
+
+    #[test]
+    fn repeated_streaming_activation_result_is_deduplicated() {
+        let call_id = "duplicate-skill-call";
+        let sent_call_ids = HashSet::from([call_id.to_string()]);
+        let mut sent_end_ids = HashSet::new();
+        let mut sent_result_ids = HashSet::new();
+        let mut pending_starts = IndexMap::new();
+
+        assert!(matches!(
+            route_result(
+                call_id,
+                "activate_skill",
+                &sent_call_ids,
+                &mut sent_end_ids,
+                &mut sent_result_ids,
+                &mut pending_starts,
+            ),
+            StreamingToolResultDisposition::Emit { .. }
+        ));
+        assert!(matches!(
+            route_result(
+                call_id,
+                "activate_skill",
+                &sent_call_ids,
+                &mut sent_end_ids,
+                &mut sent_result_ids,
+                &mut pending_starts,
+            ),
+            StreamingToolResultDisposition::Duplicate
+        ));
+    }
+
+    #[test]
+    fn only_published_activation_calls_bypass_the_completion_buffer() {
+        let mut sent_end_ids = HashSet::new();
+        let mut sent_result_ids = HashSet::new();
+        let mut pending_starts = IndexMap::new();
+
+        assert!(matches!(
+            route_result(
+                "unknown-call",
+                "activate_skill",
+                &HashSet::new(),
+                &mut sent_end_ids,
+                &mut sent_result_ids,
+                &mut pending_starts,
+            ),
+            StreamingToolResultDisposition::Buffer(_)
+        ));
+        assert!(matches!(
+            route_result(
+                "external-call",
+                "external_tool",
+                &HashSet::new(),
+                &mut sent_end_ids,
+                &mut sent_result_ids,
+                &mut pending_starts,
+            ),
+            StreamingToolResultDisposition::Buffer(_)
+        ));
+    }
+
+    #[test]
+    fn external_tool_result_still_correlates_with_its_start() {
+        let call_id = "external-call";
+        let sent_call_ids = HashSet::from([call_id.to_string()]);
+        let mut sent_end_ids = HashSet::new();
+        let mut sent_result_ids = HashSet::new();
+        let mut pending_starts = IndexMap::from([(
+            call_id.to_string(),
+            ExtractedToolStarted {
+                call_id: call_id.to_string(),
+                fn_name: "external_tool".to_string(),
+                job_id: 42,
+                fn_arguments: "{}".to_string(),
+            },
+        )]);
+
+        let StreamingToolResultDisposition::Emit {
+            events,
+            emitted_end,
+        } = route_result(
+            call_id,
+            "external_tool",
+            &sent_call_ids,
+            &mut sent_end_ids,
+            &mut sent_result_ids,
+            &mut pending_starts,
+        )
+        else {
+            panic!("started external tool result should retain its immediate behavior");
+        };
+
+        assert!(emitted_end);
+        assert_eq!(events.len(), 2);
+        assert!(
+            matches!(&events[0], AgUiEvent::ToolCallEnd { tool_call_id, .. } if tool_call_id == call_id)
+        );
+        assert!(
+            matches!(&events[1], AgUiEvent::ToolCallResult { tool_call_id, .. } if tool_call_id == call_id)
+        );
+        assert!(pending_starts.is_empty());
+    }
 
     #[test]
     fn test_handler_clone() {
-        // Handler should be clonable for use in axum state
-        // This is a compile-time check - actual instantiation requires AppWrapperModule
+        // Handler should be clonable for use in axum state. This is a compile-time check.
     }
 }

@@ -295,6 +295,7 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-opentelemetry",
+ "unicode-normalization",
  "url",
  "uuid",
 ]

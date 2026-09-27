@@ -24,14 +24,115 @@ use infra::infra::{
 };
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, ResultOutput, ResultStatus,
-    StorageType, WorkerData, WorkerId,
+    JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, ResultOutput,
+    ResultStatus, RunnerId, StorageType, WorkerData, WorkerId,
 };
 
 pub mod chan;
 pub mod rdb;
 pub mod redis;
 pub mod redis_run_after;
+
+pub(crate) fn validate_scoped_runner(job: &JobData, runner_id: &RunnerId) -> Result<()> {
+    let Some(expected) = job
+        .overrides
+        .as_ref()
+        .and_then(|overrides| overrides.expected_runner_id)
+    else {
+        return Ok(());
+    };
+    if expected != runner_id.value {
+        return Err(JobWorkerError::InvalidParameter(
+            "scoped tool target changed before dispatch".to_string(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn scoped_runner_mismatch_result(
+    job: &proto::jobworkerp::data::Job,
+    worker: &WorkerData,
+    result_id: JobResultId,
+) -> JobResult {
+    use command_utils::util::datetime;
+    let data = job.data.as_ref().expect("job data checked before dispatch");
+    let resolved = app::app::job::resolve_job_params(worker, data.overrides.as_ref());
+    let now = datetime::now_millis();
+    #[allow(deprecated)]
+    let result_data = JobResultData {
+        job_id: job.id,
+        worker_id: data.worker_id,
+        worker_name: worker.name.clone(),
+        args: data.args.clone(),
+        uniq_key: data.uniq_key.clone(),
+        status: ResultStatus::FatalError as i32,
+        output: Some(ResultOutput {
+            items: b"Scoped tool target changed before dispatch".to_vec(),
+        }),
+        retried: data.retried,
+        max_retry: 0,
+        priority: data.priority,
+        timeout: data.timeout,
+        streaming_type: data.streaming_type,
+        enqueue_time: data.enqueue_time,
+        run_after_time: data.run_after_time,
+        start_time: now,
+        end_time: now,
+        response_type: resolved.response_type,
+        store_success: resolved.store_success,
+        store_failure: true,
+        broadcast_results: true,
+        using: data.using.clone(),
+        resolved_retry_policy: None,
+    };
+    JobResult {
+        id: Some(result_id),
+        data: Some(result_data),
+        metadata: job.metadata.clone(),
+    }
+}
+
+#[cfg(test)]
+mod scoped_tool_guard_tests {
+    use super::*;
+    use proto::jobworkerp::data::JobExecutionOverrides;
+
+    #[test]
+    fn matching_runner_is_allowed_and_a_retargeted_runner_is_denied() {
+        let mut job = JobData::default();
+        assert!(validate_scoped_runner(&job, &RunnerId { value: 10 }).is_ok());
+        job.overrides = Some(JobExecutionOverrides {
+            expected_runner_id: Some(10),
+            ..Default::default()
+        });
+        assert!(validate_scoped_runner(&job, &RunnerId { value: 10 }).is_ok());
+        assert!(validate_scoped_runner(&job, &RunnerId { value: 11 }).is_err());
+    }
+
+    #[test]
+    fn mismatch_is_a_terminal_published_failure_not_a_retry() {
+        let job = proto::jobworkerp::data::Job {
+            id: Some(JobId { value: 9 }),
+            data: Some(JobData {
+                worker_id: Some(WorkerId { value: 5 }),
+                overrides: Some(JobExecutionOverrides {
+                    expected_runner_id: Some(10),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result =
+            scoped_runner_mismatch_result(&job, &WorkerData::default(), JobResultId { value: 22 });
+        let data = result.data.unwrap();
+        assert_eq!(data.status, ResultStatus::FatalError as i32);
+        assert!(data.store_failure && data.broadcast_results);
+        assert!(data.resolved_retry_policy.is_none());
+        assert!(String::from_utf8_lossy(&data.output.unwrap().items).contains("target changed"));
+    }
+}
 
 pub enum DispatchEligibility {
     Execute,

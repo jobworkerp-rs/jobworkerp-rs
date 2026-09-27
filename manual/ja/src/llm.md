@@ -109,6 +109,23 @@ chatメソッドでは、FunctionSetを指定することでLLMにツールを�
 
 FunctionSetの定義・管理、およびAutoSelection（LLMによるFunctionSetの自動選択でコンテキスト使用量を削減）の詳細は、[Function / FunctionSet](function.md)を参照してください。
 
+### Agent Skills（chat）
+
+`LLM` の `chat` メソッドでは、管理者が配置した Agent Skills の `name` と `description` を初回プロンプトに提示し、必要な指示だけを内部ツール `activate_skill(name)` で読み込めます。`activate_skill` は `SKILL.md` の全文を返しますが、参照ファイルを読んだりスクリプトを実行したりしません。Agent Skills の形式は [公式仕様](https://agentskills.io/specification) を参照してください。
+
+導入手順:
+
+1. 既存MySQLを使用する場合は、Worker更新より前に `infra/sql/migrations/mysql/004_scoped_tool_expected_runner.sql` をバックアップ・適用して新列を用意します（SQLiteは起動時にマイグレーションされます）。次に**全てのジョブ投入側・実行側Workerをskills対応版へ更新**します。旧Workerはジョブ投入後の対象変更を検出できません。Worker設定とFunctionSet／Runner／Workerの管理操作が管理者からのみ到達できることを確認し、内容をレビューしたskillsを読み取り専用でLLM Workerの全実行候補ノードへ配置します。参照ファイルを読む別Workerがあれば、その実行候補ノードにも同じ版を配置します。
+2. Workerプロセスに `LLM_SKILL_ROOTS` をJSONで設定します。例: `{"team":{"local_path":"/opt/jobworkerp/skills/team","resource_path":"/mnt/skills/team"}}`。`local_path` はLLM Workerから見える絶対パスで、`resource_path` は別のreadツールから見える絶対パス（省略時は `local_path`）です。
+3. LLM Worker設定のトップレベルに `"skills":{"root_ids":["team"],"allow_names":["my-skill"]}` を加えます。`allow_names` を省略すると選択したルートの全skillsを提示します。`skills` を指定しない既存Workerは従来どおり動作します。
+4. 参照ファイルが必要なら、読取範囲を制限したMCP filesystem等のreadツールを、固定FunctionSetへ**別途**登録します。COMMANDは任意のコマンドを実行できるため、読取専用権限の代替にはなりません。設定方法は [Function / FunctionSet](function.md) と [MCPプロキシ](runners/mcp-proxy.md) を参照してください。
+5. chat引数の `function_options` で `use_function_calling=true`、外部readを使う場合は `function_set_name`、非streamで自動実行したい場合は `is_auto_calling=true` を指定します。streamは手動実行のみ対応します。返却されたpendingの `activate_skill` は承認後、同じ `call_id` の実行要求で継続します。本文の相対パスはactivation結果の `resource_base_dir` を基準に、別のreadツールで必要時に読み込みます。
+6. 全実行候補ノードでskillsとreadツールの配置・到達性・版を確認してください。Workerの `load` 成功は一つの実行ノードでの確認にすぎません。
+
+skills有効時は `auto_select_function_set`、`client_tools_json`、全Runner／Workerの無制限公開との併用はできません。公開ツール名の衝突も拒否します。手動承認後の別ジョブでは、公開ツール名が現在の固定FunctionSetで一意に指す対象を実行します。管理者が対象を変更していた場合、提案時と異なる対象が実行され得ます。root IDごとの利用者認可は追加しないため、管理APIが管理者以外から到達できる環境では有効化しないでください。
+同じジョブの再確認後に対象が更新されても旧対象への投入は許されますが、実行時にRunner IDが異なる場合は拒否します。管理者が更新後も同じRunner IDを再利用して内容を変更する運用は、配備を不変にすることで避けてください。
+外部ツールに指定するWorkerは非定期実行にしてください。skills経由のツール実行は対象変更後の誤配送を防ぐため、自動リトライと定期実行を許可しません（エラー結果を同じ `call_id` に返します）。
+
 ## 埋め込みの利用方法
 
 `embedding`メソッドは埋め込みベクトルを生成します。ジョブ実行時に`using`を`"embedding"`に設定します。ランナー設定（プロバイダー／モデル）は`completion`/`chat`と共通です。埋め込み対応モデルを指定してください。

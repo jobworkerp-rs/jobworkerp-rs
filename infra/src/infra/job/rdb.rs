@@ -817,6 +817,7 @@ mod test {
                 max_retry: 5,
                 basis: 2.0,
             }),
+            expected_runner_id: None,
         }
     }
 
@@ -827,6 +828,7 @@ mod test {
             store_failure: Some(true),
             broadcast_results: Some(false),
             retry_policy: None,
+            expected_runner_id: None,
         }
     }
 

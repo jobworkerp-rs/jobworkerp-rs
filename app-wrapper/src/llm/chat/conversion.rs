@@ -584,6 +584,118 @@ impl ToolConverter {
         }
     }
 
+    /// Replace a complete manual execution turn without losing call IDs or error flags.
+    pub fn replace_execution_requests_with_tool_results(
+        messages: &mut Vec<jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage>,
+        results: &[jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolResult],
+    ) -> anyhow::Result<()> {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            MessageContent,
+            message_content::{Content, ToolResults},
+        };
+        let mut updated = messages.clone();
+        let mut remaining: std::collections::HashMap<_, _> = results
+            .iter()
+            .map(|result| (result.call_id.as_str(), result))
+            .collect();
+        anyhow::ensure!(remaining.len() == results.len(), "duplicate result call_id");
+        for message in &mut updated {
+            let Some(MessageContent {
+                content: Some(Content::ToolExecutionRequests(requests)),
+            }) = message.content.as_ref()
+            else {
+                continue;
+            };
+            let mut converted = Vec::with_capacity(requests.requests.len());
+            for request in &requests.requests {
+                let result = remaining
+                    .remove(request.call_id.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing or duplicate result call_id"))?;
+                anyhow::ensure!(
+                    result.fn_name == request.fn_name,
+                    "result fn_name does not match request call_id"
+                );
+                converted.push(result.clone());
+            }
+            message.content = Some(MessageContent {
+                content: Some(Content::ToolResults(ToolResults { results: converted })),
+            });
+        }
+        anyhow::ensure!(remaining.is_empty(), "unknown result call_id");
+        Self::validate_all_tool_results(&LlmChatArgs {
+            messages: updated.clone(),
+            ..Default::default()
+        })?;
+        *messages = updated;
+        Ok(())
+    }
+
+    pub fn validate_skill_execution_requests(args: &LlmChatArgs) -> anyhow::Result<()> {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content;
+        let mut seen = std::collections::HashSet::new();
+        let mut has_requests = false;
+        for (index, message) in args.messages.iter().enumerate() {
+            let Some(Content::ToolExecutionRequests(requests)) = message
+                .content
+                .as_ref()
+                .and_then(|content| content.content.as_ref())
+            else {
+                continue;
+            };
+            has_requests = true;
+            anyhow::ensure!(
+                message.role() == ChatRole::Tool,
+                "tool execution request must have TOOL role"
+            );
+            anyhow::ensure!(
+                !requests.requests.is_empty(),
+                "tool execution requests must not be empty"
+            );
+            anyhow::ensure!(
+                args.messages[index + 1..]
+                    .iter()
+                    .all(|m| m.role() == ChatRole::Tool),
+                "tool execution request must follow the latest assistant turn"
+            );
+            let calls = args.messages[..index]
+                .iter()
+                .rev()
+                .find(|m| m.role() != ChatRole::Tool)
+                .filter(|m| m.role() == ChatRole::Assistant)
+                .and_then(|m| m.content.as_ref())
+                .and_then(|c| c.content.as_ref())
+                .and_then(|c| match c {
+                    Content::ToolCalls(calls) => Some(calls),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("tool execution request must follow ASSISTANT ToolCalls")
+                })?;
+            for request in &requests.requests {
+                anyhow::ensure!(
+                    !request.call_id.is_empty() && seen.insert(request.call_id.as_str()),
+                    "duplicate or empty tool execution request call_id"
+                );
+                anyhow::ensure!(
+                    calls
+                        .calls
+                        .iter()
+                        .any(|c| c.call_id == request.call_id && c.fn_name == request.fn_name),
+                    "tool execution request call_id and fn_name must match ASSISTANT ToolCalls"
+                );
+            }
+        }
+        if has_requests {
+            anyhow::ensure!(
+                args.messages
+                    .last()
+                    .is_some_and(|m| m.role() == ChatRole::Tool),
+                "tool execution requests must be the latest turn"
+            );
+        }
+        Ok(())
+    }
+
     /// Resolve and validate a `ToolResults` payload attached to a TOOL-role
     /// message. See `ai-docs/tool-result-message-content-spec.md` for the
     /// full contract. Returns owned `ResolvedToolResult`s ready for the
@@ -735,6 +847,17 @@ impl ToolConverter {
     pub fn filter_selector_tools<T: ToolCallName>(mut tool_calls: Vec<T>) -> Vec<T> {
         Self::retain_non_selector_tools(&mut tool_calls);
         tool_calls
+    }
+
+    pub fn filter_selector_tools_for_mode<T: ToolCallName>(
+        tool_calls: Vec<T>,
+        skills_enabled: bool,
+    ) -> Vec<T> {
+        if skills_enabled {
+            tool_calls
+        } else {
+            Self::filter_selector_tools(tool_calls)
+        }
     }
 
     /// Retain only non-selector tools in place.
@@ -2401,6 +2524,7 @@ mod tests {
     // -- Tests for shared selector filtering helpers --
 
     /// Simple struct implementing ToolCallName for testing
+    #[derive(Clone)]
     struct MockToolCall {
         name: String,
     }
@@ -2461,6 +2585,18 @@ mod tests {
         let calls: Vec<MockToolCall> = vec![];
         let filtered = ToolConverter::filter_selector_tools(calls);
         assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn skills_do_not_filter_real_tools_with_selector_prefix() {
+        let calls = vec![MockToolCall {
+            name: "select_toolset_read_file".to_string(),
+        }];
+        assert_eq!(
+            ToolConverter::filter_selector_tools_for_mode(calls.clone(), true).len(),
+            1
+        );
+        assert!(ToolConverter::filter_selector_tools_for_mode(calls, false).is_empty());
     }
 
     #[test]
@@ -2745,6 +2881,129 @@ mod tests {
             ProtoContent::ToolResults(r) => r.clone(),
             other => panic!("expected ToolResults, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn skill_manual_results_preserve_call_ids_order_and_errors() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage, MessageContent,
+            message_content::{Content, ToolExecutionRequest, ToolExecutionRequests, ToolResult},
+        };
+        let mut messages = vec![
+            assistant_with_tool_calls(vec![("id-1", "activate_skill"), ("id-2", "reader")]),
+            ChatMessage {
+                role: ChatRole::Tool.into(),
+                content: Some(MessageContent {
+                    content: Some(Content::ToolExecutionRequests(ToolExecutionRequests {
+                        requests: vec![
+                            ToolExecutionRequest {
+                                call_id: "id-1".into(),
+                                fn_name: "activate_skill".into(),
+                                fn_arguments: "{}".into(),
+                            },
+                            ToolExecutionRequest {
+                                call_id: "id-2".into(),
+                                fn_name: "reader".into(),
+                                fn_arguments: "{}".into(),
+                            },
+                        ],
+                    })),
+                }),
+            },
+        ];
+        let results = vec![
+            ToolResult {
+                call_id: "id-1".into(),
+                fn_name: "activate_skill".into(),
+                content: "instructions".into(),
+                is_error: false,
+            },
+            ToolResult {
+                call_id: "id-2".into(),
+                fn_name: "reader".into(),
+                content: "not found".into(),
+                is_error: true,
+            },
+        ];
+        ToolConverter::replace_execution_requests_with_tool_results(&mut messages, &results)
+            .unwrap();
+        assert_eq!(extract_tool_results(&messages[1]).results, results);
+        ToolConverter::validate_all_tool_results(&LlmChatArgs {
+            messages,
+            ..Default::default()
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn skill_manual_results_reject_mismatched_call_id_before_mutating_history() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage, MessageContent,
+            message_content::{Content, ToolExecutionRequest, ToolExecutionRequests, ToolResult},
+        };
+        let mut messages = vec![
+            assistant_with_tool_calls(vec![("id-1", "activate_skill")]),
+            ChatMessage {
+                role: ChatRole::Tool.into(),
+                content: Some(MessageContent {
+                    content: Some(Content::ToolExecutionRequests(ToolExecutionRequests {
+                        requests: vec![ToolExecutionRequest {
+                            call_id: "id-1".into(),
+                            fn_name: "activate_skill".into(),
+                            fn_arguments: "{}".into(),
+                        }],
+                    })),
+                }),
+            },
+        ];
+        let before = messages.clone();
+        let err = ToolConverter::replace_execution_requests_with_tool_results(
+            &mut messages,
+            &[ToolResult {
+                call_id: "different".into(),
+                fn_name: "activate_skill".into(),
+                content: "instructions".into(),
+                is_error: false,
+            }],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("call_id"));
+        assert_eq!(messages, before);
+    }
+
+    #[test]
+    fn skill_manual_requests_must_match_latest_assistant_names_and_ids() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage, MessageContent,
+            message_content::{Content, ToolExecutionRequest, ToolExecutionRequests},
+        };
+        let request = |call_id: &str, name: &str| ChatMessage {
+            role: ChatRole::Tool.into(),
+            content: Some(MessageContent {
+                content: Some(Content::ToolExecutionRequests(ToolExecutionRequests {
+                    requests: vec![ToolExecutionRequest {
+                        call_id: call_id.into(),
+                        fn_name: name.into(),
+                        fn_arguments: "{}".into(),
+                    }],
+                })),
+            }),
+        };
+        let mut args = LlmChatArgs {
+            messages: vec![
+                assistant_with_tool_calls(vec![("id-1", "activate_skill")]),
+                request("id-1", "activate_skill"),
+            ],
+            ..Default::default()
+        };
+        assert!(ToolConverter::validate_skill_execution_requests(&args).is_ok());
+        args.messages[1] = request("id-1", "reader");
+        assert!(ToolConverter::validate_skill_execution_requests(&args).is_err());
+        args.messages[1] = request("missing", "activate_skill");
+        assert!(ToolConverter::validate_skill_execution_requests(&args).is_err());
+        args.messages[1] = request("id-1", "activate_skill");
+        args.messages.push(request("id-1", "activate_skill"));
+        assert!(ToolConverter::validate_skill_execution_requests(&args).is_err());
     }
 
     #[test]

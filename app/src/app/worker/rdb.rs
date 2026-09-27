@@ -63,6 +63,11 @@ impl RdbWorkerAppImpl {
 
 #[async_trait]
 impl WorkerApp for RdbWorkerAppImpl {
+    async fn find_current_list(&self) -> Result<Vec<Worker>> {
+        self.rdb_worker_repository()
+            .find_list(vec![], None, None, None, None, None, vec![], None, None)
+            .await
+    }
     async fn create(&self, worker: &WorkerData) -> Result<WorkerId> {
         let wsid = worker
             .runner_id

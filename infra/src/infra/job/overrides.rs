@@ -10,6 +10,7 @@ pub struct JobExecutionOverridesRow {
     pub store_success: Option<bool>,
     pub store_failure: Option<bool>,
     pub broadcast_results: Option<bool>,
+    pub expected_runner_id: Option<i64>,
     pub retry_type: Option<i32>,
     pub retry_interval: Option<u32>,
     pub retry_max_interval: Option<u32>,
@@ -35,6 +36,7 @@ impl JobExecutionOverridesRow {
             store_success: self.store_success,
             store_failure: self.store_failure,
             broadcast_results: self.broadcast_results,
+            expected_runner_id: self.expected_runner_id,
             retry_policy,
         }
     }
@@ -58,6 +60,7 @@ impl JobExecutionOverridesRow {
             store_success: overrides.store_success,
             store_failure: overrides.store_failure,
             broadcast_results: overrides.broadcast_results,
+            expected_runner_id: overrides.expected_runner_id,
             retry_type,
             retry_interval,
             retry_max_interval,
@@ -88,15 +91,16 @@ pub async fn create_overrides_tx<'c, E: Executor<'c, Database = Rdb>>(
     let row = JobExecutionOverridesRow::from_proto(job_id.value, overrides);
     let res = sqlx::query(
         "INSERT INTO job_execution_overrides (
-            job_id, response_type, store_success, store_failure, broadcast_results,
+            job_id, response_type, store_success, store_failure, broadcast_results, expected_runner_id,
             retry_type, retry_interval, retry_max_interval, retry_max_retry, retry_basis
-        ) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(row.job_id)
     .bind(row.response_type)
     .bind(row.store_success)
     .bind(row.store_failure)
     .bind(row.broadcast_results)
+    .bind(row.expected_runner_id)
     .bind(row.retry_type)
     .bind(row.retry_interval.map(|v| v as i64))
     .bind(row.retry_max_interval.map(|v| v as i64))
@@ -113,7 +117,7 @@ pub async fn find_overrides_tx<'c, E: Executor<'c, Database = Rdb>>(
 ) -> Result<Option<JobExecutionOverrides>> {
     let row = sqlx::query_as::<Rdb, JobExecutionOverridesRow>(
         "SELECT job_id, response_type, store_success, store_failure, broadcast_results,
-                retry_type, retry_interval, retry_max_interval, retry_max_retry, retry_basis
+                expected_runner_id, retry_type, retry_interval, retry_max_interval, retry_max_retry, retry_basis
          FROM job_execution_overrides WHERE job_id = ?",
     )
     .bind(job_id.value)
@@ -138,7 +142,7 @@ pub async fn find_overrides_batch_tx(
         let params = build_in_placeholders(chunk.len())?;
         let query_str = format!(
             "SELECT job_id, response_type, store_success, store_failure, broadcast_results,
-                    retry_type, retry_interval, retry_max_interval, retry_max_retry, retry_basis
+                    expected_runner_id, retry_type, retry_interval, retry_max_interval, retry_max_retry, retry_basis
              FROM job_execution_overrides WHERE job_id IN ( {params} )"
         );
         // AssertSqlSafe: IN-clause uses a fixed placeholder count with bound values (no
@@ -176,6 +180,7 @@ mod tests {
             store_success: Some(true),
             store_failure: Some(false),
             broadcast_results: Some(true),
+            expected_runner_id: Some(123),
             retry_policy: Some(RetryPolicy {
                 r#type: RetryType::Exponential as i32,
                 interval: 1000,
@@ -192,6 +197,7 @@ mod tests {
             store_success: Some(false),
             store_failure: None,
             broadcast_results: None,
+            expected_runner_id: None,
             retry_policy: None,
         }
     }
@@ -213,12 +219,23 @@ mod tests {
         assert_eq!(found.store_success, Some(true));
         assert_eq!(found.store_failure, Some(false));
         assert_eq!(found.broadcast_results, Some(true));
+        assert_eq!(found.expected_runner_id, Some(123));
         let policy = found.retry_policy.unwrap();
         assert_eq!(policy.r#type, RetryType::Exponential as i32);
         assert_eq!(policy.interval, 1000);
         assert_eq!(policy.max_interval, 60000);
         assert_eq!(policy.max_retry, 5);
         assert_eq!(policy.basis, 2.0);
+
+        let no_runner_override_id = JobId { value: 502 };
+        create_overrides_tx(pool, &no_runner_override_id, &partial_overrides()).await?;
+        let found_without_runner = find_overrides_tx(pool, &no_runner_override_id).await?;
+        assert_eq!(
+            found_without_runner.unwrap().expected_runner_id,
+            None,
+            "omitting expected_runner_id should persist as NULL"
+        );
+        delete_overrides_tx(pool, &no_runner_override_id).await?;
 
         // delete
         let deleted = delete_overrides_tx(pool, &job_id).await?;
@@ -255,10 +272,12 @@ mod tests {
         let o601 = &map[&601];
         assert_eq!(o601.response_type, Some(ResponseType::Direct as i32));
         assert!(o601.retry_policy.is_some());
+        assert_eq!(o601.expected_runner_id, Some(123));
 
         let o602 = &map[&602];
         assert_eq!(o602.response_type, Some(ResponseType::NoResult as i32));
         assert!(o602.retry_policy.is_none());
+        assert_eq!(o602.expected_runner_id, None);
 
         // empty list returns empty map
         let empty = find_overrides_batch_tx(pool, &[]).await?;
@@ -310,6 +329,7 @@ mod tests {
             store_success: Some(true),
             store_failure: Some(false),
             broadcast_results: Some(true),
+            expected_runner_id: Some(123),
             retry_policy: Some(RetryPolicy {
                 r#type: RetryType::Exponential as i32,
                 interval: 1000,
@@ -324,6 +344,7 @@ mod tests {
         assert_eq!(row.store_success, Some(true));
         assert_eq!(row.store_failure, Some(false));
         assert_eq!(row.broadcast_results, Some(true));
+        assert_eq!(row.expected_runner_id, Some(123));
         assert_eq!(row.retry_type, Some(RetryType::Exponential as i32));
         assert_eq!(row.retry_interval, Some(1000));
         assert_eq!(row.retry_max_interval, Some(60000));
@@ -335,6 +356,7 @@ mod tests {
         assert_eq!(proto.store_success, Some(true));
         assert_eq!(proto.store_failure, Some(false));
         assert_eq!(proto.broadcast_results, Some(true));
+        assert_eq!(proto.expected_runner_id, Some(123));
         let policy = proto.retry_policy.unwrap();
         assert_eq!(policy.r#type, RetryType::Exponential as i32);
         assert_eq!(policy.interval, 1000);
@@ -350,6 +372,7 @@ mod tests {
             store_success: None,
             store_failure: None,
             broadcast_results: None,
+            expected_runner_id: None,
             retry_policy: None,
         };
         let row = JobExecutionOverridesRow::from_proto(1, &overrides);
@@ -360,6 +383,7 @@ mod tests {
         let proto = row.to_proto();
         assert!(proto.response_type.is_none());
         assert!(proto.store_success.is_none());
+        assert!(proto.expected_runner_id.is_none());
         assert!(proto.retry_policy.is_none());
     }
 
@@ -370,6 +394,7 @@ mod tests {
             store_success: Some(true),
             store_failure: None,
             broadcast_results: None,
+            expected_runner_id: None,
             retry_policy: None,
         };
         let row = JobExecutionOverridesRow::from_proto(10, &overrides);
@@ -378,6 +403,7 @@ mod tests {
         assert_eq!(proto.store_success, Some(true));
         assert!(proto.store_failure.is_none());
         assert!(proto.broadcast_results.is_none());
+        assert!(proto.expected_runner_id.is_none());
         assert!(proto.retry_policy.is_none());
     }
 }

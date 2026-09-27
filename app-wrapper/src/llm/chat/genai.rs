@@ -4,9 +4,10 @@ use super::super::generic_tracing_helper::{
 };
 use super::conversion::{ResolvedToolResult, ToolCallName, ToolConverter};
 use crate::llm::ThinkTagHelper;
+use crate::llm::skills::SkillCatalog;
 use crate::llm::tracing::genai_helper::GenaiTracingHelper;
 use anyhow::Result;
-use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
+use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl, FunctionSetScope};
 use app::app::function::{FunctionApp, FunctionAppImpl};
 use command_utils::trace::impls::GenericOtelClient;
 use futures::StreamExt;
@@ -19,11 +20,14 @@ use genai::chat::{
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole;
-use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequest;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::{
+    ToolExecutionRequest, ToolResult as ChatToolResult,
+};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{
-    LlmChatArgs, LlmChatResult, PendingToolCalls, ToolCallRequest, llm_chat_result,
+    LlmChatArgs, LlmChatResult, PendingToolCalls, ToolCallRequest, ToolExecutionResult,
+    llm_chat_result,
 };
 use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
 use std::collections::HashMap;
@@ -46,11 +50,14 @@ impl ToolCallName for genai::chat::ToolCall {
 fn finalized_stream_tool_calls(
     captured: Option<Vec<genai::chat::ToolCall>>,
     fallback: &[genai::chat::ToolCall],
+    skills_enabled: bool,
 ) -> Vec<ToolCallRequest> {
     let mut calls = captured
         .filter(|calls| !calls.is_empty())
         .unwrap_or_else(|| fallback.to_vec());
-    ToolConverter::retain_non_selector_tools(&mut calls);
+    if !skills_enabled {
+        ToolConverter::retain_non_selector_tools(&mut calls);
+    }
     calls
         .into_iter()
         .map(|call| ToolCallRequest {
@@ -77,6 +84,16 @@ enum ChatInternalResult {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillToolDispatch {
+    Activate,
+    ScopedExternal,
+    RejectExternal,
+    LegacyExternal,
+}
+
+const ACTIVATE_SKILL_TOOL_NAME: &str = "activate_skill";
+
 pub struct GenaiLLMConfig {
     pub model_name: String,
     pub endpoint_url: Option<String>,
@@ -89,6 +106,7 @@ pub struct GenaiChatService {
     pub model: String,
     pub system_prompt: Option<String>,
     pub otel_client: Option<Arc<GenericOtelClient>>,
+    pub skill_catalog: Option<Arc<SkillCatalog>>,
     // Cached at construction so per-request schema sanitisation does not
     // re-classify the (immutable) model name. None means the model name did
     // not match any known adapter; sanitize_schema_for_adapter treats that
@@ -103,6 +121,15 @@ impl GenaiChatService {
         function_app: Arc<FunctionAppImpl>,
         function_set_app: Arc<FunctionSetAppImpl>,
         settings: GenaiRunnerSettings,
+    ) -> Result<Self> {
+        Self::new_with_skills(function_app, function_set_app, settings, None).await
+    }
+
+    pub async fn new_with_skills(
+        function_app: Arc<FunctionAppImpl>,
+        function_set_app: Arc<FunctionSetAppImpl>,
+        settings: GenaiRunnerSettings,
+        skill_catalog: Option<Arc<SkillCatalog>>,
     ) -> Result<Self> {
         let target_resolver = crate::llm::common::fixed_model_genai_service_target_resolver(
             settings.model.clone(),
@@ -128,6 +155,7 @@ impl GenaiChatService {
             model: settings.model,
             system_prompt: settings.system_prompt,
             otel_client: Some(Arc::new(GenericOtelClient::new("genai.chat_service"))),
+            skill_catalog,
             adapter_kind,
         })
     }
@@ -336,13 +364,212 @@ impl GenaiChatService {
         }
         out
     }
+    fn activation_tool_from_schema(schema: serde_json::Value) -> Result<Tool> {
+        let object = schema
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("activation tool schema must be an object"))?;
+        let name = object
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("activation tool schema is missing its name"))?;
+        anyhow::ensure!(
+            name == ACTIVATE_SKILL_TOOL_NAME,
+            "unexpected internal skills tool name"
+        );
+        let description = object
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("activation tool schema is missing its description"))?;
+        let parameters = object
+            .get("parameters")
+            .filter(|parameters| parameters.is_object())
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("activation tool parameters must be an object"))?;
+
+        Ok(Tool::new(name)
+            .with_description(description)
+            .with_schema(parameters))
+    }
+
+    fn dispatch_skill_tool(
+        skills_enabled: bool,
+        scope: Option<&FunctionSetScope>,
+        tool_name: &str,
+    ) -> SkillToolDispatch {
+        if !skills_enabled {
+            return SkillToolDispatch::LegacyExternal;
+        }
+        if tool_name == ACTIVATE_SKILL_TOOL_NAME {
+            return SkillToolDispatch::Activate;
+        }
+        if scope.is_some_and(|scope| scope.tools.contains_key(tool_name)) {
+            SkillToolDispatch::ScopedExternal
+        } else {
+            SkillToolDispatch::RejectExternal
+        }
+    }
+
+    fn activation_result(&self, arguments_json: &str) -> serde_json::Value {
+        let Some(catalog) = self.skill_catalog.as_ref() else {
+            return serde_json::json!({
+                "error": {
+                    "code": "skill_not_available",
+                    "message": "The requested skill is not available."
+                }
+            });
+        };
+        serde_json::from_str(&catalog.activate_json(arguments_json))
+            .unwrap_or_else(|_| serde_json::Value::String("{}".to_string()))
+    }
+
+    fn tool_response_for_call(
+        &self,
+        call: &genai::chat::ToolCall,
+        content: String,
+    ) -> ToolResponse {
+        let response = ToolResponse::new(&call.call_id, content);
+        if self.skill_catalog.is_some() {
+            response.with_fn_name(call.fn_name.clone())
+        } else {
+            response
+        }
+    }
+
+    async fn resolve_manual_scope(
+        &self,
+        args: &LlmChatArgs,
+        _requests: &[ToolExecutionRequest],
+    ) -> Result<Option<FunctionSetScope>> {
+        if self.skill_catalog.is_none() {
+            return Ok(None);
+        }
+        Ok(self.function_list(args).await?.2)
+    }
+
+    fn retain_published_tools(scope: &mut FunctionSetScope, tools: &[Tool]) {
+        let published: std::collections::HashSet<&str> =
+            tools.iter().map(|tool| tool.name.as_str()).collect();
+        scope
+            .tools
+            .retain(|name, _| published.contains(name.as_str()));
+        scope
+            .worker_snapshots
+            .retain(|name, _| published.contains(name.as_str()));
+    }
+
+    async fn execute_external_tool(
+        &self,
+        metadata: Arc<HashMap<String, String>>,
+        tool_name: &str,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+        scope: Option<&FunctionSetScope>,
+        skills_enabled: bool,
+    ) -> Result<serde_json::Value> {
+        if skills_enabled {
+            let scope = scope.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "external tool '{tool_name}' is not available without a fixed FunctionSet"
+                )
+            })?;
+            anyhow::ensure!(
+                scope.tools.contains_key(tool_name),
+                "external tool '{tool_name}' is not available in the selected FunctionSet"
+            );
+            self.function_set_app
+                .call_function_for_llm_in_scope(
+                    metadata,
+                    scope,
+                    tool_name,
+                    arguments,
+                    DEFAULT_TIMEOUT_SEC,
+                )
+                .await
+        } else {
+            self.function_app
+                .call_function_for_llm(metadata, tool_name, arguments, DEFAULT_TIMEOUT_SEC)
+                .await
+        }
+    }
+
+    async fn execute_auto_tool_call(
+        &self,
+        call: &genai::chat::ToolCall,
+        scope: Option<&FunctionSetScope>,
+        metadata: Arc<HashMap<String, String>>,
+    ) -> serde_json::Value {
+        let skills_enabled = self.skill_catalog.is_some();
+        let arguments = call.fn_arguments.as_object().cloned().unwrap_or_else(|| {
+            tracing::debug!("Tool call has null arguments, using an empty object");
+            serde_json::Map::new()
+        });
+        match Self::dispatch_skill_tool(skills_enabled, scope, &call.fn_name) {
+            SkillToolDispatch::Activate => self.activation_result(&call.fn_arguments.to_string()),
+            SkillToolDispatch::RejectExternal => serde_json::Value::String(format!(
+                "Error executing tool '{}': tool is not exposed by the selected FunctionSet",
+                call.fn_name
+            )),
+            SkillToolDispatch::ScopedExternal | SkillToolDispatch::LegacyExternal => self
+                .execute_external_tool(
+                    metadata,
+                    &call.fn_name,
+                    Some(arguments),
+                    scope,
+                    skills_enabled,
+                )
+                .await
+                .unwrap_or_else(|error| {
+                    serde_json::Value::String(format!(
+                        "Error executing tool '{}': {error}",
+                        call.fn_name
+                    ))
+                }),
+        }
+    }
+
     async fn function_list(
         &self,
         args: &LlmChatArgs,
-    ) -> Result<(Vec<Tool>, std::collections::HashSet<String>)> {
+    ) -> Result<(
+        Vec<Tool>,
+        std::collections::HashSet<String>,
+        Option<FunctionSetScope>,
+    )> {
         use anyhow::bail;
 
         let mut auto_select_names = std::collections::HashSet::new();
+
+        if let Some(catalog) = self.skill_catalog.as_ref() {
+            let mut scope = None;
+            let mut tools = Vec::new();
+            if let Some(function_options) = args.function_options.as_ref()
+                && function_options.use_function_calling
+                && let Some(set_name) = function_options.function_set_name.as_deref()
+            {
+                let mut resolved = self
+                    .function_set_app
+                    .resolve_current_function_scope(set_name)
+                    .await?;
+                tools = ToolConverter::convert_functions_to_genai_tools(resolved.functions.clone());
+                Self::retain_published_tools(&mut resolved, &tools);
+                for tool in &tools {
+                    anyhow::ensure!(
+                        resolved.tools.contains_key(tool.name.as_str()),
+                        "FunctionSet tool '{}' cannot be safely scoped",
+                        tool.name.as_str()
+                    );
+                    anyhow::ensure!(
+                        tool.name.as_str() != ACTIVATE_SKILL_TOOL_NAME,
+                        "FunctionSet tool name '{}' is reserved while skills are enabled",
+                        ACTIVATE_SKILL_TOOL_NAME
+                    );
+                }
+                scope = Some(resolved);
+            }
+            if let Some(schema) = catalog.activation_tool_schema() {
+                tools.push(Self::activation_tool_from_schema(schema)?);
+            }
+            return Ok((tools, auto_select_names, scope));
+        }
 
         if let Some(function_options) = &args.function_options {
             // Client-driven path takes priority over every server-driven
@@ -362,7 +589,7 @@ impl GenaiChatService {
                     );
                 }
                 let tools = ToolConverter::parse_client_tools_json(json)?;
-                return Ok((tools, auto_select_names));
+                return Ok((tools, auto_select_names, None));
             }
             if function_options.use_function_calling {
                 if let Some(set_name) = function_options.function_set_name.as_ref() {
@@ -371,6 +598,7 @@ impl GenaiChatService {
                         Ok(functions) => Ok((
                             ToolConverter::convert_functions_to_genai_tools(functions),
                             auto_select_names,
+                            None,
                         )),
                         Err(e) => {
                             tracing::error!("Error finding functions by set: {}", e);
@@ -403,6 +631,7 @@ impl GenaiChatService {
                                     &selector_tools,
                                 ),
                                 auto_select_names,
+                                None,
                             ))
                         }
                         Err(e) => {
@@ -423,6 +652,7 @@ impl GenaiChatService {
                         Ok(functions) => Ok((
                             ToolConverter::convert_functions_to_genai_tools(functions),
                             auto_select_names,
+                            None,
                         )),
                         Err(e) => {
                             tracing::error!("Error finding functions: {}", e);
@@ -431,10 +661,10 @@ impl GenaiChatService {
                     }
                 }
             } else {
-                Ok((vec![], auto_select_names))
+                Ok((vec![], auto_select_names, None))
             }
         } else {
-            Ok((vec![], auto_select_names))
+            Ok((vec![], auto_select_names, None))
         }
     }
 
@@ -460,6 +690,9 @@ impl GenaiChatService {
         // This runs before any provider call, surfacing client-side payload
         // errors as direct Err instead of confusing provider-side rejections.
         ToolConverter::validate_all_tool_results(&args)?;
+        if self.skill_catalog.is_some() {
+            ToolConverter::validate_skill_execution_requests(&args)?;
+        }
 
         // Check for tool execution requests in messages (manual mode)
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
@@ -475,7 +708,7 @@ impl GenaiChatService {
         let is_auto_calling = ToolConverter::effective_is_auto_calling(&args);
 
         let options = self.build_options(&args);
-        let (tools_vec, auto_select_names) = self.function_list(&args).await?;
+        let (tools_vec, auto_select_names, external_scope) = self.function_list(&args).await?;
         let is_auto_select = !auto_select_names.is_empty();
         let tools = Arc::new(tools_vec);
         let model = args.model.clone().unwrap_or_else(|| self.model.clone());
@@ -486,7 +719,11 @@ impl GenaiChatService {
         };
         let mut messages = self.trans_messages(args);
 
-        if let Some(system_prompt) = self.system_prompt.clone() {
+        let skills_have_catalog = self
+            .skill_catalog
+            .as_ref()
+            .is_some_and(|catalog| !catalog.is_empty());
+        if !skills_have_catalog && let Some(system_prompt) = self.system_prompt.clone() {
             messages.retain(|m| !matches!(m.role, genai::chat::ChatRole::System));
             messages.insert(
                 0,
@@ -512,6 +749,7 @@ impl GenaiChatService {
             Some(cx.clone()),
             metadata.clone(),
             effective_auto_calling,
+            external_scope,
             0,
         )
         .await?;
@@ -633,6 +871,12 @@ impl GenaiChatService {
         cx: opentelemetry::Context,
         metadata: Arc<HashMap<String, String>>,
     ) -> Result<LlmChatResult> {
+        if self.skill_catalog.is_some() {
+            return self
+                .handle_skill_tool_execution(args, requests, cx, metadata)
+                .await;
+        }
+
         // Execute each requested tool
         for req in &requests {
             if ToolConverter::skip_selector_tool_execution(req, &mut args.messages) {
@@ -674,6 +918,83 @@ impl GenaiChatService {
         Box::pin(self.request_chat(args, cx, (*metadata).clone())).await
     }
 
+    async fn handle_skill_tool_execution(
+        &self,
+        mut args: LlmChatArgs,
+        requests: Vec<ToolExecutionRequest>,
+        cx: opentelemetry::Context,
+        metadata: Arc<HashMap<String, String>>,
+    ) -> Result<LlmChatResult> {
+        let scope = self.resolve_manual_scope(&args, &requests).await?;
+        let mut history_results = Vec::with_capacity(requests.len());
+        let mut output_results = Vec::with_capacity(requests.len());
+
+        for request in &requests {
+            let dispatch = Self::dispatch_skill_tool(true, scope.as_ref(), &request.fn_name);
+            let arguments = serde_json::from_str::<serde_json::Value>(&request.fn_arguments)
+                .ok()
+                .and_then(|value| value.as_object().cloned());
+            let (content, is_error) = match dispatch {
+                SkillToolDispatch::Activate => {
+                    let content = self
+                        .skill_catalog
+                        .as_ref()
+                        .expect("activation dispatch requires a catalog")
+                        .activate_json(&request.fn_arguments);
+                    let is_error = serde_json::from_str::<serde_json::Value>(&content)
+                        .ok()
+                        .is_some_and(|value| value.get("error").is_some());
+                    (content, is_error)
+                }
+                SkillToolDispatch::RejectExternal => (
+                    "Error: tool is not exposed by the selected FunctionSet".to_string(),
+                    true,
+                ),
+                SkillToolDispatch::ScopedExternal => {
+                    match self
+                        .execute_external_tool(
+                            metadata.clone(),
+                            &request.fn_name,
+                            arguments,
+                            scope.as_ref(),
+                            true,
+                        )
+                        .await
+                    {
+                        Ok(value) => (value.to_string(), false),
+                        Err(error) => (format!("Error: {error}"), true),
+                    }
+                }
+                SkillToolDispatch::LegacyExternal => unreachable!(
+                    "skills-aware manual execution cannot use name-based legacy dispatch"
+                ),
+            };
+
+            history_results.push(ChatToolResult {
+                call_id: request.call_id.clone(),
+                fn_name: request.fn_name.clone(),
+                content: content.clone(),
+                is_error,
+            });
+            output_results.push(ToolExecutionResult {
+                call_id: request.call_id.clone(),
+                fn_name: request.fn_name.clone(),
+                result: content.clone(),
+                error: is_error.then_some(content),
+                success: !is_error,
+                job_id: None,
+            });
+        }
+
+        ToolConverter::replace_execution_requests_with_tool_results(
+            &mut args.messages,
+            &history_results,
+        )?;
+        let mut response = Box::pin(self.request_chat(args, cx, (*metadata).clone())).await?;
+        response.tool_execution_results.extend(output_results);
+        Ok(response)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn request_chat_internal_with_tracing(
         self: Arc<Self>,
@@ -684,6 +1005,7 @@ impl GenaiChatService {
         parent_context: Option<opentelemetry::Context>,
         metadata: Arc<HashMap<String, String>>,
         is_auto_calling: bool,
+        external_scope: Option<FunctionSetScope>,
         tool_call_depth: u32,
     ) -> Result<ChatInternalResult> {
         if tool_call_depth >= MAX_TOOL_CALL_DEPTH {
@@ -786,7 +1108,10 @@ impl GenaiChatService {
             // Auto mode: process tool calls automatically
             // Filter out selector pseudo-tools to prevent infinite loops —
             // LLM may hallucinate selector tool calls from conversation history
-            let tool_calls = ToolConverter::filter_selector_tools(tool_calls);
+            let tool_calls = ToolConverter::filter_selector_tools_for_mode(
+                tool_calls,
+                self.skill_catalog.is_some(),
+            );
 
             // If only selector tools were called, return as final response
             if tool_calls.is_empty() {
@@ -808,6 +1133,7 @@ impl GenaiChatService {
                     &tool_calls,
                     Some(current_context),
                     metadata.clone(),
+                    external_scope.as_ref(),
                 )
                 .await?
             } else {
@@ -815,6 +1141,7 @@ impl GenaiChatService {
                     messages.clone(),
                     &tool_calls,
                     metadata.clone(),
+                    external_scope.as_ref(),
                 )
                 .await?;
                 current_context
@@ -832,6 +1159,7 @@ impl GenaiChatService {
                 Some(updated_context),
                 metadata,
                 is_auto_calling,
+                external_scope,
                 tool_call_depth + 1,
             ))
             .await;
@@ -857,6 +1185,7 @@ impl GenaiChatService {
         tool_calls: &[genai::chat::ToolCall],
         parent_context: Option<opentelemetry::Context>,
         metadata: Arc<HashMap<String, String>>,
+        external_scope: Option<&FunctionSetScope>,
     ) -> Result<opentelemetry::Context> {
         if parent_context.is_none() && GenericLLMTracingHelper::get_otel_client(self).is_some() {
             tracing::warn!("No parent context provided for tool calls, using current context");
@@ -872,36 +1201,29 @@ impl GenaiChatService {
             );
 
             // Clone necessary data to avoid lifetime issues
-            let function_name = call.fn_name.clone();
-            let arguments = call.fn_arguments.clone();
-            let function_app = self.function_app.clone();
+            let service = Arc::new(self.clone());
+            let call_clone = call.clone();
+            let scope = external_scope.cloned();
             let metadata_clone = metadata.clone();
 
             let tool_action = async move {
                 // Handle empty or null arguments by providing an empty object
-                let arguments_obj = arguments.as_object().cloned().unwrap_or_else(|| {
-                    tracing::debug!("Tool call has null arguments, using empty object");
-                    serde_json::Map::new()
-                });
+                let _arguments_obj =
+                    call_clone
+                        .fn_arguments
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            tracing::debug!("Tool call has null arguments, using empty object");
+                            serde_json::Map::new()
+                        });
 
                 // Execute tool and convert any error to a string result for LLM to handle
-                let result = function_app
-                    .call_function_for_llm(
-                        metadata_clone,
-                        &function_name,
-                        Some(arguments_obj),
-                        DEFAULT_TIMEOUT_SEC,
-                    )
+                let result = service
+                    .execute_auto_tool_call(&call_clone, scope.as_ref(), metadata_clone)
                     .await;
 
-                let tool_result = match result {
-                    Ok(success_result) => success_result,
-                    Err(error) => serde_json::Value::String(format!(
-                        "Error executing tool '{function_name}': {error}"
-                    )),
-                };
-
-                Ok(tool_result) // Always return Ok so processing continues
+                Ok(result)
             };
 
             // Execute individual tool call as child span and get updated context
@@ -927,7 +1249,7 @@ impl GenaiChatService {
             tracing::debug!("Tool response: {}", &tool_result);
 
             // Use ToolResponse with call_id so LLM can match response to request
-            let tool_response = ToolResponse::new(&call.call_id, tool_result.to_string());
+            let tool_response = self.tool_response_for_call(call, tool_result.to_string());
             messages.lock().await.push(ChatMessage::from(tool_response));
 
             // Update context for next tool call
@@ -942,6 +1264,7 @@ impl GenaiChatService {
         messages: Arc<Mutex<Vec<ChatMessage>>>,
         tool_calls: &[genai::chat::ToolCall],
         metadata: Arc<HashMap<String, String>>,
+        external_scope: Option<&FunctionSetScope>,
     ) -> Result<()> {
         for call in tool_calls {
             tracing::debug!("Tool call: {:?}", call);
@@ -952,34 +1275,22 @@ impl GenaiChatService {
             );
 
             // Handle empty or null arguments by providing an empty object
-            let arguments_obj = call.fn_arguments.as_object().cloned().unwrap_or_else(|| {
+            let _arguments_obj = call.fn_arguments.as_object().cloned().unwrap_or_else(|| {
                 tracing::debug!("Tool call has null arguments, using empty object");
                 serde_json::Map::new()
             });
 
             // Execute tool and convert any error to a string result for LLM to handle
             let result = self
-                .function_app
-                .call_function_for_llm(
-                    metadata.clone(),
-                    &call.fn_name,
-                    Some(arguments_obj),
-                    DEFAULT_TIMEOUT_SEC,
-                )
+                .execute_auto_tool_call(call, external_scope, metadata.clone())
                 .await;
 
-            let tool_result = match result {
-                Ok(success_result) => success_result,
-                Err(error) => serde_json::Value::String(format!(
-                    "Error executing tool '{}': {error}",
-                    call.fn_name
-                )),
-            };
+            let tool_result = result;
 
             tracing::debug!("Tool response: {}", &tool_result);
 
             // Use ToolResponse with call_id so LLM can match response to request
-            let tool_response = ToolResponse::new(&call.call_id, tool_result.to_string());
+            let tool_response = self.tool_response_for_call(call, tool_result.to_string());
             messages.lock().await.push(ChatMessage::from(tool_response));
         }
 
@@ -994,6 +1305,9 @@ impl GenaiChatService {
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
         ToolConverter::validate_all_tool_results(&args)?;
+        if self.skill_catalog.is_some() {
+            ToolConverter::validate_skill_execution_requests(&args)?;
+        }
 
         // Check for tool execution requests first (highest priority, manual mode continuation)
         let metadata_arc = Arc::new(metadata.clone());
@@ -1016,7 +1330,7 @@ impl GenaiChatService {
 
         // auto_select_function_set: Phase 1 (non-streaming) selects FunctionSet, Phase 2 streams
         if is_auto_select {
-            let (tools_vec, auto_select_names) = self.function_list(&args).await?;
+            let (tools_vec, auto_select_names, external_scope) = self.function_list(&args).await?;
             if auto_select_names.is_empty() {
                 tracing::warn!(
                     "auto_select_function_set is true but no selector tools available, falling back to normal streaming"
@@ -1057,6 +1371,7 @@ impl GenaiChatService {
                 parent_context.clone(),
                 metadata_arc.clone(),
                 false, // manual mode to intercept selector tool call
+                external_scope,
                 0,
             )
             .await?;
@@ -1130,13 +1445,16 @@ impl GenaiChatService {
         metadata: HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        use jobworkerp_runner::jobworkerp::runner::llm::{
-            ToolExecutionResult, ToolExecutionStarted,
-        };
+        use jobworkerp_runner::jobworkerp::runner::llm::ToolExecutionStarted;
+
+        let skills_enabled = self.skill_catalog.is_some();
+        let external_scope = self.resolve_manual_scope(&args, &requests).await?;
 
         let self_clone = self.clone();
         let args_clone = args.clone();
         let requests_clone = requests.clone();
+        let external_scope_clone = external_scope.clone();
+        let skills_enabled_clone = skills_enabled;
         let metadata_arc_clone = metadata_arc.clone();
         let metadata_clone = metadata.clone();
         let parent_context_clone = parent_context.clone();
@@ -1148,12 +1466,15 @@ impl GenaiChatService {
         let stream = async_stream::stream! {
             let mut updated_args = args_clone;
             let mut tool_results_cache: Vec<(String, String, bool)> = Vec::new();
+            let mut skill_tool_results: Vec<ChatToolResult> = Vec::new();
 
             tracing::debug!("handle_tool_execution_stream: starting Phase 1 with {} tool requests", requests_clone.len());
 
             // Phase 1: Execute tools with 2-stage split (enqueue → yield started → await → yield result)
             for req in &requests_clone {
-                if ToolConverter::skip_selector_tool_execution(req, &mut updated_args.messages) {
+                if !skills_enabled_clone
+                    && ToolConverter::skip_selector_tool_execution(req, &mut updated_args.messages)
+                {
                     continue;
                 }
 
@@ -1175,18 +1496,61 @@ impl GenaiChatService {
                     parent_context_clone.clone(),
                 );
 
-                // Phase A: Enqueue and get job_id immediately
-                let enqueued = self_clone
-                    .function_app
-                    .enqueue_function_for_llm(
-                        metadata_arc_clone.clone(),
-                        &req.fn_name,
-                        arguments,
-                        DEFAULT_TIMEOUT_SEC,
+                // Internal activation and rejected external names never enter the FunctionApp path.
+                let dispatch = Self::dispatch_skill_tool(
+                    skills_enabled_clone,
+                    external_scope_clone.as_ref(),
+                    &req.fn_name,
+                );
+                let (tool_result, success, job_id_opt) = if dispatch == SkillToolDispatch::Activate {
+                    let content = self_clone
+                        .skill_catalog
+                        .as_ref()
+                        .expect("activation dispatch requires a catalog")
+                        .activate_json(&req.fn_arguments);
+                    let success = serde_json::from_str::<serde_json::Value>(&content)
+                        .ok()
+                        .is_none_or(|value| value.get("error").is_none());
+                    (content, success, None)
+                } else if dispatch == SkillToolDispatch::RejectExternal {
+                    (
+                        "Error: tool is not exposed by the selected FunctionSet".to_string(),
+                        false,
+                        None,
                     )
-                    .await;
+                } else {
+                    // Phase A: Enqueue and get job_id immediately
+                    let enqueued = match dispatch {
+                        SkillToolDispatch::ScopedExternal => match external_scope_clone.as_ref() {
+                            Some(scope) => self_clone
+                                .function_set_app
+                                .enqueue_function_for_llm_in_scope(
+                                    metadata_arc_clone.clone(),
+                                    scope,
+                                    &req.fn_name,
+                                    arguments,
+                                    DEFAULT_TIMEOUT_SEC,
+                                )
+                                .await,
+                            None => Err(anyhow::anyhow!(
+                                "external tools require a fixed FunctionSet when skills are enabled"
+                            )),
+                        },
+                        SkillToolDispatch::LegacyExternal => self_clone
+                            .function_app
+                            .enqueue_function_for_llm(
+                                metadata_arc_clone.clone(),
+                                &req.fn_name,
+                                arguments,
+                                DEFAULT_TIMEOUT_SEC,
+                            )
+                            .await,
+                        SkillToolDispatch::Activate | SkillToolDispatch::RejectExternal => {
+                            unreachable!("internal tool dispatch handled above")
+                        }
+                    };
 
-                let (tool_result, success, job_id_opt) = match enqueued {
+                    match enqueued {
                     Ok(enq) => {
                         // Yield ToolExecutionStarted for streaming runners
                         if enq.is_streaming {
@@ -1210,16 +1574,12 @@ impl GenaiChatService {
                         let job_id_val = enq.job_id.value;
 
                         // Phase B: Await result
-                        let result = if let Some(val) = enq.result {
-                            Ok(val)
-                        } else if let Some(handle) = enq.result_handle {
-                            self_clone
-                                .function_app
-                                .await_function_result(handle, &enq.runner_name, enq.using.as_deref())
-                                .await
-                        } else {
-                            Err(anyhow::anyhow!("No result or result_handle available"))
-                        };
+                        let result = super::await_enqueued_tool_result(
+                            &self_clone.function_app,
+                            enq,
+                            self_clone.skill_catalog.is_some(),
+                        )
+                        .await;
 
                         match result {
                             Ok(value) => (value.to_string(), true, Some(job_id_val)),
@@ -1230,6 +1590,7 @@ impl GenaiChatService {
                         tracing::error!("Failed to enqueue tool {}: {}", req.fn_name, e);
                         (format!("Error: {}", e), false, None)
                     }
+                    }
                 };
 
                 tracing::debug!("Tool {} result: {}", req.fn_name, tool_result);
@@ -1238,6 +1599,14 @@ impl GenaiChatService {
 
                 // Cache result for Phase 2
                 tool_results_cache.push((req.call_id.clone(), tool_result.clone(), success));
+                if skills_enabled_clone {
+                    skill_tool_results.push(ChatToolResult {
+                        call_id: req.call_id.clone(),
+                        fn_name: req.fn_name.clone(),
+                        content: tool_result.clone(),
+                        is_error: !success,
+                    });
+                }
 
                 // Yield tool execution result with job_id
                 let llm_result = LlmChatResult {
@@ -1261,12 +1630,38 @@ impl GenaiChatService {
 
             // Phase 2: Update args with cached tool results
             tracing::debug!("handle_tool_execution_stream: Phase 2 — updating args with {} tool results", tool_results_cache.len());
-            for (call_id, tool_result, _success) in &tool_results_cache {
-                ToolConverter::replace_tool_execution_with_result(
+            if skills_enabled_clone {
+                if let Err(error) = ToolConverter::replace_execution_requests_with_tool_results(
                     &mut updated_args.messages,
-                    call_id,
-                    tool_result,
-                );
+                    &skill_tool_results,
+                ) {
+                    tracing::error!("Failed to preserve skills-aware tool results: {error}");
+                    let failure = LlmChatResult {
+                        content: Some(llm_chat_result::MessageContent {
+                            content: Some(message_content::Content::Text(format!(
+                                "Tool result conversion error: {error}"
+                            ))),
+                        }),
+                        done: true,
+                        ..Default::default()
+                    };
+                    let bytes = prost::Message::encode_to_vec(&failure);
+                    yield ResultOutputItem {
+                        item: Some(result_output_item::Item::Data(bytes)),
+                    };
+                    yield ResultOutputItem {
+                        item: Some(result_output_item::Item::End(metadata_trailer.clone())),
+                    };
+                    return;
+                }
+            } else {
+                for (call_id, tool_result, _success) in &tool_results_cache {
+                    ToolConverter::replace_tool_execution_with_result(
+                        &mut updated_args.messages,
+                        call_id,
+                        tool_result,
+                    );
+                }
             }
 
             // Phase 3: Continue with LLM streaming using updated args
@@ -1316,7 +1711,7 @@ impl GenaiChatService {
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let options = self.build_options(&args);
-        let (tools, _auto_select_names) = self.function_list(&args).await?;
+        let (tools, _auto_select_names, _external_scope) = self.function_list(&args).await?;
         // Honour args.model when supplied so the span and the actual request
         // target the same model. Falling back to self.model only when args
         // omits it keeps parity with request_chat_internal_with_tracing.
@@ -1360,6 +1755,7 @@ impl GenaiChatService {
 
         // Use async_stream to accumulate tool calls during streaming
         let mut base_stream = res.stream;
+        let skills_enabled_for_stream = self.skill_catalog.is_some();
         let stream = async_stream::stream! {
             let mut accumulated_tool_calls: Vec<genai::chat::ToolCall> = Vec::new();
             let mut stream_error = false;
@@ -1429,6 +1825,7 @@ impl GenaiChatService {
                             let pending_calls = finalized_stream_tool_calls(
                                 captured_tool_calls,
                                 &accumulated_tool_calls,
+                                skills_enabled_for_stream,
                             );
                             if !pending_calls.is_empty() {
 
@@ -1775,6 +2172,171 @@ mod tests {
     }
 
     #[test]
+    fn activation_skill_schema_becomes_a_genai_tool_with_the_name_enum() {
+        let schema = serde_json::json!({
+            "name": "activate_skill",
+            "description": "Load one available skill.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "enum": ["docs", "review"]}
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }
+        });
+
+        let tool = GenaiChatService::activation_tool_from_schema(schema).unwrap();
+
+        assert_eq!(tool.name.as_str(), "activate_skill");
+        assert_eq!(
+            tool.description.as_deref(),
+            Some("Load one available skill.")
+        );
+        assert_eq!(
+            tool.schema,
+            Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "enum": ["docs", "review"]}
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }))
+        );
+    }
+
+    #[test]
+    fn enabled_skills_reserve_activation_and_never_fall_back_for_unscoped_tools() {
+        assert_eq!(
+            GenaiChatService::dispatch_skill_tool(true, None, "activate_skill"),
+            SkillToolDispatch::Activate,
+        );
+        assert_eq!(
+            GenaiChatService::dispatch_skill_tool(true, None, "unlisted_external"),
+            SkillToolDispatch::RejectExternal,
+        );
+        assert_eq!(
+            GenaiChatService::dispatch_skill_tool(false, None, "activate_skill"),
+            SkillToolDispatch::LegacyExternal,
+        );
+    }
+
+    #[test]
+    fn scoped_manual_calls_cannot_execute_methods_omitted_from_the_provider_tool_list() {
+        use app::app::function::function_set::FunctionScopeTarget;
+        let target = |using: &str| FunctionScopeTarget::Runner {
+            runner_id: 101,
+            runner_type: 1,
+            using: using.to_string(),
+        };
+        let mut scope = FunctionSetScope {
+            set_id: 1,
+            set_name: "fixed".to_string(),
+            functions: Vec::new(),
+            tools: HashMap::from([
+                ("visible".to_string(), target("run")),
+                ("omitted".to_string(), target("hidden")),
+            ]),
+            worker_snapshots: HashMap::new(),
+        };
+        GenaiChatService::retain_published_tools(&mut scope, &[Tool::new("visible")]);
+        assert!(scope.tools.contains_key("visible"));
+        assert!(!scope.tools.contains_key("omitted"));
+        assert_eq!(
+            GenaiChatService::dispatch_skill_tool(true, Some(&scope), "omitted"),
+            SkillToolDispatch::RejectExternal
+        );
+    }
+
+    #[test]
+    fn manual_skill_results_keep_call_ids_order_and_failure_state() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage as ArgsChatMessage, ChatRole as ArgsChatRole, MessageContent,
+            message_content::{
+                Content as ArgsContent, ToolCall, ToolCalls, ToolExecutionRequest,
+                ToolExecutionRequests, ToolResult,
+            },
+        };
+
+        let mut messages = vec![
+            ArgsChatMessage {
+                role: ArgsChatRole::Assistant.into(),
+                content: Some(MessageContent {
+                    content: Some(ArgsContent::ToolCalls(ToolCalls {
+                        calls: vec![
+                            ToolCall {
+                                call_id: "skill-call".into(),
+                                fn_name: "activate_skill".into(),
+                                fn_arguments: r#"{"name":"docs"}"#.into(),
+                            },
+                            ToolCall {
+                                call_id: "external-call".into(),
+                                fn_name: "reader".into(),
+                                fn_arguments: "{}".into(),
+                            },
+                        ],
+                    })),
+                }),
+            },
+            ArgsChatMessage {
+                role: ArgsChatRole::Tool.into(),
+                content: Some(MessageContent {
+                    content: Some(ArgsContent::ToolExecutionRequests(ToolExecutionRequests {
+                        requests: vec![
+                            ToolExecutionRequest {
+                                call_id: "skill-call".into(),
+                                fn_name: "activate_skill".into(),
+                                fn_arguments: r#"{"name":"docs"}"#.into(),
+                            },
+                            ToolExecutionRequest {
+                                call_id: "external-call".into(),
+                                fn_name: "reader".into(),
+                                fn_arguments: "{}".into(),
+                            },
+                        ],
+                    })),
+                }),
+            },
+        ];
+        let results = vec![
+            ToolResult {
+                call_id: "skill-call".into(),
+                fn_name: "activate_skill".into(),
+                content: r#"{"name":"docs","content":"instructions"}"#.into(),
+                is_error: false,
+            },
+            ToolResult {
+                call_id: "external-call".into(),
+                fn_name: "reader".into(),
+                content: "read failed".into(),
+                is_error: true,
+            },
+        ];
+
+        ToolConverter::replace_execution_requests_with_tool_results(&mut messages, &results)
+            .unwrap();
+
+        let Some(ArgsContent::ToolResults(tool_results)) = messages[1]
+            .content
+            .as_ref()
+            .and_then(|content| content.content.as_ref())
+        else {
+            panic!("manual requests must become correlated tool results");
+        };
+        assert_eq!(
+            tool_results
+                .results
+                .iter()
+                .map(|result| result.call_id.as_str())
+                .collect::<Vec<_>>(),
+            ["skill-call", "external-call"]
+        );
+        assert!(!tool_results.results[0].is_error);
+        assert!(tool_results.results[1].is_error);
+    }
+
+    #[test]
     fn build_options_sets_json_spec_response_format() {
         let schema = r#"{"type":"object","properties":{"x":{"type":"integer"}}}"#;
         let args = LlmChatArgs {
@@ -1845,7 +2407,7 @@ mod tests {
             thought_signatures: None,
         };
 
-        let calls = finalized_stream_tool_calls(Some(vec![finalized]), &[partial]);
+        let calls = finalized_stream_tool_calls(Some(vec![finalized]), &[partial], false);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].call_id, "call-1");
@@ -1867,7 +2429,7 @@ mod tests {
             thought_signatures: None,
         };
 
-        let calls = finalized_stream_tool_calls(None, &[partial]);
+        let calls = finalized_stream_tool_calls(None, &[partial], false);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].fn_arguments, r#"{"query":"fallback"}"#);
@@ -1882,11 +2444,25 @@ mod tests {
             thought_signatures: None,
         };
 
-        let calls = finalized_stream_tool_calls(Some(vec![]), &[partial]);
+        let calls = finalized_stream_tool_calls(Some(vec![]), &[partial], false);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].call_id, "call-1");
         assert_eq!(calls[0].fn_arguments, r#"{"query":"fallback"}"#);
+    }
+
+    #[test]
+    fn skill_stream_preserves_public_selector_prefixed_tool_names() {
+        let call = genai::chat::ToolCall {
+            call_id: "call-read".into(),
+            fn_name: "select_toolset_read_file".into(),
+            fn_arguments: serde_json::json!({}),
+            thought_signatures: None,
+        };
+        let skill_calls = finalized_stream_tool_calls(Some(vec![call.clone()]), &[], true);
+        assert_eq!(skill_calls.len(), 1);
+        assert_eq!(skill_calls[0].call_id, "call-read");
+        assert!(finalized_stream_tool_calls(Some(vec![call]), &[], false).is_empty());
     }
 
     #[test]

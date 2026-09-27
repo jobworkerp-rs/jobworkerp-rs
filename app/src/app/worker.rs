@@ -159,6 +159,9 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
     where
         Self: Send + 'static;
 
+    /// Read persisted Workers without node-local caches for scoped tool resolution.
+    async fn find_current_list(&self) -> Result<Vec<Worker>>;
+
     #[allow(clippy::too_many_arguments)]
     async fn find_list(
         &self,

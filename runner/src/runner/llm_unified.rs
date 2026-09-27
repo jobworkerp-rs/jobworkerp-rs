@@ -349,5 +349,15 @@ mod tests {
             schema.contains("genai") || schema.contains("Genai"),
             "settings_schema must include the genai variant:\n{schema}"
         );
+        let value: serde_json::Value = serde_json::from_str(&schema).unwrap();
+        let serialized = value.to_string();
+        assert!(
+            serialized.contains("root_ids"),
+            "skills root selection must be discoverable"
+        );
+        assert!(
+            serialized.contains("allow_names"),
+            "skills allowlist must be discoverable"
+        );
     }
 }

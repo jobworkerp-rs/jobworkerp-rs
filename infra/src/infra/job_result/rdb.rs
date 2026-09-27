@@ -2166,6 +2166,7 @@ mod test {
             store_failure: Some(true),
             broadcast_results: Some(true),
             retry_policy: None,
+            expected_runner_id: None,
         };
         create_overrides_tx(pool, &job_id, &overrides).await?;
 
@@ -2205,6 +2206,7 @@ mod test {
             store_failure: None,
             broadcast_results: Some(true),
             retry_policy: None,
+            expected_runner_id: None,
         };
 
         for (i, &jid) in job_ids.iter().enumerate() {

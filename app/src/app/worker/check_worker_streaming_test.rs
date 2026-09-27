@@ -104,6 +104,9 @@ mod tests {
 
     #[async_trait]
     impl WorkerApp for MockWorkerApp {
+        async fn find_current_list(&self) -> Result<Vec<Worker>> {
+            Ok(vec![])
+        }
         async fn create(&self, _worker: &WorkerData) -> Result<WorkerId> {
             unimplemented!()
         }

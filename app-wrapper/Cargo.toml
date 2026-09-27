@@ -95,6 +95,7 @@ tokio-util = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
+unicode-normalization = "0.1"
 url = { workspace = true }
 uuid = { workspace = true }
 

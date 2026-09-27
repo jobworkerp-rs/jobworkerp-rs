@@ -156,6 +156,7 @@ async fn test_llm_chat_with_cancellation_helper() -> Result<()> {
             ),
         ),
         embedding_chunking: None,
+        skills: None,
     };
     let serialized_settings = prost::Message::encode_to_vec(&settings);
     runner.load(serialized_settings).await?;
@@ -241,6 +242,7 @@ async fn test_llm_completion_with_cancellation_helper() -> Result<()> {
             ),
         ),
         embedding_chunking: None,
+        skills: None,
     };
     let serialized_settings = prost::Message::encode_to_vec(&settings);
     runner.load(serialized_settings).await?;
@@ -326,6 +328,7 @@ async fn test_llm_chat_pre_cancellation() -> Result<()> {
             ),
         ),
         embedding_chunking: None,
+        skills: None,
     };
     let serialized_settings = prost::Message::encode_to_vec(&settings);
     runner.load(serialized_settings).await?;
@@ -396,6 +399,7 @@ async fn test_llm_completion_pre_cancellation() -> Result<()> {
             ),
         ),
         embedding_chunking: None,
+        skills: None,
     };
     let serialized_settings = prost::Message::encode_to_vec(&settings);
     runner.load(serialized_settings).await?;
@@ -451,6 +455,7 @@ async fn test_llm_chat_without_cancellation_helper() -> Result<()> {
             ),
         ),
         embedding_chunking: None,
+        skills: None,
     };
     let serialized_settings = prost::Message::encode_to_vec(&settings);
     runner.load(serialized_settings).await?;

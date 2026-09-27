@@ -2,6 +2,7 @@ use super::job::{JobApp, UseJobApp};
 use super::runner::RunnerApp;
 use super::worker::WorkerApp;
 use super::{runner::UseRunnerApp, worker::UseWorkerApp};
+use crate::app::function::function_set::FunctionScopeTarget;
 use crate::app::job::execute::UseJobExecutor;
 use crate::app::job_result::UseJobResultApp;
 use crate::app::runner::{RunnerDataWithDescriptor, UseRunnerParserWithCache};
@@ -16,7 +17,7 @@ use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::ProtobufHelper;
 use proto::jobworkerp::data::RunnerData;
-use proto::jobworkerp::data::{RunnerType, StreamingType, WorkerId};
+use proto::jobworkerp::data::{JobId, RunnerId, RunnerType, StreamingType, Worker, WorkerId};
 use proto::jobworkerp::function::data::{FunctionResult, FunctionSpecs, WorkerOptions};
 use serde_json::json;
 use std::collections::HashMap;
@@ -1131,6 +1132,429 @@ pub trait FunctionApp:
         }
     }
 
+    /// Execute a FunctionSet target by its stable ID and method. Unlike the
+    /// name-based compatibility APIs, this never resolves the selected tool a
+    /// second time by its public name. Worker targets require the concrete
+    /// snapshot returned by current scope validation.
+    async fn enqueue_function_for_llm_target(
+        &self,
+        meta: Arc<HashMap<String, String>>,
+        target: &FunctionScopeTarget,
+        worker_snapshot: Option<Worker>,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+        timeout_sec: u32,
+    ) -> Result<EnqueuedFunction> {
+        self.enqueue_function_for_llm_target_with_streaming(
+            meta,
+            target,
+            worker_snapshot,
+            arguments,
+            timeout_sec,
+            true,
+        )
+        .await
+    }
+
+    async fn enqueue_function_for_llm_target_with_streaming(
+        &self,
+        meta: Arc<HashMap<String, String>>,
+        target: &FunctionScopeTarget,
+        worker_snapshot: Option<Worker>,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+        timeout_sec: u32,
+        use_internal_stream: bool,
+    ) -> Result<EnqueuedFunction> {
+        match target {
+            FunctionScopeTarget::Runner {
+                runner_id,
+                runner_type,
+                using,
+            } => {
+                let id = RunnerId { value: *runner_id };
+                let runner = self.runner_app().find_runner(&id).await?.ok_or_else(|| {
+                    JobWorkerError::NotFound(format!("Runner {} not found", runner_id))
+                })?;
+                if runner.id != Some(id) {
+                    return Err(JobWorkerError::NotFound(format!(
+                        "Runner {} changed while resolving a FunctionSet tool",
+                        runner_id
+                    ))
+                    .into());
+                }
+                self.enqueue_function_for_resolved_runner(
+                    meta,
+                    runner,
+                    using,
+                    *runner_type,
+                    arguments,
+                    timeout_sec,
+                    use_internal_stream,
+                )
+                .await
+            }
+            FunctionScopeTarget::Worker {
+                worker_id,
+                runner_id,
+                runner_type,
+                using,
+            } => {
+                let id = WorkerId { value: *worker_id };
+                let worker = worker_snapshot.ok_or_else(|| {
+                    JobWorkerError::InvalidParameter(format!(
+                        "Worker snapshot is required to dispatch FunctionSet target {worker_id}"
+                    ))
+                })?;
+                if worker.id != Some(id) {
+                    return Err(JobWorkerError::NotFound(format!(
+                        "Worker {} changed while resolving a FunctionSet tool",
+                        worker_id
+                    ))
+                    .into());
+                }
+                self.enqueue_function_for_resolved_worker(
+                    meta,
+                    worker,
+                    using,
+                    *runner_id,
+                    *runner_type,
+                    arguments,
+                    timeout_sec,
+                    use_internal_stream,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn call_function_for_llm_target(
+        &self,
+        meta: Arc<HashMap<String, String>>,
+        target: &FunctionScopeTarget,
+        worker_snapshot: Option<Worker>,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+        timeout_sec: u32,
+    ) -> Result<serde_json::Value> {
+        let enqueued = self
+            .enqueue_function_for_llm_target_with_streaming(
+                meta,
+                target,
+                worker_snapshot,
+                arguments,
+                timeout_sec,
+                false,
+            )
+            .await?;
+        if let Some(result_handle) = enqueued.result_handle {
+            self.await_scoped_function_result(
+                result_handle,
+                &enqueued.runner_name,
+                enqueued.using.as_deref(),
+            )
+            .await
+        } else {
+            if let Some(raw) = enqueued.raw_result.as_ref() {
+                ensure_scoped_job_succeeded(raw)?;
+            }
+            match enqueued.result {
+                Some(result) => Ok(result),
+                None => Err(JobWorkerError::RuntimeError(
+                    "Function execution returned no result".to_string(),
+                )
+                .into()),
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_function_for_resolved_runner(
+        &self,
+        meta: Arc<HashMap<String, String>>,
+        runner: RunnerWithSchema,
+        using: &str,
+        expected_runner_type: i32,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+        timeout_sec: u32,
+        use_internal_stream: bool,
+    ) -> Result<EnqueuedFunction> {
+        let runner_id = runner
+            .id
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| JobWorkerError::NotFound("Runner ID not found".to_string()))?;
+        let runner_data = runner
+            .data
+            .as_ref()
+            .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
+        if runner_data.runner_type != expected_runner_type {
+            return Err(JobWorkerError::InvalidParameter(
+                "Runner type changed after FunctionSet resolution".to_string(),
+            )
+            .into());
+        }
+        validate_resolved_method(runner_data, using)?;
+        let runner_name = runner_data.name.clone();
+        let supports_streaming =
+            use_internal_stream && check_method_supports_streaming(runner_data, Some(using));
+        let transformed = self.transform_function_arguments(runner_data.runner_type(), arguments);
+        let (settings, args) =
+            Self::prepare_runner_call_arguments(transformed.unwrap_or_default()).await?;
+        let worker_data = self.create_worker_data(&runner, settings, None).await?;
+        let job_args = self
+            .transform_job_args(&runner_id, runner_data, &args, Some(using))
+            .await?;
+        let using_for_result = Some(using.to_string());
+
+        if supports_streaming {
+            let job_id = JobId {
+                value: self.id_generator().generate_id()?,
+            };
+            let job_result_app = self.job_result_app().clone();
+            let listen_job_id = job_id;
+            let listen_timeout = (timeout_sec as u64) * 1000;
+            let result_handle = tokio::spawn(async move {
+                job_result_app
+                    .listen_result_by_job_id(&listen_job_id, Some(listen_timeout), true)
+                    .await
+            });
+            let enqueue_result = self
+                .job_app()
+                .enqueue_job_with_temp_worker(
+                    meta,
+                    worker_data,
+                    job_args,
+                    None,
+                    0,
+                    proto::jobworkerp::data::Priority::Medium as i32,
+                    (timeout_sec as u64) * 1000,
+                    Some(job_id),
+                    StreamingType::Internal,
+                    true,
+                    using_for_result.clone(),
+                    scoped_runner_overrides(streaming_no_wait_overrides(), runner_id.value),
+                )
+                .await;
+            if let Err(error) = enqueue_result {
+                result_handle.abort();
+                return Err(error);
+            }
+            Ok(EnqueuedFunction {
+                job_id,
+                runner_name,
+                result: None,
+                raw_result: None,
+                is_streaming: true,
+                result_handle: Some(result_handle),
+                using: using_for_result,
+            })
+        } else {
+            let (job_id, job_result, _stream) = self
+                .job_app()
+                .enqueue_job_with_temp_worker(
+                    meta,
+                    worker_data,
+                    job_args,
+                    None,
+                    0,
+                    proto::jobworkerp::data::Priority::Medium as i32,
+                    (timeout_sec as u64) * 1000,
+                    None,
+                    StreamingType::None,
+                    true,
+                    using_for_result.clone(),
+                    scoped_runner_overrides(None, runner_id.value),
+                )
+                .await?;
+            let raw_result = job_result.clone();
+            let result = if let Some(job_result) = job_result {
+                let bytes = self.extract_job_result_output(job_result)?;
+                Some(
+                    self.transform_raw_output(&runner_id, runner_data, &bytes, Some(using))
+                        .await?,
+                )
+            } else {
+                None
+            };
+            Ok(EnqueuedFunction {
+                job_id,
+                runner_name,
+                result,
+                raw_result,
+                is_streaming: false,
+                result_handle: None,
+                using: using_for_result,
+            })
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_function_for_resolved_worker(
+        &self,
+        meta: Arc<HashMap<String, String>>,
+        worker: Worker,
+        using: &str,
+        expected_runner_id: i64,
+        expected_runner_type: i32,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+        timeout_sec: u32,
+        use_internal_stream: bool,
+    ) -> Result<EnqueuedFunction> {
+        let Worker {
+            id: Some(worker_id),
+            data: Some(worker_data),
+        } = worker
+        else {
+            return Err(JobWorkerError::NotFound("Worker data not found".to_string()).into());
+        };
+        if worker_data.periodic_interval != 0 {
+            return Err(JobWorkerError::InvalidParameter(
+                "periodic Workers cannot be called as scoped LLM tools".to_string(),
+            )
+            .into());
+        }
+        let runner_id = worker_data.runner_id.as_ref().ok_or_else(|| {
+            JobWorkerError::NotFound(format!(
+                "Runner ID not found for worker {}",
+                worker_id.value
+            ))
+        })?;
+        if runner_id.value != expected_runner_id {
+            return Err(JobWorkerError::InvalidParameter(
+                "Worker Runner ID changed after FunctionSet resolution".to_string(),
+            )
+            .into());
+        }
+        let RunnerWithSchema {
+            id: Some(resolved_runner_id),
+            data: Some(runner_data),
+            ..
+        } = self
+            .runner_app()
+            .find_runner(runner_id)
+            .await?
+            .ok_or_else(|| {
+                JobWorkerError::NotFound(format!(
+                    "Runner {} not found for worker {}",
+                    runner_id.value, worker_id.value
+                ))
+            })?
+        else {
+            return Err(JobWorkerError::NotFound("Runner data not found".to_string()).into());
+        };
+        if runner_data.runner_type != expected_runner_type {
+            return Err(JobWorkerError::InvalidParameter(
+                "Worker Runner type changed after FunctionSet resolution".to_string(),
+            )
+            .into());
+        }
+        validate_resolved_method(&runner_data, using)?;
+
+        let runner_name = runner_data.name.clone();
+        let supports_streaming =
+            use_internal_stream && check_method_supports_streaming(&runner_data, Some(using));
+        let arguments = prepare_worker_call_arguments(
+            Some(runner_data.runner_type()),
+            Some(using),
+            serde_json::Value::Object(arguments.unwrap_or_default()),
+        );
+        let job_args = self
+            .transform_job_args(&resolved_runner_id, &runner_data, &arguments, Some(using))
+            .await?;
+        let using_for_result = Some(using.to_string());
+
+        // The worker ID is mutable across nodes, so both enqueue paths use this validated value.
+        if supports_streaming {
+            let job_id = JobId {
+                value: self.id_generator().generate_id()?,
+            };
+            let job_result_app = self.job_result_app().clone();
+            let listen_job_id = job_id;
+            let listen_timeout = (timeout_sec as u64) * 1000;
+            let result_handle = tokio::spawn(async move {
+                job_result_app
+                    .listen_result_by_job_id(&listen_job_id, Some(listen_timeout), true)
+                    .await
+            });
+            let enqueue_result = self
+                .job_app()
+                .enqueue_job_with_worker(
+                    meta,
+                    Worker {
+                        id: Some(worker_id),
+                        data: Some(worker_data.clone()),
+                    },
+                    job_args,
+                    None,
+                    0,
+                    proto::jobworkerp::data::Priority::Medium as i32,
+                    (timeout_sec as u64) * 1000,
+                    Some(job_id),
+                    StreamingType::Internal,
+                    using_for_result.clone(),
+                    scoped_runner_overrides(streaming_no_wait_overrides(), expected_runner_id),
+                )
+                .await;
+            if let Err(error) = enqueue_result {
+                result_handle.abort();
+                return Err(error);
+            }
+            Ok(EnqueuedFunction {
+                job_id,
+                runner_name,
+                result: None,
+                raw_result: None,
+                is_streaming: true,
+                result_handle: Some(result_handle),
+                using: using_for_result,
+            })
+        } else {
+            let (job_id, job_result, _stream) = self
+                .job_app()
+                .enqueue_job_with_worker(
+                    meta,
+                    Worker {
+                        id: Some(worker_id),
+                        data: Some(worker_data.clone()),
+                    },
+                    job_args,
+                    None,
+                    0,
+                    proto::jobworkerp::data::Priority::Medium as i32,
+                    (timeout_sec as u64) * 1000,
+                    None,
+                    StreamingType::None,
+                    using_for_result.clone(),
+                    scoped_runner_overrides(None, expected_runner_id),
+                )
+                .await?;
+            let raw_result = job_result.clone();
+            let result = if let Some(job_result) = job_result {
+                match self.extract_job_result_output(job_result) {
+                    Ok(bytes) => match self
+                        .decode_job_result_output(None, Some(&runner_name), &bytes, Some(using))
+                        .await
+                    {
+                        Ok(value) => Some(value),
+                        Err(_) => Some(serde_json::Value::String(
+                            String::from_utf8_lossy(&bytes).to_string(),
+                        )),
+                    },
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+            Ok(EnqueuedFunction {
+                job_id,
+                runner_name,
+                result,
+                raw_result,
+                is_streaming: false,
+                result_handle: None,
+                using: using_for_result,
+            })
+        }
+    }
+
     /// Phase A: Enqueue a function for LLM tool execution and return immediately.
     /// For streaming-capable runners, enqueues with StreamingType::Internal (returns immediately).
     /// For non-streaming runners, enqueues with StreamingType::None (waits for completion).
@@ -1330,12 +1754,24 @@ pub trait FunctionApp:
         runner_name: &str,
         using: Option<&str>,
     ) -> Result<serde_json::Value> {
-        use futures::StreamExt;
-        use proto::jobworkerp::data::result_output_item;
-
         let (job_result, stream_opt) = result_handle
             .await
             .map_err(|e| anyhow::anyhow!("Result listener task failed: {}", e))??;
+        self.collect_function_result(job_result, stream_opt, runner_name, using)
+            .await
+    }
+
+    async fn collect_function_result(
+        &self,
+        job_result: proto::jobworkerp::data::JobResult,
+        stream_opt: Option<
+            futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
+        >,
+        runner_name: &str,
+        using: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        use futures::StreamExt;
+        use proto::jobworkerp::data::result_output_item;
 
         // For streaming jobs: collect from stream (FinalCollected is authoritative)
         if let Some(mut stream) = stream_opt {
@@ -1382,6 +1818,21 @@ pub trait FunctionApp:
                     .into(),
             )
         }
+    }
+
+    async fn await_scoped_function_result(
+        &self,
+        result_handle: tokio::task::JoinHandle<JobListenResult>,
+        runner_name: &str,
+        using: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let (result, stream) = result_handle
+            .await
+            .map_err(|error| anyhow::anyhow!("Result listener task failed: {error}"))??;
+        ensure_scoped_job_succeeded(&result)?;
+        // Preserve the existing stream aggregation behavior after validating status.
+        self.collect_function_result(result, stream, runner_name, using)
+            .await
     }
 
     /// Streaming version of call_function_for_llm.
@@ -1531,7 +1982,44 @@ fn streaming_no_wait_overrides() -> Option<proto::jobworkerp::data::JobExecution
         store_failure: Some(true),
         broadcast_results: Some(true),
         retry_policy: None, // Falls back to worker's default retry_policy via resolve_job_params
+        expected_runner_id: None,
     })
+}
+
+fn scoped_runner_overrides(
+    overrides: Option<proto::jobworkerp::data::JobExecutionOverrides>,
+    runner_id: i64,
+) -> Option<proto::jobworkerp::data::JobExecutionOverrides> {
+    let mut overrides = overrides.unwrap_or_default();
+    overrides.expected_runner_id = Some(runner_id);
+    if overrides.response_type.is_none() {
+        overrides.response_type = Some(proto::jobworkerp::data::ResponseType::Direct as i32);
+    }
+    // A retry would lose the guard when it is rebuilt from JobResultData.
+    overrides.retry_policy = Some(proto::jobworkerp::data::RetryPolicy {
+        r#type: proto::jobworkerp::data::RetryType::None as i32,
+        ..Default::default()
+    });
+    Some(overrides)
+}
+
+pub fn ensure_scoped_job_succeeded(job: &proto::jobworkerp::data::JobResult) -> Result<()> {
+    let data = job.data.as_ref().ok_or_else(|| {
+        JobWorkerError::RuntimeError("Scoped tool job returned no result data".to_string())
+    })?;
+    if data.status != proto::jobworkerp::data::ResultStatus::Success as i32 {
+        let details = data
+            .output
+            .as_ref()
+            .map(|output| String::from_utf8_lossy(&output.items).to_string())
+            .unwrap_or_else(|| "no error details".to_string());
+        return Err(JobWorkerError::RuntimeError(format!(
+            "Scoped tool execution failed (status {}): {details}",
+            data.status
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 /// Check if the runner method supports streaming output.
@@ -1546,6 +2034,23 @@ fn check_method_supports_streaming(rdata: &RunnerData, tool_name_opt: Option<&st
         }
     }
     true
+}
+
+fn validate_resolved_method(runner_data: &RunnerData, using: &str) -> Result<()> {
+    if using == proto::DEFAULT_METHOD_NAME
+        || runner_data
+            .method_proto_map
+            .as_ref()
+            .is_some_and(|methods| methods.schemas.contains_key(using))
+    {
+        Ok(())
+    } else {
+        Err(JobWorkerError::InvalidParameter(format!(
+            "Method '{using}' is not available on runner '{}'",
+            runner_data.name
+        ))
+        .into())
+    }
 }
 
 #[derive(Debug)]
@@ -1812,6 +2317,58 @@ pub(crate) fn transform_function_arguments_impl(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scoped_runner_expectation_preserves_streaming_delivery_overrides() {
+        let override_settings = scoped_runner_overrides(streaming_no_wait_overrides(), 42).unwrap();
+        assert_eq!(override_settings.expected_runner_id, Some(42));
+        assert_eq!(
+            override_settings.response_type,
+            Some(proto::jobworkerp::data::ResponseType::NoResult as i32)
+        );
+        assert_eq!(override_settings.broadcast_results, Some(true));
+        assert_eq!(
+            override_settings
+                .retry_policy
+                .as_ref()
+                .map(|policy| policy.r#type),
+            Some(proto::jobworkerp::data::RetryType::None as i32),
+            "retrying would drop the scoped execution guard"
+        );
+        assert_eq!(
+            scoped_runner_overrides(None, 51)
+                .unwrap()
+                .expected_runner_id,
+            Some(51)
+        );
+        assert_eq!(
+            scoped_runner_overrides(None, 51).unwrap().response_type,
+            Some(proto::jobworkerp::data::ResponseType::Direct as i32)
+        );
+    }
+
+    #[test]
+    fn scoped_failure_result_is_not_interpreted_as_successful_tool_output() {
+        let result = |status, message: &str| proto::jobworkerp::data::JobResult {
+            data: Some(proto::jobworkerp::data::JobResultData {
+                status,
+                output: Some(proto::jobworkerp::data::ResultOutput {
+                    items: message.as_bytes().to_vec(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(ensure_scoped_job_succeeded(&result(0, "ok")).is_ok());
+        let error = ensure_scoped_job_succeeded(&result(
+            proto::jobworkerp::data::ResultStatus::FatalError as i32,
+            "target changed",
+        ))
+        .unwrap_err();
+        assert!(error.to_string().contains("target changed"));
+        assert!(
+            ensure_scoped_job_succeeded(&proto::jobworkerp::data::JobResult::default()).is_err()
+        );
+    }
     use super::*;
     use serde_json::json;
 

@@ -238,6 +238,7 @@ pub trait JobBuilder {
                 store_failure: Some(dat.store_failure),
                 broadcast_results: Some(dat.broadcast_results),
                 retry_policy: dat.resolved_retry_policy,
+                expected_runner_id: None,
             });
             #[allow(deprecated)]
             Some(Job {
@@ -281,6 +282,7 @@ pub trait JobBuilder {
                 store_failure: Some(dat.store_failure),
                 broadcast_results: Some(dat.broadcast_results),
                 retry_policy: dat.resolved_retry_policy,
+                expected_runner_id: None,
             });
             Some(JobData {
                 worker_id: dat.worker_id,

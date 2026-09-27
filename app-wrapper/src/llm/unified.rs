@@ -270,6 +270,7 @@ mod tests {
                 ..Default::default()
             })),
             embedding_chunking: None,
+            skills: None,
         }
         .encode_to_vec();
         let out = pull_ollama_model_once(settings.clone()).await.unwrap();
@@ -288,6 +289,7 @@ mod tests {
                 pull_model: Some(false),
             })),
             embedding_chunking: None,
+            skills: None,
         }
         .encode_to_vec();
         let out = pull_ollama_model_once(settings.clone()).await.unwrap();

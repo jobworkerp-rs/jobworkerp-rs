@@ -178,6 +178,7 @@ pub(crate) fn build_load_job(job_id: JobId, worker_id: &WorkerId, timeout_ms: Op
                 store_failure: Some(false),
                 broadcast_results: Some(false),
                 retry_policy: None,
+                expected_runner_id: None,
             }),
         }),
         metadata: HashMap::new(),
@@ -1061,6 +1062,7 @@ mod resolve_tests {
                 max_retry: 10,
                 basis: 2.0,
             }),
+            expected_runner_id: None,
         };
         let eff = resolve_job_params(&w, Some(&o));
         assert_eq!(eff.response_type, ResponseType::Direct as i32);
@@ -1081,6 +1083,7 @@ mod resolve_tests {
             store_failure: None,
             broadcast_results: Some(true),
             retry_policy: None,
+            expected_runner_id: None,
         };
         let eff = resolve_job_params(&w, Some(&o));
         assert_eq!(eff.response_type, ResponseType::Direct as i32);
@@ -1101,6 +1104,7 @@ mod resolve_tests {
             store_failure: None,
             broadcast_results: None,
             retry_policy: None,
+            expected_runner_id: None,
         };
         let eff = resolve_job_params(&w, Some(&o));
         // All None: same as worker defaults
@@ -1129,6 +1133,7 @@ mod resolve_tests {
             store_failure: Some(true),
             broadcast_results: Some(true),
             retry_policy: None,
+            expected_runner_id: None,
         };
         let eff = resolve_job_params(&w, Some(&o));
         // response_type overridden to NoResult

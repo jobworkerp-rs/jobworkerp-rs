@@ -4,6 +4,7 @@ pub mod completion;
 pub mod embedding;
 pub mod generic_tracing_helper;
 pub(crate) mod schema_sanitize;
+pub mod skills;
 pub mod token_count;
 pub mod tracing;
 pub mod unified;

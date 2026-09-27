@@ -59,7 +59,8 @@ CREATE TABLE `job_execution_overrides` (
   `retry_interval` INT(10) UNSIGNED DEFAULT NULL,
   `retry_max_interval` INT(10) UNSIGNED DEFAULT NULL,
   `retry_max_retry` INT(10) UNSIGNED DEFAULT NULL,
-  `retry_basis` FLOAT DEFAULT NULL
+  `retry_basis` FLOAT DEFAULT NULL,
+  `expected_runner_id` BIGINT(20) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE `job_result` (

@@ -2,8 +2,9 @@ use super::super::tracing::ollama_helper::OllamaTracingHelper;
 use super::conversion::{ToolCallName, ToolConverter};
 use crate::llm::ThinkTagHelper;
 use crate::llm::generic_tracing_helper::{self, GenericLLMTracingHelper, StreamingTraceUpdate};
+use crate::llm::skills::{SharedSkillCatalog, SkillCatalog};
 use anyhow::Result;
-use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
+use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl, FunctionSetScope};
 use app::app::function::{FunctionApp, FunctionAppImpl};
 use command_utils::trace::impls::GenericOtelClient;
 use futures::StreamExt;
@@ -59,6 +60,7 @@ pub struct OllamaChatService {
     pub ollama: Arc<Ollama>,
     pub model: String,
     pub system_prompt: Option<String>,
+    pub skills: Option<SharedSkillCatalog>,
     pub otel_client: Option<Arc<GenericOtelClient>>,
 }
 
@@ -123,6 +125,51 @@ impl ThinkTagHelper for OllamaChatService {}
 // TODO set from job.timeout
 const DEFAULT_TIMEOUT_SEC: u32 = 300; // Default timeout for Ollama chat requests in seconds
 
+const ACTIVATE_SKILL_TOOL_NAME: &str = "activate_skill";
+
+fn skill_activation_tool(skills: Option<&SkillCatalog>) -> Result<Option<ToolInfo>> {
+    let Some(schema) = skills.and_then(SkillCatalog::activation_tool_schema) else {
+        return Ok(None);
+    };
+    let parameters = serde_json::from_value(
+        schema
+            .get("parameters")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("activation tool schema is missing parameters"))?,
+    )?;
+    let description = schema
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Load the full instructions for one available skill.")
+        .to_string();
+
+    Ok(Some(ToolInfo {
+        tool_type: ollama_rs::generation::tools::ToolType::Function,
+        function: ollama_rs::generation::tools::ToolFunctionInfo {
+            name: ACTIVATE_SKILL_TOOL_NAME.to_string(),
+            description,
+            parameters,
+        },
+    }))
+}
+
+fn internal_skill_result(
+    skills: Option<&SkillCatalog>,
+    tool_name: &str,
+    arguments: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    if tool_name != ACTIVATE_SKILL_TOOL_NAME {
+        return None;
+    }
+    let skills = skills?;
+    let result = skills.activate_json(&arguments.to_string());
+    Some(serde_json::from_str(&result).unwrap_or(serde_json::Value::String(result)))
+}
+
+fn has_nonempty_skill_catalog(skills: Option<&SkillCatalog>) -> bool {
+    skills.is_some_and(|catalog| !catalog.is_empty())
+}
+
 /// Internal result type for chat operations
 enum ChatInternalResult {
     /// Final response from LLM (no more tool calls)
@@ -151,8 +198,14 @@ impl OllamaChatService {
             ollama,
             model: settings.model,
             system_prompt: settings.system_prompt,
+            skills: None,
             otel_client: Some(Arc::new(GenericOtelClient::new("ollama.chat_service"))),
         })
+    }
+
+    pub fn with_skill_catalog(mut self, skills: Option<SharedSkillCatalog>) -> Self {
+        self.skills = skills;
+        self
     }
 
     pub fn with_otel_client(mut self, client: Arc<GenericOtelClient>) -> Self {
@@ -203,8 +256,35 @@ impl OllamaChatService {
     async fn function_list(
         &self,
         args: &LlmChatArgs,
-    ) -> Result<(Vec<ToolInfo>, std::collections::HashSet<String>)> {
+    ) -> Result<(
+        Vec<ToolInfo>,
+        std::collections::HashSet<String>,
+        Option<FunctionSetScope>,
+    )> {
         let mut auto_select_names = std::collections::HashSet::new();
+
+        if self.skills.is_some() {
+            let scope = self.current_skill_scope(args).await?;
+
+            let mut tools = scope
+                .as_ref()
+                .map(|scope| {
+                    ToolConverter::convert_functions_to_ollama_tools(scope.functions.clone())
+                })
+                .unwrap_or_default();
+            if tools
+                .iter()
+                .any(|tool| tool.function.name == ACTIVATE_SKILL_TOOL_NAME)
+            {
+                anyhow::bail!(
+                    "FunctionSet tool name `{ACTIVATE_SKILL_TOOL_NAME}` is reserved when skills are enabled"
+                );
+            }
+            if let Some(activation_tool) = skill_activation_tool(self.skills.as_deref())? {
+                tools.push(activation_tool);
+            }
+            return Ok((tools, auto_select_names, scope));
+        }
 
         if let Some(function_options) = &args.function_options {
             if function_options.use_function_calling {
@@ -215,7 +295,7 @@ impl OllamaChatService {
                             tracing::debug!("Functions found: {}", functions.len());
                             let converted =
                                 ToolConverter::convert_functions_to_ollama_tools(functions);
-                            Ok((converted, auto_select_names))
+                            Ok((converted, auto_select_names, None))
                         }
                         Err(e) => {
                             tracing::error!("Error finding functions by set: {}", e);
@@ -248,6 +328,7 @@ impl OllamaChatService {
                                     &selector_tools,
                                 ),
                                 auto_select_names,
+                                None,
                             ))
                         }
                         Err(e) => {
@@ -289,7 +370,7 @@ impl OllamaChatService {
                                     .map(|f| f.function.name.as_str())
                                     .collect::<Vec<&str>>()
                             );
-                            Ok((converted, auto_select_names))
+                            Ok((converted, auto_select_names, None))
                         }
                         Err(e) => {
                             tracing::error!("Error finding functions: {}", e);
@@ -298,11 +379,54 @@ impl OllamaChatService {
                     }
                 }
             } else {
-                Ok((vec![], auto_select_names))
+                Ok((vec![], auto_select_names, None))
             }
         } else {
-            Ok((vec![], auto_select_names))
+            Ok((vec![], auto_select_names, None))
         }
+    }
+
+    fn validate_skill_options(&self, args: &LlmChatArgs, streaming: bool) -> Result<()> {
+        if self.skills.is_none() {
+            return Ok(());
+        }
+        super::validate_skill_function_options_for_ollama(args, streaming)
+    }
+
+    async fn current_skill_scope(&self, args: &LlmChatArgs) -> Result<Option<FunctionSetScope>> {
+        if self.skills.is_none() {
+            return Ok(None);
+        }
+        let options = args
+            .function_options
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("skills require function_options"))?;
+        let mut scope = if let Some(set_name) = options.function_set_name.as_deref() {
+            Some(
+                self.function_set_app
+                    .resolve_current_function_scope(set_name)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        if scope
+            .as_ref()
+            .is_some_and(|scope| scope.tools.contains_key(ACTIVATE_SKILL_TOOL_NAME))
+        {
+            anyhow::bail!(
+                "FunctionSet tool name `{ACTIVATE_SKILL_TOOL_NAME}` is reserved when skills are enabled"
+            );
+        }
+        if let Some(scope) = scope.as_mut() {
+            let published_names: std::collections::HashSet<String> =
+                ToolConverter::convert_functions_to_ollama_tools(scope.functions.clone())
+                    .into_iter()
+                    .map(|tool| tool.function.name)
+                    .collect();
+            scope.tools.retain(|name, _| published_names.contains(name));
+        }
+        Ok(scope)
     }
 
     async fn get_tool_summaries_for_set(&self, set_name: &str) -> Vec<(String, String)> {
@@ -456,6 +580,10 @@ impl OllamaChatService {
 
         // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
         ToolConverter::validate_all_tool_results(&args)?;
+        self.validate_skill_options(&args, false)?;
+        if self.skills.is_some() {
+            ToolConverter::validate_skill_execution_requests(&args)?;
+        }
 
         // Check for tool execution requests in messages (manual mode)
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
@@ -475,12 +603,14 @@ impl OllamaChatService {
         let model = args.model.clone().unwrap_or_else(|| self.model.clone());
         let mut messages = Self::convert_messages(&args).await;
 
-        if let Some(system_prompt) = self.system_prompt.clone() {
+        if !has_nonempty_skill_catalog(self.skills.as_deref())
+            && let Some(system_prompt) = self.system_prompt.clone()
+        {
             messages.retain(|m| m.role != MessageRole::System);
             messages.insert(0, ChatMessage::new(MessageRole::System, system_prompt));
         }
 
-        let (tools_vec, auto_select_names) = self.function_list(&args).await?;
+        let (tools_vec, auto_select_names, function_scope) = self.function_list(&args).await?;
         let is_auto_select = !auto_select_names.is_empty();
         let original_args = if is_auto_select {
             Some(args.clone())
@@ -504,6 +634,7 @@ impl OllamaChatService {
             metadata.clone(),
             args.json_schema,
             effective_auto_calling,
+            function_scope,
             think,
             0,
         )
@@ -631,6 +762,74 @@ impl OllamaChatService {
         cx: opentelemetry::Context,
         metadata: Arc<HashMap<String, String>>,
     ) -> Result<LlmChatResult> {
+        if self.skills.is_some() {
+            use jobworkerp_runner::jobworkerp::runner::llm::{
+                ToolExecutionResult, llm_chat_args::message_content::ToolResult,
+            };
+
+            let function_scope = self.current_skill_scope(&args).await?;
+            let mut tool_results = Vec::with_capacity(requests.len());
+            for request in &requests {
+                let arguments =
+                    serde_json::from_str(&request.fn_arguments).unwrap_or(serde_json::Value::Null);
+                let (content, is_error) = if let Some(result) =
+                    internal_skill_result(self.skills.as_deref(), &request.fn_name, &arguments)
+                {
+                    (result.to_string(), result.get("error").is_some())
+                } else if let Some(scope) = function_scope.as_ref() {
+                    let arguments = arguments.as_object().cloned();
+                    match self
+                        .function_set_app
+                        .call_function_for_llm_in_scope(
+                            metadata.clone(),
+                            scope,
+                            &request.fn_name,
+                            arguments,
+                            DEFAULT_TIMEOUT_SEC,
+                        )
+                        .await
+                    {
+                        Ok(value) => (value.to_string(), false),
+                        Err(error) => (format!("Error: {error}"), true),
+                    }
+                } else {
+                    (
+                        format!(
+                            "Error: external tool `{}` is not available without a fixed FunctionSet",
+                            request.fn_name
+                        ),
+                        true,
+                    )
+                };
+                tool_results.push(ToolResult {
+                    call_id: request.call_id.clone(),
+                    fn_name: request.fn_name.clone(),
+                    content,
+                    is_error,
+                });
+            }
+
+            ToolConverter::replace_execution_requests_with_tool_results(
+                &mut args.messages,
+                &tool_results,
+            )?;
+            let mut response = Box::pin(self.request_chat(args, cx, (*metadata).clone())).await?;
+            response
+                .tool_execution_results
+                .extend(tool_results.into_iter().map(|result| {
+                    let error = result.is_error.then(|| result.content.clone());
+                    ToolExecutionResult {
+                        call_id: result.call_id,
+                        fn_name: result.fn_name,
+                        result: result.content,
+                        error,
+                        success: !result.is_error,
+                        job_id: None,
+                    }
+                }));
+            return Ok(response);
+        }
+
         // Execute each requested tool
         for req in &requests {
             if ToolConverter::skip_selector_tool_execution(req, &mut args.messages) {
@@ -683,6 +882,7 @@ impl OllamaChatService {
         metadata: Arc<HashMap<String, String>>,
         json_schema: Option<String>,
         is_auto_calling: bool,
+        function_scope: Option<FunctionSetScope>,
         think: Option<bool>,
         tool_call_depth: u32,
     ) -> Result<ChatInternalResult> {
@@ -828,7 +1028,10 @@ impl OllamaChatService {
             // Auto mode: process tool calls automatically
             // Filter out selector pseudo-tools to prevent infinite loops —
             // LLM may hallucinate selector tool calls from conversation history
-            let tool_calls = ToolConverter::filter_selector_tools(res.message.tool_calls.clone());
+            let tool_calls = ToolConverter::filter_selector_tools_for_mode(
+                res.message.tool_calls.clone(),
+                self.skills.is_some(),
+            );
 
             // If only selector tools were called, treat as text response or error
             if tool_calls.is_empty() {
@@ -853,6 +1056,7 @@ impl OllamaChatService {
                         &tool_calls,
                         Some(updated_context),
                         metadata.clone(),
+                        function_scope.as_ref(),
                     )
                     .await?;
             } else {
@@ -860,6 +1064,7 @@ impl OllamaChatService {
                     messages.clone(),
                     &tool_calls,
                     metadata.clone(),
+                    function_scope.as_ref(),
                 )
                 .await?;
                 // Keep current context unchanged when not tracing
@@ -879,6 +1084,7 @@ impl OllamaChatService {
                 metadata,
                 None, // json_schema is not used in recursive calls to avoid conflicts
                 is_auto_calling,
+                function_scope,
                 think,
                 tool_call_depth + 1,
             ))
@@ -892,6 +1098,7 @@ impl OllamaChatService {
         tool_calls: &[ollama_rs::generation::tools::ToolCall],
         parent_context: Option<opentelemetry::Context>,
         metadata: Arc<HashMap<String, String>>,
+        function_scope: Option<&FunctionSetScope>,
     ) -> Result<opentelemetry::Context> {
         if parent_context.is_none() && GenericLLMTracingHelper::get_otel_client(self).is_some() {
             tracing::warn!("No parent context provided for tool calls, using current context");
@@ -909,10 +1116,16 @@ impl OllamaChatService {
             // Clone necessary data to avoid lifetime issues
             let function_name = call.function.name.clone();
             let arguments = call.function.arguments.clone();
-            let function_app = self.function_app.clone();
+            let service = self.clone();
+            let scope = function_scope.cloned();
 
             let metadata_clone = metadata.clone();
             let tool_action = async move {
+                if let Some(result) =
+                    internal_skill_result(service.skills.as_deref(), &function_name, &arguments)
+                {
+                    return Ok(result);
+                }
                 // Handle empty or null arguments by providing an empty object
                 let arguments_obj = arguments.as_object().cloned().unwrap_or_else(|| {
                     tracing::debug!("Tool call has null arguments, using empty object");
@@ -920,14 +1133,34 @@ impl OllamaChatService {
                 });
 
                 // Execute tool and convert any error to a string result for LLM to handle
-                let result = function_app
-                    .call_function_for_llm(
-                        metadata_clone,
-                        &function_name,
-                        Some(arguments_obj),
-                        DEFAULT_TIMEOUT_SEC,
-                    )
-                    .await;
+                let result = if service.skills.is_some() {
+                    if let Some(scope) = scope.as_ref() {
+                        service
+                            .function_set_app
+                            .call_function_for_llm_in_scope(
+                                metadata_clone,
+                                scope,
+                                &function_name,
+                                Some(arguments_obj),
+                                DEFAULT_TIMEOUT_SEC,
+                            )
+                            .await
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "External tool `{function_name}` is not available without a fixed FunctionSet"
+                        ))
+                    }
+                } else {
+                    service
+                        .function_app
+                        .call_function_for_llm(
+                            metadata_clone,
+                            &function_name,
+                            Some(arguments_obj),
+                            DEFAULT_TIMEOUT_SEC,
+                        )
+                        .await
+                };
 
                 let tool_result = match result {
                     Ok(success_result) => success_result,
@@ -970,6 +1203,7 @@ impl OllamaChatService {
         messages: Arc<Mutex<Vec<ChatMessage>>>,
         tool_calls: &[ollama_rs::generation::tools::ToolCall],
         metadata: Arc<HashMap<String, String>>,
+        function_scope: Option<&FunctionSetScope>,
     ) -> Result<()> {
         for call in tool_calls {
             tracing::debug!("Tool call: {:?}", call.function);
@@ -978,6 +1212,18 @@ impl OllamaChatService {
                 "Tool arguments as object: {:?}",
                 call.function.arguments.as_object()
             );
+
+            if let Some(tool_result) = internal_skill_result(
+                self.skills.as_deref(),
+                &call.function.name,
+                &call.function.arguments,
+            ) {
+                messages
+                    .lock()
+                    .await
+                    .push(ChatMessage::tool(tool_result.to_string()));
+                continue;
+            }
 
             // Handle empty or null arguments by providing an empty object
             let arguments_obj = call
@@ -991,15 +1237,33 @@ impl OllamaChatService {
                 });
 
             // Execute tool and convert any error to a string result for LLM to handle
-            let result = self
-                .function_app
-                .call_function_for_llm(
-                    metadata.clone(),
-                    call.function.name.as_str(),
-                    Some(arguments_obj),
-                    DEFAULT_TIMEOUT_SEC,
-                )
-                .await;
+            let result = if self.skills.is_some() {
+                if let Some(scope) = function_scope {
+                    self.function_set_app
+                        .call_function_for_llm_in_scope(
+                            metadata.clone(),
+                            scope,
+                            call.function.name.as_str(),
+                            Some(arguments_obj),
+                            DEFAULT_TIMEOUT_SEC,
+                        )
+                        .await
+                } else {
+                    Err(anyhow::anyhow!(
+                        "External tool `{}` is not available without a fixed FunctionSet",
+                        call.function.name
+                    ))
+                }
+            } else {
+                self.function_app
+                    .call_function_for_llm(
+                        metadata.clone(),
+                        call.function.name.as_str(),
+                        Some(arguments_obj),
+                        DEFAULT_TIMEOUT_SEC,
+                    )
+                    .await
+            };
 
             let tool_result = match result {
                 Ok(success_result) => {
@@ -1042,6 +1306,10 @@ impl OllamaChatService {
     ) -> Result<BoxStream<'static, LlmChatResult>> {
         // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
         ToolConverter::validate_all_tool_results(&args)?;
+        self.validate_skill_options(&args, true)?;
+        if self.skills.is_some() {
+            ToolConverter::validate_skill_execution_requests(&args)?;
+        }
 
         // Check for tool execution requests first (highest priority, manual mode continuation)
         let metadata_arc = Arc::new(metadata);
@@ -1063,7 +1331,7 @@ impl OllamaChatService {
 
         // auto_select_function_set: Phase 1 (non-streaming) selects FunctionSet, Phase 2 streams
         if is_auto_select {
-            let (tools_vec, auto_select_names) = self.function_list(&args).await?;
+            let (tools_vec, auto_select_names, function_scope) = self.function_list(&args).await?;
             if auto_select_names.is_empty() {
                 tracing::warn!(
                     "auto_select_function_set is true but no selector tools available, falling back to normal streaming"
@@ -1106,6 +1374,7 @@ impl OllamaChatService {
                 metadata_arc.clone(),
                 args.json_schema.clone(),
                 false, // manual mode to intercept selector tool call
+                function_scope,
                 think,
                 0,
             )
@@ -1189,9 +1458,10 @@ impl OllamaChatService {
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
         use jobworkerp_runner::jobworkerp::runner::llm::{
-            ToolExecutionResult, ToolExecutionStarted,
+            ToolExecutionResult, ToolExecutionStarted, llm_chat_args::message_content::ToolResult,
         };
 
+        let function_scope = self.current_skill_scope(&args).await?;
         let self_clone = self.clone();
         let args_clone = args.clone();
         let requests_clone = requests.clone();
@@ -1201,12 +1471,15 @@ impl OllamaChatService {
         let stream = async_stream::stream! {
             let mut updated_args = args_clone;
             let mut tool_results_cache: Vec<(String, String, bool)> = Vec::new();
+            let mut skill_tool_results_cache: Vec<ToolResult> = Vec::new();
 
             tracing::debug!("handle_tool_execution_stream: starting Phase 1 with {} tool requests", requests_clone.len());
 
             // Phase 1: Execute tools with 2-stage split (enqueue → yield started → await → yield result)
             for req in &requests_clone {
-                if ToolConverter::skip_selector_tool_execution(req, &mut updated_args.messages) {
+                if self_clone.skills.is_none()
+                    && ToolConverter::skip_selector_tool_execution(req, &mut updated_args.messages)
+                {
                     continue;
                 }
 
@@ -1214,6 +1487,43 @@ impl OllamaChatService {
                     serde_json::from_str(&req.fn_arguments).ok();
 
                 tracing::debug!("Executing tool: {} with args: {:?}", req.fn_name, arguments);
+
+                if let Some(skill_result) = internal_skill_result(
+                    self_clone.skills.as_deref(),
+                    &req.fn_name,
+                    &arguments
+                        .clone()
+                        .map(serde_json::Value::Object)
+                        .unwrap_or(serde_json::Value::Null),
+                ) {
+                    let result = skill_result.to_string();
+                    let success = skill_result.get("error").is_none();
+                    let tool_span = self_clone.open_tool_span(
+                        &req.fn_name,
+                        serde_json::from_str(&req.fn_arguments).unwrap_or(serde_json::Value::Null),
+                        &metadata_clone,
+                        parent_context_clone.clone(),
+                    );
+                    generic_tracing_helper::finish_tool_span(tool_span, &result, success);
+                    skill_tool_results_cache.push(ToolResult {
+                        call_id: req.call_id.clone(),
+                        fn_name: req.fn_name.clone(),
+                        content: result.clone(),
+                        is_error: !success,
+                    });
+                    yield LlmChatResult {
+                        tool_execution_results: vec![ToolExecutionResult {
+                            call_id: req.call_id.clone(),
+                            fn_name: req.fn_name.clone(),
+                            result: result.clone(),
+                            error: (!success).then(|| result.clone()),
+                            success,
+                            job_id: None,
+                        }],
+                        ..Default::default()
+                    };
+                    continue;
+                }
 
                 // Open a tool-call span (child of the streaming generation span) so wall-clock
                 // duration is captured even though the tool runs inside the async stream.
@@ -1229,15 +1539,35 @@ impl OllamaChatService {
                 );
 
                 // Phase A: Enqueue and get job_id immediately
-                let enqueued = self_clone
-                    .function_app
-                    .enqueue_function_for_llm(
-                        metadata_clone.clone(),
-                        &req.fn_name,
-                        arguments,
-                        DEFAULT_TIMEOUT_SEC,
-                    )
-                    .await;
+                let enqueued = if self_clone.skills.is_some() {
+                    if let Some(scope) = function_scope.as_ref() {
+                        self_clone
+                            .function_set_app
+                            .enqueue_function_for_llm_in_scope(
+                                metadata_clone.clone(),
+                                scope,
+                                &req.fn_name,
+                                arguments,
+                                DEFAULT_TIMEOUT_SEC,
+                            )
+                            .await
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "External tool `{}` is not available without a fixed FunctionSet",
+                            req.fn_name
+                        ))
+                    }
+                } else {
+                    self_clone
+                        .function_app
+                        .enqueue_function_for_llm(
+                            metadata_clone.clone(),
+                            &req.fn_name,
+                            arguments,
+                            DEFAULT_TIMEOUT_SEC,
+                        )
+                        .await
+                };
 
                 let (tool_result, success, job_id_opt) = match enqueued {
                     Ok(enq) => {
@@ -1257,16 +1587,12 @@ impl OllamaChatService {
                         let job_id_val = enq.job_id.value;
 
                         // Phase B: Await result
-                        let result = if let Some(val) = enq.result {
-                            Ok(val)
-                        } else if let Some(handle) = enq.result_handle {
-                            self_clone
-                                .function_app
-                                .await_function_result(handle, &enq.runner_name, enq.using.as_deref())
-                                .await
-                        } else {
-                            Err(anyhow::anyhow!("No result or result_handle available"))
-                        };
+                        let result = super::await_enqueued_tool_result(
+                            &self_clone.function_app,
+                            enq,
+                            self_clone.skills.is_some(),
+                        )
+                        .await;
 
                         match result {
                             Ok(value) => (value.to_string(), true, Some(job_id_val)),
@@ -1283,8 +1609,17 @@ impl OllamaChatService {
 
                 generic_tracing_helper::finish_tool_span(tool_span, &tool_result, success);
 
-                // Cache result for Phase 2
-                tool_results_cache.push((req.call_id.clone(), tool_result.clone(), success));
+                // Cache result for Phase 2 while retaining legacy replacement when skills are off.
+                if self_clone.skills.is_some() {
+                    skill_tool_results_cache.push(ToolResult {
+                        call_id: req.call_id.clone(),
+                        fn_name: req.fn_name.clone(),
+                        content: tool_result.clone(),
+                        is_error: !success,
+                    });
+                } else {
+                    tool_results_cache.push((req.call_id.clone(), tool_result.clone(), success));
+                }
 
                 // Yield tool execution result with job_id
                 yield LlmChatResult {
@@ -1300,14 +1635,32 @@ impl OllamaChatService {
                 };
             }
 
-            // Phase 2: Update args with cached tool results
-            tracing::debug!("handle_tool_execution_stream: Phase 2 — updating args with {} tool results", tool_results_cache.len());
-            for (call_id, tool_result, _success) in &tool_results_cache {
-                ToolConverter::replace_tool_execution_with_result(
+            // Phase 2: Keep ID-bearing results for skills-aware continuation turns.
+            tracing::debug!("handle_tool_execution_stream: Phase 2 — updating args with {} tool results", tool_results_cache.len() + skill_tool_results_cache.len());
+            if self_clone.skills.is_some() {
+                if let Err(error) = ToolConverter::replace_execution_requests_with_tool_results(
                     &mut updated_args.messages,
-                    call_id,
-                    tool_result,
-                );
+                    &skill_tool_results_cache,
+                ) {
+                    yield LlmChatResult {
+                        content: Some(llm::llm_chat_result::MessageContent {
+                            content: Some(message_content::Content::Text(format!(
+                                "Tool result conversion error: {error}"
+                            ))),
+                        }),
+                        done: true,
+                        ..Default::default()
+                    };
+                    return;
+                }
+            } else {
+                for (call_id, tool_result, _success) in &tool_results_cache {
+                    ToolConverter::replace_tool_execution_with_result(
+                        &mut updated_args.messages,
+                        call_id,
+                        tool_result,
+                    );
+                }
             }
 
             // Phase 3: Continue with LLM streaming using updated args
@@ -1360,7 +1713,7 @@ impl OllamaChatService {
 
         // Load tools if function calling is enabled
         let tools: Vec<ToolInfo> = if use_function_calling {
-            let (tools, _auto_select_names) = self.function_list(&args).await?;
+            let (tools, _auto_select_names, _function_scope) = self.function_list(&args).await?;
             tools
         } else {
             vec![]
@@ -1393,7 +1746,9 @@ impl OllamaChatService {
             req = req.think(t);
         }
 
-        if let Some(system_prompt) = self.system_prompt.clone() {
+        if !has_nonempty_skill_catalog(self.skills.as_deref())
+            && let Some(system_prompt) = self.system_prompt.clone()
+        {
             req = req.template(system_prompt);
         }
 
@@ -1403,6 +1758,7 @@ impl OllamaChatService {
         }
 
         let ollama = self.ollama.clone();
+        let skills_enabled_for_stream = self.skills.is_some();
 
         // Use async_stream for stateful stream processing
         let stream = async_stream::stream! {
@@ -1471,7 +1827,9 @@ impl OllamaChatService {
                     }
 
                     // After stream ends, process any accumulated tool calls
-                    ToolConverter::retain_non_selector_tools(&mut accumulated_tool_calls);
+                    if !skills_enabled_for_stream {
+                        ToolConverter::retain_non_selector_tools(&mut accumulated_tool_calls);
+                    }
                     if !accumulated_tool_calls.is_empty() {
                         // Convert to pending tool calls format
                         let pending_calls: Vec<ToolCallRequest> = accumulated_tool_calls
@@ -1592,9 +1950,179 @@ impl OllamaChatService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::skills::SkillCatalog;
+    use jobworkerp_runner::jobworkerp::runner::llm::SkillSettings;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::{
         ToolResult as ProtoToolResult, ToolResults as ProtoToolResults,
     };
+    use std::sync::{Mutex, MutexGuard};
+    use tempfile::TempDir;
+
+    static SKILLS_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct SkillsEnvGuard {
+        previous: Option<std::ffi::OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl SkillsEnvGuard {
+        fn set(value: &str) -> Self {
+            let lock = SKILLS_ENV_LOCK.lock().unwrap();
+            let previous = std::env::var_os("LLM_SKILL_ROOTS");
+            unsafe { std::env::set_var("LLM_SKILL_ROOTS", value) };
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for SkillsEnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                unsafe { std::env::set_var("LLM_SKILL_ROOTS", previous) };
+            } else {
+                unsafe { std::env::remove_var("LLM_SKILL_ROOTS") };
+            }
+        }
+    }
+
+    fn sample_catalog() -> (TempDir, SkillCatalog, SkillsEnvGuard) {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        std::fs::create_dir_all(root.join("review")).unwrap();
+        std::fs::write(
+            root.join("review/SKILL.md"),
+            "---\nname: review\ndescription: Review source changes\n---\nReview instructions\n",
+        )
+        .unwrap();
+        let roots = serde_json::json!({
+            "team": { "local_path": root.to_str().unwrap() }
+        });
+        let env = SkillsEnvGuard::set(&roots.to_string());
+        let catalog = SkillCatalog::load(&SkillSettings {
+            root_ids: vec!["team".to_string()],
+            allow_names: vec![],
+        })
+        .unwrap();
+        (temp, catalog, env)
+    }
+
+    #[test]
+    fn activation_tool_schema_is_converted_to_ollama_name_enum() {
+        assert!(skill_activation_tool(None).unwrap().is_none());
+        let (_temp, catalog, _env) = sample_catalog();
+
+        let tool = skill_activation_tool(Some(&catalog)).unwrap().unwrap();
+
+        assert_eq!(tool.function.name, "activate_skill");
+        let schema = serde_json::to_value(&tool.function.parameters).unwrap();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(
+            schema["properties"]["name"]["enum"],
+            serde_json::json!(["review"])
+        );
+        assert_eq!(schema["required"], serde_json::json!(["name"]));
+        assert_eq!(schema["additionalProperties"], false);
+    }
+
+    #[test]
+    fn internal_skill_dispatch_returns_snapshot_errors_and_stays_disabled_without_catalog() {
+        let (temp, catalog, _env) = sample_catalog();
+
+        assert!(
+            internal_skill_result(
+                None,
+                "activate_skill",
+                &serde_json::json!({ "name": "review" })
+            )
+            .is_none()
+        );
+        assert!(
+            internal_skill_result(Some(&catalog), "some_external_tool", &serde_json::json!({}))
+                .is_none()
+        );
+
+        let activated = internal_skill_result(
+            Some(&catalog),
+            "activate_skill",
+            &serde_json::json!({ "name": "review" }),
+        )
+        .unwrap();
+        assert_eq!(activated["name"], "review");
+        assert_eq!(
+            activated["resource_base_dir"],
+            temp.path().join("skills/review").to_string_lossy().as_ref()
+        );
+        assert!(
+            activated["content"]
+                .as_str()
+                .unwrap()
+                .contains("Review instructions")
+        );
+
+        let invalid = internal_skill_result(
+            Some(&catalog),
+            "activate_skill",
+            &serde_json::json!({ "name": "missing" }),
+        )
+        .unwrap();
+        assert_eq!(invalid["error"]["code"], "skill_not_available");
+
+        let malformed =
+            internal_skill_result(Some(&catalog), "activate_skill", &serde_json::json!([]))
+                .unwrap();
+        assert_eq!(malformed["error"]["code"], "invalid_arguments");
+    }
+
+    #[tokio::test]
+    async fn direct_service_skill_validation_preserves_disabled_mode_and_empty_choice() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::FunctionOptions;
+        let app = app::module::test::create_rdb_chan_test_app(false, false)
+            .await
+            .unwrap();
+        let settings = OllamaRunnerSettings {
+            model: "test".into(),
+            ..Default::default()
+        };
+        let service = OllamaChatService::new(
+            app.function_app.clone(),
+            app.function_set_app.clone(),
+            settings,
+        )
+        .unwrap();
+        let mut args = LlmChatArgs {
+            function_options: Some(FunctionOptions {
+                use_function_calling: true,
+                tool_choice: Some(String::new()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (_root, catalog, _env) = sample_catalog();
+        let service_with_skills = service.clone().with_skill_catalog(Some(Arc::new(catalog)));
+        assert!(
+            service_with_skills
+                .validate_skill_options(&args, false)
+                .is_ok()
+        );
+        args.function_options.as_mut().unwrap().is_auto_calling = Some(true);
+        assert!(
+            service_with_skills
+                .validate_skill_options(&args, true)
+                .is_err()
+        );
+        args.function_options
+            .as_mut()
+            .unwrap()
+            .use_runners_as_function = Some(true);
+        assert!(service.validate_skill_options(&args, true).is_ok());
+        assert!(
+            service_with_skills
+                .validate_skill_options(&args, false)
+                .is_err()
+        );
+    }
 
     #[test]
     fn expand_tool_results_into_fans_out_per_result() {

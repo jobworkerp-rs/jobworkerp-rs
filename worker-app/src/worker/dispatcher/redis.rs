@@ -253,7 +253,11 @@ pub trait RedisJobDispatcher:
         let sid = wdat.runner_id.ok_or(JobWorkerError::InvalidParameter(
             "worker runner_id is not found.".to_string(),
         ))?;
-        let runner_data = if let Some(RunnerWithSchema {
+        let scoped_target_changed = super::validate_scoped_runner(&jdat, &sid).is_err();
+        let runner_data = if scoped_target_changed {
+            // Only the claimed mismatch path may consume this placeholder.
+            Ok(proto::jobworkerp::data::RunnerData::default())
+        } else if let Some(RunnerWithSchema {
             id: _,
             data: runner_data,
             ..
@@ -539,6 +543,25 @@ pub trait RedisJobDispatcher:
             .into());
         }
 
+        if scoped_target_changed {
+            // Finish indexing before completion deletes the job and its recovery row.
+            await_running_index_update(running_index_task.take(), jid.value).await;
+            let job = Job {
+                id: Some(jid),
+                data: Some(jdat),
+                metadata: meta,
+            };
+            let result = super::scoped_runner_mismatch_result(
+                &job,
+                &wdat,
+                proto::jobworkerp::data::JobResultId {
+                    value: self.id_generator().generate_id()?,
+                },
+            );
+            return self
+                .process_cancelled_dispatch_result(result, &wdat, &jid)
+                .await;
+        }
         let mut r = self
             .run_job(
                 &runner_data,

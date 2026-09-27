@@ -283,7 +283,11 @@ pub trait ChanJobDispatcher:
             tracing::error!("{}", &mes);
             return Err(JobWorkerError::NotFound(mes).into());
         };
-        let runner_data = if let Some(RunnerWithSchema{id:_, data: runner_data,..}) =
+        let scoped_target_changed = super::validate_scoped_runner(&jdat, sid).is_err();
+        let runner_data = if scoped_target_changed {
+            // Only the claimed mismatch path may consume this placeholder.
+            Ok(proto::jobworkerp::data::RunnerData::default())
+        } else if let Some(RunnerWithSchema{id:_, data: runner_data,..}) =
              self.runner_app().find_runner(sid).await?
         {
                 runner_data.ok_or(JobWorkerError::NotFound(format!("runner data {:?} is not found.", sid)))
@@ -433,6 +437,21 @@ pub trait ChanJobDispatcher:
         let broadcast_results_for_indexing = resolved.broadcast_results;
         let attempt_for_status = jdat.retried;
 
+        if scoped_target_changed {
+            let job = Job {
+                id: Some(jid),
+                data: Some(jdat),
+                metadata,
+            };
+            let result = super::scoped_runner_mismatch_result(
+                &job,
+                &wdat,
+                proto::jobworkerp::data::JobResultId {
+                    value: self.id_generator().generate_id()?,
+                },
+            );
+            return self.process_cancelled_dispatch_result(result, &wdat, &jid).await;
+        }
         // run job (load-only requests were handled and returned above)
         let mut r = self
                 .run_job(

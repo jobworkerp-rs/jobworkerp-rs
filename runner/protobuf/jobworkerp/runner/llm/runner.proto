@@ -1,6 +1,14 @@
 syntax = "proto3";
 package jobworkerp.runner.llm;
 
+// Allowlisted skill roots and names for the chat skills catalog.
+message SkillSettings {
+  // One or more administrator-registered root IDs from LLM_SKILL_ROOTS.
+  repeated string root_ids = 1;
+  // Optional allowlist; empty exposes every skill found under the selected roots.
+  repeated string allow_names = 2;
+}
+
 // settings for model initialization
 message LLMRunnerSettings {
   // ollama model specific settings
@@ -83,4 +91,7 @@ message LLMRunnerSettings {
   // from the model's context length hint or a safe default. Uses a new unused
   // tag (10) because tag 3 is reserved above.
   optional ChunkingConfig embedding_chunking = 10;
+
+  // Optional allowlisted skills catalog for chat requests.
+  optional SkillSettings skills = 11;
 }
