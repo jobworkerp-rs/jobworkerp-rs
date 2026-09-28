@@ -91,16 +91,23 @@ pub trait FunctionSetApp: // XXX 1 impl
         function_set: &Option<FunctionSetData>,
     ) -> Result<bool> {
         if let Some(w) = function_set {
+            let Some(old_name) = self.find_function_set_name_by_id(id).await? else {
+                return Ok(false);
+            };
             let pool = self.function_set_repository().db_pool();
             let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
-            self.function_set_repository()
+            let updated = self
+                .function_set_repository()
                 .update(&mut tx, id, w)
                 .await?;
             tx.commit().await.map_err(JobWorkerError::DBError)?;
-            // clear memory cache
-            let k = Arc::new(self.find_cache_key(&id.value));
-            let _ = self.delete_cache(&k).await;
-            Ok(true)
+            self.delete_function_set_caches(
+                id,
+                Some(old_name.as_str()),
+                Some(w.name.as_str()),
+            )
+            .await;
+            Ok(updated)
         } else {
             // all empty, no update
             Ok(false)
@@ -108,10 +115,41 @@ pub trait FunctionSetApp: // XXX 1 impl
     }
 
     async fn delete_function_set(&self, id: &FunctionSetId) -> Result<bool> {
-        let r = self.function_set_repository().delete(id).await;
-        let k = Arc::new(self.find_cache_key(&id.value));
-        let _ = self.delete_cache(&k).await;
-        r
+        let old_name = self.find_function_set_name_by_id(id).await?;
+        let deleted = self.function_set_repository().delete(id).await?;
+        self.delete_function_set_caches(id, old_name.as_deref(), None)
+            .await;
+        Ok(deleted)
+    }
+
+    async fn find_function_set_name_by_id(&self, id: &FunctionSetId) -> Result<Option<String>> {
+        let Some(function_set) = self.function_set_repository().find(id).await? else {
+            return Ok(None);
+        };
+        let name = function_set
+            .data
+            .ok_or_else(|| {
+                JobWorkerError::NotFound(format!(
+                    "FunctionSet {} data not found",
+                    id.value
+                ))
+            })?
+            .name;
+        Ok(Some(name))
+    }
+
+    async fn delete_function_set_caches(
+        &self,
+        id: &FunctionSetId,
+        old_name: Option<&str>,
+        new_name: Option<&str>,
+    ) {
+        let id_key = Arc::new(self.find_cache_key(&id.value));
+        let _ = self.delete_cache(&id_key).await;
+        for name in [old_name, new_name].into_iter().flatten() {
+            let name_key = Arc::new(self.find_by_name_cache_key(name));
+            let _ = self.delete_cache(&name_key).await;
+        }
     }
 
     fn find_cache_key(&self, id: &i64) -> String {

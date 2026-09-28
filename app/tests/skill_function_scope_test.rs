@@ -265,7 +265,7 @@ fn method_tool_names_are_checked_against_exact_and_combined_name_routes() -> Res
 }
 
 #[test]
-fn authoritative_resolution_bypasses_stale_name_cache_and_rejects_deletion() -> Result<()> {
+fn authoritative_resolution_reflects_updated_name_cache_and_rejects_deletion() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         let app = app::module::test::create_hybrid_test_app().await?;
         let worker_a = create_worker(&app, "scope_a").await?;
@@ -300,13 +300,13 @@ fn authoritative_resolution_bypasses_stale_name_cache_and_rejects_deletion() -> 
             )
             .await?;
 
-        // The ordinary name lookup intentionally remains stale after ID update;
-        // the security-sensitive scope resolver must not use it.
+        // Updates evict the name cache; the security-sensitive scope resolver
+        // independently reads authoritative storage for each request.
         let still_cached = app
             .function_set_app
             .find_function_set_by_name("scope_cache")
             .await?
-            .expect("the cached lookup is still populated");
+            .expect("the updated lookup is available");
         assert_eq!(
             still_cached.data.as_ref().unwrap().targets[0]
                 .function_id
@@ -314,7 +314,7 @@ fn authoritative_resolution_bypasses_stale_name_cache_and_rejects_deletion() -> 
                 .unwrap()
                 .id,
             Some(function_id::Id::WorkerId(
-                proto::jobworkerp::data::WorkerId { value: worker_a }
+                proto::jobworkerp::data::WorkerId { value: worker_b }
             ))
         );
         let current = app

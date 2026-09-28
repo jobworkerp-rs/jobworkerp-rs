@@ -2,9 +2,12 @@ use anyhow::Result;
 use app::app::function::FunctionApp;
 use app::app::function::function_set::FunctionSetApp;
 use app::module::AppModule;
+use infra::infra::function_set::rdb::{FunctionSetRepository, UseFunctionSetRepository};
 use infra_utils::infra::test::TEST_RUNTIME;
 use proto::jobworkerp::data::{RunnerId, WorkerData};
-use proto::jobworkerp::function::data::{FunctionId, FunctionSetData, FunctionUsing, function_id};
+use proto::jobworkerp::function::data::{
+    FunctionId, FunctionSetData, FunctionSetId, FunctionUsing, function_id,
+};
 
 #[test]
 fn test_find_detail_with_runners_and_workers() -> Result<()> {
@@ -189,7 +192,246 @@ fn test_convert_function_ids_with_none_id() -> Result<()> {
     })
 }
 
+#[test]
+fn test_update_function_set_invalidates_warmed_name_and_id_caches() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app_module = setup_test_app_module().await?;
+        let name = unique_function_set_name("normal_update");
+        let function_set_id = app_module
+            .function_set_app
+            .create_function_set(&function_set_data(&name, "before update"))
+            .await?;
+
+        assert!(
+            app_module
+                .function_set_app
+                .find_function_set_by_name(&name)
+                .await?
+                .is_some()
+        );
+        assert!(
+            app_module
+                .function_set_app
+                .find_function_set(&function_set_id)
+                .await?
+                .is_some()
+        );
+
+        assert!(
+            app_module
+                .function_set_app
+                .update_function_set(
+                    &function_set_id,
+                    &Some(function_set_data(&name, "after update")),
+                )
+                .await?
+        );
+
+        for function_set in [
+            app_module
+                .function_set_app
+                .find_function_set_by_name(&name)
+                .await?
+                .expect("updated FunctionSet should be found by name"),
+            app_module
+                .function_set_app
+                .find_function_set(&function_set_id)
+                .await?
+                .expect("updated FunctionSet should be found by ID"),
+        ] {
+            assert_eq!(
+                function_set.data.as_ref().unwrap().description,
+                "after update"
+            );
+        }
+
+        app_module
+            .function_set_app
+            .delete_function_set(&function_set_id)
+            .await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn test_rename_function_set_invalidates_old_new_name_and_id_caches() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app_module = setup_test_app_module().await?;
+        let suffix = unique_function_set_name("rename");
+        let old_name = format!("{suffix}_old");
+        let new_name = format!("{suffix}_new");
+        let renamed_id = app_module
+            .function_set_app
+            .create_function_set(&function_set_data(&old_name, "rename target"))
+            .await?;
+        let former_owner_id = app_module
+            .function_set_app
+            .create_function_set(&function_set_data(&new_name, "former owner"))
+            .await?;
+
+        assert!(
+            app_module
+                .function_set_app
+                .find_function_set_by_name(&old_name)
+                .await?
+                .is_some()
+        );
+        let former_owner = app_module
+            .function_set_app
+            .find_function_set_by_name(&new_name)
+            .await?
+            .expect("destination name should be cached before rename");
+        assert_eq!(former_owner.id, Some(former_owner_id));
+        assert!(
+            app_module
+                .function_set_app
+                .find_function_set(&renamed_id)
+                .await?
+                .is_some()
+        );
+
+        // Leave the warmed name cache behind to exercise destination-key invalidation.
+        assert!(
+            app_module
+                .function_set_app
+                .function_set_repository()
+                .delete(&former_owner_id)
+                .await?
+        );
+
+        assert!(
+            app_module
+                .function_set_app
+                .update_function_set(&renamed_id, &Some(function_set_data(&new_name, "renamed")),)
+                .await?
+        );
+
+        assert!(
+            app_module
+                .function_set_app
+                .find_function_set_by_name(&old_name)
+                .await?
+                .is_none()
+        );
+        let found_by_new_name = app_module
+            .function_set_app
+            .find_function_set_by_name(&new_name)
+            .await?
+            .expect("renamed FunctionSet should be found by new name");
+        let found_by_id = app_module
+            .function_set_app
+            .find_function_set(&renamed_id)
+            .await?
+            .expect("renamed FunctionSet should be found by ID");
+        assert_eq!(found_by_new_name.id, Some(renamed_id));
+        assert_eq!(found_by_id.data.as_ref().unwrap().name, new_name);
+        assert_eq!(
+            found_by_new_name.data.as_ref().unwrap().description,
+            "renamed"
+        );
+
+        app_module
+            .function_set_app
+            .delete_function_set(&renamed_id)
+            .await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn test_delete_function_set_invalidates_warmed_name_and_id_caches() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app_module = setup_test_app_module().await?;
+        let name = unique_function_set_name("delete");
+        let function_set_id = app_module
+            .function_set_app
+            .create_function_set(&function_set_data(&name, "to delete"))
+            .await?;
+
+        assert!(
+            app_module
+                .function_set_app
+                .find_function_set_by_name(&name)
+                .await?
+                .is_some()
+        );
+        assert!(
+            app_module
+                .function_set_app
+                .find_function_set(&function_set_id)
+                .await?
+                .is_some()
+        );
+
+        assert!(
+            app_module
+                .function_set_app
+                .delete_function_set(&function_set_id)
+                .await?
+        );
+        assert!(
+            app_module
+                .function_set_app
+                .find_function_set_by_name(&name)
+                .await?
+                .is_none()
+        );
+        assert!(
+            app_module
+                .function_set_app
+                .find_function_set(&function_set_id)
+                .await?
+                .is_none()
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn test_missing_function_set_mutations_do_not_report_success() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app_module = setup_test_app_module().await?;
+        let missing_id = FunctionSetId { value: -1 };
+
+        assert!(
+            !app_module
+                .function_set_app
+                .update_function_set(
+                    &missing_id,
+                    &Some(function_set_data("missing_update", "should not exist")),
+                )
+                .await?
+        );
+        assert!(
+            !app_module
+                .function_set_app
+                .delete_function_set(&missing_id)
+                .await?
+        );
+        Ok(())
+    })
+}
+
 // Helper function to setup test AppModule
 async fn setup_test_app_module() -> Result<AppModule> {
     app::module::test::create_hybrid_test_app().await
+}
+
+fn function_set_data(name: &str, description: &str) -> FunctionSetData {
+    FunctionSetData {
+        name: name.to_string(),
+        description: description.to_string(),
+        category: 0,
+        targets: Vec::new(),
+    }
+}
+
+fn unique_function_set_name(label: &str) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after the Unix epoch")
+        .as_nanos();
+    format!("cache_test_{label}_{timestamp}")
 }

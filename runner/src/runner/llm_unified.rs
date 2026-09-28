@@ -220,6 +220,47 @@ impl RunnerSpec for LLMUnifiedRunnerSpecImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use command_utils::protobuf::ProtobufDescriptor;
+
+    #[test]
+    fn published_settings_proto_encodes_genai_and_optional_skills() {
+        let settings_proto = LLMUnifiedRunnerSpecImpl::new().runner_settings_proto();
+        assert!(
+            !settings_proto
+                .lines()
+                .any(|line| line.trim_start().starts_with("import "))
+        );
+        let descriptor = ProtobufDescriptor::new(&settings_proto).unwrap();
+        let settings = descriptor.get_messages().into_iter().next().unwrap();
+        assert_eq!(settings.name(), "LLMRunnerSettings");
+
+        for json in [
+            r#"{"genai":{"model":"test-model"}}"#,
+            r#"{"genai":{"model":"test-model"},"skills":{"root_ids":["team"],"allow_names":["review"]}}"#,
+        ] {
+            let encoded = ProtobufDescriptor::json_to_message(settings.clone(), json, false)
+                .expect("the published primary settings type must accept genai");
+            let decoded =
+                ProtobufDescriptor::get_message_from_bytes(settings.clone(), &encoded).unwrap();
+            let roundtrip =
+                ProtobufDescriptor::message_to_json_value_with_proto_names(&decoded).unwrap();
+            assert_eq!(roundtrip["genai"]["model"], "test-model");
+            if json.contains("root_ids") {
+                assert_eq!(roundtrip["skills"]["root_ids"][0], "team");
+                assert_eq!(roundtrip["skills"]["allow_names"][0], "review");
+            } else {
+                assert!(roundtrip.get("skills").is_none());
+            }
+        }
+        assert!(
+            ProtobufDescriptor::json_to_message(
+                settings,
+                r#"{"genai":{"unknown_field":true}}"#,
+                false
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn test_resolve_method_completion() {
