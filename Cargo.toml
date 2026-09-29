@@ -22,6 +22,7 @@ members = [
     "grpc-front",
     "worker-main",
     "mcp-server",
+    "agent-server",
     "ag-ui-front",
     "tests-with-worker",
 ]

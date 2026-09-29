@@ -17,12 +17,15 @@ It also provides [Open Workflow](https://open-workflow-specification.org/)-based
 jobworkerp-rs consists of the following main components:
 
 - **gRPC Frontend**: An interface that accepts requests from clients and handles job registration/retrieval
+- **[Agent Server](agent-server/README.md)**: A separately started HTTP/JSON and SSE service for chat orchestration, Skills, approvals, and Worker tools. It calls the gRPC frontend rather than replacing its existing FunctionSet APIs.
 - **Worker**: The component that performs the actual job processing, configurable with multiple channels and parallelism settings
 - **Storage**: A combination of Redis (for immediate jobs) and RDB (MySQL/SQLite, for scheduled/periodic jobs)
 
 ```mermaid
 graph TB
     Client[Client] --gRPC/gRPC-Web--> Frontend[gRPC Frontend]
+    Client --HTTP/SSE--> AgentServer[Agent Server]
+    AgentServer --gRPC--> Frontend
     Frontend --Job registration--> Storage[(Storage layer)]
     Storage --Job retrieval--> Worker[Worker]
     Worker --Result storage--> Storage

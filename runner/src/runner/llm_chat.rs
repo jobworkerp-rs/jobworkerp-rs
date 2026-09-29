@@ -79,11 +79,13 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
     /// Collect streaming LLM chat results into a single LlmChatResult
     ///
     /// Strategy:
-    /// - Concatenates text content from all chunks
+    /// - Avoids duplicating a terminal snapshot only when it matches accumulated deltas
+    /// - Appends a different terminal text as a legacy final delta
     /// - Collects all tool_calls (tool_calls takes precedence over text in final result)
     /// - Concatenates reasoning content from all chunks
     /// - Uses usage from the final chunk (done=true)
     /// - Returns error if data items were received but all decodes failed
+    /// - Returns error if the stream ends without a successful done=true chunk
     fn collect_stream(
         &self,
         stream: BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
@@ -94,6 +96,8 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
 
         Box::pin(async move {
             let mut combined_text = String::new();
+            let mut terminal_text: Option<String> = None;
+            let mut conflicting_terminal_text = false;
             let mut combined_reasoning = String::new();
             let mut collected_tool_calls: Vec<message_content::ToolCall> = Vec::new();
             let mut collected_tool_execution_results: Vec<ToolExecutionResult> = Vec::new();
@@ -105,6 +109,7 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
             let mut decode_failure_count = 0;
             let mut data_item_count = 0;
             let mut successful_decode_count = 0;
+            let mut saw_done_chunk = false;
             // HITL support: collect pending_tool_calls and requires_tool_execution flags
             let mut collected_pending_tool_calls: Option<PendingToolCalls> = None;
             let mut collected_requires_tool_execution: Option<bool> = None;
@@ -116,11 +121,20 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                         match LlmChatResult::decode(data.as_slice()) {
                             Ok(chunk) => {
                                 successful_decode_count += 1;
+                                saw_done_chunk |= chunk.done;
                                 // Handle content (text, image, or tool_calls)
                                 if let Some(content) = chunk.content {
                                     match content.content {
                                         Some(message_content::Content::Text(text)) => {
-                                            combined_text.push_str(&text);
+                                            if chunk.done {
+                                                if let Some(previous) = terminal_text.as_ref() {
+                                                    conflicting_terminal_text |= previous != &text;
+                                                } else {
+                                                    terminal_text = Some(text);
+                                                }
+                                            } else {
+                                                combined_text.push_str(&text);
+                                            }
                                         }
                                         Some(message_content::Content::ToolCalls(tc)) => {
                                             collected_tool_calls.extend(tc.calls);
@@ -184,8 +198,17 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                 }
             }
 
-            // If FinalCollected was received, return it with collected metadata
+            // FinalCollected is already aggregated, but its serialized LLM result
+            // must still confirm successful completion before it is returned.
             if let Some(data) = final_collected {
+                let final_result = LlmChatResult::decode(data.as_slice()).map_err(|e| {
+                    anyhow::anyhow!("Failed to decode FinalCollected LlmChatResult: {e}")
+                })?;
+                if !final_result.done {
+                    return Err(anyhow::anyhow!(
+                        "FinalCollected LlmChatResult is missing done=true"
+                    ));
+                }
                 return Ok((data, metadata));
             }
 
@@ -197,6 +220,46 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                 ));
             }
 
+            if !saw_done_chunk {
+                return Err(anyhow::anyhow!(
+                    "LLM chat stream ended without a successful done=true chunk"
+                ));
+            }
+
+            // Tool calls take precedence over text, including inconsistent text snapshots.
+            let final_text = if collected_tool_calls.is_empty() {
+                if conflicting_terminal_text {
+                    return Err(anyhow::anyhow!(
+                        "Contradictory terminal text snapshots in collect_stream"
+                    ));
+                }
+
+                match terminal_text {
+                    Some(text) if text == combined_text => {
+                        if text.is_empty() {
+                            None
+                        } else {
+                            Some(text)
+                        }
+                    }
+                    Some(text) => {
+                        // Text streams cannot distinguish a terminal delta from a
+                        // cumulative snapshot that differs from prior deltas. Producers
+                        // using snapshots must match the accumulated text exactly.
+                        combined_text.push_str(&text);
+                        if combined_text.is_empty() {
+                            None
+                        } else {
+                            Some(combined_text)
+                        }
+                    }
+                    None if !combined_text.is_empty() => Some(combined_text),
+                    None => None,
+                }
+            } else {
+                None
+            };
+
             // Determine final content type: tool_calls takes precedence if present
             let final_content = if !collected_tool_calls.is_empty() {
                 Some(MessageContent {
@@ -206,12 +269,10 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                         },
                     )),
                 })
-            } else if !combined_text.is_empty() {
-                Some(MessageContent {
-                    content: Some(message_content::Content::Text(combined_text)),
-                })
             } else {
-                None
+                final_text.map(|text| MessageContent {
+                    content: Some(message_content::Content::Text(text)),
+                })
             };
 
             // Build collected result with preserved HITL flags
@@ -303,7 +364,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_llm_chat_collect_stream_single_text_chunk() {
+    async fn test_llm_chat_collect_stream_terminal_only_text_is_used_as_fallback() {
         let runner = LLMChatRunnerSpecImpl::new();
         let result = create_text_chat_result("Hello!", None, true);
 
@@ -330,12 +391,14 @@ mod tests {
         let runner = LLMChatRunnerSpecImpl::new();
         let chunk1 = create_text_chat_result("Hello, ", None, false);
         let chunk2 = create_text_chat_result("world", None, false);
-        let chunk3 = create_text_chat_result("!", None, true);
+        let chunk3 = create_text_chat_result("!", None, false);
+        let terminal = create_text_chat_result("", None, true);
 
         let items = vec![
             create_data_item(&chunk1),
             create_data_item(&chunk2),
             create_data_item(&chunk3),
+            create_data_item(&terminal),
             create_end_item(HashMap::new()),
         ];
         let stream = stream::iter(items).boxed();
@@ -353,9 +416,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_llm_chat_collect_stream_tool_calls_precedence() {
+    async fn test_llm_chat_collect_stream_genai_final_snapshot_does_not_duplicate_deltas() {
+        let runner = LLMChatRunnerSpecImpl::new();
+        let delta1 = create_text_chat_result("Hello, ", None, false);
+        let delta2 = create_text_chat_result("world!", None, false);
+        let final_snapshot = create_text_chat_result("Hello, world!", None, true);
+
+        let items = vec![
+            create_data_item(&delta1),
+            create_data_item(&delta2),
+            create_data_item(&final_snapshot),
+            create_end_item(HashMap::new()),
+        ];
+        let stream = stream::iter(items).boxed();
+
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
+
+        let decoded = LlmChatResult::decode(bytes.as_slice()).unwrap();
+        let Some(MessageContent {
+            content: Some(message_content::Content::Text(text)),
+        }) = decoded.content
+        else {
+            panic!("Expected text content");
+        };
+        assert_eq!(text, "Hello, world!");
+    }
+
+    #[tokio::test]
+    async fn test_llm_chat_collect_stream_appends_legacy_terminal_delta() {
+        let runner = LLMChatRunnerSpecImpl::new();
+        let delta = create_text_chat_result("Hello, ", None, false);
+        let terminal_delta = create_text_chat_result("world", None, true);
+
+        let items = vec![
+            create_data_item(&delta),
+            create_data_item(&terminal_delta),
+            create_end_item(HashMap::new()),
+        ];
+        let stream = stream::iter(items).boxed();
+
+        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
+
+        let decoded = LlmChatResult::decode(bytes.as_slice()).unwrap();
+        let Some(MessageContent {
+            content: Some(message_content::Content::Text(text)),
+        }) = decoded.content
+        else {
+            panic!("Expected text content");
+        };
+        assert_eq!(text, "Hello, world");
+    }
+
+    #[tokio::test]
+    async fn test_llm_chat_collect_stream_errors_without_done_chunk() {
+        let runner = LLMChatRunnerSpecImpl::new();
+        let partial = create_text_chat_result("partial response", None, false);
+        let items = vec![create_data_item(&partial), create_end_item(HashMap::new())];
+        let stream = stream::iter(items).boxed();
+
+        let error = runner.collect_stream(stream, None).await.unwrap_err();
+
+        assert!(error.to_string().contains("done=true"));
+    }
+
+    #[tokio::test]
+    async fn test_llm_chat_collect_stream_tool_calls_precedence_over_prior_text() {
         let runner = LLMChatRunnerSpecImpl::new();
         let text_chunk = create_text_chat_result("Some text", None, false);
+        let contradictory_final_text = create_text_chat_result("different final text", None, true);
         let tool_call = message_content::ToolCall {
             call_id: "call_1".to_string(),
             fn_name: "get_weather".to_string(),
@@ -365,6 +493,7 @@ mod tests {
 
         let items = vec![
             create_data_item(&text_chunk),
+            create_data_item(&contradictory_final_text),
             create_data_item(&tool_chunk),
             create_end_item(HashMap::new()),
         ];
@@ -474,16 +603,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_llm_chat_collect_stream_empty_returns_empty_content() {
+    async fn test_llm_chat_collect_stream_empty_without_done_errors() {
         let runner = LLMChatRunnerSpecImpl::new();
 
         let items = vec![create_end_item(HashMap::new())];
         let stream = stream::iter(items).boxed();
 
-        let (bytes, _) = runner.collect_stream(stream, None).await.unwrap();
+        let error = runner.collect_stream(stream, None).await.unwrap_err();
 
-        let decoded = LlmChatResult::decode(bytes.as_slice()).unwrap();
-        assert!(decoded.content.is_none());
-        assert!(decoded.done);
+        assert!(error.to_string().contains("done=true"));
     }
 }

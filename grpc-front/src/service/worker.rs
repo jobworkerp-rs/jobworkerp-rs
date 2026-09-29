@@ -232,7 +232,7 @@ impl<
         &self,
         request: tonic::Request<WorkerId>,
     ) -> Result<tonic::Response<OptionalWorkerResponse>, tonic::Status> {
-        let _s = Self::trace_request("worker", "find", &request);
+        let _s = Self::trace_request("worker", "find", &super::without_metadata(&request));
         let req = request.get_ref();
         match self.app().find(req).await {
             Ok(res) => Ok(Response::new(OptionalWorkerResponse { data: res })),

@@ -49,6 +49,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-server"
+version = "0.22.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "command-utils 0.1.0",
+ "futures",
+ "futures-util",
+ "http",
+ "infra-utils",
+ "prost",
+ "prost-reflect",
+ "proto",
+ "redis",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tower",
+ "uuid",
+]
+
+[[package]]
 name = "agnostic-lite"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

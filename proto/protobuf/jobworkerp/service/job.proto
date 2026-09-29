@@ -58,6 +58,13 @@ message ClientStreamRequest {
 
 service JobService {
   rpc Enqueue(JobRequest) returns (CreateJobResponse);
+  // Enqueue a non-streaming Direct-response job. The JobId is sent eagerly in
+  // x-job-id-bin metadata, followed by exactly one final JobResult message.
+  // Unlike JobResultService.Listen, this waits for the result returned directly
+  // by the job execution and does not require broadcast_results or result
+  // storage to be enabled. Disconnecting releases only the result subscription;
+  // it does not delete or cancel the enqueued job.
+  rpc EnqueueForResult(JobRequest) returns (stream jobworkerp.data.JobResult);
   // Direct response only, JobResult on metadata header of grpc response
   rpc EnqueueForStream(JobRequest)
       returns (stream jobworkerp.data.ResultOutputItem);

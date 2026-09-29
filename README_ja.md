@@ -15,12 +15,15 @@ gRPCをつかって処理内容となる[Worker](proto/protobuf/jobworkerp/servi
 jobworkerp-rsは以下の主要コンポーネントで構成されています：
 
 - **gRPC フロントエンド**: クライアントからのリクエストを受け付け、ジョブの登録・取得を行うインターフェース
+- **[Agent Server](agent-server/README.md)**: 別プロセスで起動する HTTP/JSON・SSE の chat／Skills／承認／Worker ツール用サービス。既存の FunctionSet API を置き換えず、gRPC フロントエンドに接続します。
 - **ワーカー**: 実際のジョブ処理を行うコンポーネント、複数のチャンネルと並列度の設定が可能
 - **ストレージ**: Redis（即時ジョブ）とRDB（MySQL/SQLite、定期実行/時刻指定ジョブ）の組み合わせ
 
 ```mermaid
 graph TB
     Client[クライアント] --gRPC/gRPC-Web--> Frontend[gRPCフロントエンド]
+    Client --HTTP/SSE--> AgentServer[Agent Server]
+    AgentServer --gRPC--> Frontend
     Frontend --Job登録--> Storage[(ストレージ層)]
     Storage --Job取得--> Worker[ワーカー]
     Worker --結果保存--> Storage

@@ -200,13 +200,38 @@ impl OllamaChatService {
         }
     }
 
+    fn apply_system_prompt(messages: &mut Vec<ChatMessage>, configured_prompt: Option<&str>) {
+        let Some(configured_prompt) = configured_prompt else {
+            return;
+        };
+        let request_prompts = messages
+            .iter()
+            .filter(|message| message.role == MessageRole::System)
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>();
+        let merged_prompt = ToolConverter::merge_system_prompts(configured_prompt, request_prompts);
+        messages.retain(|message| message.role != MessageRole::System);
+        messages.insert(0, ChatMessage::new(MessageRole::System, merged_prompt));
+    }
+
     async fn function_list(
         &self,
         args: &LlmChatArgs,
     ) -> Result<(Vec<ToolInfo>, std::collections::HashSet<String>)> {
+        ToolConverter::validate_client_tools_exclusive(args)?;
         let mut auto_select_names = std::collections::HashSet::new();
 
         if let Some(function_options) = &args.function_options {
+            if let Some(json) = function_options
+                .client_tools_json
+                .as_deref()
+                .filter(|s| !s.is_empty())
+            {
+                return Ok((
+                    ToolConverter::parse_client_tools_json_ollama(json)?,
+                    auto_select_names,
+                ));
+            }
             if function_options.use_function_calling {
                 if let Some(set_name) = function_options.function_set_name.as_ref() {
                     tracing::debug!("Use functions by set: {}", set_name);
@@ -456,6 +481,8 @@ impl OllamaChatService {
 
         // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
         ToolConverter::validate_all_tool_results(&args)?;
+        ToolConverter::validate_client_tools_exclusive(&args)?;
+        ToolConverter::validate_client_tool_execution_requests(&args)?;
 
         // Check for tool execution requests in messages (manual mode)
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
@@ -465,20 +492,12 @@ impl OllamaChatService {
         }
 
         // Determine if auto-calling is enabled (default: false = manual mode)
-        let is_auto_calling = args
-            .function_options
-            .as_ref()
-            .and_then(|fo| fo.is_auto_calling)
-            .unwrap_or(false);
+        let is_auto_calling = ToolConverter::effective_is_auto_calling(&args);
 
         let options = Self::create_chat_options(&args);
         let model = args.model.clone().unwrap_or_else(|| self.model.clone());
         let mut messages = Self::convert_messages(&args).await;
-
-        if let Some(system_prompt) = self.system_prompt.clone() {
-            messages.retain(|m| m.role != MessageRole::System);
-            messages.insert(0, ChatMessage::new(MessageRole::System, system_prompt));
-        }
+        Self::apply_system_prompt(&mut messages, self.system_prompt.as_deref());
 
         let (tools_vec, auto_select_names) = self.function_list(&args).await?;
         let is_auto_select = !auto_select_names.is_empty();
@@ -1036,12 +1055,14 @@ impl OllamaChatService {
     /// 3. Server executes tools, yields results, then continues LLM conversation
     pub async fn request_stream_chat(
         self: Arc<Self>,
-        mut args: LlmChatArgs,
+        args: LlmChatArgs,
         metadata: HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
         // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
         ToolConverter::validate_all_tool_results(&args)?;
+        ToolConverter::validate_client_tools_exclusive(&args)?;
+        ToolConverter::validate_client_tool_execution_requests(&args)?;
 
         // Check for tool execution requests first (highest priority, manual mode continuation)
         let metadata_arc = Arc::new(metadata);
@@ -1072,27 +1093,13 @@ impl OllamaChatService {
                     .create_streaming_chat(args, metadata_arc, parent_context)
                     .await;
             }
-            // Insert system_prompt into args before cloning for Phase 2
-            if let Some(ref system_prompt) = self.system_prompt {
-                use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
-                    ChatMessage as ProtoChatMessage, MessageContent, message_content,
-                };
-                args.messages.retain(|m| m.role() != ChatRole::System);
-                args.messages.insert(
-                    0,
-                    ProtoChatMessage {
-                        role: ChatRole::System.into(),
-                        content: Some(MessageContent {
-                            content: Some(message_content::Content::Text(system_prompt.clone())),
-                        }),
-                    },
-                );
-            }
             let original_args = args.clone();
 
             let options = Self::create_chat_options(&args);
             let model = args.model.clone().unwrap_or_else(|| self.model.clone());
-            let messages = Arc::new(Mutex::new(Self::convert_messages(&args).await));
+            let mut converted_messages = Self::convert_messages(&args).await;
+            Self::apply_system_prompt(&mut converted_messages, self.system_prompt.as_deref());
+            let messages = Arc::new(Mutex::new(converted_messages));
 
             let tools = Arc::new(tools_vec);
             let think = args.options.as_ref().map(|o| o.extract_reasoning_content());
@@ -1324,20 +1331,6 @@ impl OllamaChatService {
                 }
                 Err(e) => {
                     tracing::error!("handle_tool_execution_stream: Phase 3 — failed to create continuation stream: {}", e);
-                    yield LlmChatResult {
-                        content: Some(llm::llm_chat_result::MessageContent {
-                            content: Some(message_content::Content::Text(
-                                format!("Continuation error: {}", e),
-                            )),
-                        }),
-                        reasoning_content: None,
-                        done: true,
-                        usage: None,
-                        pending_tool_calls: None,
-                        requires_tool_execution: None,
-                        tool_execution_results: vec![],
-                        tool_execution_started: None,
-                    };
                 }
             }
         };
@@ -1352,23 +1345,16 @@ impl OllamaChatService {
         metadata: Arc<HashMap<String, String>>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
-        let use_function_calling = args
+        let (tools, _auto_select_names) = self.function_list(&args).await?;
+        let filter_selector_tools = args
             .function_options
             .as_ref()
-            .map(|fo| fo.use_function_calling)
-            .unwrap_or(false);
-
-        // Load tools if function calling is enabled
-        let tools: Vec<ToolInfo> = if use_function_calling {
-            let (tools, _auto_select_names) = self.function_list(&args).await?;
-            tools
-        } else {
-            vec![]
-        };
+            .is_some_and(|options| options.auto_select_function_set.unwrap_or(false));
 
         let options = Self::create_chat_options(&args);
         let model_name = args.model.clone().unwrap_or_else(|| self.model.clone());
-        let messages = Self::convert_messages(&args).await;
+        let mut messages = Self::convert_messages(&args).await;
+        Self::apply_system_prompt(&mut messages, self.system_prompt.as_deref());
 
         // Build span attributes for the streaming generation BEFORE consuming `messages`
         // and `options` into the ollama request. The wrapper helper is a no-op when no
@@ -1393,10 +1379,6 @@ impl OllamaChatService {
             req = req.think(t);
         }
 
-        if let Some(system_prompt) = self.system_prompt.clone() {
-            req = req.template(system_prompt);
-        }
-
         // Add tools to request if available
         if !tools.is_empty() {
             req = req.tools(tools);
@@ -1417,9 +1399,11 @@ impl OllamaChatService {
                 Ok(mut base_stream) => {
                     let mut last_model = String::new();
                     let mut last_final_data = None;
+                    let mut saw_terminal_chunk = false;
                     while let Some(result) = base_stream.next().await {
                         match result {
                             Ok(chunk) => {
+                                saw_terminal_chunk |= chunk.done;
                                 // Accumulate tool calls
                                 if !chunk.message.tool_calls.is_empty() {
                                     accumulated_tool_calls.extend(chunk.message.tool_calls.clone());
@@ -1449,29 +1433,22 @@ impl OllamaChatService {
                                     };
                                 }
                             }
-                            Err(_) => {
-                                tracing::error!("Error in stream chat");
-                                yield LlmChatResult {
-                                    content: Some(llm::llm_chat_result::MessageContent {
-                                        content: Some(message_content::Content::Text(
-                                            "Stream error".to_string(),
-                                        )),
-                                    }),
-                                    reasoning_content: None,
-                                    done: true,
-                                    usage: None,
-                                    pending_tool_calls: None,
-                                    requires_tool_execution: None,
-                                    tool_execution_results: vec![],
-                                    tool_execution_started: None,
-                                };
+                            Err(e) => {
+                                tracing::error!("Error in stream chat: {:?}", e);
                                 return;
                             }
                         }
                     }
 
+                    if !saw_terminal_chunk {
+                        tracing::error!("Ollama chat stream ended before the terminal chunk");
+                        return;
+                    }
+
                     // After stream ends, process any accumulated tool calls
-                    ToolConverter::retain_non_selector_tools(&mut accumulated_tool_calls);
+                    if filter_selector_tools {
+                        ToolConverter::retain_non_selector_tools(&mut accumulated_tool_calls);
+                    }
                     if !accumulated_tool_calls.is_empty() {
                         // Convert to pending tool calls format
                         let pending_calls: Vec<ToolCallRequest> = accumulated_tool_calls
@@ -1530,20 +1507,6 @@ impl OllamaChatService {
                 }
                 Err(e) => {
                     tracing::error!("Failed to create stream: {}", e);
-                    yield LlmChatResult {
-                        content: Some(llm::llm_chat_result::MessageContent {
-                            content: Some(message_content::Content::Text(
-                                format!("Stream creation error: {}", e),
-                            )),
-                        }),
-                        reasoning_content: None,
-                        done: true,
-                        usage: None,
-                        pending_tool_calls: None,
-                        requires_tool_execution: None,
-                        tool_execution_results: vec![],
-                        tool_execution_started: None,
-                    };
                 }
             }
         };
@@ -1594,6 +1557,9 @@ mod tests {
     use super::*;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::{
         ToolResult as ProtoToolResult, ToolResults as ProtoToolResults,
+    };
+    use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+        ChatMessage, MessageContent, message_content,
     };
 
     #[test]
@@ -1649,5 +1615,117 @@ mod tests {
         let mut out = Vec::new();
         OllamaChatService::expand_tool_results_into(&mut out, &MessageRole::Tool, &tr);
         assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ollama_stream_creation_error_does_not_emit_success_terminal() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let app_module = app::module::test::create_hybrid_test_app().await.unwrap();
+        let service = OllamaChatService::new(
+            app_module.function_app,
+            app_module.function_set_app,
+            OllamaRunnerSettings {
+                model: "test-model".to_string(),
+                base_url: Some(format!("http://{address}")),
+                system_prompt: None,
+                pull_model: Some(false),
+            },
+        )
+        .unwrap();
+        let args = LlmChatArgs {
+            messages: vec![ChatMessage {
+                role: ChatRole::User as i32,
+                content: Some(MessageContent {
+                    content: Some(message_content::Content::Text("hello".to_string())),
+                }),
+            }],
+            ..Default::default()
+        };
+
+        let mut stream = Arc::new(service)
+            .request_stream_chat(args, HashMap::new(), None)
+            .await
+            .unwrap();
+        let mut saw_chunk = false;
+        while let Some(chunk) = stream.next().await {
+            saw_chunk = true;
+            assert!(!chunk.done, "provider failures must not look successful");
+        }
+
+        assert!(
+            !saw_chunk,
+            "a stream creation failure should emit no chunks"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ollama_stream_early_eof_does_not_emit_success_terminal() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            let body = b"{\"model\":\"test-model\",\"created_at\":\"2024-01-01T00:00:00Z\",\"message\":{\"role\":\"assistant\",\"content\":\"partial\"},\"done\":false}\n";
+            socket
+                .write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes())
+                .await
+                .unwrap();
+            socket.write_all(body).await.unwrap();
+        });
+
+        let app_module = app::module::test::create_hybrid_test_app().await.unwrap();
+        let service = OllamaChatService::new(
+            app_module.function_app,
+            app_module.function_set_app,
+            OllamaRunnerSettings {
+                model: "test-model".to_owned(),
+                base_url: Some(format!("http://{address}")),
+                system_prompt: None,
+                pull_model: Some(false),
+            },
+        )
+        .unwrap();
+        let args = LlmChatArgs {
+            messages: vec![ChatMessage {
+                role: ChatRole::User as i32,
+                content: Some(MessageContent {
+                    content: Some(message_content::Content::Text("hello".to_owned())),
+                }),
+            }],
+            ..Default::default()
+        };
+        let mut stream = Arc::new(service)
+            .request_stream_chat(args, HashMap::new(), None)
+            .await
+            .unwrap();
+        let mut saw_partial = false;
+        while let Some(chunk) = stream.next().await {
+            assert!(
+                !chunk.done,
+                "EOF without Ollama done must not look successful"
+            );
+            saw_partial = true;
+        }
+        assert!(saw_partial, "the partial chunk should be observable");
+        server.await.unwrap();
     }
 }

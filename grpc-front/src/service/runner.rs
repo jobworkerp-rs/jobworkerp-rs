@@ -73,7 +73,7 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
         &self,
         request: tonic::Request<RunnerId>,
     ) -> Result<tonic::Response<OptionalRunnerResponse>, tonic::Status> {
-        let _s = Self::trace_request("runner", "find", &request);
+        let _s = Self::trace_request("runner", "find", &super::without_metadata(&request));
         let req = request.get_ref();
         match self.app().find_runner(req).await {
             Ok(Some(res)) => Ok(Response::new(OptionalRunnerResponse {
