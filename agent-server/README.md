@@ -52,4 +52,3 @@ Use an LLM Worker configured with manual client-tool support. Externally registe
 
 `Delete.is_success=false` is **not** proof that a job completed: a result or cancellation may have raced with the request, or cancellation may be unavailable. When Agent Server cannot verify a terminal result or a successful Delete, it keeps the job's local ownership and cancellation capability instead of silently dropping them. Repeated Delete after a lost response may still return `false`; this release has no durable, idempotent per-job terminal-reconciliation protocol. Inspect jobworkerp independently when repeated cancellation cannot be confirmed. A terminated Agent Server process cannot recover process-local job ownership after restart.
 
-The `ai-docs/` design documents are internal and intentionally excluded from version control.
