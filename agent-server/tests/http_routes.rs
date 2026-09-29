@@ -314,6 +314,7 @@ async fn external_chat_token_cannot_access_admin_routes_and_capability_is_not_ad
     assert_eq!(chat_token_response.status(), StatusCode::FORBIDDEN);
 
     let capability_response = app
+        .clone()
         .oneshot(external_request(
             "GET",
             "/v1/skills",
@@ -323,6 +324,17 @@ async fn external_chat_token_cannot_access_admin_routes_and_capability_is_not_ad
         .await
         .unwrap();
     assert_eq!(capability_response.status(), StatusCode::UNAUTHORIZED);
+
+    let admin_token_on_chat_route = app
+        .oneshot(external_request(
+            "POST",
+            "/v1/chats",
+            Some("Bearer admin-token-0123456789"),
+            sample_chat(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(admin_token_on_chat_route.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -761,6 +773,150 @@ async fn host_and_origin_allowlists_are_enforced() {
             StatusCode::FORBIDDEN
         );
     }
+}
+
+#[tokio::test]
+async fn duplicate_host_and_origin_headers_are_rejected() {
+    let app = router(external_config(), backend()).unwrap();
+
+    let duplicate_host = Request::builder()
+        .method("GET")
+        .uri("/v1/skills")
+        .header("host", "api.example.test:9000")
+        .header("host", "api.example.test:9000")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(duplicate_host).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error"]["code"], "host_forbidden");
+
+    let duplicate_origin = Request::builder()
+        .method("GET")
+        .uri("/v1/skills")
+        .header("host", "api.example.test:9000")
+        .header("origin", "https://ui.example.test")
+        .header("origin", "https://ui.example.test")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(duplicate_origin).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error"]["code"], "origin_forbidden");
+}
+
+#[tokio::test]
+async fn preflight_is_handled_before_authentication_and_returns_cors_policy() {
+    let app = router(external_config(), backend()).unwrap();
+    let request = Request::builder()
+        .method("OPTIONS")
+        .uri("/v1/chats")
+        .header("host", "api.example.test:9000")
+        .header("origin", "https://ui.example.test")
+        .header("access-control-request-method", "POST")
+        .header(
+            "access-control-request-headers",
+            "Authorization, Content-Type",
+        )
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .unwrap(),
+        "https://ui.example.test"
+    );
+    assert_eq!(response.headers().get("vary").unwrap(), "Origin");
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-methods")
+            .unwrap(),
+        "GET, POST, PUT, DELETE, OPTIONS"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-headers")
+            .unwrap(),
+        "authorization, content-type"
+    );
+    assert_eq!(
+        response.headers().get("access-control-max-age").unwrap(),
+        "600"
+    );
+
+    let unsupported_method = Request::builder()
+        .method("OPTIONS")
+        .uri("/v1/chats")
+        .header("host", "api.example.test:9000")
+        .header("origin", "https://ui.example.test")
+        .header("access-control-request-method", "PATCH")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(unsupported_method).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error"]["code"], "cors_method_forbidden");
+}
+
+#[tokio::test]
+async fn external_admin_request_without_origin_is_allowed_without_cors_headers() {
+    let app = router(external_config(), backend()).unwrap();
+    let response = app
+        .oneshot(external_request(
+            "GET",
+            "/v1/skills",
+            Some("Bearer admin-token-0123456789"),
+            json!({}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
+    assert!(response.headers().get("vary").is_none());
+}
+
+#[tokio::test]
+async fn rejected_role_response_keeps_allowed_cors_and_nosniff_headers() {
+    let app = router(external_config(), backend()).unwrap();
+    let mut request = external_request(
+        "GET",
+        "/v1/skills",
+        Some("Bearer chat-token-0123456789"),
+        json!({}),
+    );
+    request
+        .headers_mut()
+        .insert("origin", "https://ui.example.test".parse().unwrap());
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .unwrap(),
+        "https://ui.example.test"
+    );
+    assert_eq!(response.headers().get("vary").unwrap(), "Origin");
+    assert_eq!(
+        response.headers().get("x-content-type-options").unwrap(),
+        "nosniff"
+    );
 }
 
 #[tokio::test]

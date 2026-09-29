@@ -489,6 +489,21 @@ impl AgentBackend {
         }
     }
 
+    fn update_session_after_successful_response(
+        sessions: &Mutex<HashMap<String, ChatSession>>,
+        chat_id: &str,
+        session: &ChatSession,
+        status: DomainStatus,
+        approval_ttl: Duration,
+    ) {
+        match status {
+            DomainStatus::Completed => Self::finish_session(sessions, chat_id, session),
+            DomainStatus::ApprovalRequired => {
+                Self::mark_approval_expiry(sessions, chat_id, session, approval_ttl);
+            }
+        }
+    }
+
     fn sweep_expired_sessions(sessions: &Mutex<HashMap<String, ChatSession>>, now: Instant) {
         let mut sessions = sessions
             .lock()
@@ -540,19 +555,16 @@ impl HttpBackend for AgentBackend {
             .await;
         let output = match result {
             Ok(response) => {
-                let completed = response.status == DomainStatus::Completed;
+                let status = response.status;
                 match domain_response_to_http(response, &chat_id, &session.cancel_capability) {
                     Ok(mapped) => {
-                        if completed {
-                            Self::finish_session(&self.sessions, &chat_id, &session);
-                        } else if mapped.status == ChatStatus::ApprovalRequired {
-                            Self::mark_approval_expiry(
-                                &self.sessions,
-                                &chat_id,
-                                &session,
-                                self.approval_ttl,
-                            );
-                        }
+                        Self::update_session_after_successful_response(
+                            &self.sessions,
+                            &chat_id,
+                            &session,
+                            status,
+                            self.approval_ttl,
+                        );
                         Ok(mapped)
                     }
                     Err(error) => {
@@ -707,19 +719,16 @@ impl HttpBackend for AgentBackend {
             .await;
         let output = match result {
             Ok(response) => {
-                let completed = response.status == DomainStatus::Completed;
+                let status = response.status;
                 match domain_response_to_http(response, &chat_id, &session.cancel_capability) {
                     Ok(mapped) => {
-                        if completed {
-                            Self::finish_session(&self.sessions, &chat_id, &session);
-                        } else if mapped.status == ChatStatus::ApprovalRequired {
-                            Self::mark_approval_expiry(
-                                &self.sessions,
-                                &chat_id,
-                                &session,
-                                self.approval_ttl,
-                            );
-                        }
+                        Self::update_session_after_successful_response(
+                            &self.sessions,
+                            &chat_id,
+                            &session,
+                            status,
+                            self.approval_ttl,
+                        );
                         Ok(mapped)
                     }
                     Err(error) => {
@@ -931,7 +940,7 @@ async fn run_stream_execution(execution: StreamExecution) {
         .await;
     match result {
         Ok(response) => {
-            let completed = response.status == DomainStatus::Completed;
+            let status = response.status;
             let mapped = domain_response_to_http(
                 response,
                 &execution.chat_id,
@@ -939,20 +948,13 @@ async fn run_stream_execution(execution: StreamExecution) {
             );
             match mapped {
                 Ok(response) => {
-                    if completed {
-                        AgentBackend::finish_session(
-                            &execution.sessions,
-                            &execution.chat_id,
-                            &execution.session,
-                        );
-                    } else if response.status == ChatStatus::ApprovalRequired {
-                        AgentBackend::mark_approval_expiry(
-                            &execution.sessions,
-                            &execution.chat_id,
-                            &execution.session,
-                            execution.approval_ttl,
-                        );
-                    }
+                    AgentBackend::update_session_after_successful_response(
+                        &execution.sessions,
+                        &execution.chat_id,
+                        &execution.session,
+                        status,
+                        execution.approval_ttl,
+                    );
                     let streamed_text_turns = execution
                         .streamed_text_turns
                         .lock()

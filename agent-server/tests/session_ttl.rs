@@ -20,7 +20,7 @@ use agent_server::{
     },
     http::{
         ApprovalDecision, CancelRequest, ChatContent, ChatMessage, ChatRequest, ChatStatus,
-        HttpBackend, MessageRole, ResumeRequest, TextContent, ToolDecision,
+        ChatStreamEvent, HttpBackend, MessageRole, ResumeRequest, TextContent, ToolDecision,
     },
     skills::SkillCatalog,
     tool_registry::{
@@ -28,6 +28,7 @@ use agent_server::{
     },
 };
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 
@@ -505,6 +506,71 @@ async fn expired_in_memory_session_restores_a_still_valid_persisted_approval() {
         .resume_chat(response.chat_id.clone(), approval_resume(&response))
         .await
         .expect("expired cache entry restores unexpired persisted state");
+
+    assert_eq!(resumed.status, ChatStatus::Completed);
+    assert_eq!(setup.factory.resume_creations.load(Ordering::SeqCst), 1);
+    assert_eq!(setup.workers.starts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn streamed_approval_expires_from_memory_and_restores_on_resume() {
+    let setup = setup_with_ttls(
+        Duration::from_millis(80),
+        Duration::from_secs(3),
+        vec![
+            model_response(vec![tool_call("call-1", "publish")]),
+            text_response("done"),
+        ],
+    )
+    .await;
+    let mut stream = setup
+        .backend
+        .stream_chat(chat_request())
+        .await
+        .expect("stream starts");
+    let chat_id = stream.chat_id.clone();
+    let mut terminal_count = 0;
+    let mut resume_request = None;
+    while let Some(event) = stream.events.next().await {
+        match event.expect("stream event") {
+            ChatStreamEvent::ApprovalRequired {
+                pending_calls,
+                resume_capability,
+            } => {
+                terminal_count += 1;
+                resume_request = Some(ResumeRequest {
+                    resume_capability,
+                    decisions: vec![ToolDecision {
+                        call_id: pending_calls
+                            .first()
+                            .expect("approval has a pending call")
+                            .call_id
+                            .clone(),
+                        decision: ApprovalDecision::Approve,
+                    }],
+                });
+            }
+            ChatStreamEvent::Completed { .. } | ChatStreamEvent::Error { .. } => {
+                panic!("stream ends with an approval-required event");
+            }
+            ChatStreamEvent::Started { .. }
+            | ChatStreamEvent::TextDelta { .. }
+            | ChatStreamEvent::ToolCall { .. }
+            | ChatStreamEvent::ToolResult { .. } => {}
+        }
+    }
+    assert_eq!(terminal_count, 1, "stream has one terminal event");
+    let orchestrator = setup.factory.first_orchestrator();
+
+    wait_until_released(&orchestrator).await;
+    let resumed = setup
+        .backend
+        .resume_chat(
+            chat_id,
+            resume_request.expect("stream exposes an approval to resume"),
+        )
+        .await
+        .expect("persisted approval remains resumable after cache expiry");
 
     assert_eq!(resumed.status, ChatStatus::Completed);
     assert_eq!(setup.factory.resume_creations.load(Ordering::SeqCst), 1);
