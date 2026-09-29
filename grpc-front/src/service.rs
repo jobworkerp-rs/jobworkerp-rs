@@ -48,33 +48,6 @@ fn valid_traceparent(value: &str) -> bool {
             .all(|(index, byte)| matches!(index, 2 | 35 | 52) || byte.is_ascii_hexdigit())
 }
 
-#[cfg(test)]
-mod trace_safety_tests {
-    #[test]
-    fn tracing_view_cannot_render_the_jobworkerp_auth_header() {
-        let mut request = tonic::Request::new("public request body");
-        request.metadata_mut().insert(
-            "jobworkerp-auth",
-            "private-auth-token".parse().expect("metadata value"),
-        );
-        request.metadata_mut().insert(
-            "traceparent",
-            "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
-                .parse()
-                .expect("traceparent"),
-        );
-        request
-            .metadata_mut()
-            .insert("path", "/v1/jobs".parse().expect("path"));
-        let rendered = format!("{:?}", super::without_metadata(&request));
-        assert!(rendered.contains("public request body"));
-        assert!(rendered.contains("0123456789abcdef0123456789abcdef"));
-        assert!(rendered.contains("/v1/jobs"));
-        assert!(!rendered.contains("private-auth-token"));
-        assert!(!rendered.contains("jobworkerp-auth"));
-    }
-}
-
 pub const JOB_RESULT_HEADER_NAME: &str = "x-job-result-bin";
 pub const JOB_ID_HEADER_NAME: &str = "x-job-id-bin";
 // prefix for jobworkerp metadata(closed headers from runner)
@@ -127,4 +100,31 @@ fn process_jobworkerp_metadata(
         }
     } // no env AUTH_TOKEN, skip authentication for backward compatibility
     Ok(jobworkerp_metadata)
+}
+
+#[cfg(test)]
+mod trace_safety_tests {
+    #[test]
+    fn tracing_view_cannot_render_the_jobworkerp_auth_header() {
+        let mut request = tonic::Request::new("public request body");
+        request.metadata_mut().insert(
+            "jobworkerp-auth",
+            "private-auth-token".parse().expect("metadata value"),
+        );
+        request.metadata_mut().insert(
+            "traceparent",
+            "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+                .parse()
+                .expect("traceparent"),
+        );
+        request
+            .metadata_mut()
+            .insert("path", "/v1/jobs".parse().expect("path"));
+        let rendered = format!("{:?}", super::without_metadata(&request));
+        assert!(rendered.contains("public request body"));
+        assert!(rendered.contains("0123456789abcdef0123456789abcdef"));
+        assert!(rendered.contains("/v1/jobs"));
+        assert!(!rendered.contains("private-auth-token"));
+        assert!(!rendered.contains("jobworkerp-auth"));
+    }
 }
