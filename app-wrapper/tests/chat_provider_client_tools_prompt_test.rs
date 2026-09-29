@@ -3,6 +3,7 @@ use app::app::function::function_set::FunctionSetApp;
 use app::module::{AppModule, test::create_hybrid_test_app};
 use app_wrapper::llm::chat::{genai::GenaiChatService, ollama::OllamaChatService};
 use futures::StreamExt;
+use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::{
     Content as ArgsContent, ToolExecutionRequest, ToolExecutionRequests, ToolResult, ToolResults,
 };
@@ -604,458 +605,466 @@ async fn create_legacy_function_set(app: &AppModule) -> Result<String> {
     Ok(name)
 }
 
-#[tokio::test]
-async fn genai_system_prompt_contract_covers_streaming_and_non_streaming() -> Result<()> {
-    let replies = vec![MockReply::GenaiText; 4]
-        .into_iter()
-        .chain(vec![MockReply::GenaiStreamText; 4])
-        .collect();
-    let mut server = start_mock_server(replies).await?;
-    let app = create_hybrid_test_app().await?;
-    let mut service = genai_service(&app, &server.base_url).await?;
-    let cases = [
-        (
-            None,
-            vec!["request one", "request two"],
-            vec!["request one", "request two"],
-        ),
-        (Some("worker prompt"), vec![], vec!["worker prompt"]),
-        (
-            Some("worker prompt"),
-            vec!["request prompt"],
-            vec!["worker prompt\nrequest prompt"],
-        ),
-        (None, vec![], vec![]),
-    ];
+#[test]
+fn genai_system_prompt_contract_covers_streaming_and_non_streaming() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let replies = vec![MockReply::GenaiText; 4]
+            .into_iter()
+            .chain(vec![MockReply::GenaiStreamText; 4])
+            .collect();
+        let mut server = start_mock_server(replies).await?;
+        let app = create_hybrid_test_app().await?;
+        let mut service = genai_service(&app, &server.base_url).await?;
+        let cases = [
+            (
+                None,
+                vec!["request one", "request two"],
+                vec!["request one", "request two"],
+            ),
+            (Some("worker prompt"), vec![], vec!["worker prompt"]),
+            (
+                Some("worker prompt"),
+                vec!["request prompt"],
+                vec!["worker prompt\nrequest prompt"],
+            ),
+            (None, vec![], vec![]),
+        ];
 
-    for streaming in [false, true] {
-        for (configured, request, expected) in &cases {
-            service.system_prompt = configured.map(str::to_string);
-            let args = system_args(request);
-            if streaming {
-                let results = run_genai_stream(&service, args).await?;
+        for streaming in [false, true] {
+            for (configured, request, expected) in &cases {
+                service.system_prompt = configured.map(str::to_string);
+                let args = system_args(request);
+                if streaming {
+                    let results = run_genai_stream(&service, args).await?;
+                    ensure!(
+                        results.iter().any(|result| result.done),
+                        "stream did not finish"
+                    );
+                } else {
+                    let result = service
+                        .request_chat(args, opentelemetry::Context::current(), HashMap::new())
+                        .await?;
+                    ensure!(result.done, "non-stream response did not finish");
+                }
+                let captured = server.next_request().await?;
                 ensure!(
-                    results.iter().any(|result| result.done),
-                    "stream did not finish"
-                );
-            } else {
-                let result = service
-                    .request_chat(args, opentelemetry::Context::current(), HashMap::new())
-                    .await?;
-                ensure!(result.done, "non-stream response did not finish");
-            }
-            let captured = server.next_request().await?;
-            ensure!(
-                system_messages(&captured) == *expected,
-                "unexpected GenAI system messages: {captured}"
-            );
-        }
-    }
-    server.finish().await
-}
-
-#[tokio::test]
-async fn ollama_system_prompt_contract_covers_streaming_and_non_streaming() -> Result<()> {
-    let replies = vec![MockReply::OllamaText; 4]
-        .into_iter()
-        .chain(vec![MockReply::OllamaStreamText; 4])
-        .collect();
-    let mut server = start_mock_server(replies).await?;
-    let app = create_hybrid_test_app().await?;
-    let mut service = ollama_service(&app, &server.base_url)?;
-    let cases = [
-        (
-            None,
-            vec!["request one", "request two"],
-            vec!["request one", "request two"],
-        ),
-        (Some("worker prompt"), vec![], vec!["worker prompt"]),
-        (
-            Some("worker prompt"),
-            vec!["request prompt"],
-            vec!["worker prompt\nrequest prompt"],
-        ),
-        (None, vec![], vec![]),
-    ];
-
-    for streaming in [false, true] {
-        for (configured, request, expected) in &cases {
-            service.system_prompt = configured.map(str::to_string);
-            let args = system_args(request);
-            if streaming {
-                let results = run_ollama_stream(Arc::new(service.clone()), args).await?;
-                ensure!(
-                    results.iter().any(|result| result.done),
-                    "stream did not finish"
-                );
-            } else {
-                let result = service
-                    .request_chat(args, opentelemetry::Context::current(), HashMap::new())
-                    .await?;
-                ensure!(result.done, "non-stream response did not finish");
-            }
-            let captured = server.next_request().await?;
-            ensure!(
-                system_messages(&captured) == *expected,
-                "unexpected Ollama system messages: {captured}"
-            );
-            if streaming {
-                ensure!(
-                    captured.get("template").is_none(),
-                    "Ollama template must not override system messages"
+                    system_messages(&captured) == *expected,
+                    "unexpected GenAI system messages: {captured}"
                 );
             }
         }
-    }
-    server.finish().await
+        server.finish().await
+    })
 }
 
-#[tokio::test]
-async fn genai_client_tools_are_manual_continuable_exclusive_and_keep_legacy_path() -> Result<()> {
-    let app = create_hybrid_test_app().await?;
-    let conflict_service = genai_service(&app, "http://127.0.0.1:1").await?;
-    for options in client_tool_conflicts() {
-        let args = LlmChatArgs {
-            function_options: Some(options.clone()),
-            ..client_args()
-        };
-        let error = conflict_service
-            .request_chat(args, opentelemetry::Context::current(), HashMap::new())
-            .await
-            .expect_err("client and server-driven tools must be mutually exclusive");
-        ensure!(
-            error.to_string().contains("mutually exclusive"),
-            "wrong conflict error: {error}"
-        );
-
-        let stream_error = conflict_service
-            .request_chat_stream(
-                LlmChatArgs {
-                    function_options: Some(options),
-                    ..client_args()
-                },
-                HashMap::new(),
+#[test]
+fn ollama_system_prompt_contract_covers_streaming_and_non_streaming() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let replies = vec![MockReply::OllamaText; 4]
+            .into_iter()
+            .chain(vec![MockReply::OllamaStreamText; 4])
+            .collect();
+        let mut server = start_mock_server(replies).await?;
+        let app = create_hybrid_test_app().await?;
+        let mut service = ollama_service(&app, &server.base_url)?;
+        let cases = [
+            (
                 None,
+                vec!["request one", "request two"],
+                vec!["request one", "request two"],
+            ),
+            (Some("worker prompt"), vec![], vec!["worker prompt"]),
+            (
+                Some("worker prompt"),
+                vec!["request prompt"],
+                vec!["worker prompt\nrequest prompt"],
+            ),
+            (None, vec![], vec![]),
+        ];
+
+        for streaming in [false, true] {
+            for (configured, request, expected) in &cases {
+                service.system_prompt = configured.map(str::to_string);
+                let args = system_args(request);
+                if streaming {
+                    let results = run_ollama_stream(Arc::new(service.clone()), args).await?;
+                    ensure!(
+                        results.iter().any(|result| result.done),
+                        "stream did not finish"
+                    );
+                } else {
+                    let result = service
+                        .request_chat(args, opentelemetry::Context::current(), HashMap::new())
+                        .await?;
+                    ensure!(result.done, "non-stream response did not finish");
+                }
+                let captured = server.next_request().await?;
+                ensure!(
+                    system_messages(&captured) == *expected,
+                    "unexpected Ollama system messages: {captured}"
+                );
+                if streaming {
+                    ensure!(
+                        captured.get("template").is_none(),
+                        "Ollama template must not override system messages"
+                    );
+                }
+            }
+        }
+        server.finish().await
+    })
+}
+
+#[test]
+fn genai_client_tools_are_manual_continuable_exclusive_and_keep_legacy_path() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app = create_hybrid_test_app().await?;
+        let conflict_service = genai_service(&app, "http://127.0.0.1:1").await?;
+        for options in client_tool_conflicts() {
+            let args = LlmChatArgs {
+                function_options: Some(options.clone()),
+                ..client_args()
+            };
+            let error = conflict_service
+                .request_chat(args, opentelemetry::Context::current(), HashMap::new())
+                .await
+                .expect_err("client and server-driven tools must be mutually exclusive");
+            ensure!(
+                error.to_string().contains("mutually exclusive"),
+                "wrong conflict error: {error}"
+            );
+
+            let stream_error = conflict_service
+                .request_chat_stream(
+                    LlmChatArgs {
+                        function_options: Some(options),
+                        ..client_args()
+                    },
+                    HashMap::new(),
+                    None,
+                )
+                .await
+                .err()
+                .context("streaming client/server tool conflict should be rejected")?;
+            ensure!(
+                stream_error.to_string().contains("mutually exclusive"),
+                "wrong stream conflict error: {stream_error}"
+            );
+        }
+
+        let execution_args = client_tool_execution_request_args();
+        let execution_error = conflict_service
+            .request_chat(
+                execution_args.clone(),
+                opentelemetry::Context::current(),
+                HashMap::new(),
             )
             .await
             .err()
-            .context("streaming client/server tool conflict should be rejected")?;
+            .context("client ToolExecutionRequests should be rejected")?;
         ensure!(
-            stream_error.to_string().contains("mutually exclusive"),
-            "wrong stream conflict error: {stream_error}"
+            execution_error.to_string().contains("ToolResults"),
+            "wrong client-tool execution error: {execution_error}"
         );
-    }
+        let execution_stream_error = conflict_service
+            .request_chat_stream(execution_args, HashMap::new(), None)
+            .await
+            .err()
+            .context("streaming client ToolExecutionRequests should be rejected")?;
+        ensure!(
+            execution_stream_error.to_string().contains("ToolResults"),
+            "wrong streaming client-tool execution error: {execution_stream_error}"
+        );
 
-    let execution_args = client_tool_execution_request_args();
-    let execution_error = conflict_service
-        .request_chat(
-            execution_args.clone(),
-            opentelemetry::Context::current(),
-            HashMap::new(),
-        )
-        .await
-        .err()
-        .context("client ToolExecutionRequests should be rejected")?;
-    ensure!(
-        execution_error.to_string().contains("ToolResults"),
-        "wrong client-tool execution error: {execution_error}"
-    );
-    let execution_stream_error = conflict_service
-        .request_chat_stream(execution_args, HashMap::new(), None)
-        .await
-        .err()
-        .context("streaming client ToolExecutionRequests should be rejected")?;
-    ensure!(
-        execution_stream_error.to_string().contains("ToolResults"),
-        "wrong streaming client-tool execution error: {execution_stream_error}"
-    );
+        let mut server = start_mock_server(vec![
+            MockReply::GenaiToolCall,
+            MockReply::GenaiText,
+            MockReply::GenaiStreamToolCall,
+            MockReply::GenaiStreamText,
+            MockReply::GenaiStreamPrefixedToolCall,
+            MockReply::GenaiText,
+        ])
+        .await?;
+        let service = genai_service(&app, &server.base_url).await?;
 
-    let mut server = start_mock_server(vec![
-        MockReply::GenaiToolCall,
-        MockReply::GenaiText,
-        MockReply::GenaiStreamToolCall,
-        MockReply::GenaiStreamText,
-        MockReply::GenaiStreamPrefixedToolCall,
-        MockReply::GenaiText,
-    ])
-    .await?;
-    let service = genai_service(&app, &server.base_url).await?;
+        let original_args = client_args();
+        let pending_result = service
+            .request_chat(
+                original_args.clone(),
+                opentelemetry::Context::current(),
+                HashMap::new(),
+            )
+            .await?;
+        assert_pending_tool(&pending_result)?;
+        let pending_call = pending_result.pending_tool_calls.unwrap().calls.remove(0);
+        let first_request = server.next_request().await?;
+        assert_tool_definition(&first_request)?;
 
-    let original_args = client_args();
-    let pending_result = service
-        .request_chat(
-            original_args.clone(),
-            opentelemetry::Context::current(),
-            HashMap::new(),
+        let continuation = continuation_args(
+            original_args,
+            &pending_call.call_id,
+            &pending_call.fn_name,
+            &pending_call.fn_arguments,
+        );
+        let continued = service
+            .request_chat(
+                continuation,
+                opentelemetry::Context::current(),
+                HashMap::new(),
+            )
+            .await?;
+        ensure!(continued.done, "tool-result continuation should complete");
+        let second_request = server.next_request().await?;
+        assert_tool_definition(&second_request)?;
+        assert_tool_result_in_history(&second_request)?;
+
+        let stream_results = run_genai_stream(&service, client_args()).await?;
+        let streamed_pending = stream_results
+            .iter()
+            .find(|result| result.pending_tool_calls.is_some())
+            .context("stream response should surface pending client tool calls")?;
+        assert_pending_tool(streamed_pending)?;
+        let streamed_call = streamed_pending
+            .pending_tool_calls
+            .as_ref()
+            .expect("pending calls checked above")
+            .calls[0]
+            .clone();
+        let stream_request = server.next_request().await?;
+        assert_tool_definition(&stream_request)?;
+
+        let streamed_continuation = run_genai_stream(
+            &service,
+            continuation_args(
+                client_args(),
+                &streamed_call.call_id,
+                &streamed_call.fn_name,
+                &streamed_call.fn_arguments,
+            ),
         )
         .await?;
-    assert_pending_tool(&pending_result)?;
-    let pending_call = pending_result.pending_tool_calls.unwrap().calls.remove(0);
-    let first_request = server.next_request().await?;
-    assert_tool_definition(&first_request)?;
+        ensure!(
+            streamed_continuation.iter().any(|result| result.done),
+            "streaming tool-result continuation should complete"
+        );
+        let streamed_continuation_request = server.next_request().await?;
+        assert_tool_definition(&streamed_continuation_request)?;
+        assert_tool_result_in_history(&streamed_continuation_request)?;
 
-    let continuation = continuation_args(
-        original_args,
-        &pending_call.call_id,
-        &pending_call.fn_name,
-        &pending_call.fn_arguments,
-    );
-    let continued = service
-        .request_chat(
-            continuation,
-            opentelemetry::Context::current(),
-            HashMap::new(),
-        )
-        .await?;
-    ensure!(continued.done, "tool-result continuation should complete");
-    let second_request = server.next_request().await?;
-    assert_tool_definition(&second_request)?;
-    assert_tool_result_in_history(&second_request)?;
+        let prefixed_name = "select_toolset_client_owned";
+        let prefixed_results =
+            run_genai_stream(&service, client_args_with_tool_name(prefixed_name)).await?;
+        let prefixed_pending = prefixed_results
+            .iter()
+            .find(|result| result.pending_tool_calls.is_some())
+            .context("client-owned selector-prefixed tool should remain pending")?;
+        assert_pending_tool_named(prefixed_pending, prefixed_name)?;
+        let prefixed_request = server.next_request().await?;
+        assert_tool_definition_named(&prefixed_request, prefixed_name)?;
 
-    let stream_results = run_genai_stream(&service, client_args()).await?;
-    let streamed_pending = stream_results
-        .iter()
-        .find(|result| result.pending_tool_calls.is_some())
-        .context("stream response should surface pending client tool calls")?;
-    assert_pending_tool(streamed_pending)?;
-    let streamed_call = streamed_pending
-        .pending_tool_calls
-        .as_ref()
-        .expect("pending calls checked above")
-        .calls[0]
-        .clone();
-    let stream_request = server.next_request().await?;
-    assert_tool_definition(&stream_request)?;
-
-    let streamed_continuation = run_genai_stream(
-        &service,
-        continuation_args(
-            client_args(),
-            &streamed_call.call_id,
-            &streamed_call.fn_name,
-            &streamed_call.fn_arguments,
-        ),
-    )
-    .await?;
-    ensure!(
-        streamed_continuation.iter().any(|result| result.done),
-        "streaming tool-result continuation should complete"
-    );
-    let streamed_continuation_request = server.next_request().await?;
-    assert_tool_definition(&streamed_continuation_request)?;
-    assert_tool_result_in_history(&streamed_continuation_request)?;
-
-    let prefixed_name = "select_toolset_client_owned";
-    let prefixed_results =
-        run_genai_stream(&service, client_args_with_tool_name(prefixed_name)).await?;
-    let prefixed_pending = prefixed_results
-        .iter()
-        .find(|result| result.pending_tool_calls.is_some())
-        .context("client-owned selector-prefixed tool should remain pending")?;
-    assert_pending_tool_named(prefixed_pending, prefixed_name)?;
-    let prefixed_request = server.next_request().await?;
-    assert_tool_definition_named(&prefixed_request, prefixed_name)?;
-
-    let set_name = create_legacy_function_set(&app).await?;
-    let legacy_result = service
-        .request_chat(
-            LlmChatArgs {
-                function_options: Some(FunctionOptions {
-                    use_function_calling: true,
-                    function_set_name: Some(set_name),
-                    ..Default::default()
-                }),
-                ..system_args(&[])
-            },
-            opentelemetry::Context::current(),
-            HashMap::new(),
-        )
-        .await?;
-    ensure!(
-        legacy_result.done,
-        "legacy FunctionSet request should complete"
-    );
-    let legacy_request = server.next_request().await?;
-    ensure!(
-        legacy_request["tools"]
-            .as_array()
-            .is_some_and(|tools| !tools.is_empty()),
-        "FunctionSet tools should remain available when client_tools_json is unset"
-    );
-    server.finish().await
+        let set_name = create_legacy_function_set(&app).await?;
+        let legacy_result = service
+            .request_chat(
+                LlmChatArgs {
+                    function_options: Some(FunctionOptions {
+                        use_function_calling: true,
+                        function_set_name: Some(set_name),
+                        ..Default::default()
+                    }),
+                    ..system_args(&[])
+                },
+                opentelemetry::Context::current(),
+                HashMap::new(),
+            )
+            .await?;
+        ensure!(
+            legacy_result.done,
+            "legacy FunctionSet request should complete"
+        );
+        let legacy_request = server.next_request().await?;
+        ensure!(
+            legacy_request["tools"]
+                .as_array()
+                .is_some_and(|tools| !tools.is_empty()),
+            "FunctionSet tools should remain available when client_tools_json is unset"
+        );
+        server.finish().await
+    })
 }
 
-#[tokio::test]
-async fn ollama_client_tools_are_manual_continuable_exclusive_and_keep_legacy_path() -> Result<()> {
-    let app = create_hybrid_test_app().await?;
-    let conflict_service = ollama_service(&app, "http://127.0.0.1:1")?;
-    for options in client_tool_conflicts() {
-        let args = LlmChatArgs {
-            function_options: Some(options.clone()),
-            ..client_args()
-        };
-        let error = conflict_service
-            .request_chat(args, opentelemetry::Context::current(), HashMap::new())
-            .await
-            .expect_err("client and server-driven tools must be mutually exclusive");
-        ensure!(
-            error.to_string().contains("mutually exclusive"),
-            "wrong conflict error: {error}"
-        );
+#[test]
+fn ollama_client_tools_are_manual_continuable_exclusive_and_keep_legacy_path() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let app = create_hybrid_test_app().await?;
+        let conflict_service = ollama_service(&app, "http://127.0.0.1:1")?;
+        for options in client_tool_conflicts() {
+            let args = LlmChatArgs {
+                function_options: Some(options.clone()),
+                ..client_args()
+            };
+            let error = conflict_service
+                .request_chat(args, opentelemetry::Context::current(), HashMap::new())
+                .await
+                .expect_err("client and server-driven tools must be mutually exclusive");
+            ensure!(
+                error.to_string().contains("mutually exclusive"),
+                "wrong conflict error: {error}"
+            );
 
-        let stream_error = Arc::new(conflict_service.clone())
-            .request_stream_chat(
-                LlmChatArgs {
-                    function_options: Some(options),
-                    ..client_args()
-                },
+            let stream_error = Arc::new(conflict_service.clone())
+                .request_stream_chat(
+                    LlmChatArgs {
+                        function_options: Some(options),
+                        ..client_args()
+                    },
+                    HashMap::new(),
+                    None,
+                )
+                .await
+                .err()
+                .context("streaming client/server tool conflict should be rejected")?;
+            ensure!(
+                stream_error.to_string().contains("mutually exclusive"),
+                "wrong stream conflict error: {stream_error}"
+            );
+        }
+
+        let execution_args = client_tool_execution_request_args();
+        let execution_error = conflict_service
+            .request_chat(
+                execution_args.clone(),
+                opentelemetry::Context::current(),
                 HashMap::new(),
-                None,
             )
             .await
             .err()
-            .context("streaming client/server tool conflict should be rejected")?;
+            .context("client ToolExecutionRequests should be rejected")?;
         ensure!(
-            stream_error.to_string().contains("mutually exclusive"),
-            "wrong stream conflict error: {stream_error}"
+            execution_error.to_string().contains("ToolResults"),
+            "wrong client-tool execution error: {execution_error}"
         );
-    }
+        let execution_stream_error = Arc::new(conflict_service.clone())
+            .request_stream_chat(execution_args, HashMap::new(), None)
+            .await
+            .err()
+            .context("streaming client ToolExecutionRequests should be rejected")?;
+        ensure!(
+            execution_stream_error.to_string().contains("ToolResults"),
+            "wrong streaming client-tool execution error: {execution_stream_error}"
+        );
 
-    let execution_args = client_tool_execution_request_args();
-    let execution_error = conflict_service
-        .request_chat(
-            execution_args.clone(),
-            opentelemetry::Context::current(),
-            HashMap::new(),
-        )
-        .await
-        .err()
-        .context("client ToolExecutionRequests should be rejected")?;
-    ensure!(
-        execution_error.to_string().contains("ToolResults"),
-        "wrong client-tool execution error: {execution_error}"
-    );
-    let execution_stream_error = Arc::new(conflict_service.clone())
-        .request_stream_chat(execution_args, HashMap::new(), None)
-        .await
-        .err()
-        .context("streaming client ToolExecutionRequests should be rejected")?;
-    ensure!(
-        execution_stream_error.to_string().contains("ToolResults"),
-        "wrong streaming client-tool execution error: {execution_stream_error}"
-    );
+        let mut server = start_mock_server(vec![
+            MockReply::OllamaToolCall,
+            MockReply::OllamaText,
+            MockReply::OllamaStreamToolCall,
+            MockReply::OllamaStreamText,
+            MockReply::OllamaStreamPrefixedToolCall,
+            MockReply::OllamaText,
+        ])
+        .await?;
+        let service = Arc::new(ollama_service(&app, &server.base_url)?);
 
-    let mut server = start_mock_server(vec![
-        MockReply::OllamaToolCall,
-        MockReply::OllamaText,
-        MockReply::OllamaStreamToolCall,
-        MockReply::OllamaStreamText,
-        MockReply::OllamaStreamPrefixedToolCall,
-        MockReply::OllamaText,
-    ])
-    .await?;
-    let service = Arc::new(ollama_service(&app, &server.base_url)?);
+        let original_args = client_args();
+        let pending_result = service
+            .request_chat(
+                original_args.clone(),
+                opentelemetry::Context::current(),
+                HashMap::new(),
+            )
+            .await?;
+        assert_pending_tool(&pending_result)?;
+        let pending_call = pending_result.pending_tool_calls.unwrap().calls.remove(0);
+        let first_request = server.next_request().await?;
+        assert_tool_definition(&first_request)?;
 
-    let original_args = client_args();
-    let pending_result = service
-        .request_chat(
-            original_args.clone(),
-            opentelemetry::Context::current(),
-            HashMap::new(),
+        let continuation = continuation_args(
+            original_args,
+            &pending_call.call_id,
+            &pending_call.fn_name,
+            &pending_call.fn_arguments,
+        );
+        let continued = service
+            .request_chat(
+                continuation,
+                opentelemetry::Context::current(),
+                HashMap::new(),
+            )
+            .await?;
+        ensure!(continued.done, "tool-result continuation should complete");
+        let second_request = server.next_request().await?;
+        assert_tool_definition(&second_request)?;
+        assert_tool_result_in_history(&second_request)?;
+
+        let stream_results = run_ollama_stream(service.clone(), client_args()).await?;
+        let streamed_pending = stream_results
+            .iter()
+            .find(|result| result.pending_tool_calls.is_some())
+            .context("stream response should surface pending client tool calls")?;
+        assert_pending_tool(streamed_pending)?;
+        let streamed_call = streamed_pending
+            .pending_tool_calls
+            .as_ref()
+            .expect("pending calls checked above")
+            .calls[0]
+            .clone();
+        let stream_request = server.next_request().await?;
+        assert_tool_definition(&stream_request)?;
+
+        let streamed_continuation = run_ollama_stream(
+            service.clone(),
+            continuation_args(
+                client_args(),
+                &streamed_call.call_id,
+                &streamed_call.fn_name,
+                &streamed_call.fn_arguments,
+            ),
         )
         .await?;
-    assert_pending_tool(&pending_result)?;
-    let pending_call = pending_result.pending_tool_calls.unwrap().calls.remove(0);
-    let first_request = server.next_request().await?;
-    assert_tool_definition(&first_request)?;
+        ensure!(
+            streamed_continuation.iter().any(|result| result.done),
+            "streaming tool-result continuation should complete"
+        );
+        let streamed_continuation_request = server.next_request().await?;
+        assert_tool_definition(&streamed_continuation_request)?;
+        assert_tool_result_in_history(&streamed_continuation_request)?;
 
-    let continuation = continuation_args(
-        original_args,
-        &pending_call.call_id,
-        &pending_call.fn_name,
-        &pending_call.fn_arguments,
-    );
-    let continued = service
-        .request_chat(
-            continuation,
-            opentelemetry::Context::current(),
-            HashMap::new(),
-        )
-        .await?;
-    ensure!(continued.done, "tool-result continuation should complete");
-    let second_request = server.next_request().await?;
-    assert_tool_definition(&second_request)?;
-    assert_tool_result_in_history(&second_request)?;
+        let prefixed_name = "select_toolset_client_owned";
+        let prefixed_results =
+            run_ollama_stream(service.clone(), client_args_with_tool_name(prefixed_name)).await?;
+        let prefixed_pending = prefixed_results
+            .iter()
+            .find(|result| result.pending_tool_calls.is_some())
+            .context("client-owned selector-prefixed tool should remain pending")?;
+        assert_pending_tool_named(prefixed_pending, prefixed_name)?;
+        let prefixed_request = server.next_request().await?;
+        assert_tool_definition_named(&prefixed_request, prefixed_name)?;
 
-    let stream_results = run_ollama_stream(service.clone(), client_args()).await?;
-    let streamed_pending = stream_results
-        .iter()
-        .find(|result| result.pending_tool_calls.is_some())
-        .context("stream response should surface pending client tool calls")?;
-    assert_pending_tool(streamed_pending)?;
-    let streamed_call = streamed_pending
-        .pending_tool_calls
-        .as_ref()
-        .expect("pending calls checked above")
-        .calls[0]
-        .clone();
-    let stream_request = server.next_request().await?;
-    assert_tool_definition(&stream_request)?;
-
-    let streamed_continuation = run_ollama_stream(
-        service.clone(),
-        continuation_args(
-            client_args(),
-            &streamed_call.call_id,
-            &streamed_call.fn_name,
-            &streamed_call.fn_arguments,
-        ),
-    )
-    .await?;
-    ensure!(
-        streamed_continuation.iter().any(|result| result.done),
-        "streaming tool-result continuation should complete"
-    );
-    let streamed_continuation_request = server.next_request().await?;
-    assert_tool_definition(&streamed_continuation_request)?;
-    assert_tool_result_in_history(&streamed_continuation_request)?;
-
-    let prefixed_name = "select_toolset_client_owned";
-    let prefixed_results =
-        run_ollama_stream(service.clone(), client_args_with_tool_name(prefixed_name)).await?;
-    let prefixed_pending = prefixed_results
-        .iter()
-        .find(|result| result.pending_tool_calls.is_some())
-        .context("client-owned selector-prefixed tool should remain pending")?;
-    assert_pending_tool_named(prefixed_pending, prefixed_name)?;
-    let prefixed_request = server.next_request().await?;
-    assert_tool_definition_named(&prefixed_request, prefixed_name)?;
-
-    let set_name = create_legacy_function_set(&app).await?;
-    let legacy_result = service
-        .request_chat(
-            LlmChatArgs {
-                function_options: Some(FunctionOptions {
-                    use_function_calling: true,
-                    function_set_name: Some(set_name),
-                    ..Default::default()
-                }),
-                ..system_args(&[])
-            },
-            opentelemetry::Context::current(),
-            HashMap::new(),
-        )
-        .await?;
-    ensure!(
-        legacy_result.done,
-        "legacy FunctionSet request should complete"
-    );
-    let legacy_request = server.next_request().await?;
-    ensure!(
-        legacy_request["tools"]
-            .as_array()
-            .is_some_and(|tools| !tools.is_empty()),
-        "FunctionSet tools should remain available when client_tools_json is unset"
-    );
-    server.finish().await
+        let set_name = create_legacy_function_set(&app).await?;
+        let legacy_result = service
+            .request_chat(
+                LlmChatArgs {
+                    function_options: Some(FunctionOptions {
+                        use_function_calling: true,
+                        function_set_name: Some(set_name),
+                        ..Default::default()
+                    }),
+                    ..system_args(&[])
+                },
+                opentelemetry::Context::current(),
+                HashMap::new(),
+            )
+            .await?;
+        ensure!(
+            legacy_result.done,
+            "legacy FunctionSet request should complete"
+        );
+        let legacy_request = server.next_request().await?;
+        ensure!(
+            legacy_request["tools"]
+                .as_array()
+                .is_some_and(|tools| !tools.is_empty()),
+            "FunctionSet tools should remain available when client_tools_json is unset"
+        );
+        server.finish().await
+    })
 }

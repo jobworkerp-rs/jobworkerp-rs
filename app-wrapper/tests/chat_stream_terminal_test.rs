@@ -2,6 +2,7 @@ use anyhow::{Context, Result, ensure};
 use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::chat::{LLMChatRunnerImpl, ollama::OllamaChatService};
 use futures::{StreamExt, stream};
+use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     ChatMessage, ChatRole, MessageContent, message_content,
 };
@@ -136,8 +137,9 @@ fn decode_data(item: &ResultOutputItem) -> LlmChatResult {
     }
 }
 
-#[tokio::test]
-async fn ollama_terminal_chunk_is_forwarded_and_collected() -> Result<()> {
+#[test]
+fn ollama_terminal_chunk_is_forwarded_and_collected() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
     let body = format!(
         "{}\n{}\n",
         ollama_text_chunk("hello", false),
@@ -184,29 +186,32 @@ async fn ollama_terminal_chunk_is_forwarded_and_collected() -> Result<()> {
         Some("terminal-test")
     );
     Ok(())
+    })
 }
 
-#[tokio::test]
-async fn ollama_early_eof_without_done_is_rejected_by_collector() -> Result<()> {
-    let body = format!("{}\n", ollama_text_chunk("partial", false));
-    let output = run_adapter_stream(body).await?;
+#[test]
+fn ollama_early_eof_without_done_is_rejected_by_collector() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let body = format!("{}\n", ollama_text_chunk("partial", false));
+        let output = run_adapter_stream(body).await?;
 
-    assert_eq!(
-        output.len(),
-        1,
-        "early EOF must not synthesize a terminal item"
-    );
-    assert!(!decode_data(&output[0]).done);
+        assert_eq!(
+            output.len(),
+            1,
+            "early EOF must not synthesize a terminal item"
+        );
+        assert!(!decode_data(&output[0]).done);
 
-    let spec = LLMChatRunnerSpecImpl::new();
-    let error = spec
-        .collect_stream(Box::pin(stream::iter(output)), None)
-        .await
-        .expect_err("collector must reject a stream without done=true");
-    assert!(
-        error
-            .to_string()
-            .contains("without a successful done=true chunk")
-    );
-    Ok(())
+        let spec = LLMChatRunnerSpecImpl::new();
+        let error = spec
+            .collect_stream(Box::pin(stream::iter(output)), None)
+            .await
+            .expect_err("collector must reject a stream without done=true");
+        assert!(
+            error
+                .to_string()
+                .contains("without a successful done=true chunk")
+        );
+        Ok(())
+    })
 }

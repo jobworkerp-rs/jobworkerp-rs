@@ -1555,6 +1555,7 @@ impl OllamaChatService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use infra_utils::infra::test::TEST_RUNTIME;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::{
         ToolResult as ProtoToolResult, ToolResults as ProtoToolResults,
     };
@@ -1617,8 +1618,9 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    #[tokio::test]
-    async fn ollama_stream_creation_error_does_not_emit_success_terminal() {
+    #[test]
+    fn ollama_stream_creation_error_does_not_emit_success_terminal() {
+        TEST_RUNTIME.block_on(async {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1672,10 +1674,12 @@ mod tests {
             "a stream creation failure should emit no chunks"
         );
         server.await.unwrap();
+        });
     }
 
-    #[tokio::test]
-    async fn ollama_stream_early_eof_does_not_emit_success_terminal() {
+    #[test]
+    fn ollama_stream_early_eof_does_not_emit_success_terminal() {
+        TEST_RUNTIME.block_on(async {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1727,5 +1731,6 @@ mod tests {
         }
         assert!(saw_partial, "the partial chunk should be observable");
         server.await.unwrap();
+        });
     }
 }
