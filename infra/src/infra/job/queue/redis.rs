@@ -17,8 +17,6 @@ use proto::jobworkerp::data::{
     Job, JobId, JobInternal, JobResult, JobResultData, JobResultId, Priority, ResultOutputItem,
 };
 use redis::AsyncCommands;
-use signal_hook::consts::SIGINT;
-use signal_hook_tokio::Signals;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -153,22 +151,20 @@ where
                 "direct"
             }
         );
-        let signal: Signals = Signals::new([SIGINT]).expect("cannot get signals");
-        let handle = signal.handle();
         let c = Self::result_queue_name(job_id);
-        // Use blocking pool for BLPOP (no response timeout)
-        let mut th_p = self.redis_blocking_pool().get().await?;
+        // Hold a pool slot to cap active waits at max_size, but isolate BLPOP on a disposable connection.
+        // A canceled BLPOP on a pooled multiplexed connection would otherwise stay server-side.
+        let _blocking_pool_slot = self.redis_blocking_pool().get().await?;
+        let mut wait_connection = self.redis_blocking_pool().dedicated_connection().await?;
+        let mut signal_stream =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                .expect("signal error");
         let pop_future = async {
             tokio::select! {
-                _ = tokio::spawn(async {
-                    let mut sig_stream = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-                        .expect("signal error");
-                    sig_stream.recv().await
-                }) => {
-                    handle.close();
+                _ = signal_stream.recv() => {
                     Err(JobWorkerError::RuntimeError("interrupt direct waiting process".to_string()).into())
                 },
-                val = th_p.blpop::<String, Vec<Vec<u8>>>(c, (timeout.unwrap_or(0)/1000) as f64) => {
+                val = wait_connection.blpop::<String, Vec<Vec<u8>>>(c, (timeout.unwrap_or(0)/1000) as f64) => {
                     let r: Result<JobResult> = val
                         .map_err(|e| JobWorkerError::RedisError(e).into())
                         .and_then(|v| {
@@ -552,6 +548,7 @@ mod test {
     // create test of 'send_job()': store job with send_job() to redis and get job value from redis (by command)
     use super::*;
     use command_utils::util::datetime;
+    use infra_utils::infra::redis::RedisConfig;
     use infra_utils::infra::redis::RedisPool;
     use infra_utils::infra::redis::UseRedisBlockingPool;
     use infra_utils::infra::redis::UseRedisPool;
@@ -561,6 +558,57 @@ mod test {
     use proto::jobworkerp::data::ResultOutput;
     use proto::jobworkerp::data::{Job, JobData, JobId, ResultStatus, WorkerId};
     use redis::AsyncCommands;
+    use std::time::Duration;
+
+    async fn setup_wait_test_pool(url: String, blocking: bool) -> Result<&'static RedisPool> {
+        let pool = infra_utils::infra::redis::new_redis_pool(RedisConfig {
+            username: None,
+            password: None,
+            url,
+            pool_connection_timeout_msec: Some(2_000),
+            pool_idle_timeout_msec: None,
+            pool_max_lifetime_msec: None,
+            pool_size: 1,
+            pool_min_idle: None,
+            blocking,
+        })
+        .await?;
+        Ok(Box::leak(Box::new(pool)))
+    }
+
+    async fn blocked_blpop_count(client: &redis::Client) -> Result<usize> {
+        let mut connection = client.get_multiplexed_async_connection().await?;
+        let clients: String = redis::cmd("CLIENT")
+            .arg("LIST")
+            .query_async(&mut connection)
+            .await?;
+        Ok(clients
+            .lines()
+            .filter(|line| {
+                line.split_ascii_whitespace()
+                    .any(|field| field == "cmd=blpop")
+            })
+            .count())
+    }
+
+    async fn wait_for_blocked_blpop_count(client: &redis::Client, expected: usize) -> Result<()> {
+        match tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if blocked_blpop_count(client).await? == expected {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!(
+                "expected {expected} blocked BLPOP clients, found {}",
+                blocked_blpop_count(client).await?
+            )),
+        }
+    }
 
     struct RedisJobQueueRepositoryImpl {
         job_queue_config: Arc<JobQueueConfig>,
@@ -712,6 +760,158 @@ mod test {
             .await?;
         assert_eq!(res.0.data.unwrap(), job_result_data);
         assert!(res.1.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn result_wait_cancellation_releases_redis_block_and_preserves_results() -> Result<()> {
+        let url = std::env::var("TEST_REDIS_URL")
+            .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let client = redis::Client::open(url.clone())?;
+        let redis_pool = setup_wait_test_pool(url.clone(), false).await?;
+        let redis_blocking_pool = setup_wait_test_pool(url, true).await?;
+        let job_queue_config = Arc::new(JobQueueConfig {
+            expire_job_result_seconds: 10,
+            fetch_interval: 1000,
+            channel_capacity: 10000,
+            pubsub_channel_capacity: 128,
+            max_channels: 10_000,
+            cancel_channel_capacity: 1_000,
+            feed_dispatch_timeout: 5000,
+        });
+        let job_result_pubsub_repository =
+            RedisJobResultPubSubRepositoryImpl::new(client.clone(), job_queue_config.clone());
+        let repo = Arc::new(RedisJobQueueRepositoryImpl {
+            job_queue_config,
+            redis_pool,
+            redis_blocking_pool,
+            job_result_pubsub_repository,
+        });
+        let baseline = blocked_blpop_count(&client).await?;
+        let mut next_job_id = 7_400_000_000_000_000_000_i64
+            + (command_utils::util::datetime::now_millis() % 100_000_000);
+
+        for _ in 0..3 {
+            let job_id = JobId { value: next_job_id };
+            next_job_id += 1;
+            let repo_for_wait = repo.clone();
+            let waiter = tokio::spawn(async move {
+                repo_for_wait
+                    .wait_for_result_queue_for_response(&job_id, None, false)
+                    .await
+            });
+
+            wait_for_blocked_blpop_count(&client, baseline + 1).await?;
+            waiter.abort();
+            assert!(waiter.await.is_err_and(|error| error.is_cancelled()));
+            wait_for_blocked_blpop_count(&client, baseline).await?;
+
+            let mut pooled_connection = redis_blocking_pool.get().await?;
+            let pong: String =
+                tokio::time::timeout(Duration::from_secs(2), pooled_connection.ping()).await??;
+            assert_eq!(pong, "PONG");
+            drop(pooled_connection);
+
+            // Once the abandoned BLPOP is gone, a later result for the same job must
+            // remain available rather than being consumed by the canceled waiter.
+            let late_data = JobResultData {
+                job_id: Some(job_id),
+                status: ResultStatus::Success as i32,
+                ..Default::default()
+            };
+            repo.enqueue_result_direct(
+                &JobResultId {
+                    value: job_id.value,
+                },
+                &late_data,
+            )
+            .await?;
+            let mut connection = client.get_multiplexed_async_connection().await?;
+            let queued: usize = connection
+                .llen(RedisJobQueueRepositoryImpl::result_queue_name(&job_id))
+                .await?;
+            assert_eq!(
+                queued, 1,
+                "the canceled waiter must not consume a later result"
+            );
+            let (late_result, stream) = tokio::time::timeout(
+                Duration::from_secs(2),
+                repo.wait_for_result_queue_for_response(&job_id, None, false),
+            )
+            .await??;
+            assert_eq!(late_result.data, Some(late_data));
+            assert!(stream.is_none());
+        }
+
+        let first_waiter_job_id = JobId { value: next_job_id };
+        next_job_id += 1;
+        let first_repo = repo.clone();
+        let first_waiter = tokio::spawn(async move {
+            first_repo
+                .wait_for_result_queue_for_response(&first_waiter_job_id, None, false)
+                .await
+        });
+        wait_for_blocked_blpop_count(&client, baseline + 1).await?;
+
+        let second_waiter_job_id = JobId { value: next_job_id };
+        next_job_id += 1;
+        let second_repo = repo.clone();
+        let second_waiter = tokio::spawn(async move {
+            second_repo
+                .wait_for_result_queue_for_response(&second_waiter_job_id, None, false)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(blocked_blpop_count(&client).await?, baseline + 1);
+
+        first_waiter.abort();
+        assert!(first_waiter.await.is_err_and(|error| error.is_cancelled()));
+        wait_for_blocked_blpop_count(&client, baseline + 1).await?;
+        second_waiter.abort();
+        assert!(second_waiter.await.is_err_and(|error| error.is_cancelled()));
+        wait_for_blocked_blpop_count(&client, baseline).await?;
+
+        let result_job_id = JobId { value: next_job_id };
+        next_job_id += 1;
+        let repo_for_wait = repo.clone();
+        let waiter = tokio::spawn(async move {
+            repo_for_wait
+                .wait_for_result_queue_for_response(&result_job_id, None, false)
+                .await
+        });
+        wait_for_blocked_blpop_count(&client, baseline + 1).await?;
+
+        let expected_data = JobResultData {
+            job_id: Some(result_job_id),
+            status: ResultStatus::Success as i32,
+            output: Some(ResultOutput {
+                items: b"result after cancellation".to_vec(),
+            }),
+            ..Default::default()
+        };
+        repo.enqueue_result_direct(
+            &JobResultId {
+                value: result_job_id.value,
+            },
+            &expected_data,
+        )
+        .await?;
+        let (result, stream) = tokio::time::timeout(Duration::from_secs(3), waiter).await???;
+        assert_eq!(result.data, Some(expected_data));
+        assert!(stream.is_none());
+
+        wait_for_blocked_blpop_count(&client, baseline).await?;
+        let timeout_job_id = JobId { value: next_job_id };
+        let timeout_result = repo
+            .wait_for_result_queue_for_response(&timeout_job_id, Some(1_000), false)
+            .await;
+        let timeout_error = match timeout_result {
+            Err(error) => error,
+            Ok(_) => panic!("result wait should time out"),
+        };
+        assert!(timeout_error.to_string().contains("timeout"));
+        wait_for_blocked_blpop_count(&client, baseline).await?;
+
         Ok(())
     }
 
