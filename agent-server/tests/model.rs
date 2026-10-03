@@ -326,6 +326,39 @@ async fn pending_tool_calls_are_normalized_from_final_collected_result() {
 }
 
 #[tokio::test]
+async fn tool_call_envelopes_report_field_specific_errors_for_invalid_shapes() {
+    let invalid_results = [
+        (
+            json!({"content": {"toolCalls": []}, "done": true}),
+            "LLM Worker FinalCollected result is invalid: LLMChatResult toolCalls must be an object",
+        ),
+        (
+            json!({"content": {"text": "answer"}, "pendingToolCalls": [], "done": true}),
+            "LLM Worker FinalCollected result is invalid: LLMChatResult pendingToolCalls must be an object",
+        ),
+        (
+            json!({"content": {"toolCalls": {"calls": [], "extra": true}}, "done": true}),
+            "LLM Worker FinalCollected result is invalid: LLMChatResult toolCalls must contain only calls",
+        ),
+        (
+            json!({"content": {"text": "answer"}, "pendingToolCalls": {"calls": [], "extra": true}, "done": true}),
+            "LLM Worker FinalCollected result is invalid: LLMChatResult pendingToolCalls must contain only calls",
+        ),
+    ];
+
+    for (result, expected_error) in invalid_results {
+        let executor = Arc::new(FakeToolExecutor::with_result(stream_result(result)));
+        let model = GrpcModelInvoker::new(31, executor);
+        let error = model
+            .invoke(invocation(vec![text_message(Role::User, "hello")]))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, expected_error);
+    }
+}
+
+#[tokio::test]
 async fn streams_only_interim_text_and_checks_it_against_the_collected_final() {
     let execution = ToolExecutionResult {
         worker_id: 31,

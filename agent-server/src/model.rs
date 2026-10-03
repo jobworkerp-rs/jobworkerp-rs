@@ -765,23 +765,21 @@ fn validate_usage_metadata(value: &Value) -> Result<(), String> {
 }
 
 fn parse_pending_tool_calls(value: &Value) -> Result<Vec<ToolCall>, String> {
-    let pending = value
-        .as_object()
-        .ok_or_else(|| "LLMChatResult pendingToolCalls must be an object".to_owned())?;
-    if pending.len() != 1 || !pending.contains_key("calls") {
-        return Err("LLMChatResult pendingToolCalls must contain only calls".to_owned());
-    }
-    parse_tool_call_array(&pending["calls"])
+    parse_tool_call_envelope(value, "pendingToolCalls")
 }
 
 fn parse_tool_calls_container(value: &Value) -> Result<Vec<ToolCall>, String> {
-    let calls = value
+    parse_tool_call_envelope(value, "toolCalls")
+}
+
+fn parse_tool_call_envelope(value: &Value, field: &str) -> Result<Vec<ToolCall>, String> {
+    let envelope = value
         .as_object()
-        .ok_or_else(|| "LLMChatResult toolCalls must be an object".to_owned())?;
-    if calls.len() != 1 || !calls.contains_key("calls") {
-        return Err("LLMChatResult toolCalls must contain only calls".to_owned());
+        .ok_or_else(|| format!("LLMChatResult {field} must be an object"))?;
+    if envelope.len() != 1 || !envelope.contains_key("calls") {
+        return Err(format!("LLMChatResult {field} must contain only calls"));
     }
-    parse_tool_call_array(&calls["calls"])
+    parse_tool_call_array(&envelope["calls"])
 }
 
 fn parse_tool_call_array(value: &Value) -> Result<Vec<ToolCall>, String> {

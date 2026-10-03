@@ -353,6 +353,36 @@ async fn streaming_output_is_bounded_before_collecting_into_memory() {
 }
 
 #[tokio::test]
+async fn stream_byte_limit_is_cumulative_across_data_and_final_collected_items() {
+    let data_bytes = vec![0; 7 * 1024 * 1024];
+    let final_bytes = vec![0; 2 * 1024 * 1024];
+    let rpc = MockRpc::new(vec![("run", false)], CreateJobResponse::default())
+        .with_result_proto("")
+        .with_stream_items(vec![
+            Ok(ResultOutputItem {
+                item: Some(result_output_item::Item::Data(data_bytes)),
+            }),
+            Ok(ResultOutputItem {
+                item: Some(result_output_item::Item::FinalCollected(final_bytes)),
+            }),
+            Ok(ResultOutputItem {
+                item: Some(result_output_item::Item::End(Default::default())),
+            }),
+        ]);
+
+    let error = executor(rpc)
+        .execute(invocation(
+            Some("run"),
+            true,
+            serde_json::json!({ "text": "hello" }),
+        ))
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("stream output limit"));
+}
+
+#[tokio::test]
 async fn malformed_protobuf_stream_items_are_not_observed() {
     let rpc =
         MockRpc::new(vec![("run", false)], CreateJobResponse::default()).with_stream_items(vec![

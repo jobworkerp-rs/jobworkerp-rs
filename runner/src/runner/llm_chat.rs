@@ -8,6 +8,41 @@ use proto::DEFAULT_METHOD_NAME;
 use super::{CollectStreamFuture, RunnerSpec};
 use std::collections::HashMap;
 
+fn reconcile_terminal_text(
+    mut combined_text: String,
+    terminal_text: Option<String>,
+    conflicting_terminal_text: bool,
+) -> anyhow::Result<Option<String>> {
+    if conflicting_terminal_text {
+        return Err(anyhow::anyhow!(
+            "Contradictory terminal text snapshots in collect_stream"
+        ));
+    }
+
+    match terminal_text {
+        Some(text) if text == combined_text => {
+            if text.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(text))
+            }
+        }
+        Some(text) => {
+            // Text streams cannot distinguish a terminal delta from a
+            // cumulative snapshot that differs from prior deltas. Producers
+            // using snapshots must match the accumulated text exactly.
+            combined_text.push_str(&text);
+            if combined_text.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(combined_text))
+            }
+        }
+        None if !combined_text.is_empty() => Ok(Some(combined_text)),
+        None => Ok(None),
+    }
+}
+
 pub struct LLMChatRunnerSpecImpl {}
 
 impl LLMChatRunnerSpecImpl {
@@ -228,34 +263,7 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
 
             // Tool calls take precedence over text, including inconsistent text snapshots.
             let final_text = if collected_tool_calls.is_empty() {
-                if conflicting_terminal_text {
-                    return Err(anyhow::anyhow!(
-                        "Contradictory terminal text snapshots in collect_stream"
-                    ));
-                }
-
-                match terminal_text {
-                    Some(text) if text == combined_text => {
-                        if text.is_empty() {
-                            None
-                        } else {
-                            Some(text)
-                        }
-                    }
-                    Some(text) => {
-                        // Text streams cannot distinguish a terminal delta from a
-                        // cumulative snapshot that differs from prior deltas. Producers
-                        // using snapshots must match the accumulated text exactly.
-                        combined_text.push_str(&text);
-                        if combined_text.is_empty() {
-                            None
-                        } else {
-                            Some(combined_text)
-                        }
-                    }
-                    None if !combined_text.is_empty() => Some(combined_text),
-                    None => None,
-                }
+                reconcile_terminal_text(combined_text, terminal_text, conflicting_terminal_text)?
             } else {
                 None
             };
@@ -465,6 +473,27 @@ mod tests {
             panic!("Expected text content");
         };
         assert_eq!(text, "Hello, world");
+    }
+
+    #[tokio::test]
+    async fn test_llm_chat_collect_stream_rejects_conflicting_terminal_text_without_tool_calls() {
+        let runner = LLMChatRunnerSpecImpl::new();
+        let terminal1 = create_text_chat_result("first terminal text", None, true);
+        let terminal2 = create_text_chat_result("second terminal text", None, true);
+        let items = vec![
+            create_data_item(&terminal1),
+            create_data_item(&terminal2),
+            create_end_item(HashMap::new()),
+        ];
+        let stream = stream::iter(items).boxed();
+
+        let error = runner.collect_stream(stream, None).await.unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Contradictory terminal text snapshots")
+        );
     }
 
     #[tokio::test]

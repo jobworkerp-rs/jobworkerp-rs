@@ -657,6 +657,24 @@ enum StreamCollectionOutcome {
     },
 }
 
+fn collect_stream_chunk(
+    bytes: Vec<u8>,
+    kind: OutputKind,
+    result_descriptor: Option<&MessageDescriptor>,
+    chunk_count: &mut usize,
+    total_bytes: &mut usize,
+) -> Result<OutputChunk> {
+    if *chunk_count >= MAX_STREAM_CHUNKS
+        || bytes.len() > MAX_STREAM_BYTES.saturating_sub(*total_bytes)
+    {
+        bail!("worker stream output limit exceeded");
+    }
+    let json = decode_result(result_descriptor, &bytes)?;
+    *chunk_count += 1;
+    *total_bytes += bytes.len();
+    Ok(OutputChunk { kind, bytes, json })
+}
+
 async fn collect_stream_result(
     worker_id: i64,
     using: String,
@@ -715,26 +733,17 @@ async fn collect_stream_result(
         }
         match item.item {
             Some(result_output_item::Item::Data(bytes)) => {
-                if chunk_count >= MAX_STREAM_CHUNKS
-                    || bytes.len() > MAX_STREAM_BYTES.saturating_sub(total_bytes)
-                {
-                    return stream_collection_error(
-                        callback_error.take(),
-                        anyhow!("worker stream output limit exceeded"),
-                    );
-                }
-                chunk_count += 1;
-                total_bytes += bytes.len();
-                let json = match decode_result(result_descriptor, &bytes) {
-                    Ok(json) => json,
+                let chunk = match collect_stream_chunk(
+                    bytes,
+                    OutputKind::Data,
+                    result_descriptor,
+                    &mut chunk_count,
+                    &mut total_bytes,
+                ) {
+                    Ok(chunk) => chunk,
                     Err(error) => {
                         return stream_collection_error(callback_error.take(), error);
                     }
-                };
-                let chunk = OutputChunk {
-                    kind: OutputKind::Data,
-                    bytes,
-                    json,
                 };
                 if callback_error.is_none() {
                     if let Some(observer) = observer {
@@ -754,28 +763,20 @@ async fn collect_stream_result(
                 }
             }
             Some(result_output_item::Item::FinalCollected(bytes)) => {
-                if chunk_count >= MAX_STREAM_CHUNKS
-                    || bytes.len() > MAX_STREAM_BYTES.saturating_sub(total_bytes)
-                {
-                    return stream_collection_error(
-                        callback_error.take(),
-                        anyhow!("worker stream output limit exceeded"),
-                    );
-                }
-                chunk_count += 1;
-                total_bytes += bytes.len();
-                let json = match decode_result(result_descriptor, &bytes) {
-                    Ok(json) => json,
+                let chunk = match collect_stream_chunk(
+                    bytes,
+                    OutputKind::FinalCollected,
+                    result_descriptor,
+                    &mut chunk_count,
+                    &mut total_bytes,
+                ) {
+                    Ok(chunk) => chunk,
                     Err(error) => {
                         return stream_collection_error(callback_error.take(), error);
                     }
                 };
                 if callback_error.is_none() {
-                    chunks.push(OutputChunk {
-                        kind: OutputKind::FinalCollected,
-                        bytes,
-                        json,
-                    });
+                    chunks.push(chunk);
                 }
             }
             Some(result_output_item::Item::End(_)) => saw_end = true,
