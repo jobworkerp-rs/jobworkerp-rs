@@ -20,7 +20,7 @@ command-utils = { path = "../modules/command-utils" }
 memory-utils = { path = "../modules/memory-utils" }
 grpc-utils = { path = "../modules/grpc-utils" }
 jobworkerp-base = { path = "../base" }
-microsandbox = { version = "=0.7.2", default-features = false, features = ["local", "net"] }
+microsandbox = { version = "=0.7.6", default-features = false, features = ["local", "net"] }
 jobworkerp-plugin-abi = { path = "../modules/jobworkerp-plugin-abi" }
 jobworkerp-plugin-abi-macros = { path = "../modules/jobworkerp-plugin-abi-macros" }
 # runner = { path = "../runner" }

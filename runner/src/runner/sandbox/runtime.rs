@@ -53,7 +53,7 @@ impl SandboxRuntime {
         settings: &ResolvedSandboxVm,
         network: Option<&super::config::ValidatedNetworkConfig>,
     ) -> Result<Arc<Self>> {
-        let backend = local_backend();
+        let backend = local_backend()?;
         ensure!(
             backend.kind() == BackendKind::Local,
             "SANDBOX Runner requires the local microsandbox backend"
@@ -333,10 +333,13 @@ where
     finished.get_or_init(cleanup).await;
 }
 
-fn local_backend() -> Arc<dyn Backend> {
-    LOCAL_BACKEND
-        .get_or_init(|| Arc::new(LocalBackend::lazy()))
-        .clone()
+fn local_backend() -> Result<Arc<dyn Backend>> {
+    if let Some(backend) = LOCAL_BACKEND.get() {
+        return Ok(backend.clone());
+    }
+    let backend: Arc<dyn Backend> = Arc::new(LocalBackend::lazy()?);
+    let _ = LOCAL_BACKEND.set(backend.clone());
+    Ok(LOCAL_BACKEND.get().cloned().unwrap_or(backend))
 }
 
 fn sdk_mount(mount: &ResolvedMount) -> Result<microsandbox::sandbox::VolumeMount> {
