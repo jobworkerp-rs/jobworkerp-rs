@@ -1050,6 +1050,7 @@ mod tests {
             position: "/do/task1".to_string(),
             status: ProtoWorkflowStatus::Completed as i32,
             error_message: None,
+            child_execution_receipts: None,
         };
 
         let state = build_workflow_state(&result);

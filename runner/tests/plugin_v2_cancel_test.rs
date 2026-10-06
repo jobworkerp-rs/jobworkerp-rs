@@ -462,6 +462,7 @@ async fn v2_plugin_setup_client_stream_channel_v2_delivers_is_final() -> Result<
         .send(FeedData {
             data: b"a".to_vec(),
             is_final: false,
+            pty_resize_control: None,
         })
         .await
         .expect("send first chunk");
@@ -469,6 +470,7 @@ async fn v2_plugin_setup_client_stream_channel_v2_delivers_is_final() -> Result<
         .send(FeedData {
             data: b"b".to_vec(),
             is_final: false,
+            pty_resize_control: None,
         })
         .await
         .expect("send second chunk");
@@ -476,6 +478,7 @@ async fn v2_plugin_setup_client_stream_channel_v2_delivers_is_final() -> Result<
         .send(FeedData {
             data: b"c".to_vec(),
             is_final: true,
+            pty_resize_control: None,
         })
         .await
         .expect("send final chunk");

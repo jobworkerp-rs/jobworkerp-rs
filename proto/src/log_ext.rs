@@ -248,6 +248,7 @@ mod tests {
     fn job_result_summary_delegates_to_data_summary() {
         let jr = JobResult {
             id: Some(JobResultId { value: 99 }),
+            sandbox_execution_observation: None,
             data: Some(sample_job_result_data(1024, 0)),
             metadata: HashMap::from([("k".to_string(), "v".to_string())]),
         };
@@ -266,6 +267,7 @@ mod tests {
     fn job_result_summary_handles_missing_data_and_id() {
         let jr = JobResult {
             id: None,
+            sandbox_execution_observation: None,
             data: None,
             metadata: HashMap::new(),
         };
@@ -282,6 +284,7 @@ mod tests {
 
         let jr = JobResult {
             id: Some(JobResultId { value: 1 }),
+            sandbox_execution_observation: None,
             data: None,
             metadata: HashMap::new(),
         };

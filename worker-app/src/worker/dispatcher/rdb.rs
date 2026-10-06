@@ -2,6 +2,7 @@ use super::JobDispatcher;
 use crate::worker::instance_session::{UseWorkerInstanceSession, WorkerInstanceSessionHandle};
 use crate::worker::result_processor::ResultProcessorImpl;
 use crate::worker::result_processor::UseResultProcessor;
+use crate::worker::result_processor::sandbox_observation::pair_raw_observation;
 use crate::worker::runner::JobRunner;
 use crate::worker::runner::map::RunnerFactoryWithPoolMap;
 use crate::worker::runner::map::UseRunnerPoolMap;
@@ -407,16 +408,27 @@ pub trait RdbJobDispatcher:
                         )
                         .into());
                     }
-                    let mut res = self.run_job(&runner_data, &wid, &w, job).await;
-                    super::ensure_job_result_id(self.id_generator(), &mut res.0)?;
+                    let mut res = self
+                        .run_job_with_observation(&runner_data, &wid, &w, job)
+                        .await;
+                    super::ensure_job_result_id(self.id_generator(), &mut res.job_result)?;
                     tracing::debug!(
                         "job completed. result: {}",
-                        proto::log_ext::JobResultSummary(&res.0)
+                        proto::log_ext::JobResultSummary(&res.job_result)
                     );
                     // store result
+                    let sandbox_observation = pair_raw_observation(
+                        res.sandbox_binding.take(),
+                        res.sandbox_observation.take(),
+                    );
                     let (result, completion_rx) = self
                         .result_processor()
-                        .process_result(res.0, res.1, w)
+                        .process_result_with_observation(
+                            res.job_result,
+                            res.stream,
+                            w,
+                            sandbox_observation,
+                        )
                         .await
                         .inspect_err(|e| {
                             tracing::error!(

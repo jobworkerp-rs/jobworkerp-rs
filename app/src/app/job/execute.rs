@@ -799,7 +799,7 @@ pub trait UseJobExecutor:
         if let JobResult {
             id: _jid,
             data: Some(jdata),
-            metadata: _,
+            ..
         } = job_result
         {
             if jdata.status() == ResultStatus::Success && jdata.output.is_some() {

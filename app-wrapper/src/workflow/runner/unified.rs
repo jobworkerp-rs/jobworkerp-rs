@@ -59,6 +59,66 @@ pub struct WorkflowUnifiedRunnerImpl {
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
+/// Structured, server-created details for a workflow runner error.
+///
+/// The contained `WorkflowResult` is available only by downcasting the
+/// in-process runner error; it is not encoded as a successful runner result or
+/// appended to the guest-visible diagnostic string.
+pub struct WorkflowExecutionFailure {
+    workflow_result: WorkflowResult,
+    original_cause: Box<crate::workflow::definition::workflow::Error>,
+}
+
+impl WorkflowExecutionFailure {
+    fn new(
+        workflow_result: WorkflowResult,
+        original_cause: Box<crate::workflow::definition::workflow::Error>,
+    ) -> Self {
+        Self {
+            workflow_result,
+            original_cause,
+        }
+    }
+
+    /// The server-produced workflow status and receipt envelope for this
+    /// failed execution. Callers must continue to treat the runner outcome as
+    /// an error, not as a successful `WorkflowResult`.
+    pub fn workflow_result(&self) -> &WorkflowResult {
+        &self.workflow_result
+    }
+
+    /// Original workflow failure preserved independently of its diagnostic
+    /// formatting, for internal error transport and classification.
+    pub fn original_cause(&self) -> &crate::workflow::definition::workflow::Error {
+        &self.original_cause
+    }
+}
+
+impl std::fmt::Debug for WorkflowExecutionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkflowExecutionFailure")
+            .field("original_cause", &self.original_cause)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for WorkflowExecutionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Failed to execute workflow: {:?}",
+            self.original_cause
+        )
+    }
+}
+
+impl std::error::Error for WorkflowExecutionFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.original_cause.as_ref())
+    }
+}
+
 /// Merge settings and args workflow contexts. Settings keys take precedence on conflict.
 fn merge_workflow_contexts(
     settings_context: &Option<Arc<serde_json::Value>>,
@@ -173,6 +233,26 @@ impl WorkflowUnifiedRunnerImpl {
     /// user-initiated cancel.
     const CANCEL_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+    fn workflow_result_from_context(
+        context: &crate::workflow::execute::context::WorkflowContext,
+    ) -> WorkflowResult {
+        WorkflowResult {
+            id: context.id.to_string(),
+            output: serde_json::to_string(&context.output).unwrap_or_default(),
+            position: context.position.as_json_pointer(),
+            status: WorkflowStatus::from_str_name(context.status.to_string().as_str())
+                .unwrap_or(WorkflowStatus::Faulted) as i32,
+            error_message: if context.status
+                == crate::workflow::execute::context::WorkflowStatus::Completed
+            {
+                None
+            } else {
+                context.output.as_ref().map(|output| output.to_string())
+            },
+            child_execution_receipts: context.child_execution_receipts(),
+        }
+    }
+
     /// Take a snapshot of the workflow context for cases where the
     /// stream did not yield a final context before the cancel-drain
     /// deadline. We must synthesise a `Cancelled` `WorkflowResult` from
@@ -207,6 +287,7 @@ impl WorkflowUnifiedRunnerImpl {
                 "Workflow was cancelled; in-flight tasks did not finish within the drain window"
                     .to_string(),
             ),
+            child_execution_receipts: ctx.child_execution_receipts(),
         })
     }
 
@@ -238,6 +319,92 @@ impl WorkflowUnifiedRunnerImpl {
         args_context: &Option<String>,
     ) -> Result<Arc<serde_json::Value>> {
         merge_workflow_contexts(&self.settings_workflow_context, args_context)
+    }
+
+    fn workflow_execution_error(
+        context: &crate::workflow::execute::context::WorkflowContext,
+        cause: Box<crate::workflow::definition::workflow::Error>,
+    ) -> anyhow::Error {
+        let failure =
+            WorkflowExecutionFailure::new(Self::workflow_result_from_context(context), cause);
+        let runner_error = JobWorkerError::RuntimeError(failure.to_string());
+        // Keep JobWorkerError as an anyhow cause so existing worker retry and
+        // failure classification remains unchanged, while exposing the typed
+        // workflow payload as an error context for internal downcasting.
+        anyhow::Error::new(runner_error).context(failure)
+    }
+
+    /// Collects the terminal workflow result without converting a yielded
+    /// workflow error into a successful protobuf result. Kept separate from
+    /// argument resolution to make the worker-error handoff path testable with
+    /// an executor that already has server-observed child receipts.
+    async fn execute_workflow_result(
+        executor: Arc<WorkflowExecutor>,
+        cx: Arc<opentelemetry::Context>,
+        cancel_token: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<WorkflowResult> {
+        let workflow_stream = executor.execute_workflow(cx);
+        pin_mut!(workflow_stream);
+
+        let mut final_context = None;
+        let mut cancelled = false;
+        loop {
+            let next = tokio::select! {
+                biased;
+                _ = Self::await_cancel(&cancel_token) => {
+                    executor.cancel().await;
+                    cancelled = true;
+                    // Bounded drain: give in-flight tasks a short window to
+                    // unwind so already-running children that observe the
+                    // broadcast cancel can publish a Cancelled task result.
+                    let drain_deadline = tokio::time::Instant::now() + Self::CANCEL_DRAIN_TIMEOUT;
+                    while let Ok(Some(result)) = tokio::time::timeout_at(
+                        drain_deadline,
+                        workflow_stream.next(),
+                    ).await {
+                        match result {
+                            Ok(context) => final_context = Some(context),
+                            Err(error) => {
+                                let failure_context = match final_context.take() {
+                                    Some(context) => context,
+                                    None => Arc::new(executor.workflow_context.read().await.clone()),
+                                };
+                                return Err(Self::workflow_execution_error(&failure_context, error));
+                            }
+                        }
+                    }
+                    break;
+                }
+                item = workflow_stream.next() => item,
+            };
+            match next {
+                Some(Ok(context)) => {
+                    final_context = Some(context);
+                }
+                Some(Err(error)) => {
+                    let failure_context = match final_context.take() {
+                        Some(context) => context,
+                        None => Arc::new(executor.workflow_context.read().await.clone()),
+                    };
+                    return Err(Self::workflow_execution_error(&failure_context, error));
+                }
+                None => break,
+            }
+        }
+
+        if let Some(context) = final_context {
+            tracing::info!("Workflow result: {}", context.output_string());
+            Ok(Self::workflow_result_from_context(&context))
+        } else if cancelled {
+            // Drain window elapsed without any context being yielded.
+            tracing::warn!(
+                "Workflow cancel drain window elapsed without a final context; \
+                 synthesising Cancelled result from executor state"
+            );
+            Self::synthesize_cancelled_result_from_executor(&executor).await
+        } else {
+            Err(anyhow!("No workflow context was returned"))
+        }
     }
 
     /// Execute workflow run (implementation for 'run' method)
@@ -302,81 +469,7 @@ impl WorkflowUnifiedRunnerImpl {
         // delete_job to every in-flight child job.
         let cancel_token = self.optional_cancel_token().await;
 
-        let workflow_stream = executor.execute_workflow(Arc::new(cx.clone()));
-        pin_mut!(workflow_stream);
-
-        let mut final_context = None;
-        let mut cancelled = false;
-        loop {
-            let next = tokio::select! {
-                biased;
-                _ = Self::await_cancel(&cancel_token) => {
-                    executor.cancel().await;
-                    cancelled = true;
-                    // Bounded drain: give in-flight tasks a short window to
-                    // unwind so already-running children that observe the
-                    // broadcast cancel can publish a Cancelled task result.
-                    // Tasks still blocked on a Pending child's
-                    // subscribe_result do NOT block this loop — the per-job
-                    // direct-response timeout (workflow defaults are
-                    // routinely tens of minutes) would otherwise stall the
-                    // user-visible cancel. See `synthesize_cancelled_result_from_executor`
-                    // for the fallback path when the drain window elapses.
-                    let drain_deadline = tokio::time::Instant::now() + Self::CANCEL_DRAIN_TIMEOUT;
-                    while let Ok(Some(result)) = tokio::time::timeout_at(
-                        drain_deadline,
-                        workflow_stream.next(),
-                    ).await {
-                        if let Ok(context) = result {
-                            final_context = Some(context);
-                        }
-                    }
-                    break;
-                }
-                item = workflow_stream.next() => item,
-            };
-            match next {
-                Some(Ok(context)) => {
-                    final_context = Some(context);
-                }
-                Some(Err(e)) => {
-                    return Err(JobWorkerError::RuntimeError(format!(
-                        "Failed to execute workflow: {e:?}"
-                    ))
-                    .into());
-                }
-                None => break,
-            }
-        }
-
-        let r = if let Some(res) = final_context {
-            tracing::info!("Workflow result: {}", res.output_string());
-            WorkflowResult {
-                id: res.id.to_string(),
-                output: serde_json::to_string(&res.output)?,
-                position: res.position.as_json_pointer(),
-                status: WorkflowStatus::from_str_name(res.status.to_string().as_str())
-                    .unwrap_or(WorkflowStatus::Faulted) as i32,
-                error_message: if res.status == WorkflowStatus::Completed.into() {
-                    None
-                } else {
-                    res.output.as_ref().map(|o| o.to_string())
-                },
-            }
-        } else if cancelled {
-            // Drain window elapsed without any context being yielded.
-            // Honour the cancellation by returning a synthetic Cancelled
-            // result built off the executor's current workflow_context —
-            // never let cancellation hang the outer job on a missing
-            // result.
-            tracing::warn!(
-                "Workflow cancel drain window elapsed without a final context; \
-                 synthesising Cancelled result from executor state"
-            );
-            Self::synthesize_cancelled_result_from_executor(&executor).await?
-        } else {
-            return Err(anyhow!("No workflow context was returned"));
-        };
+        let r = Self::execute_workflow_result(executor, Arc::new(cx.clone()), cancel_token).await?;
         // Stamp final output onto the root span before its Context is dropped.
         use opentelemetry::trace::TraceContextExt;
         cx.span().set_attribute(opentelemetry::KeyValue::new(
@@ -506,26 +599,14 @@ impl WorkflowUnifiedRunnerImpl {
             Arc::new(std::sync::Mutex::new(None));
         let last_output_for_then = last_output.clone();
         let executor_for_tail = executor.clone();
+        let executor_for_items = executor.clone();
         let output_stream = workflow_stream
             .then(move |result| {
                 let last_output = last_output_for_then.clone();
+                let executor_for_items = executor_for_items.clone();
                 async move {
                     let workflow_result = match result {
-                        Ok(context) => WorkflowResult {
-                            id: context.id.to_string(),
-                            output: serde_json::to_string(&context.output).unwrap_or_default(),
-                            position: context.position.as_json_pointer(),
-                            status: WorkflowStatus::from_str_name(
-                                context.status.to_string().as_str(),
-                            )
-                            .unwrap_or(WorkflowStatus::Faulted)
-                                as i32,
-                            error_message: if context.status == WorkflowStatus::Completed.into() {
-                                None
-                            } else {
-                                context.output.as_ref().map(|o| o.to_string())
-                            },
-                        },
+                        Ok(context) => Self::workflow_result_from_context(&context),
                         Err(e) => {
                             tracing::error!("Error in workflow execution: {:?}", e);
                             WorkflowResult {
@@ -534,6 +615,11 @@ impl WorkflowUnifiedRunnerImpl {
                                 position: e.as_ref().instance.clone().unwrap_or_default(),
                                 status: WorkflowStatus::Faulted as i32,
                                 error_message: Some(format!("Failed to execute workflow: {e}")),
+                                child_execution_receipts: executor_for_items
+                                    .workflow_context
+                                    .read()
+                                    .await
+                                    .child_execution_receipts(),
                             }
                         }
                     };
@@ -923,5 +1009,221 @@ mod tests {
         assert_eq!(r.status, WorkflowStatus::Cancelled as i32);
         assert_eq!(r.output, "");
         assert!(r.error_message.is_some());
+    }
+
+    #[test]
+    fn workflow_results_propagate_private_receipts_for_all_terminal_statuses() {
+        use crate::workflow::execute::context::WorkflowContext;
+        use jobworkerp_runner::jobworkerp::runner::{
+            ChildDurableLookupState, ChildExecutionReceipt, ChildProducerEof,
+        };
+
+        for status in [
+            crate::workflow::execute::context::WorkflowStatus::Completed,
+            crate::workflow::execute::context::WorkflowStatus::Faulted,
+            crate::workflow::execute::context::WorkflowStatus::Cancelled,
+        ] {
+            let mut context = WorkflowContext::new_empty();
+            context.status = status;
+            context.record_child_execution_receipt(ChildExecutionReceipt {
+                workflow_execution_id: context.id.to_string(),
+                task_position: "/sandbox".to_string(),
+                child_job_id: 501,
+                worker_id: Some(11),
+                worker_name: "sandbox-worker".to_string(),
+                runner_id: Some(22),
+                runner_name: "SANDBOX".to_string(),
+                method_using: Some("run".to_string()),
+                settings_sha256: vec![1; 32],
+                method_schema_sha256: vec![2; 32],
+                arguments_sha256: vec![3; 32],
+                timeout_sec: Some(30),
+                cli_exit_code: Some(7),
+                end_received: true,
+                protocol_failure: None,
+                producer_eof: ChildProducerEof::Unknown as i32,
+                child_job_result_id: None,
+                child_job_result_status: None,
+                durable_lookup_state: ChildDurableLookupState::Unknown as i32,
+                store_success: Some(true),
+                store_failure: Some(true),
+                broadcast_results: Some(true),
+                sandbox_observation: None,
+            });
+
+            let result = WorkflowUnifiedRunnerImpl::workflow_result_from_context(&context);
+            let receipts = result.child_execution_receipts.as_ref().unwrap();
+            assert_eq!(receipts.receipts.len(), 1);
+            assert_eq!(receipts.receipts[0].cli_exit_code, Some(7));
+            assert_eq!(
+                result.status,
+                WorkflowStatus::from_str_name(context.status.to_string().as_str()).unwrap() as i32
+            );
+
+            let decoded = WorkflowResult::decode(result.encode_to_vec().as_slice()).unwrap();
+            assert_eq!(decoded.id, context.id.to_string());
+            assert_eq!(decoded.status, result.status);
+            assert_eq!(decoded.child_execution_receipts.unwrap().receipts.len(), 1);
+        }
+    }
+
+    #[test]
+    fn faulted_workflow_receipts_remain_on_runner_error_not_success_output() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::workflow::execute::context::WorkflowContext;
+            use jobworkerp_runner::jobworkerp::runner::{
+                ChildDurableLookupState, ChildExecutionReceipt, ChildProducerEof,
+            };
+
+            let workflow = Arc::new(
+                serde_json::from_value::<WorkflowSchema>(json!({
+                    "document": {
+                        "dsl": "1.0.0",
+                        "namespace": "test",
+                        "name": "faulted-receipt-test",
+                        "version": "1.0.0"
+                    },
+                    "input": {
+                        "schema": {
+                            "document": {
+                                "type": "object",
+                                "required": ["required_value"],
+                                "properties": {"required_value": {"type": "string"}}
+                            }
+                        }
+                    },
+                    "do": [{"task": {"set": {"should_not_run": true}}}]
+                }))
+                .expect("workflow schema is valid"),
+            );
+            let app_module = Arc::new(app::module::test::create_hybrid_test_app().await.unwrap());
+            let workflow_context =
+                WorkflowContext::new(&workflow, Arc::new(json!({})), Arc::new(json!({})), None);
+            workflow_context.record_child_execution_receipt(ChildExecutionReceipt {
+                workflow_execution_id: workflow_context.id.to_string(),
+                task_position: "/ROOT/do/previous_sandbox".to_string(),
+                child_job_id: 777,
+                worker_id: Some(11),
+                worker_name: "sandbox-worker".to_string(),
+                runner_id: Some(22),
+                runner_name: "SANDBOX".to_string(),
+                method_using: Some("run".to_string()),
+                settings_sha256: vec![1; 32],
+                method_schema_sha256: vec![2; 32],
+                arguments_sha256: vec![3; 32],
+                timeout_sec: Some(30),
+                cli_exit_code: Some(7),
+                end_received: true,
+                protocol_failure: None,
+                producer_eof: ChildProducerEof::Unknown as i32,
+                child_job_result_id: None,
+                child_job_result_status: None,
+                durable_lookup_state: ChildDurableLookupState::Unknown as i32,
+                store_success: Some(true),
+                store_failure: Some(true),
+                broadcast_results: Some(true),
+                sandbox_observation: None,
+            });
+            let executor = Arc::new(WorkflowExecutor {
+                default_task_timeout_sec: 30,
+                job_executors: Arc::new(app::app::job::execute::JobExecutorWrapper::new(
+                    app_module,
+                )),
+                workflow,
+                workflow_context: Arc::new(tokio::sync::RwLock::new(workflow_context)),
+                execution_id: None,
+                metadata: Arc::new(HashMap::new()),
+                checkpoint_repository: None,
+            });
+
+            let error = WorkflowUnifiedRunnerImpl::execute_workflow_result(
+                executor,
+                Arc::new(opentelemetry::Context::current()),
+                None,
+            )
+            .await
+            .expect_err("input validation must remain a runner error");
+
+            let failure = error
+                .downcast_ref::<WorkflowExecutionFailure>()
+                .expect("workflow error should carry a typed internal payload");
+            let result = failure.workflow_result();
+            assert_eq!(result.status, WorkflowStatus::Faulted as i32);
+            let receipts = result.child_execution_receipts.as_ref().unwrap();
+            assert_eq!(receipts.receipts.len(), 1);
+            assert_eq!(receipts.receipts[0].child_job_id, 777);
+            assert_eq!(
+                receipts.receipts[0].durable_lookup_state,
+                ChildDurableLookupState::Unknown as i32
+            );
+            assert!(
+                failure
+                    .original_cause()
+                    .to_string()
+                    .contains("Workflow input validation failed")
+            );
+            assert!(std::error::Error::source(failure).is_some());
+            assert!(matches!(
+                error.downcast_ref::<JobWorkerError>(),
+                Some(JobWorkerError::RuntimeError(_))
+            ));
+            assert!(!error.to_string().contains("child_execution_receipts"));
+            assert!(!error.to_string().contains("777"));
+        });
+    }
+
+    #[test]
+    fn new_workflow_result_decodes_legacy_fields_without_changing_them() {
+        #[derive(Clone, PartialEq, prost::Message)]
+        struct LegacyWorkflowResult {
+            #[prost(string, tag = "1")]
+            id: String,
+            #[prost(string, tag = "2")]
+            output: String,
+            #[prost(string, tag = "3")]
+            position: String,
+            #[prost(int32, tag = "4")]
+            status: i32,
+            #[prost(string, optional, tag = "5")]
+            error_message: Option<String>,
+        }
+
+        let legacy = WorkflowResult {
+            id: "workflow-old-client".to_string(),
+            output: "{\"ok\":true}".to_string(),
+            position: "/task".to_string(),
+            status: WorkflowStatus::Faulted as i32,
+            error_message: Some("legacy error".to_string()),
+            child_execution_receipts: None,
+        };
+        let decoded = WorkflowResult::decode(legacy.encode_to_vec().as_slice()).unwrap();
+
+        assert_eq!(decoded.id, "workflow-old-client");
+        assert_eq!(decoded.output, "{\"ok\":true}");
+        assert_eq!(decoded.position, "/task");
+        assert_eq!(decoded.status, WorkflowStatus::Faulted as i32);
+        assert_eq!(decoded.error_message.as_deref(), Some("legacy error"));
+        assert!(decoded.child_execution_receipts.is_none());
+
+        let with_receipts = WorkflowResult {
+            child_execution_receipts: Some(
+                jobworkerp_runner::jobworkerp::runner::ChildExecutionReceipts {
+                    schema_version: 1,
+                    receipts: Vec::new(),
+                    collection_incomplete: true,
+                },
+            ),
+            ..legacy
+        };
+        let decoded_by_legacy =
+            LegacyWorkflowResult::decode(with_receipts.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded_by_legacy.id, "workflow-old-client");
+        assert_eq!(decoded_by_legacy.output, "{\"ok\":true}");
+        assert_eq!(decoded_by_legacy.position, "/task");
+        assert_eq!(decoded_by_legacy.status, WorkflowStatus::Faulted as i32);
+        assert_eq!(
+            decoded_by_legacy.error_message.as_deref(),
+            Some("legacy error")
+        );
     }
 }

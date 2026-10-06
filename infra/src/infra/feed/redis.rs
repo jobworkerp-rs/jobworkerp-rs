@@ -6,7 +6,12 @@ use prost::Message;
 use proto::jobworkerp::data::{FeedDataTransport, JobId};
 use std::time::Duration;
 
-use super::{FeedPublisher, job_feed_buf_key};
+use super::{FeedPublisher, job_feed_buf_key, validate_feed_data_transport};
+
+fn encode_feed_frame(msg: &FeedDataTransport) -> Result<Vec<u8>> {
+    validate_feed_data_transport(msg)?;
+    Ok(msg.encode_to_vec())
+}
 
 /// Redis List based feed publisher for Scalable mode.
 /// Publishes feed data to `job_feed_buf:{job_id}` list via RPUSH.
@@ -29,9 +34,20 @@ impl RedisFeedPublisher {
 #[async_trait]
 impl FeedPublisher for RedisFeedPublisher {
     async fn publish_feed(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
+        self.publish_frame(
+            job_id,
+            FeedDataTransport {
+                data,
+                is_final,
+                pty_resize_control: None,
+            },
+        )
+        .await
+    }
+
+    async fn publish_frame(&self, job_id: &JobId, msg: FeedDataTransport) -> Result<()> {
         let buf_key = job_feed_buf_key(job_id);
-        let msg = FeedDataTransport { data, is_final };
-        let serialized = msg.encode_to_vec();
+        let serialized = encode_feed_frame(&msg)?;
         // TTL is refreshed on every publish_feed call (EXPIRE in the pipeline below),
         // so the key only expires when no data has been published for `ttl_secs`.
         // This prevents stale keys from accumulating while keeping the list alive
@@ -57,6 +73,24 @@ mod tests {
     use infra_utils::infra::redis::new_redis_client;
     use infra_utils::infra::test::REDIS_CONFIG;
     use redis::AsyncCommands;
+
+    #[test]
+    fn encoded_resize_frame_survives_the_redis_transport_shape() {
+        let frame = FeedDataTransport {
+            pty_resize_control: Some(proto::jobworkerp::data::PtyResizeControl {
+                rows: 29,
+                cols: 132,
+            }),
+            ..Default::default()
+        };
+
+        let decoded =
+            FeedDataTransport::decode(encode_feed_frame(&frame).unwrap().as_slice()).unwrap();
+        let control = decoded.pty_resize_control.unwrap();
+        assert_eq!((control.rows, control.cols), (29, 132));
+        assert!(decoded.data.is_empty());
+        assert!(!decoded.is_final);
+    }
 
     fn make_publisher() -> RedisFeedPublisher {
         let client = new_redis_client(REDIS_CONFIG.clone()).unwrap();

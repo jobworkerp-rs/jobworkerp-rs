@@ -99,6 +99,11 @@ message MethodSchema {
   // Protobuf schema definition for client streaming data.
   // If empty, streaming data is treated as opaque bytes.
   optional string client_stream_data_proto = 6;
+
+  // Whether this method accepts typed PTY resize controls on its client stream.
+  // This capability is independent of client_stream_data_proto, which remains
+  // the descriptor for opaque application feed bytes.
+  bool supports_pty_resize = 7;
 }
 
 // # Method JSON Schema Map

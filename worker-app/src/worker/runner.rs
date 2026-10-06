@@ -2,6 +2,7 @@ pub mod feed_bridge;
 pub mod map;
 pub mod pool;
 pub mod result;
+pub mod sandbox_observation;
 pub mod stream_guard;
 
 #[cfg(test)]
@@ -10,6 +11,10 @@ mod integration_tests;
 use self::map::UseRunnerPoolMap;
 use self::pool::{RunnerHandle, RunnerPoolManagerImpl};
 use self::result::RunnerResultHandler;
+use self::sandbox_observation::{
+    RawSandboxObservationReceiver, SandboxObservationDispatchBinding,
+    capture_native_sandbox_dispatch_binding, observe_raw_sandbox_stream,
+};
 use self::stream_guard::{
     FeedSenderGuard, IdleTimeoutStream, StreamWithCancelGuard, StreamWithFeedGuard,
     StreamWithPoolGuard,
@@ -67,6 +72,16 @@ pub enum RunnerOutcome {
     #[default]
     Normal,
     TimedOut,
+}
+
+/// The regular runner result/stream plus an optional proof receiver for a raw,
+/// typed-native SANDBOX stream. The observer does not retain the runner or its
+/// pool handle; it only receives the returned output stream.
+pub struct ObservedJobRun {
+    pub job_result: JobResult,
+    pub stream: Option<BoxStream<'static, ResultOutputItem>>,
+    pub sandbox_observation: Option<RawSandboxObservationReceiver>,
+    pub sandbox_binding: Option<SandboxObservationDispatchBinding>,
 }
 
 /// run_and_result / run_and_stream signal a timeout by returning
@@ -367,6 +382,23 @@ pub trait JobRunner:
         worker_data: &WorkerData,
         job: Job,
     ) -> (JobResult, Option<BoxStream<'static, ResultOutputItem>>) {
+        let run = self
+            .run_job_with_observation(runner_data, worker_id, worker_data, job)
+            .await;
+        (run.job_result, run.stream)
+    }
+
+    /// Execute a job and, only for the typed native SANDBOX runner, return a
+    /// one-shot receiver for facts observed from its unwrapped raw stream.
+    /// Existing callers should continue to use `run_job` unless they own the
+    /// durable-observation handoff.
+    async fn run_job_with_observation(
+        &'static self,
+        runner_data: &RunnerData,
+        worker_id: &WorkerId,
+        worker_data: &WorkerData,
+        job: Job,
+    ) -> ObservedJobRun {
         tracing::debug!("run_job: {:?}, worker: {:?}", &job.id, &worker_id);
         // XXX for keeping pool object
         if worker_data.use_static {
@@ -397,16 +429,31 @@ pub trait JobRunner:
 
                         if let Err(error) = set_sandbox_job_context(&mut r, job.id.as_ref()) {
                             drop(r);
-                            return (
-                                self.handle_error_option(worker_data, job, Some(error)),
-                                None,
-                            );
+                            return ObservedJobRun {
+                                job_result: self.handle_error_option(worker_data, job, Some(error)),
+                                stream: None,
+                                sandbox_observation: None,
+                                sandbox_binding: None,
+                            };
                         }
 
                         // Check feed support and set up feed channel
                         let using = job.data.as_ref().and_then(|d| d.using.clone());
                         let using_ref = using.as_deref();
-                        let is_sandbox = pool::sandbox_runner_mut(&mut **r).is_some();
+                        let (is_sandbox, sandbox_binding) = {
+                            let native_sandbox = pool::sandbox_runner_mut(&mut **r);
+                            let is_sandbox = native_sandbox.is_some();
+                            let binding = native_sandbox.and_then(|sandbox| {
+                                capture_native_sandbox_dispatch_binding(
+                                    &job,
+                                    worker_id,
+                                    worker_data,
+                                    runner_data,
+                                    sandbox,
+                                )
+                            });
+                            (is_sandbox, binding)
+                        };
                         let skip_idle_timeout = should_skip_idle_timeout(is_sandbox, using_ref);
 
                         // Register client input before run_stream starts or creates a VM.
@@ -420,10 +467,16 @@ pub trait JobRunner:
                             Ok(registration) => registration,
                             Err(error) => {
                                 drop(r);
-                                return (
-                                    self.handle_error_option(worker_data, job, Some(error)),
-                                    None,
-                                );
+                                return ObservedJobRun {
+                                    job_result: self.handle_error_option(
+                                        worker_data,
+                                        job,
+                                        Some(error),
+                                    ),
+                                    stream: None,
+                                    sandbox_observation: None,
+                                    sandbox_binding: None,
+                                };
                             }
                         };
 
@@ -453,6 +506,21 @@ pub trait JobRunner:
                         let cancel_token_for_idle = cancellation_token_from_runner(&**r).await;
                         drop(r); // unlock
 
+                        // This is intentionally before idle-timeout and pool
+                        // guards: EOF is witnessed only when the raw native
+                        // source itself returns None.
+                        let (stream, sandbox_observation) = if is_sandbox {
+                            match stream {
+                                Some(stream) => {
+                                    let (stream, receiver) = observe_raw_sandbox_stream(stream);
+                                    (Some(stream), Some(receiver))
+                                }
+                                None => (None, None),
+                            }
+                        } else {
+                            (stream, None)
+                        };
+                        let has_raw_observation = sandbox_observation.is_some();
                         let final_stream = if let Some(s) = stream {
                             let s = maybe_wrap_stream_idle_timeout(
                                 s,
@@ -479,7 +547,14 @@ pub trait JobRunner:
                             None
                         };
 
-                        (job_result, final_stream)
+                        ObservedJobRun {
+                            job_result,
+                            stream: final_stream,
+                            sandbox_observation,
+                            sandbox_binding: has_raw_observation
+                                .then_some(sandbox_binding)
+                                .flatten(),
+                        }
                     } else {
                         // Non-streaming: Existing behavior (immediate Pool return)
                         let mut r = runner.lock().await;
@@ -487,10 +562,12 @@ pub trait JobRunner:
 
                         if let Err(error) = set_sandbox_job_context(&mut r, job.id.as_ref()) {
                             drop(r);
-                            return (
-                                self.handle_error_option(worker_data, job, Some(error)),
-                                None,
-                            );
+                            return ObservedJobRun {
+                                job_result: self.handle_error_option(worker_data, job, Some(error)),
+                                stream: None,
+                                sandbox_observation: None,
+                                sandbox_binding: None,
+                            };
                         }
 
                         let (job_result, stream, outcome) =
@@ -502,11 +579,26 @@ pub trait JobRunner:
                         // A timed-out plugin keeps its lock on a blocking thread, so
                         // discard the instance; otherwise it returns to the pool on drop.
                         detach_runner_if(detach, runner);
-                        (job_result, stream)
+                        ObservedJobRun {
+                            job_result,
+                            stream,
+                            sandbox_observation: None,
+                            sandbox_binding: None,
+                        }
                     }
                 }
-                Ok(None) => (self.handle_error_option(worker_data, job, None), None),
-                Err(e) => (self.handle_error_option(worker_data, job, Some(e)), None),
+                Ok(None) => ObservedJobRun {
+                    job_result: self.handle_error_option(worker_data, job, None),
+                    stream: None,
+                    sandbox_observation: None,
+                    sandbox_binding: None,
+                },
+                Err(e) => ObservedJobRun {
+                    job_result: self.handle_error_option(worker_data, job, Some(e)),
+                    stream: None,
+                    sandbox_observation: None,
+                    sandbox_binding: None,
+                },
             }
         } else {
             let rres = self
@@ -519,10 +611,12 @@ pub trait JobRunner:
 
                     let mut runner = runner;
                     if let Err(error) = set_sandbox_job_context(&mut runner, job.id.as_ref()) {
-                        return (
-                            self.handle_error_option(worker_data, job, Some(error)),
-                            None,
-                        );
+                        return ObservedJobRun {
+                            job_result: self.handle_error_option(worker_data, job, Some(error)),
+                            stream: None,
+                            sandbox_observation: None,
+                            sandbox_binding: None,
+                        };
                     }
 
                     // Streaming determination
@@ -539,7 +633,20 @@ pub trait JobRunner:
                         let cancel_helper_for_idle = cancel_helper.clone();
 
                         let using = job.data.as_ref().and_then(|d| d.using.as_deref());
-                        let is_sandbox = pool::sandbox_runner_mut(&mut **runner_guard).is_some();
+                        let (is_sandbox, sandbox_binding) = {
+                            let native_sandbox = pool::sandbox_runner_mut(&mut **runner_guard);
+                            let is_sandbox = native_sandbox.is_some();
+                            let binding = native_sandbox.and_then(|sandbox| {
+                                capture_native_sandbox_dispatch_binding(
+                                    &job,
+                                    worker_id,
+                                    worker_data,
+                                    runner_data,
+                                    sandbox,
+                                )
+                            });
+                            (is_sandbox, binding)
+                        };
                         let skip_idle_timeout = should_skip_idle_timeout(is_sandbox, using);
                         let feed_registration = match register_client_feed_sender_guard(
                             &mut runner_guard,
@@ -551,10 +658,16 @@ pub trait JobRunner:
                             Ok(registration) => registration,
                             Err(error) => {
                                 drop(runner_guard);
-                                return (
-                                    self.handle_error_option(worker_data, job, Some(error)),
-                                    None,
-                                );
+                                return ObservedJobRun {
+                                    job_result: self.handle_error_option(
+                                        worker_data,
+                                        job,
+                                        Some(error),
+                                    ),
+                                    stream: None,
+                                    sandbox_observation: None,
+                                    sandbox_binding: None,
+                                };
                             }
                         };
 
@@ -574,6 +687,20 @@ pub trait JobRunner:
                             (is_sandbox && !skip_idle_timeout).then(|| runner.clone());
                         drop(runner_guard);
 
+                        // Observe the raw native source before any outer
+                        // timeout/cancellation wrapper can synthesize an End.
+                        let (stream, sandbox_observation) = if is_sandbox {
+                            match stream {
+                                Some(stream) => {
+                                    let (stream, receiver) = observe_raw_sandbox_stream(stream);
+                                    (Some(stream), Some(receiver))
+                                }
+                                None => (None, None),
+                            }
+                        } else {
+                            (stream, None)
+                        };
+                        let has_raw_observation = sandbox_observation.is_some();
                         let final_stream = if let Some(stream) = stream {
                             let mut stream = maybe_wrap_stream_idle_timeout(
                                 stream,
@@ -599,16 +726,33 @@ pub trait JobRunner:
                             None
                         };
 
-                        (job_result, final_stream)
+                        ObservedJobRun {
+                            job_result,
+                            stream: final_stream,
+                            sandbox_observation,
+                            sandbox_binding: has_raw_observation
+                                .then_some(sandbox_binding)
+                                .flatten(),
+                        }
                     } else {
                         // Non-streaming: Existing behavior
                         // Non-static runners are not pooled, so timeout detach does not apply.
                         let (job_result, stream, _outcome) =
                             self.run_job_inner(worker_data, job, &mut runner).await;
-                        (job_result, stream)
+                        ObservedJobRun {
+                            job_result,
+                            stream,
+                            sandbox_observation: None,
+                            sandbox_binding: None,
+                        }
                     }
                 }
-                Err(e) => (self.handle_error_option(worker_data, job, Some(e)), None),
+                Err(e) => ObservedJobRun {
+                    job_result: self.handle_error_option(worker_data, job, Some(e)),
+                    stream: None,
+                    sandbox_observation: None,
+                    sandbox_binding: None,
+                },
             }
         }
     }
@@ -1078,6 +1222,7 @@ pub trait JobRunner:
             }),
             data: Some(data),
             metadata: metadata.unwrap_or_default(),
+            sandbox_execution_observation: None,
         }
     }
 }
@@ -1248,6 +1393,7 @@ pub(crate) mod tests {
             .send(FeedData {
                 data: b"early input".to_vec(),
                 is_final: false,
+                pty_resize_control: None,
             })
             .await
             .unwrap();

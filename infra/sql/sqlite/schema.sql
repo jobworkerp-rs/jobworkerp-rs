@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS `job_result` (
     `end_time` BIGINT NOT NULL,
     `timeout` BIGINT NOT NULL DEFAULT 0,
     `request_streaming` BOOLEAN NOT NULL,
-    `using` TEXT
+    `using` TEXT,
+    `sandbox_execution_observation` BLOB NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_result_job_id ON job_result(job_id);

@@ -123,12 +123,17 @@ impl WorkflowExecutor {
                 checkpoint_repository
             );
         }
-        let workflow_context = Arc::new(RwLock::new(context::WorkflowContext::new(
+        let is_checkpoint_resume = checkpoint.is_some();
+        let workflow_context = context::WorkflowContext::new(
             &workflow,
             input,
             context,
             checkpoint.map(|cp| cp.position),
-        )));
+        );
+        if is_checkpoint_resume {
+            workflow_context.mark_receipts_incomplete();
+        }
+        let workflow_context = Arc::new(RwLock::new(workflow_context));
 
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module));
         // let checkpoint_epository = workflow.;
@@ -2533,6 +2538,138 @@ mod tests {
                 checkpoint.workflow.input.get("data"),
                 Some(&serde_json::json!("test")),
                 "Checkpoint should preserve original input"
+            );
+        });
+    }
+
+    #[test]
+    fn checkpoint_resume_starts_receipts_incomplete_and_keeps_only_new_evidence() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::workflow::execute::checkpoint::{
+                CheckPointContext, TaskCheckPointContext, WorkflowCheckPointContext,
+            };
+            use jobworkerp_runner::jobworkerp::runner::{
+                ChildDurableLookupState, ChildExecutionReceipt, ChildProducerEof,
+            };
+
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+            let mut workflow = create_test_workflow();
+            workflow.checkpointing = Some(CheckpointConfig {
+                enabled: true,
+                storage: Some(CheckpointConfigStorage::Memory),
+            });
+            let workflow = Arc::new(workflow);
+            let execution_id =
+                ExecutionId::new("receipt-checkpoint-resume-test".to_string()).unwrap();
+            let position = WorkflowPosition::new(vec![
+                serde_json::Value::String("ROOT".to_string()),
+                serde_json::Value::String("do".to_string()),
+                serde_json::Value::Number(0.into()),
+                serde_json::Value::String("task1".to_string()),
+            ]);
+            let checkpoint = CheckPointContext {
+                workflow: WorkflowCheckPointContext {
+                    name: workflow.document.name.to_string(),
+                    // Checkpoint input is guest data. A receipt-shaped value
+                    // here must not be reconstructed as host evidence.
+                    input: Arc::new(serde_json::json!({
+                        "_child_execution_receipts": [{"child_job_id": 9001}]
+                    })),
+                    context_variables: Arc::new(serde_json::Map::new()),
+                },
+                task: TaskCheckPointContext {
+                    input: Arc::new(serde_json::Value::Null),
+                    output: Arc::new(serde_json::Value::Null),
+                    context_variables: Arc::new(serde_json::Map::new()),
+                    flow_directive: "continue".to_string(),
+                },
+                position,
+            };
+
+            let resumed = WorkflowExecutor::init(
+                app_wrapper_module.clone(),
+                app_module.clone(),
+                workflow.clone(),
+                Arc::new(serde_json::Value::Null),
+                Some(execution_id),
+                Arc::new(serde_json::Value::Null),
+                Arc::new(HashMap::new()),
+                Some(checkpoint),
+            )
+            .await
+            .unwrap();
+
+            let resumed_context = resumed.workflow_context.read().await;
+            let initial_envelope = resumed_context.child_execution_receipts().unwrap();
+            assert!(initial_envelope.collection_incomplete);
+            assert!(initial_envelope.receipts.is_empty());
+            assert_eq!(
+                resumed_context
+                    .checkpoint_position
+                    .as_ref()
+                    .unwrap()
+                    .as_json_pointer(),
+                "/ROOT/do/0/task1"
+            );
+
+            let new_receipt = ChildExecutionReceipt {
+                workflow_execution_id: resumed_context.id.to_string(),
+                task_position: "/ROOT/do/1/task2".to_string(),
+                child_job_id: 9002,
+                worker_id: Some(11),
+                worker_name: "sandbox-worker".to_string(),
+                runner_id: Some(22),
+                runner_name: "SANDBOX".to_string(),
+                method_using: Some("run".to_string()),
+                settings_sha256: vec![1; 32],
+                method_schema_sha256: vec![2; 32],
+                arguments_sha256: vec![3; 32],
+                timeout_sec: Some(30),
+                cli_exit_code: Some(7),
+                end_received: true,
+                protocol_failure: None,
+                producer_eof: ChildProducerEof::Unknown as i32,
+                child_job_result_id: None,
+                child_job_result_status: None,
+                durable_lookup_state: ChildDurableLookupState::Unknown as i32,
+                store_success: Some(true),
+                store_failure: Some(true),
+                broadcast_results: Some(true),
+                sandbox_observation: None,
+            };
+            resumed_context.record_child_execution_receipt(new_receipt.clone());
+            let after_new_execution = resumed_context.child_execution_receipts().unwrap();
+            assert!(after_new_execution.collection_incomplete);
+            assert_eq!(after_new_execution.receipts, vec![new_receipt]);
+            let cloned_resume = resumed_context.clone();
+            assert!(
+                cloned_resume
+                    .child_execution_receipts()
+                    .unwrap()
+                    .collection_incomplete
+            );
+
+            drop(resumed_context);
+            let fresh = WorkflowExecutor::init(
+                app_wrapper_module,
+                app_module,
+                workflow,
+                Arc::new(serde_json::Value::Null),
+                None,
+                Arc::new(serde_json::Value::Null),
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(
+                fresh
+                    .workflow_context
+                    .read()
+                    .await
+                    .child_execution_receipts()
+                    .is_none()
             );
         });
     }

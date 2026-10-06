@@ -24,6 +24,85 @@ use std::{
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
+const MAX_CHILD_EXECUTION_RECEIPTS: usize = 128;
+const MAX_CHILD_RECEIPT_POSITION_BYTES: usize = 1024;
+const MAX_CHILD_RECEIPT_STRING_BYTES: usize = 1024;
+
+#[derive(Debug, Default)]
+struct ChildExecutionReceiptCollection {
+    receipts: Vec<jobworkerp_runner::jobworkerp::runner::ChildExecutionReceipt>,
+    incomplete: bool,
+}
+
+impl ChildExecutionReceiptCollection {
+    fn incomplete() -> Self {
+        Self {
+            receipts: Vec::new(),
+            incomplete: true,
+        }
+    }
+}
+
+fn restored_child_execution_receipts() -> Arc<std::sync::Mutex<ChildExecutionReceiptCollection>> {
+    Arc::new(std::sync::Mutex::new(
+        ChildExecutionReceiptCollection::incomplete(),
+    ))
+}
+
+fn valid_child_sandbox_observation(
+    receipt: &jobworkerp_runner::jobworkerp::runner::ChildExecutionReceipt,
+    witness: &jobworkerp_runner::jobworkerp::runner::ChildSandboxObservation,
+) -> bool {
+    use jobworkerp_runner::jobworkerp::runner::{
+        ChildSandboxAnomalyCode, ChildSandboxEndState, ChildSandboxProducerState,
+    };
+
+    let Ok(end_state) = ChildSandboxEndState::try_from(witness.end_state) else {
+        return false;
+    };
+    let Ok(producer_state) = ChildSandboxProducerState::try_from(witness.producer_state) else {
+        return false;
+    };
+    let selected_method = if witness.using.is_empty() {
+        "run"
+    } else {
+        witness.using.as_str()
+    };
+    let anomalies_are_valid = witness.anomaly_codes.len() <= 32
+        && witness.anomaly_codes.iter().all(|code| {
+            ChildSandboxAnomalyCode::try_from(*code)
+                .is_ok_and(|code| code != ChildSandboxAnomalyCode::Unspecified)
+        });
+
+    witness.observation_sha256.len() == 32
+        && witness.host_settings_sha256.len() == 32
+        && witness.using.len() <= 255
+        && witness
+            .stdout_sha256
+            .as_ref()
+            .is_none_or(|digest| digest.len() == 32)
+        && witness
+            .stderr_sha256
+            .as_ref()
+            .is_none_or(|digest| digest.len() == 32)
+        && witness
+            .trailer_sha256
+            .as_ref()
+            .is_none_or(|digest| digest.len() == 32)
+        && anomalies_are_valid
+        && (producer_state != ChildSandboxProducerState::Clean
+            || (end_state == ChildSandboxEndState::Normal
+                && witness.cli_exit_code.is_some()
+                && witness.anomaly_codes.is_empty()))
+        && receipt.method_using.as_deref() == Some(selected_method)
+        && receipt
+            .cli_exit_code
+            .is_none_or(|stream_exit| witness.cli_exit_code == Some(stream_exit))
+        && (!receipt.end_received
+            || receipt.protocol_failure.is_some()
+            || end_state == ChildSandboxEndState::Normal)
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct WorkflowContext {
     pub id: Uuid,
@@ -61,6 +140,10 @@ pub struct WorkflowContext {
     /// the environment. Values are never stored here — only the declared names.
     #[serde(skip)]
     pub declared_secrets: Arc<HashSet<String>>,
+    /// Server-observed child execution receipts are transient evidence and are
+    /// deliberately excluded from checkpoints and expression contexts.
+    #[serde(skip, default = "restored_child_execution_receipts")]
+    child_execution_receipts: Arc<std::sync::Mutex<ChildExecutionReceiptCollection>>,
 }
 
 #[derive(Debug)]
@@ -151,6 +234,9 @@ impl WorkflowContext {
                     .map(|c| c.secrets.iter().cloned().collect())
                     .unwrap_or_default(),
             ),
+            child_execution_receipts: Arc::new(std::sync::Mutex::new(
+                ChildExecutionReceiptCollection::default(),
+            )),
         }
     }
     // for test
@@ -174,7 +260,145 @@ impl WorkflowContext {
             running_job_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
             authentications: Arc::new(std::collections::HashMap::new()),
             declared_secrets: Arc::new(HashSet::new()),
+            child_execution_receipts: Arc::new(std::sync::Mutex::new(
+                ChildExecutionReceiptCollection::default(),
+            )),
         }
+    }
+
+    /// Record immutable host evidence for one bounded child execution.
+    pub fn record_child_execution_receipt(
+        &self,
+        receipt: jobworkerp_runner::jobworkerp::runner::ChildExecutionReceipt,
+    ) {
+        let mut collection = self
+            .child_execution_receipts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let durable_state =
+            jobworkerp_runner::jobworkerp::runner::ChildDurableLookupState::try_from(
+                receipt.durable_lookup_state,
+            )
+            .ok();
+        let is_verified = durable_state
+            == Some(jobworkerp_runner::jobworkerp::runner::ChildDurableLookupState::Verified);
+        let is_missing = durable_state
+            == Some(jobworkerp_runner::jobworkerp::runner::ChildDurableLookupState::Missing);
+        let has_valid_result_facts = receipt
+            .child_job_result_id
+            .is_none_or(|result_id| result_id > 0)
+            && receipt.child_job_result_status.is_none_or(|status| {
+                proto::jobworkerp::data::ResultStatus::try_from(status).is_ok()
+            });
+        let result_facts_are_paired =
+            receipt.child_job_result_id.is_some() == receipt.child_job_result_status.is_some();
+        let durable_facts_consistent = if is_verified {
+            receipt.child_job_result_id.is_some()
+                && receipt.child_job_result_status.is_some()
+                && has_valid_result_facts
+                && receipt
+                    .sandbox_observation
+                    .as_ref()
+                    .is_some_and(|witness| valid_child_sandbox_observation(&receipt, witness))
+        } else if is_missing {
+            receipt.child_job_result_id.is_none()
+                && receipt.child_job_result_status.is_none()
+                && receipt.sandbox_observation.is_none()
+        } else if durable_state
+            == Some(jobworkerp_runner::jobworkerp::runner::ChildDurableLookupState::Unknown)
+        {
+            // A matching durable row can establish that a result is available,
+            // but without an execution-time settings witness its id/status are
+            // not proof that the child ran under those settings.
+            result_facts_are_paired
+                && has_valid_result_facts
+                && receipt.sandbox_observation.is_none()
+        } else {
+            false
+        };
+        let invalid = receipt.workflow_execution_id != self.id.to_string()
+            || receipt.workflow_execution_id.is_empty()
+            || receipt.task_position.len() > MAX_CHILD_RECEIPT_POSITION_BYTES
+            || receipt.child_job_id <= 0
+            || receipt.worker_name.is_empty()
+            || receipt.worker_name.len() > MAX_CHILD_RECEIPT_STRING_BYTES
+            || receipt.runner_name != "SANDBOX"
+            || receipt
+                .method_using
+                .as_ref()
+                .is_some_and(|method| method.is_empty() || method.len() > 128)
+            || receipt
+                .protocol_failure
+                .as_ref()
+                .is_some_and(|failure| failure.len() > MAX_CHILD_RECEIPT_STRING_BYTES)
+            || receipt.settings_sha256.len() != 32
+            || receipt.method_schema_sha256.len() != 32
+            || receipt.arguments_sha256.len() != 32
+            || receipt.worker_id.is_some_and(|id| id <= 0)
+            || receipt.runner_id.is_some_and(|id| id <= 0)
+            || receipt.child_job_result_id.is_some_and(|id| id <= 0)
+            || receipt.timeout_sec.is_some_and(|timeout| timeout == 0)
+            || receipt.producer_eof
+                != jobworkerp_runner::jobworkerp::runner::ChildProducerEof::Unknown as i32
+            || durable_state.is_none()
+            || !durable_facts_consistent
+            || (is_missing
+                && (receipt.protocol_failure.is_some()
+                    || !receipt.end_received
+                    || receipt.store_success != Some(true)
+                    || receipt.store_failure != Some(true)
+                    || receipt.broadcast_results != Some(true)));
+        if invalid {
+            collection.incomplete = true;
+            return;
+        }
+
+        if let Some(existing) = collection.receipts.iter().find(|existing| {
+            existing.workflow_execution_id == receipt.workflow_execution_id
+                && existing.task_position == receipt.task_position
+                && existing.child_job_id == receipt.child_job_id
+        }) {
+            if existing != &receipt {
+                collection.incomplete = true;
+            }
+            return;
+        }
+
+        if collection.receipts.len() >= MAX_CHILD_EXECUTION_RECEIPTS {
+            collection.incomplete = true;
+            return;
+        }
+        collection.receipts.push(receipt);
+    }
+
+    /// Return only server-collected evidence; workflow output is never read.
+    pub fn child_execution_receipts(
+        &self,
+    ) -> Option<jobworkerp_runner::jobworkerp::runner::ChildExecutionReceipts> {
+        use jobworkerp_runner::jobworkerp::runner::ChildExecutionReceipts;
+
+        let collection = self
+            .child_execution_receipts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if collection.receipts.is_empty() && !collection.incomplete {
+            return None;
+        }
+        Some(ChildExecutionReceipts {
+            schema_version: 1,
+            receipts: collection.receipts.clone(),
+            collection_incomplete: collection.incomplete,
+        })
+    }
+
+    /// A checkpoint resume may skip tasks whose receipts were transient and
+    /// deliberately not serialized. Keep newly collected receipts, but mark
+    /// the collection as permanently incomplete for this workflow execution.
+    pub(crate) fn mark_receipts_incomplete(&self) {
+        self.child_execution_receipts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .incomplete = true;
     }
 
     pub fn guard_running_job(&self, job_id: JobId) -> RunningJobGuard {
@@ -977,6 +1201,161 @@ impl WorkflowStreamEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_child_receipt(
+        workflow_execution_id: &str,
+        position: &str,
+        job_id: i64,
+    ) -> jobworkerp_runner::jobworkerp::runner::ChildExecutionReceipt {
+        jobworkerp_runner::jobworkerp::runner::ChildExecutionReceipt {
+            workflow_execution_id: workflow_execution_id.to_string(),
+            task_position: position.to_string(),
+            child_job_id: job_id,
+            worker_id: Some(11),
+            worker_name: "sandbox-worker".to_string(),
+            runner_id: Some(22),
+            runner_name: "SANDBOX".to_string(),
+            method_using: Some("run".to_string()),
+            settings_sha256: vec![1; 32],
+            method_schema_sha256: vec![2; 32],
+            arguments_sha256: vec![3; 32],
+            timeout_sec: Some(30),
+            cli_exit_code: Some(7),
+            end_received: true,
+            protocol_failure: None,
+            producer_eof: jobworkerp_runner::jobworkerp::runner::ChildProducerEof::Unknown as i32,
+            child_job_result_id: None,
+            child_job_result_status: None,
+            durable_lookup_state:
+                jobworkerp_runner::jobworkerp::runner::ChildDurableLookupState::Unknown as i32,
+            store_success: Some(true),
+            store_failure: Some(true),
+            broadcast_results: Some(true),
+            sandbox_observation: None,
+        }
+    }
+
+    #[test]
+    fn child_execution_receipts_are_private_immutable_and_task_scoped() {
+        let context = WorkflowContext::new_empty();
+        assert!(context.child_execution_receipts().is_none());
+
+        let first = sample_child_receipt(&context.id.to_string(), "/jobs/0", 101);
+        let second = sample_child_receipt(&context.id.to_string(), "/jobs/1", 102);
+        context.record_child_execution_receipt(first.clone());
+        context
+            .clone()
+            .record_child_execution_receipt(second.clone());
+
+        let envelope = context.child_execution_receipts().unwrap();
+        assert_eq!(envelope.schema_version, 1);
+        assert_eq!(envelope.receipts, vec![first.clone(), second.clone()]);
+        assert!(!envelope.collection_incomplete);
+
+        // Guest-controlled output can contain a similarly named property, but
+        // only the private server-side collector contributes to the envelope.
+        let mut guest_context = context.clone();
+        guest_context.output = Some(Arc::new(serde_json::json!({
+            "_child_execution_receipts": [{"child_job_id": 999}]
+        })));
+        assert_eq!(
+            guest_context.child_execution_receipts().unwrap().receipts,
+            vec![first, second]
+        );
+    }
+
+    #[test]
+    fn child_receipt_conflict_keeps_original_and_marks_collection_incomplete() {
+        let context = WorkflowContext::new_empty();
+        let original = sample_child_receipt(&context.id.to_string(), "/task", 1001);
+        let mut conflict = original.clone();
+        conflict.arguments_sha256 = vec![9; 32];
+
+        context.record_child_execution_receipt(original.clone());
+        context.record_child_execution_receipt(conflict);
+
+        let envelope = context.child_execution_receipts().unwrap();
+        assert_eq!(envelope.receipts, vec![original]);
+        assert!(envelope.collection_incomplete);
+    }
+
+    #[test]
+    fn unknown_durable_lookup_can_carry_unverified_result_availability() {
+        let context = WorkflowContext::new_empty();
+        let mut receipt = sample_child_receipt(&context.id.to_string(), "/task", 1002);
+        receipt.child_job_result_id = Some(987);
+        receipt.child_job_result_status =
+            Some(proto::jobworkerp::data::ResultStatus::Success as i32);
+
+        context.record_child_execution_receipt(receipt.clone());
+
+        let envelope = context.child_execution_receipts().unwrap();
+        assert!(!envelope.collection_incomplete);
+        assert_eq!(envelope.receipts, vec![receipt]);
+        assert_eq!(
+            envelope.receipts[0].durable_lookup_state,
+            jobworkerp_runner::jobworkerp::runner::ChildDurableLookupState::Unknown as i32
+        );
+    }
+
+    #[test]
+    fn child_receipt_collection_is_bounded_and_marks_overflow() {
+        let context = WorkflowContext::new_empty();
+
+        for job_id in 1..=128 {
+            context.record_child_execution_receipt(sample_child_receipt(
+                &context.id.to_string(),
+                &format!("/parallel/{job_id}"),
+                job_id,
+            ));
+        }
+
+        let at_bound = context.child_execution_receipts().unwrap();
+        assert_eq!(at_bound.receipts.len(), 128);
+        assert!(!at_bound.collection_incomplete);
+
+        context.record_child_execution_receipt(sample_child_receipt(
+            &context.id.to_string(),
+            "/parallel/129",
+            129,
+        ));
+
+        let envelope = context.child_execution_receipts().unwrap();
+        assert_eq!(envelope.receipts.len(), 128);
+        assert!(envelope.collection_incomplete);
+    }
+
+    #[test]
+    fn invalid_receipt_bounds_mark_collection_incomplete_without_accepting_data() {
+        let context = WorkflowContext::new_empty();
+        let mut bad_digest = sample_child_receipt(&context.id.to_string(), "/task", 201);
+        bad_digest.arguments_sha256.pop();
+        context.record_child_execution_receipt(bad_digest);
+
+        let mut bad_position = sample_child_receipt(
+            &context.id.to_string(),
+            &"x".repeat(MAX_CHILD_RECEIPT_POSITION_BYTES + 1),
+            202,
+        );
+        bad_position.protocol_failure = Some("oversized position".to_string());
+        context.record_child_execution_receipt(bad_position);
+
+        let envelope = context.child_execution_receipts().unwrap();
+        assert!(envelope.receipts.is_empty());
+        assert!(envelope.collection_incomplete);
+    }
+
+    #[test]
+    fn deserialized_checkpoint_marks_transient_receipt_collection_incomplete() {
+        let context = WorkflowContext::new_empty();
+        let encoded = serde_json::to_value(&context).unwrap();
+        assert!(encoded.get("child_execution_receipts").is_none());
+
+        let restored: WorkflowContext = serde_json::from_value(encoded).unwrap();
+        let envelope = restored.child_execution_receipts().unwrap();
+        assert!(envelope.collection_incomplete);
+        assert!(envelope.receipts.is_empty());
+    }
 
     #[tokio::test]
     async fn test_workflow_context_running_job_guards_share_snapshot() {

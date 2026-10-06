@@ -192,6 +192,7 @@ async fn static_vm_reuses_files_and_client_feed_closes_stdin() {
         .send(FeedData {
             data: b" from client".to_vec(),
             is_final: true,
+            pty_resize_control: None,
         })
         .await
         .unwrap();

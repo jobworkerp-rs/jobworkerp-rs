@@ -505,6 +505,7 @@ mod test {
             id: Some(job_result_id),
             data: Some(data.clone()),
             metadata: HashMap::new(),
+            sandbox_execution_observation: None,
         };
 
         let mut jhv = Vec::with_capacity(10);
@@ -627,6 +628,7 @@ mod test {
             id: Some(job_result_id),
             data: Some(data.clone()),
             metadata: HashMap::new(),
+            sandbox_execution_observation: None,
         };
 
         let mut jhv = Vec::with_capacity(10);
@@ -895,6 +897,7 @@ mod test {
             id: Some(job_result_id),
             data: Some(data.clone()),
             metadata: HashMap::new(),
+            sandbox_execution_observation: None,
         };
 
         // Start publisher FIRST - it will poll for up to ~100ms waiting for subscribers
@@ -1065,6 +1068,7 @@ mod test {
             id: Some(job_result_id),
             data: Some(data.clone()),
             metadata: HashMap::new(),
+            sandbox_execution_observation: None,
         };
         let serialized =
             <ChanJobResultPubSubRepositoryImpl as UseProstCodec>::serialize_message(&expected)?;
@@ -1112,6 +1116,7 @@ mod test {
             id: Some(job_result_id),
             data: Some(data.clone()),
             metadata: HashMap::new(),
+            sandbox_execution_observation: None,
         };
 
         let app_clone = app.clone();
@@ -1161,6 +1166,7 @@ mod test {
             id: Some(job_result_id),
             data: Some(data.clone()),
             metadata: HashMap::new(),
+            sandbox_execution_observation: None,
         };
 
         let check_started = Arc::new(tokio::sync::Notify::new());
@@ -1222,6 +1228,7 @@ mod test {
             id: Some(job_result_id),
             data: Some(data.clone()),
             metadata: HashMap::new(),
+            sandbox_execution_observation: None,
         };
 
         // Start subscriber FIRST

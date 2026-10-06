@@ -1,6 +1,9 @@
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::{StorageConfig, UseStorageConfig};
-use super::{JobResultApp, JobResultAppHelper};
+use super::{
+    JobResultApp, JobResultAppHelper, SandboxObservationFinalizeOutcome,
+    SandboxObservationFinalizeRequest,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -8,7 +11,9 @@ use infra::infra::job_result::pubsub::JobResultSubscriber;
 use infra::infra::job_result::pubsub::redis::{
     RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
 };
-use infra::infra::job_result::rdb::{RdbJobResultRepository, UseRdbJobResultRepository};
+use infra::infra::job_result::rdb::{
+    RdbJobResultRepository, SandboxObservationStoreResult, UseRdbJobResultRepository,
+};
 use infra::infra::job_result::redis::{RedisJobResultRepository, UseRedisJobResultRepository};
 use infra::infra::module::HybridRepositoryModule;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
@@ -132,6 +137,37 @@ impl JobResultApp for HybridJobResultAppImpl {
         } else {
             Ok(in_db)
         }
+    }
+
+    async fn finalize_sandbox_observation(
+        &self,
+        request: &SandboxObservationFinalizeRequest,
+    ) -> Result<SandboxObservationFinalizeOutcome> {
+        let result = self
+            .rdb_job_result_repository()
+            .finalize_sandbox_observation(&request.result_id, &request.observation)
+            .await?;
+        Ok(match result {
+            SandboxObservationStoreResult::Stored => SandboxObservationFinalizeOutcome::Stored,
+            SandboxObservationStoreResult::AlreadyIdentical => {
+                SandboxObservationFinalizeOutcome::AlreadyIdentical
+            }
+            SandboxObservationStoreResult::NotStored => {
+                SandboxObservationFinalizeOutcome::NotStored
+            }
+            SandboxObservationStoreResult::Conflict => SandboxObservationFinalizeOutcome::Conflict,
+        })
+    }
+
+    async fn find_sandbox_observation_from_db(
+        &self,
+        result_id: &JobResultId,
+    ) -> Result<Option<proto::jobworkerp::data::SandboxExecutionObservation>> {
+        Ok(self
+            .rdb_job_result_repository()
+            .find(result_id)
+            .await?
+            .and_then(|result| result.sandbox_execution_observation))
     }
 
     async fn delete_job_result(&self, id: &JobResultId) -> Result<bool> {
@@ -849,8 +885,52 @@ pub mod tests {
                     .await?
             );
 
+            use crate::app::job_result::{
+                SandboxObservationFinalizeOutcome, SandboxObservationFinalizeRequest,
+            };
+            use proto::jobworkerp::data::{
+                SandboxExecutionEndState, SandboxExecutionObservation,
+                SandboxExecutionProducerState,
+            };
+            use proto::sandbox_observation::sha256_digest;
+            let mut observation = SandboxExecutionObservation {
+                schema_version: 1,
+                job_id: job_id.value,
+                worker_id: worker_id.value,
+                runner_id: 1,
+                result_id: id.value,
+                dispatch_args_sha256: sha256_digest(&data.args).to_vec(),
+                worker_settings_sha256: sha256_digest(&worker_data.runner_settings).to_vec(),
+                method_schema_sha256: sha256_digest(b"method schema").to_vec(),
+                host_settings_sha256: sha256_digest(b"host settings").to_vec(),
+                using: String::new(),
+                retry_ordinal: data.retried,
+                stored_result_status: data.status,
+                cli_exit_code: None,
+                end_state: SandboxExecutionEndState::Unknown as i32,
+                producer_state: SandboxExecutionProducerState::Unknown as i32,
+                ..Default::default()
+            };
+            observation.seal()?;
+            assert_eq!(
+                app.finalize_sandbox_observation(&SandboxObservationFinalizeRequest {
+                    result_id: id,
+                    observation: observation.clone(),
+                })
+                .await?,
+                SandboxObservationFinalizeOutcome::Stored
+            );
+            assert_eq!(
+                app.find_sandbox_observation_from_db(&id).await?,
+                Some(observation.clone())
+            );
+
             // Sanity: result is fetchable while worker exists
-            assert!(app.find_job_result_from_db(&id).await?.is_some());
+            let fetched = app.find_job_result_from_db(&id).await?.unwrap();
+            assert_eq!(
+                fetched.sandbox_execution_observation,
+                Some(observation.clone())
+            );
 
             // Delete the worker; result must still be returned (with stored values).
             assert!(app.worker_app().delete(&worker_id).await?);
@@ -859,6 +939,7 @@ pub mod tests {
                 .find_job_result_from_db(&id)
                 .await?
                 .expect("result should still be fetchable after worker deletion");
+            assert_eq!(res.sandbox_execution_observation, Some(observation.clone()));
             let res_data = res.data.expect("result data must remain");
             assert_eq!(res_data.worker_id, Some(worker_id));
             // worker_name is normally re-filled from the live worker; once the
@@ -870,6 +951,7 @@ pub mod tests {
             // worker is Ok(None) inside the inner fill, not an Err).
             let listed = app.find_job_result_list_by_job_id(&job_id).await?;
             assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].sandbox_execution_observation, Some(observation));
             assert_eq!(
                 listed[0].data.as_ref().and_then(|d| d.worker_id),
                 Some(worker_id)

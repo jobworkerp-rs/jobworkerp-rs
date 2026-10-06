@@ -2,13 +2,13 @@ use anyhow::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use jobworkerp_runner::runner::FeedData;
-use proto::jobworkerp::data::JobId;
+use proto::jobworkerp::data::{FeedDataTransport, JobId};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Notify, mpsc};
 
-use super::FeedPublisher;
+use super::{FeedPublisher, feed_data_from_transport};
 
 /// Maximum number of feed items buffered per-job before the runner registers
 /// its sender. When exceeded, the oldest entry is dropped and a warning is
@@ -286,6 +286,20 @@ impl Default for ChanFeedSenderStore {
 #[async_trait]
 impl FeedPublisher for ChanFeedSenderStore {
     async fn publish_feed(&self, job_id: &JobId, data: Vec<u8>, is_final: bool) -> Result<()> {
+        self.publish_frame(
+            job_id,
+            FeedDataTransport {
+                data,
+                is_final,
+                pty_resize_control: None,
+            },
+        )
+        .await
+    }
+
+    async fn publish_frame(&self, job_id: &JobId, frame: FeedDataTransport) -> Result<()> {
+        let is_final = frame.is_final;
+        let feed = feed_data_from_transport(frame)?;
         // Trace per-feed timing so an observer can tell whether a streaming
         // job's stall is upstream (client stopped sending) or downstream
         // (plugin failed to consume). Cheap (DEBUG, gated by RUST_LOG) and
@@ -294,10 +308,9 @@ impl FeedPublisher for ChanFeedSenderStore {
         tracing::debug!(
             "ChanFeedSenderStore::publish_feed: job={}, bytes={}, is_final={}",
             job_id.value,
-            data.len(),
+            feed.data.len(),
             is_final,
         );
-        let feed = FeedData { data, is_final };
 
         // Decide under the entry guard whether to append to the buffer or to
         // send directly. Doing both lookups inside one DashMap entry closes
@@ -427,6 +440,55 @@ mod tests {
 
         // sender should be removed after final
         assert!(store.get(42).is_none());
+    }
+
+    #[tokio::test]
+    async fn resize_control_is_buffered_and_forwarded_as_typed_control() {
+        let store = ChanFeedSenderStore::new();
+        let job_id = JobId { value: 407 };
+        store
+            .publish_frame(
+                &job_id,
+                FeedDataTransport {
+                    pty_resize_control: Some(proto::jobworkerp::data::PtyResizeControl {
+                        rows: 31,
+                        cols: 101,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = mpsc::channel(4);
+        store.register(job_id.value, tx);
+        let feed = rx.recv().await.unwrap();
+        assert!(feed.data.is_empty());
+        assert!(!feed.is_final);
+        let resize = feed.pty_resize_control.unwrap();
+        assert_eq!((resize.rows, resize.cols), (31, 101));
+    }
+
+    #[tokio::test]
+    async fn invalid_resize_control_is_rejected_before_buffering() {
+        let store = ChanFeedSenderStore::new();
+        let job_id = JobId { value: 408 };
+        let result = store
+            .publish_frame(
+                &job_id,
+                FeedDataTransport {
+                    data: b"not stdin".to_vec(),
+                    pty_resize_control: Some(proto::jobworkerp::data::PtyResizeControl {
+                        rows: 24,
+                        cols: 80,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(store.buffer_len(job_id.value), 0);
     }
 
     #[tokio::test]

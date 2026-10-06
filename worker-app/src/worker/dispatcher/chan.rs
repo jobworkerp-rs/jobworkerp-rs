@@ -1,4 +1,5 @@
 use super::JobDispatcher;
+use crate::worker::result_processor::sandbox_observation::pair_raw_observation;
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
 use crate::worker::runner::JobRunner;
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
@@ -435,7 +436,7 @@ pub trait ChanJobDispatcher:
 
         // run job (load-only requests were handled and returned above)
         let mut r = self
-                .run_job(
+                .run_job_with_observation(
                     &runner_data,
                     &wid,
                     &wdat,
@@ -446,9 +447,9 @@ pub trait ChanJobDispatcher:
                     },
                 )
                 .await;
-            super::ensure_job_result_id(self.id_generator(), &mut r.0)?;
+            super::ensure_job_result_id(self.id_generator(), &mut r.job_result)?;
             // TODO execute and return result to result channel.
-            tracing::trace!("send result id: {:?}, data: {:?}", &r.0.id, &r.0.data);
+            tracing::trace!("send result id: {:?}, data: {:?}", &r.job_result.id, &r.job_result.data);
             // change status to wait handling result (skip for Direct response)
             if resolved.response_type != ResponseType::Direct as i32 {
                 let running = infra::infra::job::status::JobProcessingStatusRecord {
@@ -487,8 +488,12 @@ pub trait ChanJobDispatcher:
                     }
             }
 
-            let (result, completion_rx) =
-                self.result_processor().process_result(r.0, r.1, wdat).await?;
+            let sandbox_observation =
+                pair_raw_observation(r.sandbox_binding.take(), r.sandbox_observation.take());
+            let (result, completion_rx) = self
+                .result_processor()
+                .process_result_with_observation(r.job_result, r.stream, wdat, sandbox_observation)
+                .await?;
             // Wait for background stream-publishing task to finish before allowing
             // this concurrency slot to pop the next job.
             if let Some(rx) = completion_rx

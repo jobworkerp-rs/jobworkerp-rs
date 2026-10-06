@@ -85,6 +85,7 @@ impl CancelMonitoringHelper {
                         resolved_retry_policy: None,
                     }),
                     metadata: HashMap::new(),
+                    sandbox_execution_observation: None,
                 }))
             }
         }

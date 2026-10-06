@@ -1,3 +1,5 @@
+pub(crate) mod sandbox_observation;
+
 use anyhow::Result;
 use app::app::JobBuilder;
 use app::app::StorageConfig;
@@ -30,6 +32,8 @@ use proto::jobworkerp::data::{JobResult, ResultOutput, ResultStatus, StreamingTy
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing;
+
+use self::sandbox_observation::{PendingSandboxObservation, after_initial_store};
 
 #[derive(DebugStub, Clone)]
 pub struct ResultProcessorImpl {
@@ -82,7 +86,22 @@ impl ResultProcessorImpl {
         st_data: Option<BoxStream<'static, ResultOutputItem>>,
         w: WorkerData,
     ) -> Result<(JobResult, StreamCompletionReceiver)> {
-        self.process_result_inner(jr, st_data, w, false).await
+        self.process_result_inner_with_observation(jr, st_data, w, false, None)
+            .await
+    }
+
+    /// Process a regular result while handing a typed-native SANDBOX raw-stream
+    /// receiver to the detached persistence path. The receiver never joins the
+    /// result stream publisher or worker-slot completion lifecycle.
+    pub(crate) async fn process_result_with_observation(
+        &self,
+        jr: JobResult,
+        st_data: Option<BoxStream<'static, ResultOutputItem>>,
+        w: WorkerData,
+        observation: Option<PendingSandboxObservation>,
+    ) -> Result<(JobResult, StreamCompletionReceiver)> {
+        self.process_result_inner_with_observation(jr, st_data, w, false, observation)
+            .await
     }
 
     /// `load_only`: the result comes from a pre-load (config-check) request, not
@@ -98,11 +117,24 @@ impl ResultProcessorImpl {
         w: WorkerData,
         load_only: bool,
     ) -> Result<(JobResult, StreamCompletionReceiver)> {
+        self.process_result_inner_with_observation(jr, st_data, w, load_only, None)
+            .await
+    }
+
+    async fn process_result_inner_with_observation(
+        &self,
+        jr: JobResult,
+        st_data: Option<BoxStream<'static, ResultOutputItem>>,
+        w: WorkerData,
+        load_only: bool,
+        observation: Option<PendingSandboxObservation>,
+    ) -> Result<(JobResult, StreamCompletionReceiver)> {
         tracing::debug!("got job_result: {:?}, worker: {:?}", &jr.id, &w.name);
         if let JobResult {
             id: Some(id),
             data: Some(data),
             metadata,
+            sandbox_execution_observation,
         } = jr
         {
             let mut data = self.cancel_retryable_result_if_requested(data).await?;
@@ -115,6 +147,7 @@ impl ResultProcessorImpl {
                         id: Some(id),
                         data: Some(data),
                         metadata,
+                        sandbox_execution_observation,
                     },
                     completion_rx,
                 ));
@@ -133,18 +166,31 @@ impl ResultProcessorImpl {
             // Store result if necessary by result status and worker setting.
             // data.broadcast_results is already resolved by resolve_job_params()
             // in runner.rs (merging worker defaults with job-level overrides).
-            match self
+            let store_result = self
                 .job_result_app()
                 .create_job_result_if_necessary(&id, &data, data.broadcast_results)
-                .await
-            {
-                Ok(_r) => {
+                .await;
+            match after_initial_store(
+                self.app_module.job_result_app.clone(),
+                id,
+                &data,
+                store_result,
+                observation,
+            ) {
+                Ok(task) => {
+                    if let Some(task) = task {
+                        // Dropping a Tokio JoinHandle detaches its task. The
+                        // dispatcher's normal stream-completion receiver is
+                        // left untouched and remains the only waited channel.
+                        drop(task);
+                    }
                     let completion_rx = complete_or_retry_result?;
                     Ok((
                         JobResult {
                             id: Some(id),
                             data: Some(data),
                             metadata,
+                            sandbox_execution_observation,
                         },
                         completion_rx,
                     ))

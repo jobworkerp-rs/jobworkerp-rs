@@ -357,6 +357,7 @@ pub trait JobDispatcher:
             }),
             data: Some(job_result_data),
             metadata: job_metadata,
+            sandbox_execution_observation: None,
         };
 
         Ok(DispatchEligibility::Cancelled(Box::new(cancelled_result)))

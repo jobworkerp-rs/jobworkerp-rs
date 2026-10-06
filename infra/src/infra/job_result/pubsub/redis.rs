@@ -352,6 +352,7 @@ mod test {
             id: Some(job_result_id),
             data: Some(data.clone()),
             metadata: HashMap::new(),
+            sandbox_execution_observation: None,
         };
 
         // 2 subscribers
@@ -449,6 +450,7 @@ mod test {
             id: Some(job_result_id),
             data: Some(data.clone()),
             metadata: HashMap::new(),
+            sandbox_execution_observation: None,
         };
         let mut jhv = Vec::with_capacity(10);
         // 10 subscribers

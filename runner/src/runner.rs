@@ -39,17 +39,52 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::pin::Pin;
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use futures::stream::BoxStream;
-use proto::jobworkerp::data::ResultOutputItem;
+use proto::jobworkerp::data::{PtyResizeControl, ResultOutputItem};
 use tokio::sync::mpsc;
 use tonic::async_trait;
 
 /// Feed data sent from client to a running streaming job
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FeedData {
     pub data: Vec<u8>,
     pub is_final: bool,
+    pub pty_resize_control: Option<PtyResizeControl>,
+}
+
+impl FeedData {
+    /// Validate the unambiguous wire representation of a typed PTY resize.
+    pub fn validate(&self) -> Result<()> {
+        Self::validate_frame(&self.data, self.is_final, self.pty_resize_control.as_ref())
+    }
+
+    /// Validate borrowed transport fields without copying opaque feed bytes.
+    pub fn validate_frame(
+        data: &[u8],
+        is_final: bool,
+        pty_resize_control: Option<&PtyResizeControl>,
+    ) -> Result<()> {
+        if let Some(control) = pty_resize_control {
+            ensure!(
+                data.is_empty(),
+                "PTY resize feed frame must not contain stdin data"
+            );
+            ensure!(
+                !is_final,
+                "PTY resize feed frame cannot also mark end-of-input"
+            );
+            ensure!(
+                (1..=1000).contains(&control.rows),
+                "PTY resize row count must be between 1 and 1000"
+            );
+            ensure!(
+                (1..=1000).contains(&control.cols),
+                "PTY resize column count must be between 1 and 1000"
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Type alias for the boxed future returned by `collect_stream`.

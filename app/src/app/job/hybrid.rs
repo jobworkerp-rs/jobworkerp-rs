@@ -2101,6 +2101,7 @@ pub mod tests {
                     resolved_retry_policy: None,
                 }),
                 metadata: (*metadata).clone(),
+                sandbox_execution_observation: None,
             };
             let jid = job_id;
             let res = result.clone();
@@ -2232,6 +2233,7 @@ pub mod tests {
                     resolved_retry_policy: None,
                 }),
                 metadata: (*metadata).clone(),
+                sandbox_execution_observation: None,
             };
             assert!(
                 !app.complete_job(

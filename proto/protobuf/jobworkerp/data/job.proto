@@ -122,4 +122,14 @@ message JobInternal {
 message FeedDataTransport {
   bytes data = 1;
   bool is_final = 2;
+  // Typed out-of-band control for an active client-streaming PTY. Control
+  // frames must leave data empty and is_final false.
+  optional PtyResizeControl pty_resize_control = 3;
+}
+
+// Resize the PTY attached to the current client-streaming execution.
+message PtyResizeControl {
+  // Both dimensions must be in the inclusive range 1..1000.
+  uint32 rows = 1;
+  uint32 cols = 2;
 }

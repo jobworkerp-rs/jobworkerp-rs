@@ -79,6 +79,7 @@ CREATE TABLE `job_result` (
   `timeout` BIGINT(20) NOT NULL DEFAULT 0,
   `request_streaming` TINYINT(1) NOT NULL DEFAULT 0,
   `using` VARCHAR(255) DEFAULT NULL,
+  `sandbox_execution_observation` MEDIUMBLOB NULL,
   KEY `job_id_key` (`job_id`, `end_time`),
   KEY `worker_id_key` (`worker_id`, `job_id`),
   KEY `uniq_key_idx` (`uniq_key`),

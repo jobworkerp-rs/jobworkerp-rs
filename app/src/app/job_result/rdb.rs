@@ -1,6 +1,9 @@
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::{StorageConfig, UseStorageConfig};
-use super::{JobResultApp, JobResultAppHelper};
+use super::{
+    JobResultApp, JobResultAppHelper, SandboxObservationFinalizeOutcome,
+    SandboxObservationFinalizeRequest,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
@@ -12,7 +15,8 @@ use infra::infra::job_result::pubsub::chan::{
     ChanJobResultPubSubRepositoryImpl, UseChanJobResultPubSubRepository,
 };
 use infra::infra::job_result::rdb::{
-    RdbJobResultRepository, RdbJobResultRepositoryImpl, UseRdbJobResultRepository,
+    RdbJobResultRepository, RdbJobResultRepositoryImpl, SandboxObservationStoreResult,
+    UseRdbJobResultRepository,
 };
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
@@ -193,6 +197,37 @@ impl JobResultApp for RdbJobResultAppImpl {
         }
     }
 
+    async fn finalize_sandbox_observation(
+        &self,
+        request: &SandboxObservationFinalizeRequest,
+    ) -> Result<SandboxObservationFinalizeOutcome> {
+        let result = self
+            .rdb_job_result_repository()
+            .finalize_sandbox_observation(&request.result_id, &request.observation)
+            .await?;
+        Ok(match result {
+            SandboxObservationStoreResult::Stored => SandboxObservationFinalizeOutcome::Stored,
+            SandboxObservationStoreResult::AlreadyIdentical => {
+                SandboxObservationFinalizeOutcome::AlreadyIdentical
+            }
+            SandboxObservationStoreResult::NotStored => {
+                SandboxObservationFinalizeOutcome::NotStored
+            }
+            SandboxObservationStoreResult::Conflict => SandboxObservationFinalizeOutcome::Conflict,
+        })
+    }
+
+    async fn find_sandbox_observation_from_db(
+        &self,
+        result_id: &JobResultId,
+    ) -> Result<Option<proto::jobworkerp::data::SandboxExecutionObservation>> {
+        Ok(self
+            .rdb_job_result_repository()
+            .find(result_id)
+            .await?
+            .and_then(|result| result.sandbox_execution_observation))
+    }
+
     async fn delete_job_result(&self, id: &JobResultId) -> Result<bool> {
         self.rdb_job_result_repository().delete(id).await
     }
@@ -201,38 +236,13 @@ impl JobResultApp for RdbJobResultAppImpl {
     where
         Self: Send + 'static,
     {
-        // find from db first if enabled
-        let found = self.rdb_job_result_repository().find(id).await;
-        // fill found.worker_name and found.max_retry from worker
-        let v = if let Ok(Some(fnd)) = found.as_ref() {
-            if let Some(dat) = fnd.data.as_ref() {
-                self._fill_worker_data_to_data(dat.clone()).await.map(|d| {
-                    Some(JobResult {
-                        id: Some(*id),
-                        data: Some(d),
-                        ..Default::default()
-                    })
-                })
-            } else {
-                // unknown (id only?)
-                Ok(Some(JobResult {
-                    id: Some(*id),
-                    data: None,
-                    ..Default::default()
-                }))
-            }
-        } else {
-            // error or not found
-            found
+        let Some(mut result) = self.rdb_job_result_repository().find(id).await? else {
+            return Ok(None);
         };
-        match v {
-            Ok(opt) => Ok(match opt {
-                Some(v) => vec![v],
-                None => Vec::new(),
-            }),
-            Err(e) => Err(e),
+        if let Some(data) = result.data.take() {
+            result.data = Some(self._fill_worker_data_to_data(data).await?);
         }
-        .map(|r| r.first().map(|o| (*o).clone()))
+        Ok(Some(result))
     }
 
     async fn find_job_result_list(

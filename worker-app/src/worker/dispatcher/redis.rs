@@ -1,5 +1,6 @@
 use crate::worker::dispatcher::redis_run_after::RedisRunAfterJobDispatcher;
 use crate::worker::instance_session::{UseWorkerInstanceSession, WorkerInstanceSessionHandle};
+use crate::worker::result_processor::sandbox_observation::pair_raw_observation;
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
 use crate::worker::runner::JobRunner;
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
@@ -540,7 +541,7 @@ pub trait RedisJobDispatcher:
         }
 
         let mut r = self
-            .run_job(
+            .run_job_with_observation(
                 &runner_data,
                 &wid,
                 &wdat,
@@ -551,13 +552,13 @@ pub trait RedisJobDispatcher:
                 },
             )
             .await;
-        let id = super::ensure_job_result_id(self.id_generator(), &mut r.0)?;
+        let id = super::ensure_job_result_id(self.id_generator(), &mut r.job_result)?;
         // TODO execute and return result to result channel.
         tracing::trace!(
             "send result id: {:?}, data: {:?}, hasStream:{}, ",
             id,
-            &r.0,
-            &r.1.is_some()
+            &r.job_result,
+            &r.stream.is_some()
         );
         await_running_index_update(running_index_task.take(), jid.value).await;
         // change status to wait handling result
@@ -606,9 +607,11 @@ pub trait RedisJobDispatcher:
                 }
             }
         }
+        let sandbox_observation =
+            pair_raw_observation(r.sandbox_binding.take(), r.sandbox_observation.take());
         let (result, completion_rx) = self
             .result_processor()
-            .process_result(r.0, r.1, wdat)
+            .process_result_with_observation(r.job_result, r.stream, wdat, sandbox_observation)
             .await?;
         // Wait for background stream-publishing task to finish before allowing
         // this concurrency slot to pop the next job.

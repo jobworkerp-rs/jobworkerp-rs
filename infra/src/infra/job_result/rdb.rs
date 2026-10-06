@@ -1,16 +1,62 @@
 use super::rows::JobResultRow;
 use crate::infra::job::overrides::{delete_overrides_tx, find_overrides_tx};
 use crate::infra::job::rows::UseJobqueueAndCodec;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use infra_utils::infra::rdb::{Rdb, RdbPool, UseRdbPool};
-use itertools::Itertools;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobExecutionOverrides, JobId, JobResult, JobResultData, JobResultId, JobResultSortField,
+    SandboxExecutionObservation,
 };
 use sqlx::{Executor, Transaction};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxObservationStoreResult {
+    Stored,
+    AlreadyIdentical,
+    NotStored,
+    Conflict,
+}
+
+#[cfg(feature = "mysql")]
+const SANDBOX_OBSERVATION_CAS_UPDATE_SQL: &str = "UPDATE job_result SET sandbox_execution_observation = ? \
+     WHERE id = ? AND job_id = ? AND worker_id = ? AND args = ? \
+       AND status = ? AND retried = ? \
+       AND ((BINARY `using` = BINARY ?) OR (`using` IS NULL AND ? IS NULL)) \
+       AND sandbox_execution_observation IS NULL";
+#[cfg(not(feature = "mysql"))]
+const SANDBOX_OBSERVATION_CAS_UPDATE_SQL: &str = "UPDATE job_result SET sandbox_execution_observation = ? \
+     WHERE id = ? AND job_id = ? AND worker_id = ? AND args = ? \
+       AND status = ? AND retried = ? \
+       AND ((`using` COLLATE BINARY = ? COLLATE BINARY) \
+            OR (`using` IS NULL AND ? IS NULL)) \
+       AND sandbox_execution_observation IS NULL";
+
+fn observation_matches_row(
+    row: &JobResultRow,
+    id: &JobResultId,
+    observation: &SandboxExecutionObservation,
+) -> bool {
+    // runner_id is not persisted on job_result rows, so it remains dispatch evidence only.
+    observation.result_id == id.value && row.matches_observation(observation)
+}
+
+fn is_identical_sealed_row_update(row: &JobResultRow, data: &JobResultData) -> Result<bool> {
+    let Some(bytes) = row.sandbox_execution_observation.as_deref() else {
+        return Ok(false);
+    };
+    let observation = SandboxExecutionObservation::decode_validated(bytes)?;
+    if !row.matches_observation(&observation) {
+        bail!("sealed sandbox observation does not match its job result row");
+    }
+    if row.matches_persisted_data(data)? {
+        Ok(true)
+    } else {
+        bail!("cannot change job result data after sandbox observation is finalized");
+    }
+}
 
 #[async_trait]
 pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
@@ -71,7 +117,21 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         id: &JobResultId,
         job_result: &JobResultData,
     ) -> Result<bool> {
-        sqlx::query(
+        let Some(row) =
+            sqlx::query_as::<Rdb, JobResultRow>("SELECT * FROM job_result WHERE id = ?;")
+                .bind(id.value)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(JobWorkerError::DBError)?
+        else {
+            return Ok(false);
+        };
+
+        if is_identical_sealed_row_update(&row, job_result)? {
+            return Ok(true);
+        }
+
+        let updated = sqlx::query(
             "UPDATE job_result SET
             job_id = ?,
             worker_id = ?,
@@ -88,7 +148,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
             start_time = ?,
             end_time = ?,
             `using` = ?
-            WHERE id = ?;",
+            WHERE id = ? AND sandbox_execution_observation IS NULL;",
         )
         .bind(job_result.job_id.as_ref().unwrap().value) //XXX unwrap
         .bind(job_result.worker_id.as_ref().unwrap().value) //XXX unwrap
@@ -115,13 +175,29 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .bind(id.value)
         .execute(&mut **tx)
         .await
-        .map(|r| r.rows_affected() > 0)
         .map_err(JobWorkerError::DBError)
         .context(format!(
             "error in update: id = {:?}, job id = {:?}",
             id.value,
             job_result.job_id.as_ref()
-        ))
+        ))?;
+        if updated.rows_affected() > 0 {
+            return Ok(true);
+        }
+
+        let Some(current) =
+            sqlx::query_as::<Rdb, JobResultRow>("SELECT * FROM job_result WHERE id = ?;")
+                .bind(id.value)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(JobWorkerError::DBError)?
+        else {
+            return Ok(false);
+        };
+        if is_identical_sealed_row_update(&current, job_result)? {
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Fetch job execution overrides for a given job_id.
@@ -191,43 +267,116 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
     }
 
     async fn find_latest_by_job_id(&self, job_id: &JobId) -> Result<Option<JobResult>> {
-        sqlx::query_as::<Rdb, JobResultRow>(
+        let row = sqlx::query_as::<Rdb, JobResultRow>(
             "SELECT * FROM job_result WHERE job_id = ? ORDER BY end_time DESC LIMIT 1;",
         )
         .bind(job_id.value)
         .fetch_optional(self.db_pool())
         .await
-        .map(|r| r.map(|r2| r2.to_proto()))
         .map_err(JobWorkerError::DBError)
-        .context(format!("error in find: job_id = {}", job_id.value))
+        .context(format!("error in find: job_id = {}", job_id.value))?;
+        row.map(|row| row.to_proto()).transpose()
     }
 
     /// find latest 1000 records by job_id
     /// XXX limit 1000 (max retry)
     async fn find_list_by_job_id(&self, job_id: &JobId) -> Result<Vec<JobResult>> {
-        sqlx::query_as::<Rdb, JobResultRow>(
+        let rows = sqlx::query_as::<Rdb, JobResultRow>(
             "SELECT * FROM job_result WHERE job_id = ? ORDER BY end_time DESC LIMIT 1000;",
         )
         .bind(job_id.value)
         .fetch_all(self.db_pool())
         .await
-        .map(|r| r.into_iter().map(|r2| r2.to_proto()).collect_vec())
         .map_err(JobWorkerError::DBError)
-        .context(format!("error in find: job_id = {}", job_id.value))
+        .context(format!("error in find: job_id = {}", job_id.value))?;
+        rows.into_iter().map(|row| row.to_proto()).collect()
     }
 
     async fn find(&self, id: &JobResultId) -> Result<Option<JobResult>> {
-        sqlx::query_as::<Rdb, JobResultRow>("SELECT * FROM job_result WHERE id = ?;")
+        let row = sqlx::query_as::<Rdb, JobResultRow>("SELECT * FROM job_result WHERE id = ?;")
             .bind(id.value)
             .fetch_optional(self.db_pool())
             .await
-            .map(|r| r.map(|r2| r2.to_proto()))
             .map_err(JobWorkerError::DBError)
-            .context(format!("error in find: job_result.id = {}", id.value))
+            .context(format!("error in find: job_result.id = {}", id.value))?;
+        row.map(|row| row.to_proto()).transpose()
+    }
+
+    async fn finalize_sandbox_observation(
+        &self,
+        id: &JobResultId,
+        observation: &SandboxExecutionObservation,
+    ) -> Result<SandboxObservationStoreResult> {
+        observation.validate()?;
+        let encoded = observation.encode_validated()?;
+        if observation.result_id != id.value {
+            return Ok(SandboxObservationStoreResult::Conflict);
+        }
+
+        let Some(row) =
+            sqlx::query_as::<Rdb, JobResultRow>("SELECT * FROM job_result WHERE id = ?;")
+                .bind(id.value)
+                .fetch_optional(self.db_pool())
+                .await
+                .map_err(JobWorkerError::DBError)?
+        else {
+            return Ok(SandboxObservationStoreResult::NotStored);
+        };
+
+        if !observation_matches_row(&row, id, observation) {
+            return Ok(SandboxObservationStoreResult::Conflict);
+        }
+        if let Some(existing) = row.sandbox_execution_observation.as_deref() {
+            let existing = SandboxExecutionObservation::decode_validated(existing)?;
+            return Ok(if existing == *observation {
+                SandboxObservationStoreResult::AlreadyIdentical
+            } else {
+                SandboxObservationStoreResult::Conflict
+            });
+        }
+
+        let updated = sqlx::query::<Rdb>(SANDBOX_OBSERVATION_CAS_UPDATE_SQL)
+            .bind(encoded)
+            .bind(row.id)
+            .bind(row.job_id)
+            .bind(row.worker_id)
+            .bind(&row.args)
+            .bind(row.status)
+            .bind(row.retried)
+            .bind(&row.using)
+            .bind(&row.using)
+            .execute(self.db_pool())
+            .await
+            .map_err(JobWorkerError::DBError)?;
+        if updated.rows_affected() > 0 {
+            return Ok(SandboxObservationStoreResult::Stored);
+        }
+
+        let Some(current) =
+            sqlx::query_as::<Rdb, JobResultRow>("SELECT * FROM job_result WHERE id = ?;")
+                .bind(id.value)
+                .fetch_optional(self.db_pool())
+                .await
+                .map_err(JobWorkerError::DBError)?
+        else {
+            return Ok(SandboxObservationStoreResult::NotStored);
+        };
+        if !observation_matches_row(&current, id, observation) {
+            return Ok(SandboxObservationStoreResult::Conflict);
+        }
+        let Some(existing) = current.sandbox_execution_observation.as_deref() else {
+            return Ok(SandboxObservationStoreResult::Conflict);
+        };
+        let existing = SandboxExecutionObservation::decode_validated(existing)?;
+        Ok(if existing == *observation {
+            SandboxObservationStoreResult::AlreadyIdentical
+        } else {
+            SandboxObservationStoreResult::Conflict
+        })
     }
 
     async fn find_list(&self, limit: Option<&i32>, offset: Option<&i64>) -> Result<Vec<JobResult>> {
-        if let Some(l) = limit {
+        let rows = if let Some(l) = limit {
             sqlx::query_as::<_, JobResultRow>(
                 "SELECT * FROM job_result ORDER BY job_id DESC LIMIT ? OFFSET ?;",
             )
@@ -240,9 +389,9 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
                 .fetch_all(self.db_pool())
         }
         .await
-        .map(|r| r.iter().map(|r2| r2.to_proto()).collect_vec())
         .map_err(JobWorkerError::DBError)
-        .context(format!("error in find_list: ({limit:?}, {offset:?})"))
+        .context(format!("error in find_list: ({limit:?}, {offset:?})"))?;
+        rows.into_iter().map(|row| row.to_proto()).collect()
     }
 
     async fn count_list_tx<'c, E: Executor<'c, Database = Rdb>>(&self, tx: E) -> Result<i64> {
@@ -364,7 +513,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
             .await
             .map_err(JobWorkerError::DBError)?;
 
-        Ok(rows.iter().map(|r| r.to_proto()).collect())
+        rows.into_iter().map(|row| row.to_proto()).collect()
     }
 
     /// Count job results with filtering
@@ -590,6 +739,8 @@ mod test {
 
     use super::RdbJobResultRepository;
     use super::RdbJobResultRepositoryImpl;
+    #[cfg(test)]
+    use super::SandboxObservationStoreResult;
     use anyhow::Context;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
@@ -646,6 +797,7 @@ mod test {
             id: Some(id1),
             data,
             metadata: HashMap::new(), // not stored in rdb etc
+            sandbox_execution_observation: None,
         };
 
         // find
@@ -2304,6 +2456,289 @@ mod test {
                 .execute(pool)
                 .await?;
             _test_streaming_type_all_values(pool).await
+        })
+    }
+
+    #[cfg(not(feature = "mysql"))]
+    #[test]
+    fn test_sandbox_observation_cas_preserves_job_result_bytes_and_identity() -> Result<()> {
+        use infra_utils::infra::test::{TEST_RUNTIME, setup_test_rdb_from};
+        use proto::jobworkerp::data::{
+            SandboxExecutionEndState, SandboxExecutionObservation, SandboxExecutionProducerState,
+        };
+        use proto::sandbox_observation::sha256_digest;
+
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_rdb_from("sql/migrations/sqlite").await;
+            sqlx::query("DELETE FROM job_result WHERE id BETWEEN 78300 AND 78399")
+                .execute(pool)
+                .await?;
+            let repository = RdbJobResultRepositoryImpl::new(pool);
+
+            let make_observation = |result_id: i64,
+                                    job_id: i64,
+                                    worker_id: i64,
+                                    args: &[u8],
+                                    status: i32,
+                                    using: &str,
+                                    retried: u32| {
+                let mut observation = SandboxExecutionObservation {
+                    schema_version: 1,
+                    job_id,
+                    worker_id,
+                    runner_id: 79001,
+                    result_id,
+                    dispatch_args_sha256: sha256_digest(args).to_vec(),
+                    worker_settings_sha256: sha256_digest(b"worker settings").to_vec(),
+                    method_schema_sha256: sha256_digest(b"method schema").to_vec(),
+                    host_settings_sha256: sha256_digest(b"host settings").to_vec(),
+                    using: using.to_owned(),
+                    retry_ordinal: retried,
+                    stored_result_status: status,
+                    cli_exit_code: Some(7),
+                    end_state: SandboxExecutionEndState::Normal as i32,
+                    producer_state: SandboxExecutionProducerState::Unknown as i32,
+                    anomaly_codes: Vec::new(),
+                    stdout_bytes: Some(3),
+                    stderr_bytes: None,
+                    stdout_sha256: Some(sha256_digest(b"out").to_vec()),
+                    stderr_sha256: None,
+                    trailer_bytes: None,
+                    trailer_sha256: None,
+                    observation_sha256: Vec::new(),
+                };
+                observation.seal().unwrap();
+                observation
+            };
+
+            let outputs = [
+                None,
+                Some(ResultOutput { items: Vec::new() }),
+                Some(ResultOutput {
+                    items: b"nonempty output".to_vec(),
+                }),
+            ];
+            let args = b"raw serialized args";
+            for (index, output) in outputs.into_iter().enumerate() {
+                let result_id = JobResultId {
+                    value: 78300 + index as i64,
+                };
+                let job_id = 78400 + index as i64;
+                let worker_id = 78500 + index as i64;
+                let data = JobResultData {
+                    job_id: Some(JobId { value: job_id }),
+                    worker_id: Some(WorkerId { value: worker_id }),
+                    args: args.to_vec(),
+                    status: ResultStatus::Success as i32,
+                    output,
+                    retried: 2,
+                    using: Some("run".to_owned()),
+                    ..Default::default()
+                };
+                assert!(repository.create(&result_id, &data).await?);
+                let before = repository.find(&result_id).await?.unwrap();
+                let before_output = before.data.as_ref().unwrap().output.clone();
+                let raw_output_before: Vec<u8> =
+                    sqlx::query_scalar("SELECT output FROM job_result WHERE id = ?")
+                        .bind(result_id.value)
+                        .fetch_one(pool)
+                        .await?;
+                let observation = make_observation(
+                    result_id.value,
+                    job_id,
+                    worker_id,
+                    args,
+                    ResultStatus::Success as i32,
+                    "run",
+                    2,
+                );
+
+                let stored = repository
+                    .finalize_sandbox_observation(&result_id, &observation)
+                    .await?;
+                assert_eq!(stored, SandboxObservationStoreResult::Stored);
+                let after = repository.find(&result_id).await?.unwrap();
+                assert_eq!(
+                    after.sandbox_execution_observation,
+                    Some(observation.clone())
+                );
+                assert_eq!(after.data.as_ref().unwrap().output, before_output);
+                let raw_output_after: Vec<u8> =
+                    sqlx::query_scalar("SELECT output FROM job_result WHERE id = ?")
+                        .bind(result_id.value)
+                        .fetch_one(pool)
+                        .await?;
+                assert_eq!(raw_output_after, raw_output_before);
+
+                if index == 0 {
+                    assert_eq!(
+                        before.data.as_ref().unwrap().output,
+                        Some(ResultOutput { items: Vec::new() }),
+                        "the existing empty-blob decoder must remain unchanged"
+                    );
+                    assert_eq!(
+                        repository
+                            .finalize_sandbox_observation(&result_id, &observation)
+                            .await?,
+                        SandboxObservationStoreResult::AlreadyIdentical
+                    );
+                    let mut different = observation.clone();
+                    different.cli_exit_code = Some(8);
+                    different.seal()?;
+                    assert_eq!(
+                        repository
+                            .finalize_sandbox_observation(&result_id, &different)
+                            .await?,
+                        SandboxObservationStoreResult::Conflict
+                    );
+                }
+
+                if index == 1 {
+                    sqlx::query("DELETE FROM job_result WHERE id = ?")
+                        .bind(result_id.value)
+                        .execute(pool)
+                        .await?;
+                    assert!(repository.find(&result_id).await?.is_none());
+                    assert_eq!(
+                        repository
+                            .finalize_sandbox_observation(&result_id, &observation)
+                            .await?,
+                        SandboxObservationStoreResult::NotStored
+                    );
+                }
+            }
+
+            let concurrent_id = JobResultId { value: 78320 };
+            let concurrent_data = JobResultData {
+                job_id: Some(JobId { value: 78420 }),
+                worker_id: Some(WorkerId { value: 78520 }),
+                args: args.to_vec(),
+                status: ResultStatus::Success as i32,
+                output: Some(ResultOutput {
+                    items: b"concurrent output".to_vec(),
+                }),
+                retried: 4,
+                using: Some("run".to_owned()),
+                ..Default::default()
+            };
+            repository.create(&concurrent_id, &concurrent_data).await?;
+            let concurrent_observation = make_observation(
+                concurrent_id.value,
+                78420,
+                78520,
+                args,
+                ResultStatus::Success as i32,
+                "run",
+                4,
+            );
+            let (first, second) = tokio::join!(
+                repository.finalize_sandbox_observation(&concurrent_id, &concurrent_observation),
+                repository.finalize_sandbox_observation(&concurrent_id, &concurrent_observation),
+            );
+            let outcomes = [first?, second?];
+            assert_eq!(
+                outcomes
+                    .iter()
+                    .filter(|outcome| **outcome == SandboxObservationStoreResult::Stored)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                outcomes
+                    .iter()
+                    .filter(|outcome| **outcome == SandboxObservationStoreResult::AlreadyIdentical)
+                    .count(),
+                1
+            );
+
+            let identity_id = JobResultId { value: 78330 };
+            let identity_data = JobResultData {
+                job_id: Some(JobId { value: 78430 }),
+                worker_id: Some(WorkerId { value: 78530 }),
+                args: args.to_vec(),
+                status: ResultStatus::Success as i32,
+                output: Some(ResultOutput {
+                    items: b"original output".to_vec(),
+                }),
+                retried: 5,
+                using: Some("run".to_owned()),
+                ..Default::default()
+            };
+            repository.create(&identity_id, &identity_data).await?;
+            let valid = make_observation(
+                identity_id.value,
+                78430,
+                78530,
+                args,
+                ResultStatus::Success as i32,
+                "run",
+                5,
+            );
+
+            let mut mismatches = Vec::new();
+            let mut wrong_job = valid.clone();
+            wrong_job.job_id += 1;
+            mismatches.push(wrong_job);
+            let mut wrong_worker = valid.clone();
+            wrong_worker.worker_id += 1;
+            mismatches.push(wrong_worker);
+            let mut wrong_args = valid.clone();
+            wrong_args.dispatch_args_sha256 = sha256_digest(b"different args").to_vec();
+            mismatches.push(wrong_args);
+            let mut wrong_status = valid.clone();
+            wrong_status.stored_result_status = ResultStatus::FatalError as i32;
+            mismatches.push(wrong_status);
+            let mut wrong_using = valid.clone();
+            wrong_using.using = "different-method".to_owned();
+            mismatches.push(wrong_using);
+            let mut wrong_retry = valid.clone();
+            wrong_retry.retry_ordinal += 1;
+            mismatches.push(wrong_retry);
+            for mut mismatch in mismatches {
+                mismatch.seal()?;
+                assert_eq!(
+                    repository
+                        .finalize_sandbox_observation(&identity_id, &mismatch)
+                        .await?,
+                    SandboxObservationStoreResult::Conflict
+                );
+            }
+
+            let mut wrong_observation_id = valid.clone();
+            wrong_observation_id.result_id += 1;
+            wrong_observation_id.seal()?;
+            assert_eq!(
+                repository
+                    .finalize_sandbox_observation(&identity_id, &wrong_observation_id)
+                    .await?,
+                SandboxObservationStoreResult::Conflict
+            );
+            assert_eq!(
+                repository
+                    .finalize_sandbox_observation(
+                        &JobResultId {
+                            value: identity_id.value + 1,
+                        },
+                        &valid,
+                    )
+                    .await?,
+                SandboxObservationStoreResult::Conflict
+            );
+
+            let unchanged = repository.find(&identity_id).await?.unwrap();
+            assert!(unchanged.sandbox_execution_observation.is_none());
+            assert_eq!(
+                unchanged.data.unwrap().output.unwrap().items,
+                b"original output"
+            );
+            assert_eq!(
+                repository
+                    .finalize_sandbox_observation(&identity_id, &valid)
+                    .await?,
+                SandboxObservationStoreResult::Stored
+            );
+
+            Ok::<(), anyhow::Error>(())
         })
     }
 }

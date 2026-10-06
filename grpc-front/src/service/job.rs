@@ -17,12 +17,41 @@ use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::result_output_item;
-use proto::jobworkerp::data::{Job, JobId, JobProcessingStatus, JobResult, StreamingType};
+use proto::jobworkerp::data::{
+    FeedDataTransport, Job, JobId, JobProcessingStatus, JobResult, RunnerData, StreamingType,
+};
 use std::fmt::Debug;
 use std::future::Future;
 use std::sync::Arc;
 use tonic::Response;
 use tonic::metadata::MetadataValue;
+
+fn method_supports_pty_resize(runner_data: Option<&RunnerData>, using: Option<&str>) -> bool {
+    let Some(methods) = runner_data.and_then(|data| data.method_proto_map.as_ref()) else {
+        return false;
+    };
+    let method_name = using.unwrap_or(proto::DEFAULT_METHOD_NAME);
+    let method_schema = methods.schemas.get(method_name).or_else(|| {
+        (method_name != proto::DEFAULT_METHOD_NAME)
+            .then(|| methods.schemas.get(proto::DEFAULT_METHOD_NAME))
+            .flatten()
+    });
+    method_schema.is_some_and(|schema| schema.supports_pty_resize)
+}
+
+fn validate_client_feed_frame(
+    frame: &FeedDataTransport,
+    supports_pty_resize: bool,
+) -> Result<(), tonic::Status> {
+    infra::infra::feed::validate_feed_data_transport(frame)
+        .map_err(|error| tonic::Status::invalid_argument(error.to_string()))?;
+    if frame.pty_resize_control.is_some() && !supports_pty_resize {
+        return Err(tonic::Status::failed_precondition(
+            "selected runner method does not support PTY resize controls",
+        ));
+    }
+    Ok(())
+}
 
 /// Convert a ResultOutputStream into a gRPC-compatible stream that ends on End item.
 fn wrap_result_output_stream(
@@ -738,6 +767,30 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             .await
             .map_err(|e| handle_error(&e))?;
 
+        // Capture the selected method's capability for this accepted client
+        // stream. A resize is never inferred from a job id or from payload
+        // bytes; old/custom methods remain input-only unless their resolved
+        // MethodSchema explicitly advertises typed PTY resize support.
+        let runner_schema = if let Some(runner_id) = worker
+            .data
+            .as_ref()
+            .and_then(|worker_data| worker_data.runner_id.as_ref())
+        {
+            self.app_module()
+                .runner_app
+                .find_runner(runner_id)
+                .await
+                .map_err(|error| handle_error(&error))?
+        } else {
+            None
+        };
+        let supports_pty_resize = method_supports_pty_resize(
+            runner_schema
+                .as_ref()
+                .and_then(|runner| runner.data.as_ref()),
+            using.as_deref(),
+        );
+
         // 5. Pre-generate job ID
         let reserved_job_id = self.app().generate_job_id().map_err(|e| handle_error(&e))?;
         let job_id_value = reserved_job_id.value;
@@ -807,14 +860,14 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                     .map_err(|e| tonic::Status::internal(format!("client stream error: {e}")))?;
                 match msg.request {
                     Some(client_stream_request::Request::FeedData(feed_transport)) => {
+                        validate_client_feed_frame(&feed_transport, supports_pty_resize)?;
                         let is_final = feed_transport.is_final;
                         feed_publisher
-                            .publish_feed(
+                            .publish_frame(
                                 &JobId {
                                     value: job_id_value,
                                 },
-                                feed_transport.data,
-                                is_final,
+                                feed_transport,
                             )
                             .await
                             .map_err(|e| {
@@ -1207,6 +1260,7 @@ impl JobGrpcImpl {
             id: Some(proto::jobworkerp::data::JobResultId { value: 0 }), // dummy id for error response
             data: Some(metadata_result_data),
             metadata: std::collections::HashMap::new(),
+            sandbox_execution_observation: None,
         };
 
         // Map ResultStatus to appropriate gRPC status codes and messages
@@ -1727,6 +1781,7 @@ mod tests {
                 FeedDataTransport {
                     data: vec![10, 20, 30],
                     is_final: true,
+                    pty_resize_control: None,
                 },
             )),
         };
@@ -1743,6 +1798,82 @@ mod tests {
     fn test_client_stream_request_empty() {
         let req = ClientStreamRequest { request: None };
         assert!(req.request.is_none());
+    }
+
+    #[test]
+    fn pty_resize_requires_the_resolved_method_capability() {
+        use proto::jobworkerp::data::{MethodProtoMap, MethodSchema};
+
+        let runner = RunnerData {
+            method_proto_map: Some(MethodProtoMap {
+                schemas: std::collections::HashMap::from([(
+                    "run_with_client".to_string(),
+                    MethodSchema {
+                        require_client_stream: true,
+                        supports_pty_resize: true,
+                        ..Default::default()
+                    },
+                )]),
+            }),
+            ..Default::default()
+        };
+        assert!(method_supports_pty_resize(
+            Some(&runner),
+            Some("run_with_client")
+        ));
+        assert!(!method_supports_pty_resize(Some(&runner), Some("run")));
+        assert!(!method_supports_pty_resize(None, Some("run_with_client")));
+
+        let legacy_runner = RunnerData {
+            method_proto_map: Some(MethodProtoMap {
+                schemas: std::collections::HashMap::from([(
+                    "run_with_client".to_string(),
+                    MethodSchema {
+                        require_client_stream: true,
+                        ..Default::default()
+                    },
+                )]),
+            }),
+            ..Default::default()
+        };
+        assert!(!method_supports_pty_resize(
+            Some(&legacy_runner),
+            Some("run_with_client")
+        ));
+    }
+
+    #[test]
+    fn client_stream_control_validation_rejects_unsupported_or_mixed_frames() {
+        use proto::jobworkerp::data::PtyResizeControl;
+
+        let resize = FeedDataTransport {
+            pty_resize_control: Some(PtyResizeControl { rows: 24, cols: 80 }),
+            ..Default::default()
+        };
+        assert!(validate_client_feed_frame(&resize, true).is_ok());
+        assert_eq!(
+            validate_client_feed_frame(&resize, false)
+                .unwrap_err()
+                .code(),
+            tonic::Code::FailedPrecondition
+        );
+
+        let mixed = FeedDataTransport {
+            data: b"must not be enqueued as stdin".to_vec(),
+            pty_resize_control: resize.pty_resize_control.clone(),
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_client_feed_frame(&mixed, true).unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+
+        let opaque_bytes = FeedDataTransport {
+            data: vec![0, 255, 0x04],
+            ..Default::default()
+        };
+        assert!(validate_client_feed_frame(&opaque_bytes, false).is_ok());
+        assert_eq!(opaque_bytes.data, vec![0, 255, 0x04]);
     }
 
     #[test]

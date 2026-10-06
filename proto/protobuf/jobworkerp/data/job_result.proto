@@ -120,6 +120,64 @@ message JobResult {
   JobResultId id = 1;
   JobResultData data = 2;
   map<string, string> metadata = 3;
+  SandboxExecutionObservation sandbox_execution_observation = 4;
+}
+
+// Bounded, typed evidence about one sandbox invocation. Stream output and
+// freeform diagnostics are deliberately excluded from this durable record.
+message SandboxExecutionObservation {
+  uint32 schema_version = 1;
+  int64 job_id = 2;
+  int64 worker_id = 3;
+  int64 runner_id = 4;
+  int64 result_id = 5;
+  bytes dispatch_args_sha256 = 6;
+  bytes worker_settings_sha256 = 7;
+  bytes method_schema_sha256 = 8;
+  // Dispatch configuration evidence; this is not effective VM capacity.
+  bytes host_settings_sha256 = 9;
+  string using = 10;
+  uint32 retry_ordinal = 11;
+  jobworkerp.data.ResultStatus stored_result_status = 12;
+  optional int32 cli_exit_code = 13;
+  SandboxExecutionEndState end_state = 14;
+  SandboxExecutionProducerState producer_state = 15;
+  repeated SandboxExecutionAnomalyCode anomaly_codes = 16;
+  optional uint64 stdout_bytes = 17;
+  optional uint64 stderr_bytes = 18;
+  optional bytes stdout_sha256 = 19;
+  optional bytes stderr_sha256 = 20;
+  optional uint64 trailer_bytes = 21;
+  optional bytes trailer_sha256 = 22;
+  // SHA-256 of the canonical protobuf encoding with this field cleared and
+  // a fixed schema-domain prefix, binding the evidence to its row identity.
+  bytes observation_sha256 = 23;
+}
+
+enum SandboxExecutionEndState {
+  SANDBOX_EXECUTION_END_STATE_UNKNOWN = 0;
+  SANDBOX_EXECUTION_END_STATE_NORMAL = 1;
+  SANDBOX_EXECUTION_END_STATE_ERROR = 2;
+  SANDBOX_EXECUTION_END_STATE_MALFORMED = 3;
+}
+
+enum SandboxExecutionProducerState {
+  SANDBOX_EXECUTION_PRODUCER_STATE_UNKNOWN = 0;
+  SANDBOX_EXECUTION_PRODUCER_STATE_CLEAN = 1;
+  SANDBOX_EXECUTION_PRODUCER_STATE_ABORTED = 2;
+  SANDBOX_EXECUTION_PRODUCER_STATE_PROTOCOL_INVALID = 3;
+}
+
+enum SandboxExecutionAnomalyCode {
+  SANDBOX_EXECUTION_ANOMALY_CODE_UNSPECIFIED = 0;
+  SANDBOX_EXECUTION_ANOMALY_CODE_EXIT_CODE_MISSING = 1;
+  SANDBOX_EXECUTION_ANOMALY_CODE_EXIT_CODE_MISMATCH = 2;
+  SANDBOX_EXECUTION_ANOMALY_CODE_DUPLICATE_TERMINAL = 3;
+  SANDBOX_EXECUTION_ANOMALY_CODE_UNKNOWN_TERMINAL = 4;
+  SANDBOX_EXECUTION_ANOMALY_CODE_MALFORMED_TERMINAL = 5;
+  SANDBOX_EXECUTION_ANOMALY_CODE_TRUNCATED_OUTPUT = 6;
+  SANDBOX_EXECUTION_ANOMALY_CODE_OUTPUT_DIGEST_MISMATCH = 7;
+  SANDBOX_EXECUTION_ANOMALY_CODE_UNEXPECTED_FRAME = 8;
 }
 
 // # Job Result Sort Field

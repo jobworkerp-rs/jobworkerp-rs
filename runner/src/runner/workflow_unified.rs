@@ -412,6 +412,7 @@ mod tests {
             position: "/test".to_string(),
             status: status as i32,
             error_message: None,
+            child_execution_receipts: None,
         }
     }
 

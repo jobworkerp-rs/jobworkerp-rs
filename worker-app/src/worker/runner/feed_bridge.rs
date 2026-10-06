@@ -80,7 +80,7 @@ async fn bridge_loop(
         match result {
             Some((_key, bytes)) => {
                 let transport = FeedDataTransport::decode(bytes.as_slice())?;
-                let feed = feed_data_from_transport(transport);
+                let feed = feed_data_from_transport(transport)?;
                 let is_final = feed.is_final;
                 if feed_sender.send(feed).await.is_err() {
                     tracing::debug!("Feed bridge: receiver dropped for job {}", job_id.value);
@@ -122,7 +122,11 @@ mod tests {
 
     async fn rpush_feed(client: &RedisClient, job_id: &JobId, data: Vec<u8>, is_final: bool) {
         let key = job_feed_buf_key(job_id);
-        let msg = FeedDataTransport { data, is_final };
+        let msg = FeedDataTransport {
+            data,
+            is_final,
+            pty_resize_control: None,
+        };
         let serialized = msg.encode_to_vec();
         let mut conn = client.get_multiplexed_async_connection().await.unwrap();
         let _: () = conn.rpush(&key, &serialized).await.unwrap();

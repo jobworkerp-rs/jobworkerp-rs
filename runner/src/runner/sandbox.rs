@@ -38,7 +38,7 @@ use super::{
     cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper},
 };
 #[cfg(test)]
-use client_feed::{ClientInputSink, forward_client_feed};
+use client_feed::{ClientInputSink, PtyControl, forward_client_feed};
 use client_feed::{ExecInputSink, FeedTaskGuard};
 use runtime::SandboxRuntime;
 
@@ -524,6 +524,7 @@ impl SandboxRunner {
             (Some(receiver), Some(stdin)) => Some(FeedTaskGuard::spawn(
                 receiver,
                 ExecInputSink(stdin),
+                control.clone(),
                 local_cancel.clone(),
             )),
             (Some(_), None) => {
@@ -745,6 +746,7 @@ impl RunnerSpec for SandboxRunner {
                     ),
                     output_type: streaming,
                     require_client_stream: true,
+                    supports_pty_resize: true,
                     client_stream_data_proto: Some(String::new()),
                 },
             ),
@@ -1323,10 +1325,18 @@ mod tests {
     #[derive(Clone, Default)]
     struct RecordedInput {
         chunks: Arc<Mutex<Vec<Vec<u8>>>>,
+        events: Arc<Mutex<Vec<InputEvent>>>,
         closed: Arc<AtomicBool>,
         fail_next_write: Arc<AtomicBool>,
         writes: Arc<std::sync::atomic::AtomicUsize>,
         fail_on_write: Option<usize>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum InputEvent {
+        Write(Vec<u8>),
+        Resize(u16, u16),
+        Close,
     }
 
     #[async_trait]
@@ -1339,11 +1349,32 @@ mod tests {
                 bail!("simulated guest stdin error");
             }
             self.chunks.lock().await.push(bytes.to_vec());
+            self.events
+                .lock()
+                .await
+                .push(InputEvent::Write(bytes.to_vec()));
             Ok(())
         }
 
         async fn close(&mut self) -> Result<()> {
             self.closed.store(true, Ordering::Release);
+            self.events.lock().await.push(InputEvent::Close);
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordedPtyControl {
+        events: Arc<Mutex<Vec<InputEvent>>>,
+    }
+
+    #[async_trait]
+    impl PtyControl for RecordedPtyControl {
+        async fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+            self.events
+                .lock()
+                .await
+                .push(InputEvent::Resize(rows, cols));
             Ok(())
         }
     }
@@ -1356,12 +1387,14 @@ mod tests {
         let task = tokio::spawn(forward_client_feed(
             receiver,
             input,
+            None,
             CancellationToken::new(),
         ));
         sender
             .send(FeedData {
                 data: vec![0, 255],
                 is_final: false,
+                pty_resize_control: None,
             })
             .await
             .unwrap();
@@ -1369,6 +1402,7 @@ mod tests {
             .send(FeedData {
                 data: b"last".to_vec(),
                 is_final: true,
+                pty_resize_control: None,
             })
             .await
             .unwrap();
@@ -1389,12 +1423,14 @@ mod tests {
         let task = tokio::spawn(forward_client_feed(
             receiver,
             input,
+            None,
             CancellationToken::new(),
         ));
         sender
             .send(FeedData {
                 data: Vec::new(),
                 is_final: true,
+                pty_resize_control: None,
             })
             .await
             .unwrap();
@@ -1418,12 +1454,14 @@ mod tests {
         let task = tokio::spawn(forward_client_feed(
             receiver,
             input,
+            None,
             CancellationToken::new(),
         ));
         sender
             .send(FeedData {
                 data: b"payload".to_vec(),
                 is_final: true,
+                pty_resize_control: None,
             })
             .await
             .unwrap();
@@ -1444,12 +1482,14 @@ mod tests {
         let task = tokio::spawn(forward_client_feed(
             receiver,
             input,
+            None,
             CancellationToken::new(),
         ));
         sender
             .send(FeedData {
                 data: b"unwritable".to_vec(),
                 is_final: false,
+                pty_resize_control: None,
             })
             .await
             .unwrap();
@@ -1457,6 +1497,7 @@ mod tests {
             .send(FeedData {
                 data: b"still delivered".to_vec(),
                 is_final: true,
+                pty_resize_control: None,
             })
             .await
             .unwrap();
@@ -1475,11 +1516,12 @@ mod tests {
         let input = RecordedInput::default();
         let observed = input.clone();
         let cancel = CancellationToken::new();
-        let task = tokio::spawn(forward_client_feed(receiver, input, cancel.clone()));
+        let task = tokio::spawn(forward_client_feed(receiver, input, None, cancel.clone()));
         sender
             .send(FeedData {
                 data: b"partial".to_vec(),
                 is_final: false,
+                pty_resize_control: None,
             })
             .await
             .unwrap();
@@ -1498,6 +1540,156 @@ mod tests {
 
         assert_eq!(*observed.chunks.lock().await, vec![b"partial".to_vec()]);
         assert!(!observed.closed.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn resize_routes_to_bound_exec_without_writing_stdin_and_preserves_feed_order() {
+        use proto::jobworkerp::data::PtyResizeControl;
+
+        let (sender, receiver) = mpsc::channel(4);
+        let input = RecordedInput::default();
+        let events = input.events.clone();
+        let control = Arc::new(RecordedPtyControl {
+            events: events.clone(),
+        });
+        let task = tokio::spawn(forward_client_feed(
+            receiver,
+            input.clone(),
+            Some(control),
+            CancellationToken::new(),
+        ));
+
+        sender
+            .send(FeedData {
+                data: Vec::new(),
+                is_final: false,
+                pty_resize_control: Some(PtyResizeControl { rows: 24, cols: 80 }),
+            })
+            .await
+            .unwrap();
+        sender
+            .send(FeedData {
+                data: vec![0, 255, 0x04],
+                is_final: false,
+                pty_resize_control: None,
+            })
+            .await
+            .unwrap();
+        sender
+            .send(FeedData {
+                data: b"last".to_vec(),
+                is_final: true,
+                pty_resize_control: None,
+            })
+            .await
+            .unwrap();
+        task.await.unwrap();
+
+        assert_eq!(
+            *events.lock().await,
+            vec![
+                InputEvent::Resize(24, 80),
+                InputEvent::Write(vec![0, 255, 0x04]),
+                InputEvent::Write(b"last".to_vec()),
+                InputEvent::Write(vec![0x04, 0x04]),
+                InputEvent::Close,
+            ]
+        );
+        assert_eq!(input.writes.load(Ordering::Acquire), 3);
+        assert!(input.closed.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn resize_without_bound_exec_control_never_becomes_stdin_bytes() {
+        use proto::jobworkerp::data::PtyResizeControl;
+
+        let (sender, receiver) = mpsc::channel(1);
+        let input = RecordedInput::default();
+        let observed = input.clone();
+        let task = tokio::spawn(forward_client_feed(
+            receiver,
+            input,
+            None,
+            CancellationToken::new(),
+        ));
+        sender
+            .send(FeedData {
+                data: Vec::new(),
+                is_final: false,
+                pty_resize_control: Some(PtyResizeControl { rows: 24, cols: 80 }),
+            })
+            .await
+            .unwrap();
+        drop(sender);
+        task.await.unwrap();
+
+        assert!(observed.chunks.lock().await.is_empty());
+        assert_eq!(observed.writes.load(Ordering::Acquire), 0);
+        assert!(observed.closed.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn mixed_resize_frame_is_rejected_without_writing_its_data_as_stdin() {
+        use proto::jobworkerp::data::PtyResizeControl;
+
+        let (sender, receiver) = mpsc::channel(1);
+        let input = RecordedInput::default();
+        let observed = input.clone();
+        let task = tokio::spawn(forward_client_feed(
+            receiver,
+            input,
+            None,
+            CancellationToken::new(),
+        ));
+        sender
+            .send(FeedData {
+                data: b"must not become stdin".to_vec(),
+                is_final: false,
+                pty_resize_control: Some(PtyResizeControl { rows: 24, cols: 80 }),
+            })
+            .await
+            .unwrap();
+        task.await.unwrap();
+
+        assert!(observed.chunks.lock().await.is_empty());
+        assert_eq!(observed.writes.load(Ordering::Acquire), 0);
+        assert!(observed.closed.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn cancellation_discards_a_queued_resize_for_its_bound_exec() {
+        use proto::jobworkerp::data::PtyResizeControl;
+
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .send(FeedData {
+                data: Vec::new(),
+                is_final: false,
+                pty_resize_control: Some(PtyResizeControl {
+                    rows: 40,
+                    cols: 120,
+                }),
+            })
+            .await
+            .unwrap();
+        let input = RecordedInput::default();
+        let control = Arc::new(RecordedPtyControl::default());
+        let observed_control = control.clone();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        forward_client_feed(receiver, input, Some(control), cancel).await;
+
+        assert!(observed_control.events.lock().await.is_empty());
+    }
+
+    #[test]
+    fn only_run_with_client_advertises_pty_resize() {
+        let methods = SandboxRunner::method_proto_map(&SandboxRunner::new());
+        assert!(!methods[DEFAULT_METHOD_NAME].supports_pty_resize);
+        let client_method = &methods[METHOD_RUN_WITH_CLIENT];
+        assert!(client_method.supports_pty_resize);
+        assert_eq!(client_method.client_stream_data_proto.as_deref(), Some(""));
     }
 
     #[tokio::test]

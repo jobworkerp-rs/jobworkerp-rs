@@ -466,6 +466,7 @@ mod streaming_pool_guard_tests {
                     .send(FeedData {
                         data: encode_hello_args("World"),
                         is_final: false,
+                        pty_resize_control: None,
                     })
                     .await
                     .expect("send feed data should succeed");
@@ -476,6 +477,7 @@ mod streaming_pool_guard_tests {
                     .send(FeedData {
                         data: encode_hello_args("!"),
                         is_final: true,
+                        pty_resize_control: None,
                     })
                     .await
                     .expect("send final feed data should succeed");

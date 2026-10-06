@@ -12,11 +12,26 @@ use infra::infra::job_result::rdb::{RdbJobResultRepository, UseRdbJobResultRepos
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
     JobExecutionOverrides, JobId, JobResult, JobResultData, JobResultId, JobResultSortField,
-    ResultOutputItem, ResultStatus, WorkerId,
+    ResultOutputItem, ResultStatus, SandboxExecutionObservation, WorkerId,
 };
 use std::collections::HashMap;
 use std::{fmt, pin::Pin, sync::Arc};
 use tokio_stream::Stream;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SandboxObservationFinalizeRequest {
+    pub result_id: JobResultId,
+    pub observation: SandboxExecutionObservation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxObservationFinalizeOutcome {
+    Stored,
+    AlreadyIdentical,
+    NotStored,
+    Conflict,
+    Unsupported,
+}
 
 #[async_trait]
 pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
@@ -64,6 +79,7 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
                     id: result.id,
                     data: Some(res),
                     metadata: result.metadata,
+                    sandbox_execution_observation: result.sandbox_execution_observation,
                 }),
                 Err(e) => Err(e),
             }
@@ -162,6 +178,7 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
                     id: result.id,
                     data: Some(res),
                     metadata: result.metadata,
+                    sandbox_execution_observation: result.sandbox_execution_observation,
                 }),
                 Err(e) => Err(e), // remove on error
             }
@@ -186,6 +203,7 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
             id: Some(id),
             data: Some(dat),
             metadata,
+            sandbox_execution_observation,
         }) = res_opt
         {
             self._fill_worker_data_to_data(dat).await.map(|d| {
@@ -193,6 +211,7 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
                     id: Some(id),
                     data: Some(d),
                     metadata,
+                    sandbox_execution_observation,
                 })
             })
         } else {
@@ -212,6 +231,20 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
         broadcast_result: bool,
     ) -> Result<bool>; // record result and create retry job if needed
     // return
+
+    async fn finalize_sandbox_observation(
+        &self,
+        _request: &SandboxObservationFinalizeRequest,
+    ) -> Result<SandboxObservationFinalizeOutcome> {
+        Ok(SandboxObservationFinalizeOutcome::Unsupported)
+    }
+
+    async fn find_sandbox_observation_from_db(
+        &self,
+        _result_id: &JobResultId,
+    ) -> Result<Option<SandboxExecutionObservation>> {
+        anyhow::bail!("sandbox observation lookup is unsupported")
+    }
 
     async fn delete_job_result(&self, id: &JobResultId) -> Result<bool>;
     // fill in worker data in vector using _fill_worker_data() iteratively

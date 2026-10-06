@@ -17,6 +17,7 @@ pub mod jobworkerp {
 }
 
 pub mod log_ext;
+pub mod sandbox_observation;
 pub mod stream_error;
 
 // for test runner

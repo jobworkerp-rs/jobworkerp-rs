@@ -43,4 +43,109 @@ message WorkflowResult {
   // Detailed error information if the workflow failed
   // Only populated when status is Faulted
   optional string error_message = 5;
+
+  // Private server-observed evidence for child executions. Kept separate from
+  // output so workflow-authored JSON cannot forge these values.
+  ChildExecutionReceipts child_execution_receipts = 6;
+}
+
+// Bounded evidence collected by the workflow host while observing child jobs.
+message ChildExecutionReceipts {
+  uint32 schema_version = 1;
+  repeated ChildExecutionReceipt receipts = 2;
+  bool collection_incomplete = 3;
+}
+
+// Runtime facts known to the workflow host about one enqueued SANDBOX job.
+message ChildExecutionReceipt {
+  string workflow_execution_id = 1;
+  string task_position = 2;
+  int64 child_job_id = 3;
+  optional int64 worker_id = 4;
+  string worker_name = 5;
+  optional int64 runner_id = 6;
+  string runner_name = 7;
+  optional string method_using = 8;
+  bytes settings_sha256 = 9;
+  bytes method_schema_sha256 = 10;
+  bytes arguments_sha256 = 11;
+  optional uint32 timeout_sec = 12;
+  optional int32 cli_exit_code = 13;
+  bool end_received = 14;
+  optional string protocol_failure = 15;
+  ChildProducerEof producer_eof = 16;
+  optional int64 child_job_result_id = 17;
+  ChildDurableLookupState durable_lookup_state = 18;
+  optional bool store_success = 19;
+  optional bool store_failure = 20;
+  optional bool broadcast_results = 21;
+  optional int32 child_job_result_status = 22;
+  // Present only when a schema-1 observation was read from durable storage,
+  // validated, and bound to this exact prepared child execution. This does not
+  // make a failed child successful; producer/end facts remain independent.
+  ChildSandboxObservation sandbox_observation = 23;
+}
+
+// Auditable producer facts copied from the validated durable SANDBOX
+// observation. Identity and dispatch digests are repeated on the parent
+// ChildExecutionReceipt; observation_sha256 commits to the complete stored
+// observation. host_settings_sha256 fingerprints server dispatch settings,
+// not effective VM/SDK capacity.
+message ChildSandboxObservation {
+  bytes observation_sha256 = 1;
+  bytes host_settings_sha256 = 2;
+  // Empty means the runner's default method; this preserves the exact stored
+  // dispatch value rather than the normalized method name.
+  string using = 3;
+  uint32 retry_ordinal = 4;
+  optional int32 cli_exit_code = 5;
+  ChildSandboxEndState end_state = 6;
+  ChildSandboxProducerState producer_state = 7;
+  repeated ChildSandboxAnomalyCode anomaly_codes = 8;
+  optional uint64 stdout_bytes = 9;
+  optional uint64 stderr_bytes = 10;
+  optional bytes stdout_sha256 = 11;
+  optional bytes stderr_sha256 = 12;
+  optional uint64 trailer_bytes = 13;
+  optional bytes trailer_sha256 = 14;
+}
+
+enum ChildSandboxEndState {
+  CHILD_SANDBOX_END_STATE_UNKNOWN = 0;
+  CHILD_SANDBOX_END_STATE_NORMAL = 1;
+  CHILD_SANDBOX_END_STATE_ERROR = 2;
+  CHILD_SANDBOX_END_STATE_MALFORMED = 3;
+}
+
+enum ChildSandboxProducerState {
+  CHILD_SANDBOX_PRODUCER_STATE_UNKNOWN = 0;
+  CHILD_SANDBOX_PRODUCER_STATE_CLEAN = 1;
+  CHILD_SANDBOX_PRODUCER_STATE_ABORTED = 2;
+  CHILD_SANDBOX_PRODUCER_STATE_PROTOCOL_INVALID = 3;
+}
+
+enum ChildSandboxAnomalyCode {
+  CHILD_SANDBOX_ANOMALY_CODE_UNSPECIFIED = 0;
+  CHILD_SANDBOX_ANOMALY_CODE_EXIT_CODE_MISSING = 1;
+  CHILD_SANDBOX_ANOMALY_CODE_EXIT_CODE_MISMATCH = 2;
+  CHILD_SANDBOX_ANOMALY_CODE_DUPLICATE_TERMINAL = 3;
+  CHILD_SANDBOX_ANOMALY_CODE_UNKNOWN_TERMINAL = 4;
+  CHILD_SANDBOX_ANOMALY_CODE_MALFORMED_TERMINAL = 5;
+  CHILD_SANDBOX_ANOMALY_CODE_TRUNCATED_OUTPUT = 6;
+  CHILD_SANDBOX_ANOMALY_CODE_OUTPUT_DIGEST_MISMATCH = 7;
+  CHILD_SANDBOX_ANOMALY_CODE_UNEXPECTED_FRAME = 8;
+}
+
+// The worker stream subscriber cannot distinguish real producer EOF from its
+// own End handling yet, so UNKNOWN is the only observation emitted this phase.
+enum ChildProducerEof {
+  CHILD_PRODUCER_EOF_UNKNOWN = 0;
+  CHILD_PRODUCER_EOF_CLEAN = 1;
+  CHILD_PRODUCER_EOF_ABORTED = 2;
+}
+
+enum ChildDurableLookupState {
+  CHILD_DURABLE_LOOKUP_STATE_UNKNOWN = 0;
+  CHILD_DURABLE_LOOKUP_STATE_VERIFIED = 1;
+  CHILD_DURABLE_LOOKUP_STATE_MISSING = 2;
 }
