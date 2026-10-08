@@ -51,9 +51,8 @@ pub trait FunctionSetApp: // XXX 1 impl
                 .update(&mut tx, id, w)
                 .await?;
             tx.commit().await.map_err(JobWorkerError::DBError)?;
-            // clear memory cache
-            let k = Arc::new(self.find_cache_key(&id.value));
-            let _ = self.delete_cache(&k).await;
+            // ID and name lookups cache targets; renames must retire the old name too.
+            self.clear().await;
             Ok(true)
         } else {
             // all empty, no update
@@ -62,10 +61,9 @@ pub trait FunctionSetApp: // XXX 1 impl
     }
 
     async fn delete_function_set(&self, id: &FunctionSetId) -> Result<bool> {
-        let r = self.function_set_repository().delete(id).await;
-        let k = Arc::new(self.find_cache_key(&id.value));
-        let _ = self.delete_cache(&k).await;
-        r
+        let deleted = self.function_set_repository().delete(id).await?;
+        self.clear().await;
+        Ok(deleted)
     }
 
     fn find_cache_key(&self, id: &i64) -> String {
@@ -199,4 +197,223 @@ impl UseMokaCache<Arc<String>, FunctionSet> for FunctionSetAppImpl {
 
 pub trait UseFunctionSetApp {
     fn function_set_app(&self) -> &FunctionSetAppImpl;
+}
+
+#[cfg(test)]
+mod cache_invalidation_tests {
+    use super::*;
+    use infra_utils::infra::test::TEST_RUNTIME;
+    use proto::jobworkerp::data::RunnerId;
+    use proto::jobworkerp::function::data::{FunctionId, FunctionUsing, function_id};
+
+    async fn setup() -> FunctionSetAppImpl {
+        let module = crate::module::test::create_rdb_chan_test_app(false, false)
+            .await
+            .unwrap();
+        FunctionSetAppImpl::new(
+            Arc::new(module.function_set_app.function_set_repository().clone()),
+            &memory_utils::cache::moka::MokaCacheConfig {
+                num_counters: 1000,
+                ttl: None,
+            },
+            module.function_app.clone(),
+        )
+    }
+
+    fn data(name: &str, runner: i64) -> FunctionSetData {
+        FunctionSetData {
+            name: name.into(),
+            targets: vec![FunctionUsing {
+                function_id: Some(FunctionId {
+                    id: Some(function_id::Id::RunnerId(RunnerId { value: runner })),
+                }),
+                using: None,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn update_refreshes_id_name_and_resolved_tools() {
+        TEST_RUNTIME.block_on(async {
+            let app = setup().await;
+            let original = data("cached-tools", 1);
+            let id = app.create_function_set(&original).await.unwrap();
+            assert_eq!(
+                app.find_function_set(&id).await.unwrap().unwrap().data,
+                Some(original.clone())
+            );
+            assert_eq!(
+                app.find_function_set_by_name(&original.name)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .data,
+                Some(original.clone())
+            );
+            assert_eq!(
+                app.find_functions_by_set(&original.name).await.unwrap()[0].runner_id,
+                Some(RunnerId { value: 1 })
+            );
+            let updated = data(&original.name, 2);
+            assert!(
+                app.update_function_set(&id, &Some(updated.clone()))
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                app.find_function_set(&id).await.unwrap().unwrap().data,
+                Some(updated.clone())
+            );
+            assert_eq!(
+                app.find_function_set_by_name(&original.name)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .data,
+                Some(updated)
+            );
+            assert_eq!(
+                app.find_functions_by_set(&original.name).await.unwrap()[0].runner_id,
+                Some(RunnerId { value: 2 })
+            );
+        });
+    }
+
+    #[test]
+    fn rename_retires_old_name_and_refreshes_new_name_and_id() {
+        TEST_RUNTIME.block_on(async {
+            let app = setup().await;
+            let original = data("old-tools", 1);
+            let id = app.create_function_set(&original).await.unwrap();
+            assert!(app.find_function_set(&id).await.unwrap().is_some());
+            assert!(
+                app.find_function_set_by_name(&original.name)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                app.find_function_set_by_name("new-tools")
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let renamed = data("new-tools", 2);
+            app.update_function_set(&id, &Some(renamed.clone()))
+                .await
+                .unwrap();
+            assert!(
+                app.find_function_set_by_name(&original.name)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let found = app
+                .find_function_set_by_name(&renamed.name)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(found.id, Some(id));
+            assert_eq!(found.data, Some(renamed.clone()));
+            assert_eq!(
+                app.find_function_set(&id).await.unwrap().unwrap().data,
+                Some(renamed)
+            );
+            assert!(
+                app.find_functions_by_set(&original.name)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        });
+    }
+
+    #[test]
+    fn deletion_retires_cached_tools_and_same_name_recreation_uses_new_targets() {
+        TEST_RUNTIME.block_on(async {
+            let app = setup().await;
+            let original = data("recreated-tools", 1);
+            let id = app.create_function_set(&original).await.unwrap();
+            assert!(app.find_function_set(&id).await.unwrap().is_some());
+            assert!(
+                app.find_function_set_by_name(&original.name)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                app.find_functions_by_set(&original.name)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(app.delete_function_set(&id).await.unwrap());
+            assert!(app.find_function_set(&id).await.unwrap().is_none());
+            assert!(
+                app.find_function_set_by_name(&original.name)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                app.find_functions_by_set(&original.name)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            let replacement = data(&original.name, 2);
+            let new_id = app.create_function_set(&replacement).await.unwrap();
+            assert_ne!(new_id, id);
+            let found = app
+                .find_function_set_by_name(&original.name)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(found.id, Some(new_id));
+            assert_eq!(found.data, Some(replacement));
+            assert_eq!(
+                app.find_functions_by_set(&original.name).await.unwrap()[0].runner_id,
+                Some(RunnerId { value: 2 })
+            );
+        });
+    }
+
+    #[test]
+    fn rejected_and_empty_updates_preserve_the_existing_set() {
+        TEST_RUNTIME.block_on(async {
+            let app = setup().await;
+            let original = data("original-tools", 1);
+            let id = app.create_function_set(&original).await.unwrap();
+            app.create_function_set(&data("occupied-tools", 2))
+                .await
+                .unwrap();
+            assert!(app.find_function_set(&id).await.unwrap().is_some());
+            assert!(
+                app.find_function_set_by_name(&original.name)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                app.update_function_set(&id, &Some(data("occupied-tools", 2)))
+                    .await
+                    .is_err()
+            );
+            assert!(!app.update_function_set(&id, &None).await.unwrap());
+            assert_eq!(
+                app.find_function_set(&id).await.unwrap().unwrap().data,
+                Some(original.clone())
+            );
+            assert_eq!(
+                app.find_function_set_by_name(&original.name)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .data,
+                Some(original)
+            );
+        });
+    }
 }
