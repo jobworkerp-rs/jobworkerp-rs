@@ -6,6 +6,8 @@ use crate::infra::job::queue::redis::{RedisJobQueueRepositoryImpl, UseRedisJobQu
 use crate::infra::job::queue::{JobQueueCancellationRepository, UseJobQueueCancellationRepository};
 use crate::infra::job::redis::RedisJobRepositoryImpl;
 use crate::infra::job::redis::UseRedisJobRepository;
+use crate::infra::job::status::redis::RedisJobProcessingStatusRepository;
+use crate::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::redis::RedisJobResultRepositoryImpl;
 use crate::infra::job_result::redis::UseRedisJobResultRepository;
@@ -51,6 +53,12 @@ impl UseJobQueueCancellationRepository for RedisRepositoryModule {
     }
 }
 
+impl UseJobProcessingStatusRepository for RedisRepositoryModule {
+    fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
+        self.redis_job_processing_status_repository.clone()
+    }
+}
+
 // redis and rdb module for DI
 #[derive(Clone, DebugStub)]
 pub struct RedisRepositoryModule {
@@ -67,6 +75,7 @@ pub struct RedisRepositoryModule {
     pub redis_job_result_repository: RedisJobResultRepositoryImpl,
     pub redis_job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl,
     pub redis_job_queue_repository: RedisJobQueueRepositoryImpl,
+    pub redis_job_processing_status_repository: Arc<RedisJobProcessingStatusRepository>,
 }
 
 impl RedisRepositoryModule {
@@ -81,6 +90,9 @@ impl RedisRepositoryModule {
         let job_queue_config = Arc::new(load_job_queue_config_from_env().unwrap());
         RedisRepositoryModule {
             redis_pool,
+            redis_job_processing_status_repository: Arc::new(
+                RedisJobProcessingStatusRepository::new(redis_pool),
+            ),
             redis_blocking_pool,
             redis_client: redis_client.clone(),
             redis_runner_repository: RedisRunnerRepositoryImpl::new(
@@ -129,6 +141,9 @@ impl RedisRepositoryModule {
         let redis_client = super::super::resource::setup_redis_client(conf).await;
         RedisRepositoryModule {
             redis_pool,
+            redis_job_processing_status_repository: Arc::new(
+                RedisJobProcessingStatusRepository::new(redis_pool),
+            ),
             redis_blocking_pool,
             redis_client: redis_client.clone(),
             redis_runner_repository: RedisRunnerRepositoryImpl::new(
@@ -173,6 +188,7 @@ impl UseRedisRepositoryModule for RedisRepositoryModule {
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test {
     use super::RedisRepositoryModule;
+    use crate::infra::job::status::redis::RedisJobProcessingStatusRepository;
     use crate::infra::{
         IdGeneratorWrapper,
         job::queue::redis::RedisJobQueueRepositoryImpl,
@@ -222,6 +238,9 @@ pub mod test {
         p.load_plugins_from(TEST_PLUGIN_DIR).await;
         RedisRepositoryModule {
             redis_pool,
+            redis_job_processing_status_repository: Arc::new(
+                RedisJobProcessingStatusRepository::new(redis_pool),
+            ),
             redis_blocking_pool,
             redis_client: redis_client.clone(),
             redis_runner_repository: RedisRunnerRepositoryImpl::new(

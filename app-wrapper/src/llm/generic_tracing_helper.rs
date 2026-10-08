@@ -138,7 +138,7 @@ pub trait GenericLLMTracingHelper {
                         tracing::error!("LLM action failed: {:?}", e);
                         span.set_status(Status::error(e.to_string()));
                         span.end();
-                        return Err(anyhow::anyhow!("Action failed: {}", e));
+                        return Err(e.into());
                     }
                 }
             } else {
@@ -562,4 +562,61 @@ pub trait ChatResponse {
 pub trait UsageData {
     fn to_usage_map(&self) -> HashMap<String, i64>;
     fn to_json(&self) -> serde_json::Value;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Helper(Option<Arc<GenericOtelClient>>);
+    impl GenericLLMTracingHelper for Helper {
+        fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
+            self.0.as_ref()
+        }
+        fn convert_messages_to_input(&self, _: &[impl LLMMessage]) -> serde_json::Value {
+            json!(null)
+        }
+        fn get_provider_name(&self) -> &str {
+            "fixture"
+        }
+    }
+    struct Response;
+    impl ChatResponse for Response {
+        fn to_json(&self) -> serde_json::Value {
+            json!(null)
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_tracing_preserves_retry_classification() {
+        for traced in [false, true] {
+            let helper = Helper(traced.then(|| Arc::new(GenericOtelClient::new("fixture"))));
+            for retryable in [false, true] {
+                let error = if retryable {
+                    JobWorkerError::TonicClientError(tonic::Status::unavailable("temporary"))
+                } else {
+                    JobWorkerError::OtherError("nonretryable".into())
+                };
+                let result = helper
+                    .with_chat_response_tracing(
+                        &HashMap::new(),
+                        None,
+                        OtelSpanBuilder::new("fixture").build(),
+                        async move { Err::<Response, _>(error) },
+                    )
+                    .await;
+                let error = result.err().unwrap();
+                assert_eq!(
+                    matches!(error.downcast_ref::<JobWorkerError>(), Some(JobWorkerError::TonicClientError(status)) if status.code() == tonic::Code::Unavailable),
+                    retryable,
+                );
+                if !retryable {
+                    assert!(matches!(
+                        error.downcast_ref::<JobWorkerError>(),
+                        Some(JobWorkerError::OtherError(_))
+                    ));
+                }
+            }
+        }
+    }
 }

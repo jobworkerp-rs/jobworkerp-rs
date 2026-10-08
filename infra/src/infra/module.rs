@@ -3,8 +3,6 @@ pub mod redis;
 
 use self::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
 use super::job::queue::{JobQueueCancellationRepository, UseJobQueueCancellationRepository};
-use super::job::status::memory::MemoryJobProcessingStatusRepository;
-use super::job::status::redis::RedisJobProcessingStatusRepository;
 use super::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use super::worker_instance::memory::MemoryWorkerInstanceRepository;
 use super::worker_instance::redis::RedisWorkerInstanceRepository;
@@ -91,9 +89,7 @@ impl UseJobQueueCancellationRepository for HybridRepositoryModule {
 impl UseJobProcessingStatusRepository for HybridRepositoryModule {
     fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
         // In Hybrid mode, Redis is used preferentially
-        Arc::new(RedisJobProcessingStatusRepository::new(
-            self.redis_module.redis_pool,
-        ))
+        self.redis_module.job_processing_status_repository()
     }
 }
 
@@ -149,8 +145,8 @@ impl UseJobQueueCancellationRepository for RedisRdbOptionalRepositoryModule {
 impl UseJobProcessingStatusRepository for RedisRdbOptionalRepositoryModule {
     fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
         match (&self.redis_module, &self.rdb_module) {
-            (Some(redis), _) => Arc::new(RedisJobProcessingStatusRepository::new(redis.redis_pool)),
-            (None, Some(_rdb)) => Arc::new(MemoryJobProcessingStatusRepository::new()),
+            (Some(redis), _) => redis.job_processing_status_repository(),
+            (None, Some(rdb)) => rdb.memory_job_processing_status_repository.clone(),
             (None, None) => panic!("No repository module available"),
         }
     }
@@ -194,6 +190,137 @@ pub mod test {
                 .split(',')
                 .all(|path| path.ends_with(expected_profile)),
             "test plugins must use only the current build profile: {TEST_PLUGIN_DIR}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod status_sharing_tests {
+    use super::*;
+    use crate::infra::job::status::{JobProcessingStatusRecord, StatusTransitionResult};
+    use proto::jobworkerp::data::{JobId, JobProcessingStatus};
+
+    #[tokio::test]
+    async fn standalone_module_shares_status_and_preserves_cancellation() {
+        let rdb = Arc::new(rdb::test::setup_test_rdb_module(false).await);
+        let module = RedisRdbOptionalRepositoryModule::from(rdb.clone());
+        let job_id = JobId { value: 70001 };
+        let running = JobProcessingStatusRecord {
+            status: JobProcessingStatus::Running,
+            retried: 1,
+        };
+        let cancelling = JobProcessingStatusRecord {
+            status: JobProcessingStatus::Cancelling,
+            retried: 1,
+        };
+        let pending = JobProcessingStatusRecord {
+            status: JobProcessingStatus::Pending,
+            retried: 2,
+        };
+        let dispatcher = &rdb.memory_job_processing_status_repository;
+        assert_eq!(
+            dispatcher
+                .compare_and_set_status(&job_id, None, Some(running))
+                .await
+                .unwrap(),
+            StatusTransitionResult::Applied
+        );
+        let processor = module.job_processing_status_repository();
+        assert_eq!(
+            processor.find_status_record(&job_id).await.unwrap(),
+            Some(running)
+        );
+        assert_eq!(
+            processor
+                .compare_and_set_status(&job_id, Some(running), Some(cancelling))
+                .await
+                .unwrap(),
+            StatusTransitionResult::Applied
+        );
+        let reopened = module.clone().job_processing_status_repository();
+        assert_eq!(
+            reopened.find_status_record(&job_id).await.unwrap(),
+            Some(cancelling)
+        );
+        assert_eq!(
+            dispatcher
+                .compare_and_set_status(&job_id, Some(running), Some(pending))
+                .await
+                .unwrap(),
+            StatusTransitionResult::Conflict(Some(cancelling))
+        );
+        assert_eq!(
+            reopened.find_status_record(&job_id).await.unwrap(),
+            Some(cancelling)
+        );
+        processor.delete_status(&job_id).await.unwrap();
+        assert_eq!(dispatcher.find_status_record(&job_id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn standalone_status_does_not_leak_between_independent_modules() {
+        let first = RedisRdbOptionalRepositoryModule::from(Arc::new(
+            rdb::test::setup_test_rdb_module(false).await,
+        ));
+        let second = RedisRdbOptionalRepositoryModule::from(Arc::new(
+            rdb::test::setup_test_rdb_module(false).await,
+        ));
+        let job_id = JobId { value: 70002 };
+        first
+            .job_processing_status_repository()
+            .upsert_status(&job_id, &JobProcessingStatus::Pending)
+            .await
+            .unwrap();
+        assert_eq!(
+            first
+                .job_processing_status_repository()
+                .find_status(&job_id)
+                .await
+                .unwrap(),
+            Some(JobProcessingStatus::Pending)
+        );
+        assert_eq!(
+            second
+                .job_processing_status_repository()
+                .find_status(&job_id)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn redis_module_reuses_its_owned_status_repository_across_wrappers() {
+        let redis_url = std::env::var("TEST_REDIS_URL").expect(
+            "TEST_REDIS_URL must identify an isolated Redis instance for this destructive fixture",
+        );
+        assert!(!redis_url.trim().is_empty());
+        let redis = redis::test::setup_test_redis_module().await;
+        let optional = RedisRdbOptionalRepositoryModule::from(Arc::new(redis.clone()));
+        let hybrid = HybridRepositoryModule {
+            redis_module: redis,
+            rdb_chan_module: rdb::test::setup_test_rdb_module(false).await,
+        };
+        let first = optional.job_processing_status_repository();
+        let second = hybrid.job_processing_status_repository();
+        assert!(Arc::ptr_eq(&first, &second));
+        let job_id = JobId { value: 70003 };
+        first
+            .upsert_status(&job_id, &JobProcessingStatus::Cancelling)
+            .await
+            .unwrap();
+        assert_eq!(
+            second.find_status(&job_id).await.unwrap(),
+            Some(JobProcessingStatus::Cancelling)
+        );
+        second.delete_status(&job_id).await.unwrap();
+        assert_eq!(
+            optional
+                .job_processing_status_repository()
+                .find_status(&job_id)
+                .await
+                .unwrap(),
+            None
         );
     }
 }
