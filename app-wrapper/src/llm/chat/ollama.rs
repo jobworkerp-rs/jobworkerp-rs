@@ -2,6 +2,7 @@ use super::super::tracing::ollama_helper::OllamaTracingHelper;
 use super::conversion::{ToolCallName, ToolConverter};
 use crate::llm::ThinkTagHelper;
 use crate::llm::generic_tracing_helper::{self, GenericLLMTracingHelper, StreamingTraceUpdate};
+use crate::llm::reasoning::ollama_think_for;
 use anyhow::Result;
 use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
 use app::app::function::{FunctionApp, FunctionAppImpl};
@@ -17,7 +18,7 @@ use jobworkerp_runner::jobworkerp::runner::llm::{
     self, LlmChatArgs, LlmChatResult, PendingToolCalls, ToolCallRequest,
 };
 use ollama_rs::generation::chat::{ChatMessageFinalResponseData, ChatMessageResponse};
-use ollama_rs::generation::parameters::{FormatType, JsonStructure};
+use ollama_rs::generation::parameters::{FormatType, JsonStructure, ThinkType};
 use ollama_rs::generation::tools::{ToolCall as OllamaToolCall, ToolInfo};
 use ollama_rs::{
     Ollama,
@@ -508,7 +509,7 @@ impl OllamaChatService {
         };
         let tools = Arc::new(tools_vec);
         let messages = Arc::new(Mutex::new(messages));
-        let think = args.options.as_ref().map(|o| o.extract_reasoning_content());
+        let think = ollama_think_for(args.options.as_ref())?;
 
         // For auto-select, force manual mode for the 1st call to intercept the tool call
         let effective_auto_calling = !is_auto_select && is_auto_calling;
@@ -702,7 +703,7 @@ impl OllamaChatService {
         metadata: Arc<HashMap<String, String>>,
         json_schema: Option<String>,
         is_auto_calling: bool,
-        think: Option<bool>,
+        think: Option<ThinkType>,
         tool_call_depth: u32,
     ) -> Result<ChatInternalResult> {
         if tool_call_depth >= MAX_TOOL_CALL_DEPTH {
@@ -712,7 +713,7 @@ impl OllamaChatService {
         }
         let mut req = ChatMessageRequest::new(model.clone(), messages.lock().await.clone());
         req = req.options(options.clone());
-        if let Some(t) = think {
+        if let Some(t) = think.clone() {
             req = req.think(t);
         }
 
@@ -1102,7 +1103,7 @@ impl OllamaChatService {
             let messages = Arc::new(Mutex::new(converted_messages));
 
             let tools = Arc::new(tools_vec);
-            let think = args.options.as_ref().map(|o| o.extract_reasoning_content());
+            let think = ollama_think_for(args.options.as_ref())?;
             let res = Self::request_chat_internal_with_tracing(
                 self.clone(),
                 model,
@@ -1375,7 +1376,7 @@ impl OllamaChatService {
 
         let mut req = ChatMessageRequest::new(model_name.clone(), messages);
         req = req.options(options);
-        if let Some(t) = args.options.as_ref().map(|o| o.extract_reasoning_content()) {
+        if let Some(t) = ollama_think_for(args.options.as_ref())? {
             req = req.think(t);
         }
 

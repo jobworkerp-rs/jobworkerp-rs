@@ -88,6 +88,7 @@ fn create_manual_mode_args(message: &str) -> LlmChatArgs {
             repeat_last_n: None,
             seed: Some(42),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: Some(FunctionOptions {
@@ -396,6 +397,7 @@ async fn test_auto_vs_manual_mode_comparison() -> Result<()> {
             repeat_last_n: None,
             seed: Some(42),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: Some(FunctionOptions {
@@ -514,6 +516,7 @@ async fn test_manual_mode_invalid_function_name() -> Result<()> {
             repeat_last_n: None,
             seed: Some(42),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: Some(FunctionOptions {

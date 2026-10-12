@@ -32,9 +32,7 @@ impl GenaiEmbeddingService {
         let target_resolver = crate::llm::common::request_model_genai_service_target_resolver(
             settings.base_url.clone(),
         );
-        let client = Client::builder()
-            .with_service_target_resolver(target_resolver)
-            .build();
+        let client = crate::llm::common::build_genai_client(Some(target_resolver))?;
         Ok(Self {
             client,
             model: settings.model,

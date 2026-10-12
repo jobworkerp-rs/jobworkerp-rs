@@ -4,6 +4,7 @@ use super::super::generic_tracing_helper::{
 };
 use super::conversion::{ResolvedToolResult, ToolCallName, ToolConverter};
 use crate::llm::ThinkTagHelper;
+use crate::llm::reasoning::ReasoningParams;
 use crate::llm::tracing::genai_helper::GenaiTracingHelper;
 use anyhow::Result;
 use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
@@ -176,9 +177,7 @@ impl GenaiChatService {
             settings.base_url.clone(),
         );
         // -- Build the new client with this adapter_config
-        let client = Client::builder()
-            .with_service_target_resolver(target_resolver)
-            .build();
+        let client = crate::llm::common::build_genai_client(Some(target_resolver))?;
         let adapter_kind = genai::adapter::AdapterKind::from_model(&settings.model)
             .map_err(|e| {
                 tracing::warn!(
@@ -198,14 +197,14 @@ impl GenaiChatService {
             adapter_kind,
         })
     }
-    pub(super) fn build_options(&self, args: &LlmChatArgs) -> Option<ChatOptions> {
+    pub(super) fn build_options(&self, args: &LlmChatArgs) -> Result<Option<ChatOptions>> {
         Self::build_options_with_adapter(args, self.adapter_kind)
     }
 
     pub(super) fn build_options_with_adapter(
         args: &LlmChatArgs,
         adapter_kind: Option<genai::adapter::AdapterKind>,
-    ) -> Option<ChatOptions> {
+    ) -> Result<Option<ChatOptions>> {
         // Explicit opt-in to StreamEnd captures (genai 0.6+). The streaming handler in
         // create_chat_stream() reads end.captured_content / captured_reasoning_content /
         // captured_tool_calls / captured_usage; without these flags the values are no
@@ -218,11 +217,11 @@ impl GenaiChatService {
             ..ChatOptions::default()
         };
 
-        if let Some(opt) = args.options {
+        if let Some(opt) = args.options.as_ref() {
             chat_opts.temperature = opt.temperature.map(|v| v as f64);
             chat_opts.max_tokens = opt.max_tokens.map(|v| v as u32);
             chat_opts.top_p = opt.top_p.map(|v| v as f64);
-            chat_opts.normalize_reasoning_content = opt.extract_reasoning_content;
+            ReasoningParams::from(opt).apply_to_genai(&mut chat_opts, adapter_kind)?;
         }
 
         if let Some(schema_str) = args.json_schema.as_deref() {
@@ -271,7 +270,7 @@ impl GenaiChatService {
             }
         }
 
-        Some(chat_opts)
+        Ok(Some(chat_opts))
     }
     fn trans_role(
         &self,
@@ -559,7 +558,7 @@ impl GenaiChatService {
         // because the schema may not match any registered runner / worker.
         let is_auto_calling = ToolConverter::effective_is_auto_calling(&args);
 
-        let options = self.build_options(&args);
+        let options = self.build_options(&args)?;
         let (tools_vec, auto_select_names) = self.function_list(&args).await?;
         let is_auto_select = !auto_select_names.is_empty();
         let tools = Arc::new(tools_vec);
@@ -593,8 +592,10 @@ impl GenaiChatService {
         // Handle the result based on whether it contains pending tool calls
         match res {
             ChatInternalResult::Final(response) => {
-                let (prompt, think) =
-                    Self::divide_think_tag(response.first_text().unwrap_or("").to_string());
+                let (prompt, think) = Self::split_text_and_reasoning(
+                    response.first_text().unwrap_or(""),
+                    response.reasoning_content.clone(),
+                );
 
                 Ok(LlmChatResult {
                     content: Some(llm_chat_result::MessageContent {
@@ -1104,7 +1105,7 @@ impl GenaiChatService {
             }
             let original_args = args.clone();
 
-            let options = self.build_options(&args);
+            let options = self.build_options(&args)?;
             let model = args.model.clone().unwrap_or_else(|| self.model.clone());
             let mut converted_messages = self.trans_messages(args);
             Self::apply_system_prompt(&mut converted_messages, self.system_prompt.as_deref());
@@ -1145,8 +1146,10 @@ impl GenaiChatService {
                     tracing::debug!(
                         "Auto-select (stream): LLM responded with text instead of tool call, returning as stream"
                     );
-                    let (content_text, reasoning) =
-                        Self::divide_think_tag(response.first_text().unwrap_or("").to_string());
+                    let (content_text, reasoning) = Self::split_text_and_reasoning(
+                        response.first_text().unwrap_or(""),
+                        response.reasoning_content.clone(),
+                    );
                     let metadata_trailer = Trailer { metadata };
                     let stream = async_stream::stream! {
                         let llm_result = LlmChatResult {
@@ -1365,7 +1368,7 @@ impl GenaiChatService {
         metadata: HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let options = self.build_options(&args);
+        let options = self.build_options(&args)?;
         let (tools, _auto_select_names) = self.function_list(&args).await?;
         let filter_selector_tools = args
             .function_options
@@ -1423,8 +1426,8 @@ impl GenaiChatService {
             while let Some(event_result) = base_stream.next().await {
                 match event_result {
                     Ok(event) => match event {
-                        ChatStreamEvent::Start => {
-                            // Ignore start event
+                        ChatStreamEvent::Start | ChatStreamEvent::Heartbeat => {
+                            // Start and keep-alive pings carry no payload
                         }
                         ChatStreamEvent::Chunk(chunk) => {
                             let llm_result = LlmChatResult {
@@ -1787,6 +1790,7 @@ mod tests {
                 status: reqwest::StatusCode::from_u16(status).unwrap(),
                 canonical_reason: "test".into(),
                 body: "private-provider-response".into(),
+                headers: Box::default(),
             };
             let mapped = generation_request_error(error, true);
             assert_eq!(
@@ -1877,6 +1881,7 @@ mod tests {
             status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
             canonical_reason: "test".into(),
             body: "private".into(),
+            headers: Box::default(),
         };
         assert!(matches!(
             generation_request_error(error, false),
@@ -1947,7 +1952,7 @@ mod tests {
 
     fn build_test_options(model: &str, args: &LlmChatArgs) -> Option<ChatOptions> {
         let kind = genai::adapter::AdapterKind::from_model(model).ok();
-        GenaiChatService::build_options_with_adapter(args, kind)
+        GenaiChatService::build_options_with_adapter(args, kind).expect("valid options")
     }
 
     fn resolved(call_id: &str, fn_name: &str, content: &str, is_error: bool) -> ResolvedToolResult {
@@ -2134,6 +2139,29 @@ mod tests {
             opts.response_format,
             Some(ChatResponseFormat::JsonSpec(_))
         ));
+    }
+
+    #[test]
+    fn split_text_and_reasoning_prefers_provider_reasoning() {
+        let (text, reasoning) =
+            GenaiChatService::split_text_and_reasoning("2", Some("thought".to_string()));
+        assert_eq!(text, "2");
+        assert_eq!(reasoning.as_deref(), Some("thought"));
+    }
+
+    #[test]
+    fn split_text_and_reasoning_falls_back_to_think_tags() {
+        let (text, reasoning) =
+            GenaiChatService::split_text_and_reasoning("<think>inner</think>answer", None);
+        assert_eq!(text, "answer");
+        assert_eq!(reasoning.as_deref(), Some("inner"));
+    }
+
+    #[test]
+    fn split_text_and_reasoning_without_any_reasoning() {
+        let (text, reasoning) = GenaiChatService::split_text_and_reasoning(" plain ", None);
+        assert_eq!(text, "plain");
+        assert_eq!(reasoning, None);
     }
 
     #[test]

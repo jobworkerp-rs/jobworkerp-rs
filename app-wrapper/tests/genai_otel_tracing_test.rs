@@ -108,6 +108,7 @@ fn simple_chat_args(message: &str) -> LlmChatArgs {
             repeat_last_n: None,
             seed: Some(42),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: None,
@@ -126,6 +127,7 @@ fn simple_completion_args(prompt: &str) -> LlmCompletionArgs {
             repeat_last_n: None,
             seed: Some(42),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         context: None,

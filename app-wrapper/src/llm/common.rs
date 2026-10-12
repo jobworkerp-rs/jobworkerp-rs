@@ -49,7 +49,7 @@ pub(crate) async fn resolve_fixed_genai_service_target(
     model_name: &str,
     endpoint_url: Option<&str>,
 ) -> Result<ServiceTarget> {
-    let mut service_target = Client::default()
+    let mut service_target = build_genai_client(None)?
         .resolve_service_target(model_name)
         .await
         .with_context(|| {
@@ -57,6 +57,15 @@ pub(crate) async fn resolve_fixed_genai_service_target(
         })?;
     apply_genai_endpoint_override(&mut service_target, endpoint_url)?;
     Ok(service_target)
+}
+
+/// Build a GenAI client, optionally pinned to a service target resolver.
+pub(crate) fn build_genai_client(resolver: Option<ServiceTargetResolver>) -> Result<Client> {
+    let mut builder = Client::builder();
+    if let Some(resolver) = resolver {
+        builder = builder.with_service_target_resolver(resolver);
+    }
+    builder.build().context("failed to build GenAI client")
 }
 
 /// Construct the target resolver shared by GenAI completion and chat.
@@ -168,7 +177,8 @@ mod tests {
 
     #[tokio::test]
     async fn endpoint_override_preserves_a_request_model() {
-        let mut target = Client::default()
+        let mut target = Client::new()
+            .expect("client builds")
             .resolve_service_target("openai::request-model")
             .await
             .expect("target resolves without contacting a provider");

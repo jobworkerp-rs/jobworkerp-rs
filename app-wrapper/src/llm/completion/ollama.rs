@@ -1,3 +1,4 @@
+use crate::llm::reasoning::ollama_think_for;
 use anyhow::{Result, anyhow};
 use command_utils::trace::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType};
 use command_utils::trace::impls::GenericOtelClient;
@@ -171,7 +172,7 @@ impl OllamaService {
         };
         let mut request = GenerationRequest::new(model, args.prompt);
         request = request.options(options);
-        if let Some(t) = args.options.as_ref().map(|o| o.extract_reasoning_content()) {
+        if let Some(t) = ollama_think_for(args.options.as_ref())? {
             request = request.think(t);
         }
 
@@ -319,7 +320,7 @@ impl OllamaService {
         metadata: HashMap<String, String>,
     ) -> Result<LlmCompletionResult> {
         let options = Self::create_completion_options(&args);
-        let think = args.options.as_ref().map(|o| o.extract_reasoning_content());
+        let think = ollama_think_for(args.options.as_ref())?;
         // Open the generation span before constructing the ollama request so the
         // request payload can still be borrowed for the span attributes.
         let span = self.get_otel_client().cloned().map(|client| {
@@ -626,6 +627,7 @@ We want to verify that all chunks are properly received and processed.
                 repeat_last_n: Some(8),
                 seed: Some(32),
                 extract_reasoning_content: Some(true),
+                ..Default::default()
             }),
             ..Default::default()
         };

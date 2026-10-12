@@ -45,6 +45,7 @@ fn create_long_running_chat_args() -> LlmChatArgs {
             repeat_last_n: None,
             seed: None,
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: None,
@@ -73,6 +74,7 @@ fn create_simple_chat_args() -> LlmChatArgs {
             repeat_last_n: None,
             seed: Some(42),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: None,
@@ -96,6 +98,7 @@ fn create_simple_completion_args() -> LlmCompletionArgs {
                 repeat_last_n: None,
                 seed: Some(42),
                 extract_reasoning_content: Some(false),
+                ..Default::default()
             },
         ),
         context: None,
@@ -119,6 +122,7 @@ fn create_long_running_completion_args() -> LlmCompletionArgs {
                 repeat_last_n: None,
                 seed: None,
                 extract_reasoning_content: Some(false),
+                ..Default::default()
             },
         ),
         context: None,

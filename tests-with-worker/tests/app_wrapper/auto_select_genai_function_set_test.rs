@@ -121,6 +121,7 @@ fn create_auto_select_chat_args(message: &str) -> LlmChatArgs {
             repeat_last_n: None,
             seed: Some(41),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: Some(FunctionOptions {
@@ -302,6 +303,7 @@ async fn test_genai_auto_select_without_function_sets_falls_back() -> Result<()>
             repeat_last_n: None,
             seed: Some(42),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: Some(FunctionOptions {

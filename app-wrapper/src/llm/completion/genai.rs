@@ -1,3 +1,4 @@
+use crate::llm::reasoning::ReasoningParams;
 use anyhow::Result;
 use command_utils::trace::impls::GenericOtelClient;
 use futures::StreamExt;
@@ -70,9 +71,7 @@ impl GenaiCompletionService {
         );
         tracing::debug!("=== Genai LLM: target_resolver: {:?}", &target_resolver,);
         // -- Build the new client with this adapter_config
-        let client = Client::builder()
-            .with_service_target_resolver(target_resolver)
-            .build();
+        let client = crate::llm::common::build_genai_client(Some(target_resolver))?;
         let adapter_kind = genai::adapter::AdapterKind::from_model(&settings.model)
             .map_err(|e| {
                 tracing::warn!(
@@ -90,14 +89,14 @@ impl GenaiCompletionService {
             adapter_kind,
         })
     }
-    pub(super) fn build_options(&self, args: &LlmCompletionArgs) -> Option<ChatOptions> {
+    pub(super) fn build_options(&self, args: &LlmCompletionArgs) -> Result<Option<ChatOptions>> {
         Self::build_options_with_adapter(args, self.adapter_kind)
     }
 
     pub(super) fn build_options_with_adapter(
         args: &LlmCompletionArgs,
         adapter_kind: Option<genai::adapter::AdapterKind>,
-    ) -> Option<ChatOptions> {
+    ) -> Result<Option<ChatOptions>> {
         // Explicit opt-in to StreamEnd captures (genai 0.6+). request_chat_stream()
         // reads end.captured_content / captured_reasoning_content / captured_usage;
         // without these flags the values are no longer guaranteed to be populated.
@@ -110,11 +109,11 @@ impl GenaiCompletionService {
             ..ChatOptions::default()
         };
 
-        if let Some(opt) = args.options {
+        if let Some(opt) = args.options.as_ref() {
             chat_opts.temperature = opt.temperature.map(|v| v as f64);
             chat_opts.max_tokens = opt.max_tokens.map(|v| v as u32);
             chat_opts.top_p = opt.top_p.map(|v| v as f64);
-            chat_opts.normalize_reasoning_content = opt.extract_reasoning_content;
+            ReasoningParams::from(opt).apply_to_genai(&mut chat_opts, adapter_kind)?;
         }
 
         if let Some(schema_str) = args.json_schema.as_deref() {
@@ -140,7 +139,7 @@ impl GenaiCompletionService {
             }
         }
 
-        Some(chat_opts)
+        Ok(Some(chat_opts))
     }
     fn messages(&self, args: LlmCompletionArgs) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
@@ -162,7 +161,7 @@ impl GenaiCompletionService {
         metadata: HashMap<String, String>,
     ) -> Result<LlmCompletionResult> {
         let metadata = Arc::new(metadata);
-        let options = self.build_options(&args);
+        let options = self.build_options(&args)?;
         let messages = self.messages(args);
         let chat_req = ChatRequest::new(messages);
 
@@ -280,7 +279,7 @@ impl GenaiCompletionService {
         metadata: HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let options = self.build_options(&args);
+        let options = self.build_options(&args)?;
         let span_attributes = if GenericLLMTracingHelper::get_otel_client(self).is_some() {
             Some(build_genai_completion_span(
                 &self.model,
@@ -315,8 +314,8 @@ impl GenaiCompletionService {
             async move {
                 match event_result {
                     Ok(event) => match event {
-                        ChatStreamEvent::Start => {
-                            // Ignore start event
+                        ChatStreamEvent::Start | ChatStreamEvent::Heartbeat => {
+                            // Start and keep-alive pings carry no payload
                             None
                         },
                         ChatStreamEvent::Chunk(chunk) => {
@@ -552,7 +551,7 @@ mod tests {
 
     fn build_test_options(model: &str, args: &LlmCompletionArgs) -> Option<ChatOptions> {
         let kind = genai::adapter::AdapterKind::from_model(model).ok();
-        GenaiCompletionService::build_options_with_adapter(args, kind)
+        GenaiCompletionService::build_options_with_adapter(args, kind).expect("valid options")
     }
 
     #[test]
@@ -633,6 +632,53 @@ mod tests {
             opts.response_format,
             Some(ChatResponseFormat::JsonSpec(_))
         ));
+    }
+
+    #[test]
+    fn build_options_extract_false_requests_no_reasoning() {
+        let args = LlmCompletionArgs {
+            options: Some(LlmOptions {
+                extract_reasoning_content: Some(false),
+                chat_template_kwargs: Some(r#"{"k":"v"}"#.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let opts = build_test_options(TEST_OPENAI_MODEL, &args).expect("options must be Some");
+        assert!(matches!(
+            opts.reasoning_effort,
+            Some(genai::chat::ReasoningEffort::Zero)
+        ));
+        assert_eq!(
+            opts.extra_body,
+            Some(serde_json::json!({"chat_template_kwargs": {"k": "v"}}))
+        );
+    }
+
+    #[test]
+    fn build_options_rejects_invalid_reasoning_options() {
+        for options in [
+            LlmOptions {
+                reasoning_effort: Some("bogus".to_string()),
+                ..Default::default()
+            },
+            LlmOptions {
+                chat_template_kwargs: Some("1".to_string()),
+                ..Default::default()
+            },
+        ] {
+            let args = LlmCompletionArgs {
+                options: Some(options),
+                ..Default::default()
+            };
+            assert!(
+                GenaiCompletionService::build_options_with_adapter(
+                    &args,
+                    Some(genai::adapter::AdapterKind::OpenAI)
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
