@@ -200,7 +200,7 @@ crate-type = ["cdylib"]
 # This one crate exposes everything plugin authors need: FFI types, the
 # `PluginV2` trait, and the `register_plugin_v2!` proc macro (re-exported
 # from `jobworkerp-plugin-abi-macros`).
-jobworkerp-plugin-abi = { git = "https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs.git", branch = "main", package = "jobworkerp-plugin-abi" }
+jobworkerp-plugin-abi = { git = "https://github.com/jobworkerp-rs/jobworkerp-rs.git", branch = "main", package = "jobworkerp-plugin-abi" }
 
 # A proto crate of your choice (host runtime proto, jobworkerp-client
 # proto, or your own) to produce protobuf-encoded `MethodSchema` bytes.

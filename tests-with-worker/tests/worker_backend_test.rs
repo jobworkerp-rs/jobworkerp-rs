@@ -17,6 +17,7 @@
 use anyhow::Result;
 use app::app::function::FunctionApp;
 use app::app::function::function_set::FunctionSetApp;
+use infra_utils::infra::test::TEST_RUNTIME;
 use proto::jobworkerp::data::{ResponseType, RunnerId, WorkerData};
 use proto::jobworkerp::function::data::{FunctionId, FunctionSetData, FunctionUsing, function_id};
 use std::collections::HashMap;
@@ -473,36 +474,38 @@ async fn sub_test_load_periodic_worker_no_side_effect(
 
 /// Unified test that shares a single start_test_worker invocation
 /// across all worker backend sub-tests.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_worker_backend_e2e() -> Result<()> {
-    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+#[test]
+fn test_worker_backend_e2e() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
-    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-    let worker_handle = start_test_worker(app_module.clone()).await?;
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+        let worker_handle = start_test_worker(app_module.clone()).await?;
 
-    // Wait briefly for dispatcher to be ready
-    tokio::time::sleep(Duration::from_millis(500)).await;
+        // Wait briefly for dispatcher to be ready
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Run all sub-tests sequentially, sharing the same worker.
-    // Ordering matters: each sub-test creates a temp worker that may leave
-    // dispatcher state affecting subsequent tests. Long-running tests
-    // (workflow_progress) go first, then fast streaming tests, then
-    // call_function_for_llm (Direct response) last since it most disrupts
-    // dispatcher state for subsequent streaming enqueue tests.
-    //
-    // Wrap in async block so shutdown() always runs even if a sub-test fails.
-    let test_result = async {
-        sub_test_workflow_progress_realtime(&app_module).await?;
-        sub_test_enqueue_and_await_function_result_streaming(&app_module).await?;
-        sub_test_enqueue_function_non_streaming_with_runner(&app_module).await?;
-        sub_test_short_tool_execution_skips_progress(&app_module).await?;
-        sub_test_load_worker_command(&app_module).await?;
-        sub_test_load_periodic_worker_no_side_effect(&app_module).await?;
-        sub_test_worker_executes_command_via_function(&app_module).await?;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
+        // Run all sub-tests sequentially, sharing the same worker.
+        // Ordering matters: each sub-test creates a temp worker that may leave
+        // dispatcher state affecting subsequent tests. Long-running tests
+        // (workflow_progress) go first, then fast streaming tests, then
+        // call_function_for_llm (Direct response) last since it most disrupts
+        // dispatcher state for subsequent streaming enqueue tests.
+        //
+        // Wrap in async block so shutdown() always runs even if a sub-test fails.
+        let test_result = async {
+            sub_test_workflow_progress_realtime(&app_module).await?;
+            sub_test_enqueue_and_await_function_result_streaming(&app_module).await?;
+            sub_test_enqueue_function_non_streaming_with_runner(&app_module).await?;
+            sub_test_short_tool_execution_skips_progress(&app_module).await?;
+            sub_test_load_worker_command(&app_module).await?;
+            sub_test_load_periodic_worker_no_side_effect(&app_module).await?;
+            sub_test_worker_executes_command_via_function(&app_module).await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
 
-    worker_handle.shutdown().await;
-    test_result
+        worker_handle.shutdown().await;
+        test_result
+    })
 }

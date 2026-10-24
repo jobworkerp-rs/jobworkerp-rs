@@ -16,7 +16,7 @@ use crate::workflow::{
         workflow,
     },
     execute::{
-        context::{TaskContext, WorkflowContext},
+        context::{ChildJobScope, TaskContext, WorkflowContext},
         expression::UseExpression,
         secret,
         task::{NamedTimeouts, run::resolve_run_task_timeout_sec},
@@ -35,7 +35,7 @@ use tokio::sync::RwLock;
 
 pub struct CallTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
-    default_task_timeout: Duration,
+    default_task_timeout: Option<Duration>,
     named_timeouts: Arc<NamedTimeouts>,
     task: workflow::CallTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -50,7 +50,7 @@ impl Tracing for CallTaskExecutor {}
 impl CallTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        default_task_timeout: Duration,
+        default_task_timeout: Option<Duration>,
         named_timeouts: Arc<NamedTimeouts>,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         task: workflow::CallTask,
@@ -165,6 +165,7 @@ impl CallTaskExecutor {
         job_args: Value,
         worker_name: &str,
         timeout_sec: u32,
+        child_job_scope: Option<&Arc<ChildJobScope>>,
     ) -> Result<Value> {
         let runner = self
             .job_executor_wrapper
@@ -201,6 +202,7 @@ impl CallTaskExecutor {
         let (result_fut, running_job_guard) = super::enqueue_child_job(
             &self.workflow_context,
             &self.job_executor_wrapper,
+            child_job_scope,
             self.job_executor_wrapper
                 .enqueue_with_worker_or_temp_channel(
                     Arc::new(metadata),

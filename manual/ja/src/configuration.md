@@ -62,8 +62,7 @@ MySQL は手動適用です。復旧用スキーマ追加前の既存 MySQL に�
 | | WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC | ハートビート間隔 | 30 |
 | | WORKER_INSTANCE_TIMEOUT_SEC | 非アクティブタイムアウト (Scalableモードのみ) | 90 |
 | | WORKER_INSTANCE_CLEANUP_INTERVAL_SEC | クリーンアップ間隔（秒） | 300 |
-| **ワークフロー設定** | WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC | タスクデフォルトタイムアウト（秒） | None（制限なし）。dot.envでは3600を設定例として記載 |
-| | WORKFLOW_HTTP_TIMEOUT_SEC | HTTPリソース取得タイムアウト（秒） | 120（dot.envでは20を設定例として記載） |
+| **ワークフロー設定** | WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC | `timeout` 未指定の run/call タスクに適用するデフォルトタイムアウト（秒）。タスクの期限と子ジョブの job timeout の両方に使われる。他の種類のタスクには適用されない | None（制限なし）。0 も制限なし |
 | | WORKFLOW_CHECKPOINT_EXPIRE_SEC | チェックポイント有効期限（秒） | None（制限なし）。dot.envでは86400を設定例として記載 |
 | | WORKFLOW_CHECKPOINT_MAX_COUNT | チェックポイント最大保持数 | None（制限なし）。dot.envでは100000を設定例として記載 |
 | | WORKFLOW_SKIP_SCHEMA_VALIDATION | スキーマバリデーションスキップ | false |

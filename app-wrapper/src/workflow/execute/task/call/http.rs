@@ -328,6 +328,7 @@ impl CallTaskExecutor {
                 args,
                 task_name,
                 timeout_sec,
+                task_context.child_job_scope.as_ref(),
             )
             .await
             .map_err(|e| {

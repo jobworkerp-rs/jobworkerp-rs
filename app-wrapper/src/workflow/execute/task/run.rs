@@ -8,7 +8,7 @@ use crate::workflow::{
         workflow::{self, RunJobRunner, RunJobWorker},
     },
     execute::{
-        context::{TaskContext, WorkflowContext},
+        context::{ChildJobScope, TaskContext, WorkflowContext},
         expression::UseExpression,
         task::{NamedTimeouts, resolve_timeout_duration},
     },
@@ -38,7 +38,7 @@ pub(crate) fn no_result_override_if(condition: bool) -> Option<JobExecutionOverr
 
 pub struct RunTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
-    default_task_timeout: Duration,
+    default_task_timeout: Option<Duration>,
     named_timeouts: Arc<NamedTimeouts>,
     task: workflow::RunTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -50,8 +50,9 @@ impl UseExpressionTransformer for RunTaskExecutor {}
 impl Tracing for RunTaskExecutor {}
 
 /// Resolve a task's timeout to job timeout in seconds, handling an inline
-/// timeout, a named timeout reference from `use.timeouts`, or the default.
-/// Errors if a referenced timeout name is undefined.
+/// timeout, a named timeout reference from `use.timeouts`, or the opt-in
+/// default. Returns 0 (the job-level "no timeout" sentinel, see [`job_timeout`])
+/// when none applies. Errors if a referenced timeout name is undefined.
 /// `max(1, ...)` prevents sub-second durations from immediately tripping the
 /// receiver-side timeout. Shared by `RunTaskExecutor` and `stream::run` so the
 /// two execution paths stay in lockstep with the receiver-side timeout
@@ -59,15 +60,20 @@ impl Tracing for RunTaskExecutor {}
 pub(crate) fn resolve_run_task_timeout_sec(
     timeout: Option<&workflow::TaskTimeout>,
     named_timeouts: &NamedTimeouts,
-    default_task_timeout: Duration,
+    default_task_timeout: Option<Duration>,
 ) -> Result<u32, Box<workflow::Error>> {
     let duration = resolve_timeout_duration(timeout, named_timeouts, default_task_timeout)?;
-    Ok(std::cmp::max(1, duration.as_millis().div_ceil(1000) as u32))
+    Ok(duration.map_or(0, |d| std::cmp::max(1, d.as_millis().div_ceil(1000) as u32)))
+}
+
+/// Inverse of [`resolve_run_task_timeout_sec`]: 0 means no timeout.
+pub(crate) fn job_timeout(timeout_sec: u32) -> Option<Duration> {
+    (timeout_sec > 0).then(|| Duration::from_secs(timeout_sec as u64))
 }
 impl RunTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        default_task_timeout: Duration,
+        default_task_timeout: Option<Duration>,
         named_timeouts: Arc<NamedTimeouts>,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         task: workflow::RunTask,
@@ -163,6 +169,7 @@ impl RunTaskExecutor {
         // await:true path clones only the pointer, never the (possibly large)
         // input value.
         output_when_not_awaiting: Arc<serde_json::Value>,
+        child_job_scope: Option<&Arc<ChildJobScope>>,
     ) -> Result<serde_json::Value> {
         let runner = self
             .job_executor_wrapper
@@ -230,6 +237,7 @@ impl RunTaskExecutor {
             let (result_fut, _guard) = super::enqueue_child_job(
                 &self.workflow_context,
                 &self.job_executor_wrapper,
+                child_job_scope,
                 self.job_executor_wrapper
                     .enqueue_with_worker_or_temp_channel(
                         Arc::new(metadata),
@@ -251,6 +259,7 @@ impl RunTaskExecutor {
         let (result_fut, running_job_guard) = super::enqueue_child_job(
             &self.workflow_context,
             &self.job_executor_wrapper,
+            child_job_scope,
             self.job_executor_wrapper
                 .enqueue_with_worker_or_temp_channel(
                     Arc::new(metadata),
@@ -292,6 +301,7 @@ impl RunTaskExecutor {
         timeout_sec: u32,
         await_completion: bool,
         output_when_not_awaiting: Arc<serde_json::Value>,
+        child_job_scope: Option<&Arc<ChildJobScope>>,
     ) -> Result<serde_json::Value> {
         // await:false applies NoResult as a per-job override. The worker is
         // referenced by name (an existing, possibly static, definition whose
@@ -305,6 +315,7 @@ impl RunTaskExecutor {
             let (child, _guard) = super::enqueue_child_job(
                 &self.workflow_context,
                 &self.job_executor_wrapper,
+                child_job_scope,
                 async {
                     let child = self
                         .job_executor_wrapper
@@ -331,6 +342,7 @@ impl RunTaskExecutor {
         let (child, running_job_guard) = super::enqueue_child_job(
             &self.workflow_context,
             &self.job_executor_wrapper,
+            child_job_scope,
             async {
                 let child = self
                     .job_executor_wrapper
@@ -482,6 +494,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         timeout_sec,
                         *await_,
                         task_context.input.clone(),
+                        task_context.child_job_scope.as_ref(),
                     )
                     .await
                 {
@@ -603,6 +616,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         // await:false returns the current task input unchanged
                         // so downstream tasks keep a stable shape.
                         task_context.input.clone(),
+                        task_context.child_job_scope.as_ref(),
                     )
                     .await
                 {
@@ -701,6 +715,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         timeout_sec,
                         *await_,
                         task_context.input.clone(),
+                        task_context.child_job_scope.as_ref(),
                     )
                     .await
                 {
@@ -821,6 +836,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         timeout_sec,
                         *await_,
                         task_context.input.clone(),
+                        task_context.child_job_scope.as_ref(),
                     )
                     .await
                 {
@@ -887,6 +903,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         timeout_sec,
                         await_completion,
                         task_context.input.clone(),
+                        task_context.child_job_scope.as_ref(),
                     )
                     .await
                     .map_err(|e| {
@@ -1019,7 +1036,7 @@ mod tests {
 
     // Regression: a YAML task-level `timeout: hours: 24` used to be dropped
     // on the run.function / run.runner paths because execute_by_jobworkerp
-    // hard-coded `default_task_timeout` (3600s) as the job timeout. This
+    // hard-coded `default_task_timeout` as the job timeout. This
     // test pins the conversion contract so the bug cannot silently come back.
     #[test]
     fn timeout_sec_honors_24_hour_yaml_timeout() {
@@ -1027,7 +1044,7 @@ mod tests {
         let resolved = super::resolve_run_task_timeout_sec(
             Some(&t),
             &NamedTimeouts::new(),
-            std::time::Duration::from_secs(3600), // fallback that must NOT win
+            Some(std::time::Duration::from_secs(3600)), // fallback that must NOT win
         )
         .unwrap();
         assert_eq!(
@@ -1037,11 +1054,23 @@ mod tests {
     }
 
     #[test]
+    fn timeout_sec_is_zero_without_timeout_or_default() {
+        let resolved =
+            super::resolve_run_task_timeout_sec(None, &NamedTimeouts::new(), None).unwrap();
+        assert_eq!(resolved, 0, "0 means no job timeout");
+        assert_eq!(super::job_timeout(resolved), None);
+        assert_eq!(
+            super::job_timeout(3),
+            Some(std::time::Duration::from_secs(3))
+        );
+    }
+
+    #[test]
     fn timeout_sec_uses_default_when_yaml_omits_timeout() {
         let resolved = super::resolve_run_task_timeout_sec(
             None,
             &NamedTimeouts::new(),
-            std::time::Duration::from_secs(3600),
+            Some(std::time::Duration::from_secs(3600)),
         )
         .unwrap();
         assert_eq!(resolved, 3600);
@@ -1066,7 +1095,7 @@ mod tests {
         let resolved = super::resolve_run_task_timeout_sec(
             Some(&timeout),
             &named_timeouts,
-            std::time::Duration::from_secs(3600),
+            Some(std::time::Duration::from_secs(3600)),
         )
         .unwrap();
 
@@ -1087,7 +1116,7 @@ mod tests {
         let resolved = super::resolve_run_task_timeout_sec(
             Some(&t),
             &NamedTimeouts::new(),
-            std::time::Duration::from_secs(3600),
+            Some(std::time::Duration::from_secs(3600)),
         )
         .unwrap();
         assert_eq!(

@@ -54,7 +54,11 @@ message LLMChatResult {
   }
 
   // The response of the completion. This can be the entire completion or only
-  // a token if the completion is streaming.
+  // a token if the completion is streaming. A terminal text equal to the
+  // concatenated deltas is treated as a full snapshot; a different terminal
+  // text is appended as a legacy final delta. Since these forms are ambiguous
+  // when a snapshot differs from the deltas, providers using snapshots must
+  // make the terminal text exactly match the concatenated deltas.
   optional MessageContent content = 1;
 
   // The response of the reasoning content(think tag etc). This can be the
@@ -62,7 +66,8 @@ message LLMChatResult {
   optional string reasoning_content = 2;
 
   // Whether the completion is done. If the completion is streaming, this will
-  // be false until the last response.
+  // be false until the last response. A successful stream must contain a
+  // done=true result; ending without one is treated as a stream failure.
   bool done = 3;
 
   // information about the inferencing process

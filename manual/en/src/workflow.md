@@ -34,7 +34,7 @@ Settings configured in `worker.runner_settings` for the `run` method:
 |-------|------|-------------|
 | `workflow_url` | string (oneof) | Path or URL to the workflow definition file (JSON or YAML) |
 | `workflow_data` | string (oneof) | Inline workflow definition as JSON or YAML string |
-| `workflow_context` | string (optional) | Context variables (JSON object string). If set, `workflow_context` in runtime args is ignored |
+| `workflow_context` | string (optional) | Context variables (JSON object string). Merged with `workflow_context` in runtime args; settings keys take precedence on conflict |
 
 > `workflow_url` and `workflow_data` are mutually exclusive (`oneof workflow_source`). Settings are optional when workflow source is provided in job arguments.
 
@@ -47,7 +47,7 @@ Settings configured in `worker.runner_settings` for the `run` method:
 | `workflow_url` | string (oneof, optional) | Override workflow source with URL/path |
 | `workflow_data` | string (oneof, optional) | Override workflow source with inline definition |
 | `input` | string | Input for the workflow context (JSON or plain string) |
-| `workflow_context` | string (optional) | Additional context information (JSON). Ignored if `workflow_context` is set in runner settings |
+| `workflow_context` | string (optional) | Additional context information (JSON object). Merged with `workflow_context` in runner settings; settings keys take precedence on conflict |
 | `execution_id` | string (optional) | Unique identifier for the workflow execution instance |
 | `from_checkpoint` | Checkpoint (optional) | Data for resuming from a specific checkpoint |
 
@@ -223,13 +223,52 @@ raise:
     detail: '${ "requestId=" + $error.detail.requestId }'
 ```
 
+### Task Timeouts
+
+A task's `timeout` (and the workflow-level `timeout`) is optional; a task without one has no deadline. When `WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC` is set, it applies only to run/call tasks that omit `timeout`. It never applies to do/try/for/fork and other tasks, so an outer task does not need a longer `timeout` than the tasks it contains. The workflow-level `timeout` applies only to the implicit root task and is not used as a default for inner tasks (when it expires, the whole workflow is interrupted).
+
+Child jobs still running inside a timed-out task are cancelled. The raised error is the Open Workflow Specification standard error with `type` `https://open-workflow-specification.org/spec/1.0.0/errors/timeout` and `status` `408`.
+
+```yaml
+- guarded:
+    try:
+      - slow:
+          timeout:
+            after:
+              minutes: 10
+          run:
+            function:
+              runnerName: COMMAND
+              arguments:
+                command: ./long-job.sh
+    catch:
+      errors:
+        with:
+          type: https://open-workflow-specification.org/spec/1.0.0/errors/timeout
+      do:
+        - fallback:
+            set:
+              timedOut: true
+```
+
+### Child Job Cancellation
+
+A workflow cancels its in-flight child jobs (jobs started by run/call tasks) only when it decides to stop that work:
+
+- The workflow job is cancelled explicitly (e.g. JobService Delete)
+- The workflow job itself hits its job timeout
+- A task times out (only child jobs inside the timed-out task; other fork branches and other parallel for items are left alone)
+- An item of an `inParallel: true` for fails and `onError: break` stops the loop (child jobs of the other items). With `onError: continue`, other items are not affected
+- A `fork` with `compete: true` has a winner (child jobs of the losing branches)
+
+A stream consumer merely disconnecting does not cancel child jobs; their results can still be received later, e.g. with ListenStream.
+
 ### Environment Variable Access
 
 In jq syntax, you can access process environment variables via the built-in `env` function (provided by the jaq crate):
 
 ```yaml
 # Accessing environment variables in jq syntax
-botToken: ${env.SLACK_BOT_TOKEN}
 apiKey: ${env.API_KEY}
 ```
 
@@ -243,7 +282,7 @@ You can pass global variables via the `workflow_context` parameter separately fr
 
 **Via runner settings (WorkflowRunnerSettings):**
 
-Set `workflow_context` as a JSON string in `runner_settings` when creating the worker. When set in settings, `workflow_context` in runtime args is ignored.
+Set `workflow_context` as a JSON string in `runner_settings` when creating the worker. It is merged with `workflow_context` in runtime args, and settings keys take precedence on conflict.
 
 ```shell
 # Set context variables in worker settings
@@ -251,12 +290,12 @@ $ ./target/release/jobworkerp-client worker create \
     --name "MyWorkflow" \
     --runner-name WORKFLOW \
     --response-type DIRECT \
-    --settings '{"workflow_url":"./my-workflow.yaml", "workflow_context":"{\"api_url\":\"https://api.example.com\",\"slack_token\":\"xoxb-xxx\"}"}'
+    --settings '{"workflow_url":"./my-workflow.yaml", "workflow_context":"{\"api_url\":\"https://api.example.com\",\"tenant\":\"example\"}"}'
 ```
 
 **Via job arguments (WorkflowRunArgs):**
 
-Only effective when `workflow_context` is not set in runner settings.
+Merged with `workflow_context` in runner settings; for keys present in both, the settings value is used.
 
 ```shell
 # Pass context variables at runtime

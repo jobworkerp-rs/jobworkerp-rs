@@ -29,7 +29,7 @@ type CheckPointRepo =
 #[derive(DebugStub, Clone)]
 pub struct DoTaskStreamExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
-    default_timeout: Duration, // default timeout for tasks
+    default_timeout: Option<Duration>,
     named_timeouts: Arc<NamedTimeouts>,
     // for secret metadata
     #[debug_stub = "HashMap<String, String>"]
@@ -52,7 +52,7 @@ impl DoTaskStreamExecutor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        default_timeout: Duration,
+        default_timeout: Option<Duration>,
         named_timeouts: Arc<NamedTimeouts>,
         metadata: Arc<HashMap<String, String>>,
         task: workflow::DoTask,
@@ -508,7 +508,7 @@ mod tests {
             let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
             let executor = DoTaskStreamExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(1200), // 20 minutes
+                Some(Duration::from_secs(1200)), // 20 minutes
                 Arc::new(NamedTimeouts::new()),
                 Arc::new(HashMap::new()),
                 do_task,
@@ -653,7 +653,7 @@ mod tests {
             let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
             let executor = DoTaskStreamExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(1200), // 20 minutes
+                Some(Duration::from_secs(1200)), // 20 minutes
                 Arc::new(NamedTimeouts::new()),
                 Arc::new(HashMap::new()),
                 do_task,
@@ -763,7 +763,7 @@ mod tests {
                 let do_task = exit_workflow.create_do_task(Arc::new(HashMap::new()));
                 let executor = DoTaskStreamExecutor::new(
                     workflow_context.clone(),
-                    Duration::from_secs(1200), // 20 minutes
+                    Some(Duration::from_secs(1200)), // 20 minutes
                     Arc::new(NamedTimeouts::new()),
                     Arc::new(HashMap::new()),
                     do_task,
@@ -843,7 +843,7 @@ mod tests {
                 let do_task = end_workflow.create_do_task(Arc::new(HashMap::new()));
                 let executor = DoTaskStreamExecutor::new(
                     workflow_context.clone(),
-                    Duration::from_secs(1200), // 20 minutes
+                    Some(Duration::from_secs(1200)), // 20 minutes
                     Arc::new(NamedTimeouts::new()),
                     Arc::new(HashMap::new()),
                     do_task,
@@ -987,7 +987,7 @@ mod tests {
             let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
             let executor = DoTaskStreamExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(1200), // 20 minutes
+                Some(Duration::from_secs(1200)), // 20 minutes
                 Arc::new(NamedTimeouts::new()),
                 Arc::new(HashMap::new()),
                 do_task,
@@ -1155,7 +1155,7 @@ mod tests {
             let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
             let executor = DoTaskStreamExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(1200),
+                Some(Duration::from_secs(1200)),
                 Arc::new(NamedTimeouts::new()),
                 Arc::new(HashMap::new()),
                 do_task,
@@ -1327,7 +1327,7 @@ mod tests {
             let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
             let executor = DoTaskStreamExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(1200),
+                Some(Duration::from_secs(1200)),
                 Arc::new(NamedTimeouts::new()),
                 Arc::new(HashMap::new()),
                 do_task,

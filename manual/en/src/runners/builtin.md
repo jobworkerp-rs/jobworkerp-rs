@@ -6,7 +6,6 @@ Each feature requires setting necessary values in protobuf format for worker.run
 | Runner ID | Name | Description | Settings |
 |----------|------|-------------|---------|
 | COMMAND | Command execution | Executes shell commands | worker.runner_settings: none, job.args: command name and argument array |
-| SLACK_POST_MESSAGE | Slack message posting | Posts messages to Slack channels | worker.runner_settings: Slack token, job.args: channel, message text, etc. |
 | PYTHON_COMMAND | Python execution | Executes Python scripts using uv | worker.runner_settings: uv environment settings, job.args: python script, input, etc. |
 | HTTP_REQUEST | HTTP requests | HTTP communication using reqwest | worker.runner_settings: base URL, job.args: headers, method, body, path, etc. |
 | GRPC | gRPC communication (multi-method) | gRPC unary and server streaming requests | worker.runner_settings: host, port, TLS settings, default method/metadata/timeout/as_json/proto (all optional), etc., job.args: method, request, metadata, timeout, as_json, proto (all optional if set in settings). With proto, JSON/protobuf conversion works without reflection. worker.using: "unary" or "streaming" |

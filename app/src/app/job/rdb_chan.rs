@@ -800,6 +800,7 @@ impl JobApp for RdbChanJobAppImpl {
                 .subscribe_result_with_ready(&result_job_id, None, Some(result_ready_tx))
                 .await
         });
+        let result_subscription_abort_handle = result_handle.abort_handle();
         result_ready_rx.await.map_err(|_| {
             JobWorkerError::RuntimeError("result subscriber stopped before registering".to_string())
         })?;
@@ -832,7 +833,11 @@ impl JobApp for RdbChanJobAppImpl {
         // Keep the registered receiver until the job reaches a terminal state.
         // JobData.timeout bounds runner execution, not queue residence time.
         let result_handle = start_deferred_result_wait(result_handle, None);
-        let fut = self.wait_for_direct_response_future(result_handle, result_stream);
+        let fut = self.wait_for_direct_response_future(
+            result_handle,
+            result_stream,
+            result_subscription_abort_handle,
+        );
         Ok((job_id, fut))
     }
 
@@ -1607,10 +1612,12 @@ where
         &self,
         result_handle: tokio::task::JoinHandle<Result<JobResult>>,
         result_stream: Option<BoxStream<'static, ResultOutputItem>>,
+        result_subscription_abort_handle: tokio::task::AbortHandle,
     ) -> super::ChannelJobResultFuture {
-        super::ChannelJobResultFuture::new(
+        super::ChannelJobResultFuture::new_with_result_wait_abort_handle(
             Box::pin(async move { result_handle.await?.map(Some) }),
             result_stream,
+            result_subscription_abort_handle,
         )
     }
 

@@ -252,8 +252,8 @@ impl WorkflowSchema {
             output: self.output.clone(),
             metadata: meta_map,
             // Propagate workflow-level timeout to the implicit root DoTask so
-            // that the executor's resolve_timeout() picks it up instead of
-            // falling back to WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC (default 1h).
+            // that the executor's resolve_timeout() picks it up; without it the
+            // root runs without a deadline.
             timeout: self.timeout.as_ref().map(do_timeout_to_task_timeout),
             ..Default::default()
         }

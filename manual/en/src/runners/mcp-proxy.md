@@ -40,7 +40,7 @@ Place the configuration file at the path specified by the `MCP_CONFIG` environme
 
 1. Prepare an MCP server configuration file
 2. When creating a worker, specify the numeric ID of the specific MCP server as runner_id (you can check available MCP servers using the `jobworkerp-client runner list` command)
-3. Specify tool_name and arg_json in job execution arguments
+3. When enqueueing a job, select the tool with `--using` (gRPC: `JobRequest.using`; may be omitted only for single-tool servers) and pass the tool's own arguments as JSON
 
 ```shell
 # First, check the available runner-id
@@ -52,11 +52,11 @@ $ ./target/release/jobworkerp-client runner list
 $ ./target/release/jobworkerp-client worker create --name "TimeInfo" --description "" --runner-id <runner id> --response-type DIRECT --settings '' --use-static
 
 # Execute a job to retrieve current time information
-$ ./target/release/jobworkerp-client job enqueue --worker "TimeInfo" --args '{"tool_name":"get_current_time","arg_json":"{\"timezone\":\"Asia/Tokyo\"}"}'
+$ ./target/release/jobworkerp-client job enqueue --worker "TimeInfo" --using get_current_time --args '{"timezone":"Asia/Tokyo"}'
 
 # Web page fetching example
 $ ./target/release/jobworkerp-client worker create --name "WebFetch" --description "" --response-type DIRECT --settings '' --runner-id <runner id>
-$ ./target/release/jobworkerp-client job enqueue --worker "WebFetch" --args '{"tool_name":"fetch","arg_json":"{\"url\":\"https://example.com\"}"}'
+$ ./target/release/jobworkerp-client job enqueue --worker "WebFetch" --using fetch --args '{"url":"https://example.com"}'
 ```
 
 Responses from the MCP server can be retrieved as job results and processed directly or asynchronously according to the response_type setting.

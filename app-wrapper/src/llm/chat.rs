@@ -271,13 +271,14 @@ impl RunnerTrait for LLMChatRunnerImpl {
                         item = stream.next() => {
                             match item {
                                 Some(completion_result) => {
-                                    // Yield chunks that have content or tool execution results
+                                    // A terminal chunk carries completion metadata even when it
+                                    // has no content or tool execution results.
                                     let has_content = completion_result
                                         .content
                                         .as_ref()
                                         .is_some_and(|c| c.content.is_some());
                                     let has_tool_results = !completion_result.tool_execution_results.is_empty();
-                                    if has_content || has_tool_results {
+                                    if has_content || has_tool_results || completion_result.done {
                                         let buf = ProstMessageCodec::serialize_message(&completion_result);
                                         if let Ok(buf) = buf {
                                             yield ResultOutputItem {

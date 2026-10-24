@@ -15,6 +15,7 @@ use anyhow::Result;
 use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::chat::genai::GenaiChatService;
 use app_wrapper::llm::completion::genai::GenaiCompletionService;
+use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     ChatMessage, ChatRole, LlmOptions as ChatLlmOptions, MessageContent, message_content,
 };
@@ -27,7 +28,7 @@ use tokio::time::{Duration, timeout};
 
 // Use the OpenAI-compatible endpoint of a local Ollama server. The path is
 // normalized to `/v1/` by GenaiChatService::new, so the bare base URL is fine.
-const GENAI_BASE_URL: &str = "http://ollama.ollama.svc.cluster.local:11434";
+const GENAI_BASE_URL: &str = "http://ollama.ollama.svc.cluster.local:11434/v1/";
 // Force the OpenAI adapter via the `openai::` namespace so that genai sends the
 // `response_format` payload. Without the namespace, `gpt-oss:*` is explicitly
 // excluded from the OpenAI auto-detection in genai 0.5.x and falls back to the
@@ -84,8 +85,9 @@ async fn create_test_completion_service() -> Result<GenaiCompletionService> {
 }
 
 #[ignore = "need to run with OpenAI-compatible LLM server (e.g. Ollama)"]
-#[tokio::test]
-async fn test_chat_with_json_schema() -> Result<()> {
+#[test]
+fn test_chat_with_json_schema() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let service = create_test_chat_service().await?;
 
@@ -138,6 +140,7 @@ async fn test_chat_with_json_schema() -> Result<()> {
         }
 
     Ok(())
+    })
 }
 
 #[ignore = "need to run with OpenAI-compatible LLM server (e.g. Ollama)"]

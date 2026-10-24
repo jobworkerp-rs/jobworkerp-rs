@@ -12,6 +12,7 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext},
         expression::UseExpression,
+        task::{ChildJobTracking, enqueue_child_job},
     },
 };
 use anyhow::{Context, Result, anyhow};
@@ -373,30 +374,55 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             WorkerForEnqueue::Temp(worker_data)
         };
 
-        // Enqueue job with protobuf binary arguments directly
-        let (_job_id, job_result, _stream) = bail_with_position!(
+        // Enqueue job with protobuf binary arguments directly. Awaited scripts
+        // are tracked so a task timeout or workflow cancel can reach them.
+        let tracking = if await_completion {
+            ChildJobTracking::Tracked
+        } else {
+            ChildJobTracking::Untracked
+        };
+        let child_job_scope = task_context.child_job_scope.clone();
+        let (result_fut, running_job_guard) = bail_with_position!(
             task_context,
-            self.job_executor_wrapper
-                .enqueue_with_worker_or_temp(
-                    self.metadata.clone(),
-                    worker,
-                    args_bytes, // Use protobuf binary directly, not JSON
-                    None,       // No unique key
-                    self.task_timeout.as_secs() as u32,
-                    StreamingType::None,
-                    None, // using not used for Python script execution
-                    super::no_result_override_if(!await_completion),
-                )
-                .await,
+            enqueue_child_job(
+                &self.workflow_context,
+                &self.job_executor_wrapper,
+                child_job_scope.as_ref(),
+                self.job_executor_wrapper
+                    .enqueue_with_worker_or_temp_channel(
+                        self.metadata.clone(),
+                        worker,
+                        args_bytes, // Use protobuf binary directly, not JSON
+                        None,       // No unique key
+                        self.task_timeout.as_secs() as u32,
+                        StreamingType::None,
+                        None, // using not used for Python script execution
+                        super::no_result_override_if(!await_completion),
+                    ),
+                tracking,
+            )
+            .await,
             service_unavailable,
             "Failed to enqueue script execution job"
         );
 
         if !await_completion {
             // Fire-and-forget: continue with the current task input as output.
+            drop(result_fut);
             task_context.set_raw_output(task_context.input.as_ref().clone());
             return Ok(task_context);
         }
+
+        let wait_result = result_fut.await;
+        if let Some(guard) = running_job_guard {
+            guard.mark_completed();
+        }
+        let (job_result, _stream) = bail_with_position!(
+            task_context,
+            wait_result,
+            service_unavailable,
+            "Failed to wait for script execution job"
+        );
 
         let output_bytes = bail_with_position!(
             task_context,

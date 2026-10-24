@@ -27,13 +27,11 @@ use std::sync::Arc;
 
 /// Create test app wrapper module (equivalent to app_wrapper::modules::test::create_test_app_wrapper_module)
 fn create_test_app_wrapper_module(app_module: Arc<AppModule>) -> AppWrapperModule {
-    let workflow_config = Arc::new(WorkflowConfig::new(
-        Some(120),                           // task_default_timeout
-        Some("test-user-agent".to_string()), // http_user_agent
-        Some(60),                            // http_timeout_sec
-        Some(120),                           // checkpoint_expire_sec
-        Some(1000),                          // checkpoint_max_count
-    ));
+    let workflow_config = Arc::new(WorkflowConfig {
+        task_default_timeout_sec: Some(120),
+        checkpoint_expire_sec: Some(120),
+        checkpoint_max_count: Some(1000),
+    });
     let config_module = Arc::new(AppWrapperConfigModule::new(workflow_config));
     let repositories = Arc::new(AppWrapperRepositoryModule::new(
         config_module.clone(),

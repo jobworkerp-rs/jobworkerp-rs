@@ -64,6 +64,12 @@ impl ResolvedToolResult {
 pub struct ToolConverter;
 impl McpNameConverter for ToolConverter {}
 
+struct ClientToolDefinition {
+    name: String,
+    description: Option<String>,
+    parameters: serde_json::Value,
+}
+
 impl ToolConverter {
     /// Convert FunctionSpecs to MCP Tools.
     ///
@@ -327,6 +333,46 @@ impl ToolConverter {
     /// `{"type":"function","function":{"name":<string>,"parameters":<object>}}`.
     /// `description` is optional.
     pub fn parse_client_tools_json(json: &str) -> anyhow::Result<Vec<genai::chat::Tool>> {
+        Self::parse_client_tool_definitions(json).map(|tools| {
+            tools
+                .into_iter()
+                .map(|tool| {
+                    Self::build_genai_tool(&tool.name, tool.parameters, tool.description.as_deref())
+                })
+                .collect()
+        })
+    }
+
+    /// Parse OpenAI-compatible client tool definitions into Ollama's native
+    /// tool representation while preserving the supplied parameter schema.
+    pub fn parse_client_tools_json_ollama(
+        json: &str,
+    ) -> anyhow::Result<Vec<ollama_rs::generation::tools::ToolInfo>> {
+        use anyhow::Context;
+        use ollama_rs::generation::tools::{ToolFunctionInfo, ToolInfo, ToolType};
+
+        Self::parse_client_tool_definitions(json)?
+            .into_iter()
+            .map(|tool| {
+                let parameters = serde_json::from_value(tool.parameters).with_context(|| {
+                    format!(
+                        "client_tools_json schema for '{}' cannot be represented by Ollama",
+                        tool.name
+                    )
+                })?;
+                Ok(ToolInfo {
+                    tool_type: ToolType::Function,
+                    function: ToolFunctionInfo {
+                        name: tool.name,
+                        description: tool.description.unwrap_or_default(),
+                        parameters,
+                    },
+                })
+            })
+            .collect()
+    }
+
+    fn parse_client_tool_definitions(json: &str) -> anyhow::Result<Vec<ClientToolDefinition>> {
         use anyhow::{Context, bail};
 
         let value: serde_json::Value = serde_json::from_str(json)
@@ -365,14 +411,37 @@ impl ToolConverter {
                 bail!("invalid client_tools_json[{i}]: function.parameters must be an object");
             }
 
-            let description = function.get("description").and_then(|v| v.as_str());
-            tools.push(Self::build_genai_tool(
-                name,
-                parameters.clone(),
+            let description = function
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            tools.push(ClientToolDefinition {
+                name: name.to_string(),
                 description,
-            ));
+                parameters: parameters.clone(),
+            });
         }
         Ok(tools)
+    }
+
+    /// Combine a configured Worker prompt with request-level SYSTEM text.
+    /// Empty request messages are ignored; each non-empty message is separated
+    /// by one newline without changing the source text.
+    pub fn merge_system_prompts<I, S>(configured: &str, request_prompts: I) -> String
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let request_prompts = request_prompts
+            .into_iter()
+            .map(|prompt| prompt.as_ref().to_string())
+            .filter(|prompt| !prompt.is_empty())
+            .collect::<Vec<_>>();
+        if request_prompts.is_empty() {
+            configured.to_string()
+        } else {
+            format!("{configured}\n{}", request_prompts.join("\n"))
+        }
     }
 
     /// Translate the client-supplied OpenAI `tool_choice` field into the
@@ -428,6 +497,60 @@ impl ToolConverter {
             || fo.auto_select_function_set.unwrap_or(false)
     }
 
+    /// Reject requests that combine client-owned tool definitions with any
+    /// server-owned tool-selection option, before either tool execution or
+    /// provider dispatch can observe the request.
+    pub fn validate_client_tools_exclusive(args: &LlmChatArgs) -> anyhow::Result<()> {
+        use anyhow::bail;
+
+        let Some(function_options) = args.function_options.as_ref() else {
+            return Ok(());
+        };
+        if Self::has_client_tools_json(args)
+            && Self::server_driven_tool_selection_set(function_options)
+        {
+            bail!(
+                "client_tools_json is mutually exclusive with {}",
+                Self::SERVER_DRIVEN_TOOL_KNOBS.join(" / ")
+            );
+        }
+        Ok(())
+    }
+
+    /// A client-owned tool call can only be continued with its result. It must
+    /// never enter the legacy server-side ToolExecutionRequests executor.
+    pub fn validate_client_tool_execution_requests(args: &LlmChatArgs) -> anyhow::Result<()> {
+        use anyhow::bail;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+
+        if !Self::has_client_tools_json(args) {
+            return Ok(());
+        }
+        let has_execution_requests = args.messages.iter().any(|message| {
+            message.role() == ChatRole::Tool
+                && message
+                    .content
+                    .as_ref()
+                    .and_then(|content| content.content.as_ref())
+                    .is_some_and(|content| {
+                        matches!(content, ProtoContent::ToolExecutionRequests(_))
+                    })
+        });
+        if has_execution_requests {
+            bail!(
+                "client_tools_json requires TOOL ToolResults; ToolExecutionRequests are not allowed"
+            );
+        }
+        Ok(())
+    }
+
+    fn has_client_tools_json(args: &LlmChatArgs) -> bool {
+        args.function_options
+            .as_ref()
+            .and_then(|options| options.client_tools_json.as_deref())
+            .is_some_and(|json| !json.is_empty())
+    }
+
     /// Effective `is_auto_calling` flag after applying the client-driven
     /// override: when `client_tools_json` is set the runner must not
     /// execute tools server-side (the schemas belong to the client), so
@@ -439,10 +562,7 @@ impl ToolConverter {
             return false;
         };
         let requested = fo.is_auto_calling.unwrap_or(false);
-        let client_driven = fo
-            .client_tools_json
-            .as_deref()
-            .is_some_and(|s| !s.is_empty());
+        let client_driven = Self::has_client_tools_json(args);
         if client_driven {
             if requested {
                 tracing::warn!(

@@ -547,10 +547,11 @@ MCPサーバーの設定は`mcp-settings.toml`ファイルで定義されます
 **Job Arguments (args_json):**
 ```json
 {
-  "tool_name": "fetch",
-  "arg_json": "{\"url\": \"https://api.example.com/data\", \"method\": \"GET\"}"
+  "url": "https://api.example.com/data"
 }
 ```
+
+引数はツール自身の入力フィールドです。ツールはメソッドとして指定します（gRPCでは`JobRequest.using`、FunctionService.Call経由では`<サーバー名>___<ツール名>`形式。ツールが1つだけのサーバーでは省略可）。
 
 > **注意**: メソッド選択（`"completion"`/`"chat"`）はgRPC直接利用時に`JobRequest.using`で指定します。FunctionService.Call経由では、`runner_name___method_name`形式（トリプルアンダースコア区切り）でメソッドを指定できます（例: `llm___chat`）。指定しない場合はデフォルトの`run`メソッドが実行されます。
 

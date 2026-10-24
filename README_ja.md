@@ -15,12 +15,15 @@ gRPCをつかって処理内容となる[Worker](proto/protobuf/jobworkerp/servi
 jobworkerp-rsは以下の主要コンポーネントで構成されています：
 
 - **gRPC フロントエンド**: クライアントからのリクエストを受け付け、ジョブの登録・取得を行うインターフェース
+- **[Agent Server](agent-server/README.md)**: 別プロセスで起動する HTTP/JSON・SSE の chat／Skills／承認／Worker ツール用サービス。既存の FunctionSet API を置き換えず、gRPC フロントエンドに接続します。
 - **ワーカー**: 実際のジョブ処理を行うコンポーネント、複数のチャンネルと並列度の設定が可能
 - **ストレージ**: Redis（即時ジョブ）とRDB（MySQL/SQLite、定期実行/時刻指定ジョブ）の組み合わせ
 
 ```mermaid
 graph TB
     Client[クライアント] --gRPC/gRPC-Web--> Frontend[gRPCフロントエンド]
+    Client --HTTP/SSE--> AgentServer[Agent Server]
+    AgentServer --gRPC--> Frontend
     Frontend --Job登録--> Storage[(ストレージ層)]
     Storage --Job取得--> Worker[ワーカー]
     Worker --結果保存--> Storage
@@ -300,7 +303,7 @@ args = ["mcp-server-fetch"]
 
 1. MCPサーバー設定ファイルを準備する
 2. worker作成時にrunner_idに特定のMCPサーバーの数値IDを指定（`jobworkerp-client runner list` コマンドで利用可能なMCPサーバーを確認できます）
-3. ジョブ実行時の引数にtool_nameとarg_jsonを指定する
+3. ジョブ実行時に`--using`（gRPCでは`JobRequest.using`。ツールが1つだけのサーバーでは省略可）でツール名を指定し、ツールの引数をそのままJSONで渡す
 
 ```shell
 # まず利用可能なrunner-idを確認する
@@ -312,11 +315,11 @@ $ ./target/release/jobworkerp-client runner list
 $ ./target/release/jobworkerp-client worker create --name "TimeInfo" --description "" --runner-id <runner id> --response-type DIRECT --settings '' --use-static
 
 # ジョブを実行して現在の時間情報を取得
-$ ./target/release/jobworkerp-client job enqueue --worker "TimeInfo" --args '{"tool_name":"get_current_time","arg_json":"{\"timezone\":\"Asia/Tokyo\"}"}'
+$ ./target/release/jobworkerp-client job enqueue --worker "TimeInfo" --using get_current_time --args '{"timezone":"Asia/Tokyo"}'
 
 # Webページ取得の例
 $ ./target/release/jobworkerp-client worker create --name "WebFetch" --description "" --response-type DIRECT --settings '' --runner-id <runner id>
-$ ./target/release/jobworkerp-client job enqueue --worker "WebFetch" --args '{"tool_name":"fetch","arg_json":"{\"url\":\"https://example.com\"}"}'
+$ ./target/release/jobworkerp-client job enqueue --worker "WebFetch" --using fetch --args '{"url":"https://example.com"}'
 ```
 
 MCPサーバーからの応答はジョブ結果として取得でき、response_typeの設定に従って直接または非同期に処理できます。

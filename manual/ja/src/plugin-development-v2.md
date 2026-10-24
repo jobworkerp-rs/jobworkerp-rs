@@ -197,7 +197,7 @@ crate-type = ["cdylib"]
 # jobworkerp-rs リポジトリから git 経由で取得してください。この 1
 # crate に FFI 型、`PluginV2` トレイト、`register_plugin_v2!` マクロ
 # (`jobworkerp-plugin-abi-macros` から re-export) すべてが含まれます。
-jobworkerp-plugin-abi = { git = "https://gitea.sutr.app/jobworkerp-rs/jobworkerp-rs.git", branch = "main", package = "jobworkerp-plugin-abi" }
+jobworkerp-plugin-abi = { git = "https://github.com/jobworkerp-rs/jobworkerp-rs.git", branch = "main", package = "jobworkerp-plugin-abi" }
 
 # `MethodSchema` を encode するための proto crate (host runtime proto、
 # jobworkerp-client proto、自前 proto のいずれでも可)。

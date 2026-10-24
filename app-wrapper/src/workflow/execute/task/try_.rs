@@ -21,7 +21,7 @@ use tokio::{sync::RwLock, time::Instant};
 
 pub struct TryTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
-    default_timeout: Duration,
+    default_timeout: Option<Duration>,
     named_timeouts: Arc<NamedTimeouts>,
     task: workflow::TryTask,
     job_executors: Arc<JobExecutorWrapper>,
@@ -36,7 +36,7 @@ impl TryTaskExecutor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        default_timeout: Duration,
+        default_timeout: Option<Duration>,
         named_timeouts: Arc<NamedTimeouts>,
         task: workflow::TryTask,
         job_executors: Arc<JobExecutorWrapper>,
@@ -534,7 +534,7 @@ mod tests {
 
         let try_executor = TryTaskExecutor::new(
             workflow_context.clone(),
-            Duration::from_secs(60), // default timeout
+            Some(Duration::from_secs(60)), // default timeout
             Arc::new(NamedTimeouts::new()),
             try_task.clone(),
             job_executors.clone(),

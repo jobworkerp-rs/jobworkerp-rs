@@ -294,7 +294,7 @@ mod tests {
         use std::sync::Arc;
 
         // No workflow-level timeout set; root DoTask.timeout must remain None so
-        // that the executor falls back to the configured default.
+        // that the root runs without a deadline.
         let wf = WorkflowSchema::default();
         let do_task = wf.create_do_task(Arc::new(HashMap::new()));
         assert!(do_task.timeout.is_none());

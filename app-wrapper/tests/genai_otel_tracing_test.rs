@@ -27,6 +27,7 @@ use app_wrapper::llm::chat::genai::GenaiChatService;
 use app_wrapper::llm::completion::genai::GenaiCompletionService;
 use command_utils::util::tracing::LoggingConfig;
 use futures::StreamExt;
+use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     ChatMessage, ChatRole, LlmOptions as ChatLlmOptions, MessageContent, message_content,
 };
@@ -39,7 +40,7 @@ use tokio::time::{Duration, timeout};
 // Default to Ollama's OpenAI-compatible endpoint; the path is normalised to `/v1/`
 // inside GenaiChatService::new so the bare host URL is enough. Same pattern as the
 // existing genai_json_schema_test.rs — keeps the test runnable in a local k8s setup.
-const GENAI_BASE_URL: &str = "http://ollama.ollama.svc.cluster.local:11434";
+const GENAI_BASE_URL: &str = "http://ollama.ollama.svc.cluster.local:11434/v1/";
 // Force the OpenAI adapter (genai 0.5.x excludes `gpt-oss:*` from auto-detection,
 // without the namespace it falls back to the Ollama adapter which does NOT exercise
 // the genai code path we want to trace).
@@ -108,6 +109,7 @@ fn simple_chat_args(message: &str) -> LlmChatArgs {
             repeat_last_n: None,
             seed: Some(42),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: None,
@@ -126,6 +128,7 @@ fn simple_completion_args(prompt: &str) -> LlmCompletionArgs {
             repeat_last_n: None,
             seed: Some(42),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         context: None,
@@ -137,57 +140,61 @@ fn simple_completion_args(prompt: &str) -> LlmCompletionArgs {
 /// Non-streaming chat baseline. Matches the ollama variant — the existing
 /// `request_chat` path was already known to emit a span; this guards against a
 /// regression introduced while wiring the streaming paths.
-#[tokio::test]
+#[test]
 #[ignore = "Requires an OpenAI-compatible endpoint and OTLP collector. Inspect Langfuse afterwards."]
-async fn genai_simple_greeting_emits_otlp_span() -> Result<()> {
-    let otlp_active = init_real_tracing().await?;
-    eprintln!("OTLP exporter active: {} (genai chat)", otlp_active);
+fn genai_simple_greeting_emits_otlp_span() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let otlp_active = init_real_tracing().await?;
+        eprintln!("OTLP exporter active: {} (genai chat)", otlp_active);
 
-    let service = build_chat_service().await?;
-    let args = simple_chat_args("Hi");
-    let cx = opentelemetry::Context::current();
-    let metadata: HashMap<String, String> = HashMap::new();
+        let service = build_chat_service().await?;
+        let args = simple_chat_args("Hi");
+        let cx = opentelemetry::Context::current();
+        let metadata: HashMap<String, String> = HashMap::new();
 
-    let result = timeout(TEST_TIMEOUT, service.request_chat(args, cx, metadata)).await??;
-    eprintln!(
-        "genai chat replied (done={}, has_content={})",
-        result.done,
-        result.content.is_some()
-    );
+        let result = timeout(TEST_TIMEOUT, service.request_chat(args, cx, metadata)).await??;
+        eprintln!(
+            "genai chat replied (done={}, has_content={})",
+            result.done,
+            result.content.is_some()
+        );
 
-    command_utils::util::tracing::shutdown_tracer_provider();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    Ok(())
+        command_utils::util::tracing::shutdown_tracer_provider();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok(())
+    })
 }
 
 /// Streaming chat. This is the case that did NOT emit traces before the streaming
 /// instrumentation was added. The expected outcome is a generation span in Langfuse
 /// with `service.name=command-utils` and `name=genai.chat.completions`.
-#[tokio::test]
+#[test]
 #[ignore = "Requires an OpenAI-compatible endpoint and OTLP collector. Inspect Langfuse afterwards."]
-async fn genai_simple_greeting_streaming_emits_otlp_span() -> Result<()> {
-    let otlp_active = init_real_tracing().await?;
-    eprintln!("OTLP exporter active: {} (genai chat stream)", otlp_active);
+fn genai_simple_greeting_streaming_emits_otlp_span() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let otlp_active = init_real_tracing().await?;
+        eprintln!("OTLP exporter active: {} (genai chat stream)", otlp_active);
 
-    let service = build_chat_service().await?;
-    let args = simple_chat_args("Hi");
-    let metadata: HashMap<String, String> = HashMap::new();
+        let service = build_chat_service().await?;
+        let args = simple_chat_args("Hi");
+        let metadata: HashMap<String, String> = HashMap::new();
 
-    let mut stream = timeout(
-        TEST_TIMEOUT,
-        service.request_chat_stream(args, metadata, None),
-    )
-    .await??;
+        let mut stream = timeout(
+            TEST_TIMEOUT,
+            service.request_chat_stream(args, metadata, None),
+        )
+        .await??;
 
-    let mut chunks: u32 = 0;
-    while let Some(_chunk) = timeout(TEST_TIMEOUT, stream.next()).await? {
-        chunks += 1;
-    }
-    eprintln!("genai chat stream finished (chunks={})", chunks);
+        let mut chunks: u32 = 0;
+        while let Some(_chunk) = timeout(TEST_TIMEOUT, stream.next()).await? {
+            chunks += 1;
+        }
+        eprintln!("genai chat stream finished (chunks={})", chunks);
 
-    command_utils::util::tracing::shutdown_tracer_provider();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    Ok(())
+        command_utils::util::tracing::shutdown_tracer_provider();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok(())
+    })
 }
 
 /// Streaming completion via the genai service. Verifies the new streaming tracing

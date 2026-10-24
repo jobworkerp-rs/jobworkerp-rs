@@ -1163,25 +1163,4 @@ do:
 "#;
         run_validate(yaml).unwrap();
     }
-
-    #[test]
-    fn gitea_pr_auto_review_workflow_passes_schema_validation() {
-        let workflow = include_str!(
-            "../../../.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml"
-        );
-        run_validate(workflow).unwrap();
-    }
-
-    #[test]
-    fn gitea_pr_auto_review_workflow_uses_stdin_for_agent_prompts() {
-        let workflow = include_str!(
-            "../../../.gitea/jobworkerp/workflows/gitea-pr-auto-review-fix-workflow.yaml"
-        );
-
-        assert!(workflow.contains("stdin: \"${$review_prompt}\""));
-        assert!(workflow.contains("stdin: \"${$fix_agent_prompt}\""));
-        assert!(workflow.contains("stdin: \"${$refactor_prompt}\""));
-        assert!(!workflow.contains("prompt_chunks"));
-        assert!(!workflow.contains("encode_base64"));
-    }
 }

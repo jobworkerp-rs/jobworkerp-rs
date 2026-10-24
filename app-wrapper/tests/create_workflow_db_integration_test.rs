@@ -235,10 +235,16 @@ do:
 
 /// CREATE_WORKFLOW Workflow URL DB integration test
 /// Fetch workflow from URL and create worker
-#[ignore = "local url"]
+///
+/// Requires `TEST_WORKFLOW_URL` to point at a reachable workflow definition.
+#[ignore = "requires TEST_WORKFLOW_URL"]
 #[test]
 fn test_create_workflow_url_db_integration() -> Result<()> {
     //command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    let Ok(test_url) = std::env::var("TEST_WORKFLOW_URL") else {
+        println!("TEST_WORKFLOW_URL is not set; skipping CREATE_WORKFLOW URL DB integration test");
+        return Ok(());
+    };
     println!("🌐 CREATE_WORKFLOW URL DB integration test start");
     TEST_RUNTIME.block_on(async {
         // Initialize AppModule (hybrid setup for testing)
@@ -248,8 +254,6 @@ fn test_create_workflow_url_db_integration() -> Result<()> {
         let mut runner = CreateWorkflowRunnerImpl::new(app.clone())?;
 
         let worker_name = "url-db-test-workflow-worker";
-        let test_url = "https://gitea.sutr.app/jobworkerp-rs/workflow-files/raw/branch/main/deep-research/workflows/deep_research.yml";
-
         let url_args = CreateWorkflowArgs {
             workflow_source: Some(WorkflowSource::WorkflowUrl(test_url.to_string())),
             name: worker_name.to_string(),

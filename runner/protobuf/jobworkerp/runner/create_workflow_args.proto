@@ -36,8 +36,9 @@ message CreateWorkflowArgs {
     WITH_BACKUP = 1;
 
     // # Database-Only Queue
-    // Forces all jobs to be stored in database (slowest)
-    FORCED_RDB = 2;
+    // Forces all jobs to be stored in database (slowest).
+    // Same name as jobworkerp.data.QueueType and the workflow DSL workerOptions.
+    DB_ONLY = 2;
   }
 
   // # Response Type (local definition)

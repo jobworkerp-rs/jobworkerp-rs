@@ -19,6 +19,7 @@ use prost::Message;
 use proto::jobworkerp::data::result_output_item;
 use proto::jobworkerp::data::{Job, JobId, JobProcessingStatus, JobResult, StreamingType};
 use std::fmt::Debug;
+use std::future::Future;
 use std::sync::Arc;
 use tonic::Response;
 use tonic::metadata::MetadataValue;
@@ -186,7 +187,8 @@ async fn start_deferred_result_output_stream(
     deferred_result_output_stream(job_id, tokio::spawn(result_fut), output_stream, method_name)
 }
 
-fn response_with_job_id<S>(job_id: JobId, stream: S) -> Response<S> {
+#[doc(hidden)]
+pub fn response_with_job_id<S>(job_id: JobId, stream: S) -> Response<S> {
     let job_id_header = job_id.encode_to_vec();
     let mut response = Response::new(stream);
     response.metadata_mut().insert_bin(
@@ -194,6 +196,140 @@ fn response_with_job_id<S>(job_id: JobId, stream: S) -> Response<S> {
         MetadataValue::from_bytes(job_id_header.as_slice()),
     );
     response
+}
+
+fn validate_enqueue_for_result_request(req: &JobRequest) -> Result<(), tonic::Status> {
+    if req.run_after_time.is_some_and(|time| time > 0) {
+        return Err(tonic::Status::invalid_argument(
+            "run_after_time is unsupported for EnqueueForResult",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_enqueue_for_result_worker(
+    req: &JobRequest,
+    worker: &proto::jobworkerp::data::Worker,
+) -> Result<(), tonic::Status> {
+    let Some(data) = worker.data.as_ref() else {
+        return Err(tonic::Status::internal("worker has no data"));
+    };
+
+    if worker.id.is_none() {
+        return Err(tonic::Status::internal("worker has no id"));
+    }
+    if data.periodic_interval > 0 {
+        return Err(tonic::Status::invalid_argument(
+            "periodic workers are unsupported for EnqueueForResult",
+        ));
+    }
+    if !matches!(
+        proto::jobworkerp::data::QueueType::try_from(data.queue_type),
+        Ok(proto::jobworkerp::data::QueueType::Normal)
+            | Ok(proto::jobworkerp::data::QueueType::WithBackup)
+    ) {
+        return Err(tonic::Status::invalid_argument(
+            "worker queue type is unsupported for EnqueueForResult",
+        ));
+    }
+
+    let response_type = req
+        .overrides
+        .as_ref()
+        .and_then(|overrides| overrides.response_type)
+        .unwrap_or(data.response_type);
+    if response_type != proto::jobworkerp::data::ResponseType::Direct as i32 {
+        return Err(tonic::Status::invalid_argument(
+            "EnqueueForResult requires a Direct-response worker",
+        ));
+    }
+
+    Ok(())
+}
+
+#[doc(hidden)]
+pub async fn enqueue_for_result_with<C, E, EFut>(
+    req: JobRequest,
+    worker: proto::jobworkerp::data::Worker,
+    check_non_streaming: C,
+    enqueue: E,
+) -> Result<(JobId, ChannelJobResultFuture), tonic::Status>
+where
+    C: Future<Output = anyhow::Result<()>>,
+    E: FnOnce(proto::jobworkerp::data::Worker, JobRequest) -> EFut,
+    EFut: Future<Output = anyhow::Result<(JobId, ChannelJobResultFuture)>>,
+{
+    validate_enqueue_for_result_request(&req)?;
+    validate_enqueue_for_result_worker(&req, &worker)?;
+    check_non_streaming
+        .await
+        .map_err(|error| handle_error(&error))?;
+    enqueue(worker, req).await.map_err(|error| {
+        tracing::warn!("enqueue_for_result failed during enqueue: {:?}", error);
+        handle_error(&error)
+    })
+}
+
+#[doc(hidden)]
+pub fn job_result_stream(
+    result_future: futures::future::BoxFuture<'static, anyhow::Result<Option<JobResult>>>,
+) -> BoxStream<'static, Result<JobResult, tonic::Status>> {
+    job_result_stream_with_abort_handle(result_future, None)
+}
+
+#[doc(hidden)]
+pub fn job_result_stream_from_future(
+    result_future: ChannelJobResultFuture,
+) -> BoxStream<'static, Result<JobResult, tonic::Status>> {
+    let (result_future, _output_stream, abort_handle) =
+        result_future.into_parts_with_result_wait_abort_handle();
+    job_result_stream_with_abort_handle(result_future, abort_handle)
+}
+
+struct AbortResultSubscriptionOnDrop {
+    abort_handle: Option<tokio::task::AbortHandle>,
+}
+
+impl AbortResultSubscriptionOnDrop {
+    fn new(abort_handle: tokio::task::AbortHandle) -> Self {
+        Self {
+            abort_handle: Some(abort_handle),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.abort_handle = None;
+    }
+}
+
+impl Drop for AbortResultSubscriptionOnDrop {
+    fn drop(&mut self) {
+        if let Some(abort_handle) = &self.abort_handle {
+            // Only the result subscription is cancelled; the enqueued job keeps running.
+            abort_handle.abort();
+        }
+    }
+}
+
+fn job_result_stream_with_abort_handle(
+    result_future: futures::future::BoxFuture<'static, anyhow::Result<Option<JobResult>>>,
+    abort_handle: Option<tokio::task::AbortHandle>,
+) -> BoxStream<'static, Result<JobResult, tonic::Status>> {
+    let mut abort_guard = abort_handle.map(AbortResultSubscriptionOnDrop::new);
+    stream! {
+        let result = result_future.await;
+        if let Some(abort_guard) = &mut abort_guard {
+            abort_guard.disarm();
+        }
+        match result {
+            Ok(Some(result)) => yield Ok(result),
+            Ok(None) => yield Err(tonic::Status::internal(
+                "Direct-response job completed without a JobResult",
+            )),
+            Err(error) => yield Err(handle_error(&error)),
+        }
+    }
+    .boxed()
 }
 
 pub trait JobGrpc {
@@ -291,7 +427,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         &self,
         request: tonic::Request<JobRequest>,
     ) -> Result<tonic::Response<CreateJobResponse>, tonic::Status> {
-        let _span = Self::trace_request("job", "create", &request);
+        let _span = Self::trace_request("job", "create", &super::without_metadata(&request));
         let (metadata, _extensions, req) = request.into_parts();
         let metadata = Arc::new(super::process_metadata(metadata)?);
         self.validate_create(&req)?;
@@ -394,6 +530,82 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Err(e) => Err(handle_error(&e)),
         }
     }
+
+    type EnqueueForResultStream = BoxStream<'static, Result<JobResult, tonic::Status>>;
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(method = "enqueue_for_result")
+    )]
+    #[allow(clippy::result_large_err)]
+    async fn enqueue_for_result(
+        &self,
+        request: tonic::Request<JobRequest>,
+    ) -> Result<tonic::Response<Self::EnqueueForResultStream>, tonic::Status> {
+        let _span = Self::trace_request(
+            "job",
+            "enqueue_for_result",
+            &super::without_metadata(&request),
+        );
+        let (metadata, _, req) = request.into_parts();
+        let metadata = Arc::new(super::process_metadata(metadata)?);
+        self.validate_create(&req)?;
+        validate_enqueue_for_result_request(&req)?;
+
+        let (worker_id, worker_name) = match req.worker.as_ref() {
+            Some(Worker::WorkerId(id)) => (Some(id), None),
+            Some(Worker::WorkerName(name)) => (None, Some(name)),
+            None => {
+                return Err(tonic::Status::invalid_argument(
+                    "worker_id or worker_name is required",
+                ));
+            }
+        };
+        let worker = self
+            .app_module()
+            .worker_app
+            .find_by_id_or_name(worker_id, worker_name.map(|name| name as &String))
+            .await
+            .map_err(|error| handle_error(&error))?;
+        let worker_id = worker
+            .id
+            .ok_or_else(|| tonic::Status::internal("worker has no id"))?;
+
+        let worker_app = self.app_module().worker_app.clone();
+        let using = req.using.clone();
+        let check_non_streaming = async move {
+            worker_app
+                .check_worker_streaming(&worker_id, false, Some(false), using.as_deref())
+                .await
+        };
+
+        let app = self.app().clone();
+        let (job_id, result_future) = enqueue_for_result_with(
+            req,
+            worker,
+            check_non_streaming,
+            move |worker, req| async move {
+                app.enqueue_job_with_channel(
+                    metadata,
+                    worker,
+                    req.args,
+                    req.uniq_key,
+                    req.run_after_time.unwrap_or(0),
+                    req.priority.unwrap_or(Priority::Medium as i32),
+                    req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
+                    None,
+                    StreamingType::None,
+                    req.using,
+                    req.overrides,
+                )
+                .await
+            },
+        )
+        .await?;
+        let stream = job_result_stream_from_future(result_future);
+        Ok(response_with_job_id(job_id, stream))
+    }
+
     type EnqueueForStreamStream = BoxStream<'static, Result<ResultOutputItem, tonic::Status>>;
     #[tracing::instrument(
         level = "info",
@@ -405,7 +617,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         &self,
         request: tonic::Request<JobRequest>,
     ) -> Result<tonic::Response<Self::EnqueueForStreamStream>, tonic::Status> {
-        let _span = Self::trace_request("job", "create", &request);
+        let _span = Self::trace_request("job", "create", &super::without_metadata(&request));
         let (metadata, _, req) = request.into_parts();
         let metadata = Arc::new(super::process_metadata(metadata)?);
         self.validate_create(&req)?;
@@ -761,7 +973,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         &self,
         request: tonic::Request<JobId>,
     ) -> Result<tonic::Response<SuccessResponse>, tonic::Status> {
-        let _s = Self::trace_request("job", "delete", &request);
+        let _s = Self::trace_request("job", "delete", &super::without_metadata(&request));
         let req = request.get_ref();
         match self.app().delete_job(req).await {
             Ok(r) => Ok(Response::new(SuccessResponse { is_success: r })),

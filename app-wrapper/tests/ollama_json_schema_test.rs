@@ -9,6 +9,7 @@ use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::chat::ollama::OllamaChatService;
 use app_wrapper::llm::completion::ollama::OllamaService;
 use futures::StreamExt;
+use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, MessageContent};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     ChatRole, LlmOptions as ChatLlmOptions, message_content,
@@ -63,8 +64,9 @@ async fn create_test_completion_service() -> Result<OllamaService> {
 }
 
 #[ignore = "need to run with ollama server"]
-#[tokio::test]
-async fn test_chat_with_json_schema() -> Result<()> {
+#[test]
+fn test_chat_with_json_schema() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
     let service = create_test_chat_service().await?;
 
     let schema = r#"{
@@ -116,6 +118,7 @@ async fn test_chat_with_json_schema() -> Result<()> {
         }
 
     Ok(())
+    })
 }
 
 #[ignore = "need to run with ollama server"]
@@ -177,32 +180,34 @@ async fn test_completion_with_json_schema() -> Result<()> {
 }
 
 #[ignore = "need to run with ollama server"]
-#[tokio::test]
-async fn test_invalid_json_schema_handling() -> Result<()> {
-    let service = create_test_chat_service().await?;
+#[test]
+fn test_invalid_json_schema_handling() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let service = create_test_chat_service().await?;
 
-    let invalid_schema = r#"{ invalid json schema }"#;
+        let invalid_schema = r#"{ invalid json schema }"#;
 
-    let args = LlmChatArgs {
-        json_schema: Some(invalid_schema.to_string()),
-        messages: vec![ChatMessage {
-            role: ChatRole::User.into(),
-            content: Some(MessageContent {
-                content: Some(message_content::Content::Text("Test message".to_string())),
-            }),
-        }],
-        ..Default::default()
-    };
+        let args = LlmChatArgs {
+            json_schema: Some(invalid_schema.to_string()),
+            messages: vec![ChatMessage {
+                role: ChatRole::User.into(),
+                content: Some(MessageContent {
+                    content: Some(message_content::Content::Text("Test message".to_string())),
+                }),
+            }],
+            ..Default::default()
+        };
 
-    let result = timeout(
-        TEST_TIMEOUT,
-        service.request_chat(args, opentelemetry::Context::current(), HashMap::new()),
-    )
-    .await??;
+        let result = timeout(
+            TEST_TIMEOUT,
+            service.request_chat(args, opentelemetry::Context::current(), HashMap::new()),
+        )
+        .await??;
 
-    assert!(result.content.is_some());
-    println!("Invalid JSON schema gracefully handled");
-    Ok(())
+        assert!(result.content.is_some());
+        println!("Invalid JSON schema gracefully handled");
+        Ok(())
+    })
 }
 
 #[ignore = "need to run with ollama server"]
@@ -271,8 +276,9 @@ async fn test_completion_stream_with_json_schema() -> Result<()> {
 }
 
 #[ignore = "need to run with ollama server"]
-#[tokio::test]
-async fn test_workflow_minimal_schema_with_llm_chat() -> Result<()> {
+#[test]
+fn test_workflow_minimal_schema_with_llm_chat() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let service = create_test_chat_service().await?;
 
@@ -356,11 +362,13 @@ async fn test_workflow_minimal_schema_with_llm_chat() -> Result<()> {
         }
 
     Ok(())
+    })
 }
 
 #[ignore = "need to run with ollama server"]
-#[tokio::test]
-async fn test_complex_nested_workflow_with_llm_chat() -> Result<()> {
+#[test]
+fn test_complex_nested_workflow_with_llm_chat() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let service = create_test_chat_service().await?;
 
@@ -445,4 +453,5 @@ async fn test_complex_nested_workflow_with_llm_chat() -> Result<()> {
         }
 
     Ok(())
+    })
 }

@@ -160,6 +160,13 @@ impl UriTemplate {
     }
 }
 
+/// Open Workflow Specification 1.0 standard error type for runtime failures.
+pub const ERROR_TYPE_RUNTIME: &str =
+    "https://open-workflow-specification.org/spec/1.0.0/errors/runtime";
+/// Open Workflow Specification 1.0 standard error type for timeouts.
+pub const ERROR_TYPE_TIMEOUT: &str =
+    "https://open-workflow-specification.org/spec/1.0.0/errors/timeout";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
     BadArgument,
@@ -377,6 +384,24 @@ impl ErrorFactory {
         self.create_error_with_code(ErrorCode::RequestTimeout, message, position, detail)
     }
 
+    /// Task/workflow timeout as mandated by the Open Workflow Specification
+    /// (`errors/timeout`, status 408). Distinct from `request_timeout`, which
+    /// models an HTTP 408 from a remote service.
+    pub fn timeout(
+        &self,
+        message: String,
+        position: Option<String>,
+        detail: Option<String>,
+    ) -> Box<super::Error> {
+        Box::new(super::Error {
+            type_: super::UriTemplate(ERROR_TYPE_TIMEOUT.to_string()),
+            status: 408,
+            title: Some(message),
+            detail,
+            instance: position,
+        })
+    }
+
     pub fn conflict(
         &self,
         message: String,
@@ -523,5 +548,27 @@ impl std::fmt::Display for ErrorCode {
             ErrorCode::UnprocessableEntity => write!(f, "UnprocessableEntity"),
             ErrorCode::Locked => write!(f, "Locked"),
         }
+    }
+}
+
+#[cfg(test)]
+mod spec_error_type_tests {
+    use super::*;
+
+    #[test]
+    fn timeout_error_uses_spec_type_and_408() {
+        let err = ErrorFactory::new().timeout("t".to_string(), Some("/do/0".to_string()), None);
+        assert_eq!(err.type_.0, ERROR_TYPE_TIMEOUT);
+        assert_eq!(err.status, 408);
+        assert_eq!(err.title.as_deref(), Some("t"));
+        assert_eq!(err.instance.as_deref(), Some("/do/0"));
+    }
+
+    #[test]
+    fn spec_timeout_type_matches_only_spec_filter() {
+        let err_type = super::super::UriTemplate(ERROR_TYPE_TIMEOUT.to_string());
+        assert!(err_type.is_match(ERROR_TYPE_TIMEOUT));
+        assert!(!err_type.is_match("http-error://requesttimeout"));
+        assert!(!err_type.is_match("requesttimeout"));
     }
 }

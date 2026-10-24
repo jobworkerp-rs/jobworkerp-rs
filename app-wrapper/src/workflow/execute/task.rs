@@ -1,5 +1,5 @@
 use super::{
-    context::{TaskContext, WorkflowContext, WorkflowStreamEvent},
+    context::{ChildJobScope, TaskContext, WorkflowContext, WorkflowStreamEvent},
     expression::UseExpression,
 };
 use crate::workflow::{
@@ -20,7 +20,7 @@ use call::CallTaskExecutor;
 use command_utils::trace::Tracing;
 use debug_stub_derive::DebugStub;
 use fork::ForkTaskExecutor;
-use futures::{StreamExt, pin_mut};
+use futures::StreamExt;
 use jobworkerp_base::APP_NAME;
 use opentelemetry::trace::TraceContextExt;
 use run::RunTaskExecutor;
@@ -62,52 +62,109 @@ pub(crate) enum ChildJobTracking {
 pub(crate) async fn enqueue_child_job<T, F>(
     workflow_context: &RwLock<WorkflowContext>,
     job_executor_wrapper: &JobExecutorWrapper,
+    child_job_scope: Option<&Arc<ChildJobScope>>,
     enqueue: F,
     tracking: ChildJobTracking,
 ) -> Result<(T, Option<super::context::RunningJobGuard>)>
 where
     F: Future<Output = Result<(super::context::JobId, T)>>,
 {
-    if workflow_context.read().await.is_cancelled() {
-        return Err(anyhow::anyhow!("Workflow was cancelled"));
-    }
-
+    let scope = ensure_child_job_can_start(workflow_context, child_job_scope).await?;
     let (job_id, payload) = enqueue.await?;
+    let guard =
+        register_started_child_job(workflow_context, job_executor_wrapper, &scope, job_id).await?;
     match tracking {
-        ChildJobTracking::Tracked => {
-            let ctx = workflow_context.read().await;
-            if ctx.is_cancelled() {
-                drop(ctx);
-                use app::app::job::UseJobApp;
-
-                job_executor_wrapper.job_app().delete_job(&job_id).await?;
-                return Err(anyhow::anyhow!("Workflow was cancelled"));
-            }
-            let guard = ctx.guard_running_job(job_id);
-            Ok((payload, Some(guard)))
-        }
+        ChildJobTracking::Tracked => Ok((payload, Some(guard))),
+        // Fire-and-forget jobs are deliberately left running and untracked.
         ChildJobTracking::Untracked => {
-            if workflow_context.read().await.is_cancelled() {
-                use app::app::job::UseJobApp;
-
-                job_executor_wrapper.job_app().delete_job(&job_id).await?;
-                return Err(anyhow::anyhow!("Workflow was cancelled"));
-            }
+            guard.mark_completed();
             Ok((payload, None))
         }
     }
 }
 
+/// Pre-enqueue half of the cancellation gate: refuse to start a child job
+/// once the workflow or the task scope has been cancelled. Returns the scope
+/// the child job must be registered in.
+pub(crate) async fn ensure_child_job_can_start(
+    workflow_context: &RwLock<WorkflowContext>,
+    child_job_scope: Option<&Arc<ChildJobScope>>,
+) -> Result<Arc<ChildJobScope>> {
+    let ctx = workflow_context.read().await;
+    let scope = ctx.scope_or_root(child_job_scope);
+    if ctx.is_cancelled() || scope.is_closed() {
+        return Err(anyhow::anyhow!(CHILD_JOB_CANCELLED));
+    }
+    Ok(scope)
+}
+
+/// Post-enqueue half of the cancellation gate. Must run right after the
+/// enqueue returns the job id: the job is registered before any further await
+/// so a racing cancellation can find it, and a cancellation that already
+/// happened (and so could not see the job) is applied here.
+pub(crate) async fn register_started_child_job(
+    workflow_context: &RwLock<WorkflowContext>,
+    job_executor_wrapper: &JobExecutorWrapper,
+    scope: &Arc<ChildJobScope>,
+    job_id: super::context::JobId,
+) -> Result<super::context::RunningJobGuard> {
+    use app::app::job::UseJobApp;
+
+    let guard = scope.guard(job_id);
+    if workflow_context.read().await.is_cancelled() || scope.is_closed() {
+        guard.mark_completed();
+        job_executor_wrapper.job_app().delete_job(&job_id).await?;
+        return Err(anyhow::anyhow!(CHILD_JOB_CANCELLED));
+    }
+    Ok(guard)
+}
+
+const CHILD_JOB_CANCELLED: &str = "Child job was cancelled by its workflow or enclosing task";
+
+/// Upper bound on concurrent `delete_job` calls when cancelling a scope, so a
+/// wide parallel `for` cannot flood the job queue backend.
+const CHILD_JOB_CANCEL_CONCURRENCY: usize = 16;
+
+/// Cancel every child job registered in `scope` (and below it) and close the
+/// scope against new child jobs. Jobs whose cancellation fails stay registered
+/// so an enclosing scope or an explicit workflow cancel can retry them.
+pub(crate) async fn cancel_child_jobs(
+    job_executor_wrapper: &JobExecutorWrapper,
+    scope: &ChildJobScope,
+    reason: &str,
+) {
+    use app::app::job::UseJobApp;
+
+    let job_ids = scope.close();
+    if job_ids.is_empty() {
+        return;
+    }
+    tracing::info!(
+        "Cancelling {} in-flight child job(s): {reason}",
+        job_ids.len()
+    );
+    futures::stream::iter(job_ids)
+        .for_each_concurrent(CHILD_JOB_CANCEL_CONCURRENCY, |job_id| async move {
+            match job_executor_wrapper.job_app().delete_job(&job_id).await {
+                Ok(_) => scope.unregister(job_id),
+                Err(e) => tracing::warn!("Failed to cancel child job {}: {:?}", job_id.value, e),
+            }
+        })
+        .await;
+}
+
 pub(crate) fn resolve_timeout_duration(
     timeout: Option<&workflow::TaskTimeout>,
     named_timeouts: &NamedTimeouts,
-    default_task_timeout: Duration,
-) -> Result<Duration, Box<workflow::Error>> {
+    default_task_timeout: Option<Duration>,
+) -> Result<Option<Duration>, Box<workflow::Error>> {
     match timeout {
-        Some(workflow::TaskTimeout::Timeout(t)) => Ok(Duration::from_millis(t.after.to_millis())),
+        Some(workflow::TaskTimeout::Timeout(t)) => {
+            Ok(Some(Duration::from_millis(t.after.to_millis())))
+        }
         Some(workflow::TaskTimeout::TaskTimeoutReference(name)) => named_timeouts
             .get(name)
-            .map(|t| Duration::from_millis(t.after.to_millis()))
+            .map(|t| Some(Duration::from_millis(t.after.to_millis())))
             .ok_or_else(|| {
                 workflow::errors::ErrorFactory::new().bad_argument(
                     format!("Unresolved timeout reference: {name}"),
@@ -119,10 +176,27 @@ pub(crate) fn resolve_timeout_duration(
     }
 }
 
+/// Only run/call tasks fall back to the opt-in default timeout. Every other
+/// task finishes when its children do, so an implicit deadline on it would just
+/// force authors to keep nested timeouts ordered by hand.
+pub(crate) fn default_timeout_for(task: &Task, default: Option<Duration>) -> Option<Duration> {
+    match task {
+        Task::RunTask(_) | Task::CallTask(_) => default,
+        Task::DoTask(_)
+        | Task::ForTask(_)
+        | Task::ForkTask(_)
+        | Task::RaiseTask(_)
+        | Task::SetTask(_)
+        | Task::SwitchTask(_)
+        | Task::TryTask(_)
+        | Task::WaitTask(_) => None,
+    }
+}
+
 #[derive(DebugStub, Clone)]
 pub struct TaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
-    default_task_timeout: Duration,
+    default_task_timeout: Option<Duration>,
     named_timeouts: Arc<NamedTimeouts>,
     #[debug_stub = "AppModule"]
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -144,7 +218,7 @@ impl TaskExecutor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        default_task_timeout: Duration,
+        default_task_timeout: Option<Duration>,
         named_timeouts: Arc<NamedTimeouts>,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         checkpoint_repository: Option<Arc<dyn CheckPointRepositoryWithId>>,
@@ -168,13 +242,13 @@ impl TaskExecutor {
     }
 
     /// Resolve the timeout duration for the current task: an inline timeout, a
-    /// named timeout reference from `use.timeouts`, or the default when none is
-    /// set. Errors if a referenced timeout name is undefined.
-    fn resolve_timeout(&self) -> Result<Duration, Box<workflow::Error>> {
+    /// named timeout reference from `use.timeouts`, or the default chosen by
+    /// [`default_timeout_for`]. Errors if a referenced timeout name is undefined.
+    fn resolve_timeout(&self) -> Result<Option<Duration>, Box<workflow::Error>> {
         resolve_timeout_duration(
             self.task.timeout(),
             &self.named_timeouts,
-            self.default_task_timeout,
+            default_timeout_for(&self.task, self.default_task_timeout),
         )
     }
 
@@ -396,6 +470,16 @@ impl TaskExecutor {
             // normal execution, no checkpoint recovery
             task_context
         };
+        // Contexts handed back upward must carry the parent's scope: siblings
+        // use them as their parent, and nesting their scopes would chain them.
+        let parent_scope = parent_task.child_job_scope.clone();
+        task_context.child_job_scope = parent_scope.clone();
+        let task_scope = self
+            .workflow_context
+            .read()
+            .await
+            .scope_or_root(parent_scope.as_ref())
+            .child();
 
         let expression = Self::expression(
             &*self.workflow_context.read().await,
@@ -511,7 +595,7 @@ impl TaskExecutor {
                 return Box::pin(futures::stream::once(async move { Err(e) }));
             }
         };
-        let deadline = tokio::time::Instant::now() + timeout_duration;
+        let deadline = timeout_duration.map(|d| (tokio::time::Instant::now() + d, d));
         let task_name_for_timeout = self.task_name.clone();
 
         // Determine task type name for TaskStarted event
@@ -530,6 +614,10 @@ impl TaskExecutor {
         let task_started_event =
             WorkflowStreamEvent::task_started(task_type_name, &self.task_name, &task_position_ptr);
 
+        let mut task_context = task_context;
+        task_context.child_job_scope = Some(task_scope.clone());
+        let job_executor_wrapper = self.job_executor_wrapper.clone();
+
         let res = self
             .execute_task(cx, task_context, execution_id.clone())
             .await;
@@ -546,7 +634,7 @@ impl TaskExecutor {
             // Emit TaskStarted at the beginning of task execution
             yield Ok(task_started_event);
 
-            pin_mut!(res);
+            let mut res = res;
             // Hold the most recent completed event's context so we can pop its
             // position once the stream ends. Only Ok(completed) events carry a
             // context; errors deliberately leave the position in place so the
@@ -554,18 +642,23 @@ impl TaskExecutor {
             let mut last_completed_ctx: Option<TaskContext> = None;
             let mut saw_any = false;
             let mut ended_with_error = false;
-            let mut timed_out = false;
+            let mut timed_out_after: Option<Duration> = None;
 
             loop {
-                match tokio::time::timeout_at(deadline, res.next()).await {
-                    Ok(Some(item)) => {
+                let next = match deadline {
+                    Some((at, _)) => tokio::time::timeout_at(at, res.next()).await,
+                    None => Ok(res.next().await),
+                };
+                match next {
+                    Ok(Some(mut item)) => {
                         saw_any = true;
                         // Track whether the latest item is an error so the
                         // post-loop pop matches the old "only pop when the final
                         // item is a successful completed event" semantics.
                         ended_with_error = item.is_err();
-                        if let Ok(event) = &item
-                            && let Some(tc) = event.context() {
+                        if let Ok(event) = &mut item
+                            && let Some(tc) = event.context_mut() {
+                                tc.child_job_scope = parent_scope.clone();
                                 last_completed_ctx = Some(tc.clone());
                             }
                         // Forward immediately for real-time delivery.
@@ -576,13 +669,18 @@ impl TaskExecutor {
                         break;
                     }
                     Err(_elapsed) => {
-                        // Timeout occurred
-                        timed_out = true;
+                        timed_out_after = deadline.map(|(_, after)| after);
                         tracing::warn!(
                             "Task '{}' timed out after {:?}",
                             task_name_for_timeout,
-                            timeout_duration
+                            timed_out_after
                         );
+                        // The spec requires a timed-out task to be interrupted,
+                        // so stop it and cancel the child jobs it started. Wait
+                        // for the cancellation before raising the error so a
+                        // catch handler does not queue behind the orphans.
+                        drop(res);
+                        cancel_child_jobs(&job_executor_wrapper, &task_scope, "task timeout").await;
                         break;
                     }
                 }
@@ -593,18 +691,18 @@ impl TaskExecutor {
             // timeout, or when the stream ended with an error, we leave the
             // position in place so the faulting position is reported correctly
             // upstream (matching the pre-streaming behavior).
-            if !timed_out
+            if timed_out_after.is_none()
                 && !ended_with_error
                 && let Some(tc) = last_completed_ctx.take() {
                     tc.remove_position().await; // remove task name from position stack
                 }
 
-            if timed_out {
-                yield Err(workflow::errors::ErrorFactory::new().request_timeout(
+            if let Some(after) = timed_out_after {
+                yield Err(workflow::errors::ErrorFactory::new().timeout(
                     format!(
                         "Task '{}' timed out after {:?}",
                         task_name_for_timeout,
-                        timeout_duration
+                        after
                     ),
                     Some(err_pos.clone()),
                     None,
@@ -1382,8 +1480,7 @@ impl RaiseTaskExecutor {
                 match value {
                     serde_json::Value::String(detail) => Ok(workflow::Error {
                         type_: workflow::UriTemplate(
-                            "https://open-workflow-specification.org/spec/1.0.0/errors/runtime"
-                                .to_string(),
+                            workflow::errors::ERROR_TYPE_RUNTIME.to_string(),
                         ),
                         status: 500,
                         title: Some("Workflow runtime error".to_string()),
@@ -1569,10 +1666,7 @@ mod tests {
             .await
             .expect_err("raise task must fail");
             assert_eq!(literal_error.status, 500);
-            assert_eq!(
-                literal_error.type_.0,
-                "https://open-workflow-specification.org/spec/1.0.0/errors/runtime"
-            );
+            assert_eq!(literal_error.type_.0, workflow::errors::ERROR_TYPE_RUNTIME);
             assert_eq!(
                 literal_error.detail.as_deref(),
                 Some("upstream unavailable")
@@ -1777,6 +1871,7 @@ mod tests {
             let result = super::enqueue_child_job(
                 &workflow_context,
                 &job_executor_wrapper,
+                None,
                 {
                     let polled = polled.clone();
                     async move {
@@ -1797,9 +1892,42 @@ mod tests {
                 workflow_context
                     .read()
                     .await
-                    .snapshot_running_jobs()
-                    .await
+                    .child_job_scope
+                    .snapshot()
                     .is_empty()
+            );
+        });
+    }
+
+    #[test]
+    fn test_enqueue_child_job_skips_enqueue_when_scope_closed() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_rdb_chan_test_app(false, false).await.unwrap());
+            let job_executor_wrapper = JobExecutorWrapper::new(app_module);
+            let workflow_context = RwLock::new(WorkflowContext::new_empty());
+            let task_scope = workflow_context.read().await.child_job_scope.child();
+            task_scope.close();
+            let polled = Arc::new(AtomicBool::new(false));
+
+            let result = super::enqueue_child_job(
+                &workflow_context,
+                &job_executor_wrapper,
+                Some(&task_scope),
+                {
+                    let polled = polled.clone();
+                    async move {
+                        polled.store(true, Ordering::SeqCst);
+                        Ok((JobId { value: 998 }, ()))
+                    }
+                },
+                super::ChildJobTracking::Tracked,
+            )
+            .await;
+
+            assert!(result.is_err());
+            assert!(
+                !polled.load(Ordering::SeqCst),
+                "a cancelled task scope must not start new child jobs"
             );
         });
     }
@@ -1815,6 +1943,7 @@ mod tests {
             let result = super::enqueue_child_job(
                 &workflow_context,
                 &job_executor_wrapper,
+                None,
                 {
                     let polled = polled.clone();
                     let workflow_context = &workflow_context;
@@ -1837,8 +1966,8 @@ mod tests {
                 workflow_context
                     .read()
                     .await
-                    .snapshot_running_jobs()
-                    .await
+                    .child_job_scope
+                    .snapshot()
                     .is_empty(),
                 "fire-and-forget jobs are not registered for result tracking"
             );
@@ -1991,7 +2120,7 @@ mod tests {
             // Create TaskExecutor
             let task_executor = TaskExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(60),
+                Some(Duration::from_secs(60)),
                 Arc::new(NamedTimeouts::new()),
                 job_executor_wrapper,
                 None, // checkpoint_repository
@@ -2063,7 +2192,7 @@ mod tests {
             // Create TaskExecutor
             let task_executor = TaskExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(60),
+                Some(Duration::from_secs(60)),
                 Arc::new(NamedTimeouts::new()),
                 job_executor_wrapper,
                 None,
@@ -2295,7 +2424,7 @@ mod tests {
 
             let task_executor = TaskExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(60), // default timeout (should be overridden)
+                Some(Duration::from_secs(60)), // default timeout (should be overridden)
                 Arc::new(NamedTimeouts::new()),
                 job_executor_wrapper,
                 None,
@@ -2306,60 +2435,7 @@ mod tests {
             );
 
             let resolved = task_executor.resolve_timeout();
-            assert_eq!(resolved.unwrap(), Duration::from_millis(500));
-        });
-    }
-
-    /// Test resolve_timeout() returns default timeout when no task timeout is set
-    #[test]
-    fn test_resolve_timeout_uses_default() {
-        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-            let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module.clone()));
-
-            let workflow = create_workflow_with_set_task();
-            let input = Arc::new(serde_json::json!({}));
-            let context = Arc::new(serde_json::json!({}));
-
-            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
-                &workflow,
-                input.clone(),
-                context.clone(),
-                None,
-            )));
-
-            // Task without timeout (uses default)
-            let task_without_timeout = Task::SetTask(SetTask {
-                set: {
-                    let mut m = serde_json::Map::new();
-                    m.insert("key".to_string(), serde_json::json!("value"));
-                    m
-                },
-                export: None,
-                if_: None,
-                input: None,
-                metadata: serde_json::Map::new(),
-                output: None,
-                then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
-                timeout: None,
-                checkpoint: false,
-            });
-
-            let default_timeout = Duration::from_secs(120);
-            let task_executor = TaskExecutor::new(
-                workflow_context.clone(),
-                default_timeout,
-                Arc::new(NamedTimeouts::new()),
-                job_executor_wrapper,
-                None,
-                "set_no_timeout",
-                Arc::new(task_without_timeout),
-                Arc::new(HashMap::new()),
-                false, // emit_streaming_data (tests don't need streaming events)
-            );
-
-            let resolved = task_executor.resolve_timeout();
-            assert_eq!(resolved.unwrap(), default_timeout);
+            assert_eq!(resolved.unwrap(), Some(Duration::from_millis(500)));
         });
     }
 
@@ -2427,7 +2503,7 @@ mod tests {
 
             let task_executor = TaskExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(60),
+                Some(Duration::from_secs(60)),
                 Arc::new(NamedTimeouts::new()),
                 job_executor_wrapper,
                 None,
@@ -2482,11 +2558,11 @@ mod tests {
                 assert!(
                     timeout_error
                         .unwrap()
-                        .detail
+                        .title
                         .as_ref()
                         .map(|d| d.contains("timed out"))
                         .unwrap_or(false),
-                    "Error detail should mention timeout"
+                    "Error title should mention timeout"
                 );
             }
         });
@@ -2512,11 +2588,11 @@ mod tests {
                 "some-named-timeout".to_string(),
             )),
             &named_timeouts,
-            Duration::from_secs(90),
+            Some(Duration::from_secs(90)),
         )
         .expect("named timeout must resolve");
 
-        assert_eq!(resolved, Duration::from_millis(750));
+        assert_eq!(resolved, Some(Duration::from_millis(750)));
     }
 
     /// Test resolve_timeout() with unresolved TaskTimeoutReference returns error
@@ -2529,11 +2605,216 @@ mod tests {
                 "missing-timeout".to_string(),
             )),
             &super::NamedTimeouts::new(),
-            Duration::from_secs(90),
+            Some(Duration::from_secs(90)),
         )
         .expect_err("unresolved timeout reference must fail");
 
         assert_eq!(err.status, 400);
         assert!(format!("{err:?}").contains("missing-timeout"));
+    }
+}
+
+#[cfg(test)]
+mod executor_behavior_tests {
+    use super::*;
+    use app::module::test::create_rdb_chan_test_app;
+    use futures::StreamExt;
+
+    fn task_from_json(value: serde_json::Value) -> Task {
+        serde_json::from_value(value).expect("valid task json")
+    }
+
+    async fn executor_for(task: Task, default_task_timeout: Option<Duration>) -> TaskExecutor {
+        let app_module = Arc::new(create_rdb_chan_test_app(false, false).await.unwrap());
+        let mut workflow_context = WorkflowContext::new_empty();
+        // Container executors stop early unless the workflow is running.
+        workflow_context.status = crate::workflow::execute::context::WorkflowStatus::Running;
+        TaskExecutor::new(
+            Arc::new(RwLock::new(workflow_context)),
+            default_task_timeout,
+            Arc::new(NamedTimeouts::new()),
+            Arc::new(JobExecutorWrapper::new(app_module)),
+            None,
+            "timeout_policy",
+            Arc::new(task),
+            Arc::new(HashMap::new()),
+            false,
+        )
+    }
+
+    async fn run_to_end(
+        executor: &TaskExecutor,
+    ) -> Vec<Result<WorkflowStreamEvent, Box<workflow::Error>>> {
+        run_with_parent(executor, TaskContext::new_empty()).await
+    }
+
+    async fn run_with_parent(
+        executor: &TaskExecutor,
+        parent: TaskContext,
+    ) -> Vec<Result<WorkflowStreamEvent, Box<workflow::Error>>> {
+        let stream = executor
+            .execute(
+                Arc::new(opentelemetry::Context::current()),
+                Arc::new(parent),
+                None,
+            )
+            .await;
+        stream.collect().await
+    }
+
+    fn run_task() -> Task {
+        task_from_json(serde_json::json!({
+            "run": { "runner": { "name": "COMMAND", "arguments": { "command": "true" } } }
+        }))
+    }
+
+    fn call_task() -> Task {
+        task_from_json(serde_json::json!({
+            "call": "http",
+            "with": { "method": "get", "endpoint": "http://localhost:1/" }
+        }))
+    }
+
+    fn set_task() -> Task {
+        task_from_json(serde_json::json!({ "set": { "key": "value" } }))
+    }
+
+    fn do_wait_task(wait_ms: u64, timeout_ms: Option<u64>) -> Task {
+        let mut value = serde_json::json!({
+            "do": [ { "slow": { "wait": { "milliseconds": wait_ms } } } ]
+        });
+        if let Some(ms) = timeout_ms {
+            value["timeout"] = serde_json::json!({ "after": { "milliseconds": ms } });
+        }
+        task_from_json(value)
+    }
+
+    fn try_slow_task_catching(error_type: &str) -> Task {
+        task_from_json(serde_json::json!({
+            "try": [ { "slow": {
+                "wait": { "milliseconds": 2000 },
+                "timeout": { "after": { "milliseconds": 50 } }
+            } } ],
+            "catch": {
+                "errors": { "with": { "type": error_type } },
+                "do": [ { "fallback": { "set": { "timedOut": true } } } ]
+            }
+        }))
+    }
+
+    #[test]
+    fn try_catches_task_timeout_by_spec_error_type() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let task = try_slow_task_catching(workflow::errors::ERROR_TYPE_TIMEOUT);
+            let events = run_to_end(&executor_for(task, None).await).await;
+            assert!(
+                events.iter().all(|e| e.is_ok()),
+                "timeout must be caught: {events:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn try_does_not_catch_task_timeout_by_legacy_http_error_type() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let task = try_slow_task_catching("http-error://requesttimeout");
+            let events = run_to_end(&executor_for(task, None).await).await;
+            let err = events
+                .iter()
+                .find_map(|e| e.as_ref().err())
+                .expect("timeout must propagate");
+            assert_eq!(err.type_.0, workflow::errors::ERROR_TYPE_TIMEOUT);
+        });
+    }
+
+    #[test]
+    fn only_run_and_call_tasks_receive_default_timeout() {
+        let default = Some(Duration::from_secs(120));
+        assert_eq!(default_timeout_for(&run_task(), default), default);
+        assert_eq!(default_timeout_for(&call_task(), default), default);
+        assert_eq!(default_timeout_for(&set_task(), default), None);
+        assert_eq!(default_timeout_for(&do_wait_task(1, None), default), None);
+        assert_eq!(default_timeout_for(&run_task(), None), None);
+    }
+
+    #[test]
+    fn explicit_timeout_applies_to_container_task() {
+        let task = do_wait_task(1, Some(500));
+        let resolved = resolve_timeout_duration(
+            task.timeout(),
+            &NamedTimeouts::new(),
+            default_timeout_for(&task, None),
+        )
+        .unwrap();
+        assert_eq!(resolved, Some(Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn do_task_without_timeout_outlives_configured_default() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let executor =
+                executor_for(do_wait_task(300, None), Some(Duration::from_millis(50))).await;
+            let events = run_to_end(&executor).await;
+            assert!(
+                events.iter().all(|e| e.is_ok()),
+                "no timeout expected: {events:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn explicit_container_timeout_raises_spec_timeout_error() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let executor = executor_for(do_wait_task(2_000, Some(50)), None).await;
+            let started = std::time::Instant::now();
+            let events = run_to_end(&executor).await;
+            assert!(started.elapsed() < Duration::from_secs(1));
+            let errors: Vec<_> = events.iter().filter_map(|e| e.as_ref().err()).collect();
+            assert_eq!(errors.len(), 1, "exactly one timeout error: {events:?}");
+            assert_eq!(errors[0].status, 408);
+            assert_eq!(errors[0].type_.0, workflow::errors::ERROR_TYPE_TIMEOUT);
+        });
+    }
+
+    fn do_set_tasks() -> Task {
+        task_from_json(serde_json::json!({
+            "do": [
+                { "first": { "set": { "a": 1 } } },
+                { "second": { "set": { "b": 2 } } }
+            ]
+        }))
+    }
+
+    #[test]
+    fn yielded_contexts_carry_the_parent_scope() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let parent_scope = ChildJobScope::new_root();
+            let parent = TaskContext {
+                child_job_scope: Some(parent_scope.clone()),
+                ..TaskContext::new_empty()
+            };
+            let events = run_with_parent(&executor_for(do_set_tasks(), None).await, parent).await;
+            let contexts: Vec<_> = events
+                .iter()
+                .filter_map(|e| e.as_ref().ok().and_then(|e| e.context()))
+                .collect();
+            assert!(!contexts.is_empty(), "{events:?}");
+            for context in contexts {
+                let scope = context.child_job_scope.as_ref().expect("scope restored");
+                assert!(Arc::ptr_eq(scope, &parent_scope));
+            }
+        });
+    }
+
+    #[test]
+    fn yielded_contexts_keep_root_scope_as_none() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let events = run_to_end(&executor_for(do_set_tasks(), None).await).await;
+            for event in events.iter().filter_map(|e| e.as_ref().ok()) {
+                if let Some(context) = event.context() {
+                    assert!(context.child_job_scope.is_none());
+                }
+            }
+        });
     }
 }

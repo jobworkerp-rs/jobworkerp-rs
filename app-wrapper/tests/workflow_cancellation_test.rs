@@ -20,6 +20,7 @@ use anyhow::Result;
 use app::module::test::create_rdb_chan_test_app;
 use app_wrapper::modules::AppWrapperModule;
 use app_wrapper::workflow::runner::unified::WorkflowUnifiedRunnerImpl;
+use futures::StreamExt;
 use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::workflow_runner_settings::WorkflowSource as SettingsWorkflowSource;
 use jobworkerp_runner::jobworkerp::runner::{WorkflowRunArgs, WorkflowRunnerSettings};
@@ -170,14 +171,7 @@ fn test_workflow_run_pre_cancelled_returns_immediately() -> Result<()> {
             .load(workflow_settings(&sleep_workflow_json()))
             .await?;
 
-        let args = WorkflowRunArgs {
-            workflow_source: None,
-            input: "{}".to_string(),
-            ..Default::default()
-        };
-        let (result, _meta) = runner
-            .run(&args.encode_to_vec(), HashMap::new(), None)
-            .await;
+        let (result, _meta) = runner.run(&run_args(), HashMap::new(), None).await;
 
         let err = result.expect_err("pre-cancelled run must return an error");
         assert!(
@@ -209,12 +203,7 @@ fn test_workflow_run_cancel_propagates_to_child() -> Result<()> {
             .load(workflow_settings(&sleep_workflow_json()))
             .await?;
 
-        let args = WorkflowRunArgs {
-            workflow_source: None,
-            input: "{}".to_string(),
-            ..Default::default()
-        };
-        let args_bytes = args.encode_to_vec();
+        let args_bytes = run_args();
 
         // Fire cancellation shortly after the child job is enqueued.
         let canceller = token.clone();
@@ -259,12 +248,7 @@ fn test_workflow_run_cancel_propagates_to_worker_name_child() -> Result<()> {
             )))
             .await?;
 
-        let args = WorkflowRunArgs {
-            workflow_source: None,
-            input: "{}".to_string(),
-            ..Default::default()
-        };
-        let args_bytes = args.encode_to_vec();
+        let args_bytes = run_args();
 
         let canceller = token.clone();
         tokio::spawn(async move {
@@ -281,6 +265,134 @@ fn test_workflow_run_cancel_propagates_to_worker_name_child() -> Result<()> {
             "workerName cancellation should unwind well before the 30s sleep; took {:?}",
             elapsed
         );
+        Ok(())
+    })
+}
+
+/// Child jobs that are still Pending or Running. No worker runs in-process, so
+/// an enqueued child stays Pending until it is cancelled.
+async fn active_child_jobs(app_module: &app::module::AppModule) -> usize {
+    use infra::infra::job::status::JobProcessingStatusRepository;
+    use proto::jobworkerp::data::JobProcessingStatus;
+    app_module
+        .repositories
+        .rdb_module
+        .as_ref()
+        .unwrap()
+        .memory_job_processing_status_repository
+        .find_status_all()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|(_, status)| {
+            matches!(
+                status,
+                JobProcessingStatus::Pending | JobProcessingStatus::Running
+            )
+        })
+        .count()
+}
+
+async fn wait_until_no_active_child(app_module: &app::module::AppModule) -> usize {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let active = active_child_jobs(app_module).await;
+        if active == 0 || tokio::time::Instant::now() >= deadline {
+            return active;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+fn run_args() -> Vec<u8> {
+    WorkflowRunArgs {
+        workflow_source: None,
+        input: "{}".to_string(),
+        ..Default::default()
+    }
+    .encode_to_vec()
+}
+
+/// Mirrors the worker's job timeout: the run future is dropped first and only
+/// then is `request_cancellation()` called on the same runner instance.
+#[test]
+fn test_job_timeout_drop_then_request_cancellation_cancels_child() -> Result<()> {
+    use jobworkerp_runner::runner::cancellation::CancelMonitoring;
+    TEST_RUNTIME.block_on(async {
+        let (app, mut runner) = runner_with_app_and_token(CancellationToken::new()).await?;
+        runner
+            .load(workflow_settings(&sleep_workflow_json()))
+            .await?;
+
+        let args = run_args();
+        let run = runner.run(&args, HashMap::new(), None);
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), run).await;
+        assert_eq!(active_child_jobs(&app).await, 1);
+
+        runner.request_cancellation().await?;
+        assert_eq!(wait_until_no_active_child(&app).await, 0);
+        Ok(())
+    })
+}
+
+/// A run that finished normally must not be cancelled by a later
+/// `request_cancellation()` (the pool calls it when recycling a runner).
+#[test]
+fn test_request_cancellation_after_completed_run_is_noop() -> Result<()> {
+    use jobworkerp_runner::runner::cancellation::CancelMonitoring;
+    TEST_RUNTIME.block_on(async {
+        let (_app, mut runner) = runner_with_app_and_token(CancellationToken::new()).await?;
+        let set_only = r#"{
+            "document": { "dsl": "0.0.1", "namespace": "test", "name": "set-only", "version": "1.0.0" },
+            "do": [ { "s": { "set": { "a": 1 } } } ]
+        }"#;
+        runner.load(workflow_settings(set_only)).await?;
+        let (result, _) = runner.run(&run_args(), HashMap::new(), None).await;
+        result?;
+
+        assert!(!runner.has_active_run(), "completed run must be released");
+        runner.request_cancellation().await?;
+        Ok(())
+    })
+}
+
+/// The worker's stream idle timeout cancels the job token and then drops the
+/// stream without polling it again; the children must still be cancelled.
+#[test]
+fn test_run_stream_dropped_after_token_cancel_cancels_child() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let token = CancellationToken::new();
+        let (app, mut runner) = runner_with_app_and_token(token.clone()).await?;
+        runner
+            .load(workflow_settings(&sleep_workflow_json()))
+            .await?;
+
+        let mut stream = runner.run_stream(&run_args(), HashMap::new(), None).await?;
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await;
+        assert_eq!(active_child_jobs(&app).await, 1);
+
+        token.cancel();
+        drop(stream);
+        assert_eq!(wait_until_no_active_child(&app).await, 0);
+        Ok(())
+    })
+}
+
+/// Dropping the stream without a cancelled token (e.g. the consumer went
+/// away) is not a cancellation decision.
+#[test]
+fn test_run_stream_plain_drop_keeps_child() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let (app, mut runner) = runner_with_app_and_token(CancellationToken::new()).await?;
+        runner
+            .load(workflow_settings(&sleep_workflow_json()))
+            .await?;
+
+        let mut stream = runner.run_stream(&run_args(), HashMap::new(), None).await?;
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await;
+        drop(stream);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(active_child_jobs(&app).await, 1);
         Ok(())
     })
 }

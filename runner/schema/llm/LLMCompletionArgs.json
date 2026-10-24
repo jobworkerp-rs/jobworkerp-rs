@@ -94,7 +94,15 @@
                 },
                 "extract_reasoning_content": {
                     "type": "boolean",
-                    "description": "extract reasoning content from the response"
+                    "description": "Extract reasoning content from the response. When reasoning_effort is unset, false also requests no thinking (same as reasoning_effort=none)."
+                },
+                "reasoning_effort": {
+                    "type": "string",
+                    "description": "Reasoning (thinking) intensity: none, minimal, low, medium, high, xhigh, max, or a token budget number (e.g. \"2048\"). Takes precedence over extract_reasoning_content."
+                },
+                "chat_template_kwargs": {
+                    "type": "string",
+                    "description": "JSON object string sent as chat_template_kwargs to OpenAI-compatible local servers, e.g. '{\"enable_thinking\": false}'. Ignored by the Ollama runner."
                 }
             },
             "additionalProperties": true,

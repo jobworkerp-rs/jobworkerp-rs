@@ -63,14 +63,40 @@ pub type StreamCompletionReceiver = Option<tokio::sync::oneshot::Receiver<()>>;
 pub struct ChannelJobResultFuture {
     result: BoxFuture<'static, Result<Option<JobResult>>>,
     stream: Option<BoxStream<'static, ResultOutputItem>>,
+    result_wait_abort_handle: Option<tokio::task::AbortHandle>,
 }
+
+type ResultWaitParts = (
+    BoxFuture<'static, Result<Option<JobResult>>>,
+    Option<BoxStream<'static, ResultOutputItem>>,
+    Option<tokio::task::AbortHandle>,
+);
 
 impl ChannelJobResultFuture {
     pub fn new(
         result: BoxFuture<'static, Result<Option<JobResult>>>,
         stream: Option<BoxStream<'static, ResultOutputItem>>,
     ) -> Self {
-        Self { result, stream }
+        Self {
+            result,
+            stream,
+            result_wait_abort_handle: None,
+        }
+    }
+
+    /// Build a deferred result with access to the spawned result subscription.
+    /// Transports can opt into cancelling that subscription on disconnect
+    /// without affecting callers that use `into_parts` or await this future.
+    pub fn new_with_result_wait_abort_handle(
+        result: BoxFuture<'static, Result<Option<JobResult>>>,
+        stream: Option<BoxStream<'static, ResultOutputItem>>,
+        result_wait_abort_handle: tokio::task::AbortHandle,
+    ) -> Self {
+        Self {
+            result,
+            stream,
+            result_wait_abort_handle: Some(result_wait_abort_handle),
+        }
     }
 
     /// Split the already-subscribed output stream from the final-result wait.
@@ -81,7 +107,14 @@ impl ChannelJobResultFuture {
         BoxFuture<'static, Result<Option<JobResult>>>,
         Option<BoxStream<'static, ResultOutputItem>>,
     ) {
-        (self.result, self.stream)
+        let (result, stream, _) = self.into_parts_with_result_wait_abort_handle();
+        (result, stream)
+    }
+
+    /// Split the future and transfer the scoped cancellation capability.
+    /// Dropping the returned abort handle does not cancel its task.
+    pub fn into_parts_with_result_wait_abort_handle(self) -> ResultWaitParts {
+        (self.result, self.stream, self.result_wait_abort_handle)
     }
 }
 

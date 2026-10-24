@@ -57,6 +57,11 @@ pub struct WorkflowUnifiedRunnerImpl {
     create_runner: CreateWorkflowRunnerImpl,
     spec: WorkflowUnifiedRunnerSpecImpl,
     cancel_helper: Option<CancelMonitoringHelper>,
+    /// Executor of the non-streaming run in progress. Kept outside the run
+    /// future because the worker drops that future on job timeout before
+    /// calling `request_cancellation()`, which must still reach its children.
+    /// (Streaming runs cover the opposite order with `CancelChildrenIfAbandoned`.)
+    active_run: std::sync::Mutex<Option<Arc<WorkflowExecutor>>>,
 }
 
 /// Merge settings and args workflow contexts. Settings keys take precedence on conflict.
@@ -102,6 +107,7 @@ impl WorkflowUnifiedRunnerImpl {
             create_runner: CreateWorkflowRunnerImpl::new(app_module)?,
             spec: WorkflowUnifiedRunnerSpecImpl::new(),
             cancel_helper: None,
+            active_run: Default::default(),
         })
     }
 
@@ -121,7 +127,18 @@ impl WorkflowUnifiedRunnerImpl {
             ),
             spec: WorkflowUnifiedRunnerSpecImpl::new(),
             cancel_helper: Some(cancel_helper),
+            active_run: Default::default(),
         })
+    }
+
+    fn lock_active_run(&self) -> std::sync::MutexGuard<'_, Option<Arc<WorkflowExecutor>>> {
+        self.active_run.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Whether a non-streaming run is in progress or was abandoned mid-run.
+    #[doc(hidden)]
+    pub fn has_active_run(&self) -> bool {
+        self.lock_active_run().is_some()
     }
 
     /// Convert SettingsWorkflowSource to ArgsWorkflowSource for unified handling
@@ -295,6 +312,19 @@ impl WorkflowUnifiedRunnerImpl {
             .await?,
         );
 
+        *self.lock_active_run() = Some(executor.clone());
+        let result = self.drive_run(executor, cx).await;
+        // Only reached when the run was not dropped mid-way; an abandoned run
+        // stays registered for `request_cancellation()`.
+        self.lock_active_run().take();
+        result
+    }
+
+    async fn drive_run(
+        &self,
+        executor: Arc<WorkflowExecutor>,
+        cx: opentelemetry::Context,
+    ) -> Result<Vec<u8>> {
         // Watch the cancellation token alongside the workflow stream so an abort
         // takes effect at the next task boundary instead of waiting for the
         // whole workflow to finish. On cancel, `executor.cancel()` flips the
@@ -463,6 +493,11 @@ impl WorkflowUnifiedRunnerImpl {
         let cancel_drained_without_final = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancel_drained_flag = cancel_drained_without_final.clone();
         let workflow_stream = async_stream::stream! {
+            let mut abandon_guard = cancel_token.clone().map(|token| CancelChildrenIfAbandoned {
+                token,
+                executor: executor_for_stream.clone(),
+                armed: true,
+            });
             let inner = executor_for_stream.execute_workflow(inner_cx);
             futures::pin_mut!(inner);
             loop {
@@ -470,6 +505,9 @@ impl WorkflowUnifiedRunnerImpl {
                     biased;
                     _ = Self::await_cancel(&cancel_token) => {
                         executor_for_stream.cancel().await;
+                        if let Some(guard) = abandon_guard.as_mut() {
+                            guard.armed = false;
+                        }
                         let drain_deadline = tokio::time::Instant::now()
                             + Self::CANCEL_DRAIN_TIMEOUT;
                         let mut saw_ok_item = false;
@@ -494,6 +532,9 @@ impl WorkflowUnifiedRunnerImpl {
                     Some(item) => yield item,
                     None => break,
                 }
+            }
+            if let Some(guard) = abandon_guard.as_mut() {
+                guard.armed = false;
             }
         };
         // root_cx is moved into the trailing `once` future so the BoxedSpan stays
@@ -599,6 +640,34 @@ impl WorkflowUnifiedRunnerImpl {
             .boxed();
 
         Ok(output_stream)
+    }
+}
+
+/// Cancels the workflow's child jobs when the run stream is dropped after its
+/// job token was cancelled. The worker's stream idle timeout cancels the token
+/// and then stops polling the stream, so the stream itself never observes the
+/// cancel. A drop without a cancelled token (e.g. the consumer went away) is
+/// not a cancellation decision and leaves the children running.
+/// (Non-streaming runs cover the opposite order with `active_run`.)
+struct CancelChildrenIfAbandoned {
+    token: tokio_util::sync::CancellationToken,
+    executor: Arc<WorkflowExecutor>,
+    /// Cleared once the stream finished or handled the cancel itself.
+    armed: bool,
+}
+
+impl Drop for CancelChildrenIfAbandoned {
+    fn drop(&mut self) {
+        if !self.armed || !self.token.is_cancelled() {
+            return;
+        }
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let executor = self.executor.clone();
+                handle.spawn(async move { executor.cancel().await });
+            }
+            Err(e) => tracing::warn!("Cannot cancel abandoned workflow child jobs: {e}"),
+        }
     }
 }
 
@@ -748,10 +817,17 @@ impl CancelMonitoring for WorkflowUnifiedRunnerImpl {
                 token.cancel();
             }
         }
+        // A run abandoned by the worker (job timeout) can no longer observe the
+        // token, so cancel its child jobs directly.
+        let abandoned = self.lock_active_run().take();
+        if let Some(executor) = abandoned {
+            executor.cancel().await;
+        }
         Ok(())
     }
 
     async fn reset_for_pooling(&mut self) -> Result<()> {
+        self.lock_active_run().take();
         if let Some(helper) = &mut self.cancel_helper {
             helper.reset_for_pooling_impl().await
         } else {

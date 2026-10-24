@@ -4,6 +4,7 @@ use super::super::generic_tracing_helper::{
 };
 use super::conversion::{ResolvedToolResult, ToolCallName, ToolConverter};
 use crate::llm::ThinkTagHelper;
+use crate::llm::reasoning::ReasoningParams;
 use crate::llm::tracing::genai_helper::GenaiTracingHelper;
 use anyhow::Result;
 use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
@@ -46,11 +47,14 @@ impl ToolCallName for genai::chat::ToolCall {
 fn finalized_stream_tool_calls(
     captured: Option<Vec<genai::chat::ToolCall>>,
     fallback: &[genai::chat::ToolCall],
+    filter_selector_tools: bool,
 ) -> Vec<ToolCallRequest> {
     let mut calls = captured
         .filter(|calls| !calls.is_empty())
         .unwrap_or_else(|| fallback.to_vec());
-    ToolConverter::retain_non_selector_tools(&mut calls);
+    if filter_selector_tools {
+        ToolConverter::retain_non_selector_tools(&mut calls);
+    }
     calls
         .into_iter()
         .map(|call| ToolCallRequest {
@@ -59,6 +63,70 @@ fn finalized_stream_tool_calls(
             fn_arguments: call.fn_arguments.to_string(),
         })
         .collect()
+}
+
+// A retry replays the entire job, so tool execution must never be repeated.
+fn generation_retry_is_safe(
+    messages: &[ChatMessage],
+    tools: &[Tool],
+    tool_call_depth: u32,
+) -> bool {
+    tool_call_depth == 0
+        && tools.is_empty()
+        && !messages
+            .iter()
+            .any(|message| matches!(message.role, genai::chat::ChatRole::Tool))
+}
+
+fn generation_transport_error(error: &reqwest::Error) -> bool {
+    if error.is_connect() || error.is_timeout() || error.is_body() {
+        return true;
+    }
+    if !error.is_decode() {
+        return false;
+    }
+    // Reqwest also labels interrupted bodies as Decode; invalid JSON is not a transport retry.
+    let mut cause = std::error::Error::source(error);
+    while let Some(current) = cause {
+        if current.is::<serde_json::Error>() {
+            return false;
+        }
+        cause = current.source();
+    }
+    true
+}
+
+// Preserve transient provider failures for the existing job retry classifier.
+// Provider bodies and URLs may contain credentials and are not included in errors.
+fn generation_request_error(error: genai::Error, retry_safe: bool) -> JobWorkerError {
+    let transient = match &error {
+        genai::Error::HttpError { status, .. } => status.is_server_error(),
+        genai::Error::WebAdapterCall { webc_error, .. }
+        | genai::Error::WebModelCall { webc_error, .. } => match webc_error {
+            genai::webc::Error::ResponseFailedStatus { status, .. } => status.is_server_error(),
+            genai::webc::Error::Reqwest(error) => generation_transport_error(error),
+            _ => false,
+        },
+        _ => false,
+    };
+    if transient && retry_safe {
+        JobWorkerError::TonicClientError(tonic::Status::unavailable(
+            "LLM provider temporarily unavailable",
+        ))
+    } else {
+        JobWorkerError::OtherError("LLM provider request failed".into())
+    }
+}
+
+fn generation_stream_error_trailer(
+    metadata: HashMap<String, String>,
+) -> std::result::Result<Trailer, proto::stream_error::StreamErrorBuildError> {
+    proto::stream_error::build_stream_error_trailer(
+        metadata,
+        "PROVIDER_STREAM_FAILED",
+        "LLM provider stream interrupted",
+        "LLM",
+    )
 }
 
 // Default timeout for tool calls in seconds
@@ -109,9 +177,7 @@ impl GenaiChatService {
             settings.base_url.clone(),
         );
         // -- Build the new client with this adapter_config
-        let client = Client::builder()
-            .with_service_target_resolver(target_resolver)
-            .build();
+        let client = crate::llm::common::build_genai_client(Some(target_resolver))?;
         let adapter_kind = genai::adapter::AdapterKind::from_model(&settings.model)
             .map_err(|e| {
                 tracing::warn!(
@@ -131,14 +197,14 @@ impl GenaiChatService {
             adapter_kind,
         })
     }
-    pub(super) fn build_options(&self, args: &LlmChatArgs) -> Option<ChatOptions> {
+    pub(super) fn build_options(&self, args: &LlmChatArgs) -> Result<Option<ChatOptions>> {
         Self::build_options_with_adapter(args, self.adapter_kind)
     }
 
     pub(super) fn build_options_with_adapter(
         args: &LlmChatArgs,
         adapter_kind: Option<genai::adapter::AdapterKind>,
-    ) -> Option<ChatOptions> {
+    ) -> Result<Option<ChatOptions>> {
         // Explicit opt-in to StreamEnd captures (genai 0.6+). The streaming handler in
         // create_chat_stream() reads end.captured_content / captured_reasoning_content /
         // captured_tool_calls / captured_usage; without these flags the values are no
@@ -151,11 +217,11 @@ impl GenaiChatService {
             ..ChatOptions::default()
         };
 
-        if let Some(opt) = args.options {
+        if let Some(opt) = args.options.as_ref() {
             chat_opts.temperature = opt.temperature.map(|v| v as f64);
             chat_opts.max_tokens = opt.max_tokens.map(|v| v as u32);
             chat_opts.top_p = opt.top_p.map(|v| v as f64);
-            chat_opts.normalize_reasoning_content = opt.extract_reasoning_content;
+            ReasoningParams::from(opt).apply_to_genai(&mut chat_opts, adapter_kind)?;
         }
 
         if let Some(schema_str) = args.json_schema.as_deref() {
@@ -204,7 +270,7 @@ impl GenaiChatService {
             }
         }
 
-        Some(chat_opts)
+        Ok(Some(chat_opts))
     }
     fn trans_role(
         &self,
@@ -225,6 +291,29 @@ impl GenaiChatService {
             }
         }
     }
+
+    fn apply_system_prompt(messages: &mut Vec<ChatMessage>, configured_prompt: Option<&str>) {
+        let Some(configured_prompt) = configured_prompt else {
+            return;
+        };
+        let request_prompts = messages
+            .iter()
+            .filter(|message| matches!(message.role, genai::chat::ChatRole::System))
+            .filter_map(|message| message.content.first_text())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let merged_prompt = ToolConverter::merge_system_prompts(configured_prompt, request_prompts);
+        messages.retain(|message| !matches!(message.role, genai::chat::ChatRole::System));
+        messages.insert(
+            0,
+            ChatMessage {
+                role: genai::chat::ChatRole::System,
+                content: GenaiMessageContent::from_text(merged_prompt),
+                options: None,
+            },
+        );
+    }
+
     /// Build genai `ToolResponse`s from already-resolved tool results.
     ///
     /// fn_name must be forwarded so Gemini's `functionResponse.name` is
@@ -340,8 +429,7 @@ impl GenaiChatService {
         &self,
         args: &LlmChatArgs,
     ) -> Result<(Vec<Tool>, std::collections::HashSet<String>)> {
-        use anyhow::bail;
-
+        ToolConverter::validate_client_tools_exclusive(args)?;
         let mut auto_select_names = std::collections::HashSet::new();
 
         if let Some(function_options) = &args.function_options {
@@ -355,12 +443,6 @@ impl GenaiChatService {
                 .as_deref()
                 .filter(|s| !s.is_empty())
             {
-                if ToolConverter::server_driven_tool_selection_set(function_options) {
-                    bail!(
-                        "client_tools_json is mutually exclusive with {}",
-                        ToolConverter::SERVER_DRIVEN_TOOL_KNOBS.join(" / ")
-                    );
-                }
                 let tools = ToolConverter::parse_client_tools_json(json)?;
                 return Ok((tools, auto_select_names));
             }
@@ -460,6 +542,8 @@ impl GenaiChatService {
         // This runs before any provider call, surfacing client-side payload
         // errors as direct Err instead of confusing provider-side rejections.
         ToolConverter::validate_all_tool_results(&args)?;
+        ToolConverter::validate_client_tools_exclusive(&args)?;
+        ToolConverter::validate_client_tool_execution_requests(&args)?;
 
         // Check for tool execution requests in messages (manual mode)
         if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
@@ -474,7 +558,7 @@ impl GenaiChatService {
         // because the schema may not match any registered runner / worker.
         let is_auto_calling = ToolConverter::effective_is_auto_calling(&args);
 
-        let options = self.build_options(&args);
+        let options = self.build_options(&args)?;
         let (tools_vec, auto_select_names) = self.function_list(&args).await?;
         let is_auto_select = !auto_select_names.is_empty();
         let tools = Arc::new(tools_vec);
@@ -485,18 +569,7 @@ impl GenaiChatService {
             None
         };
         let mut messages = self.trans_messages(args);
-
-        if let Some(system_prompt) = self.system_prompt.clone() {
-            messages.retain(|m| !matches!(m.role, genai::chat::ChatRole::System));
-            messages.insert(
-                0,
-                ChatMessage {
-                    role: genai::chat::ChatRole::System,
-                    content: GenaiMessageContent::from_text(system_prompt),
-                    options: None,
-                },
-            );
-        }
+        Self::apply_system_prompt(&mut messages, self.system_prompt.as_deref());
 
         let messages = Arc::new(Mutex::new(messages));
 
@@ -519,8 +592,10 @@ impl GenaiChatService {
         // Handle the result based on whether it contains pending tool calls
         match res {
             ChatInternalResult::Final(response) => {
-                let (prompt, think) =
-                    Self::divide_think_tag(response.first_text().unwrap_or("").to_string());
+                let (prompt, think) = Self::split_text_and_reasoning(
+                    response.first_text().unwrap_or(""),
+                    response.reasoning_content.clone(),
+                );
 
                 Ok(LlmChatResult {
                     content: Some(llm_chat_result::MessageContent {
@@ -692,6 +767,7 @@ impl GenaiChatService {
             ));
         }
         let current_messages = messages.lock().await.clone();
+        let retry_safe = generation_retry_is_safe(&current_messages, &tools, tool_call_depth);
 
         // Execute with tracing using generic_tracing_helper approach
         let (res, current_context) = if GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
@@ -713,7 +789,7 @@ impl GenaiChatService {
                 client_clone
                     .exec_chat(&model_clone, chat_req_clone, options_clone.as_ref())
                     .await
-                    .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {e}")))
+                    .map_err(|error| generation_request_error(error, retry_safe))
             };
 
             let model_parameters = {
@@ -764,7 +840,7 @@ impl GenaiChatService {
                 .client
                 .exec_chat(&model, chat_req, options.as_ref())
                 .await
-                .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {e}")))?;
+                .map_err(|error| generation_request_error(error, retry_safe))?;
             let context = parent_context.unwrap_or_else(opentelemetry::Context::current);
             (res, context)
         };
@@ -988,12 +1064,14 @@ impl GenaiChatService {
 
     pub async fn request_chat_stream(
         &self,
-        mut args: LlmChatArgs,
+        args: LlmChatArgs,
         metadata: HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
         ToolConverter::validate_all_tool_results(&args)?;
+        ToolConverter::validate_client_tools_exclusive(&args)?;
+        ToolConverter::validate_client_tool_execution_requests(&args)?;
 
         // Check for tool execution requests first (highest priority, manual mode continuation)
         let metadata_arc = Arc::new(metadata.clone());
@@ -1025,27 +1103,13 @@ impl GenaiChatService {
                     .create_chat_stream(args, metadata, parent_context)
                     .await;
             }
-            // Insert system_prompt into args before cloning for Phase 2
-            if let Some(ref system_prompt) = self.system_prompt {
-                use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
-                    ChatMessage as ProtoChatMessage, MessageContent, message_content,
-                };
-                args.messages.retain(|m| m.role() != ChatRole::System);
-                args.messages.insert(
-                    0,
-                    ProtoChatMessage {
-                        role: ChatRole::System.into(),
-                        content: Some(MessageContent {
-                            content: Some(message_content::Content::Text(system_prompt.clone())),
-                        }),
-                    },
-                );
-            }
             let original_args = args.clone();
 
-            let options = self.build_options(&args);
+            let options = self.build_options(&args)?;
             let model = args.model.clone().unwrap_or_else(|| self.model.clone());
-            let messages = Arc::new(Mutex::new(self.trans_messages(args)));
+            let mut converted_messages = self.trans_messages(args);
+            Self::apply_system_prompt(&mut converted_messages, self.system_prompt.as_deref());
+            let messages = Arc::new(Mutex::new(converted_messages));
             let tools = Arc::new(tools_vec);
 
             let res = Self::request_chat_internal_with_tracing(
@@ -1082,8 +1146,10 @@ impl GenaiChatService {
                     tracing::debug!(
                         "Auto-select (stream): LLM responded with text instead of tool call, returning as stream"
                     );
-                    let (content_text, reasoning) =
-                        Self::divide_think_tag(response.first_text().unwrap_or("").to_string());
+                    let (content_text, reasoning) = Self::split_text_and_reasoning(
+                        response.first_text().unwrap_or(""),
+                        response.reasoning_content.clone(),
+                    );
                     let metadata_trailer = Trailer { metadata };
                     let stream = async_stream::stream! {
                         let llm_result = LlmChatResult {
@@ -1283,21 +1349,8 @@ impl GenaiChatService {
                 }
                 Err(e) => {
                     tracing::error!("handle_tool_execution_stream: Phase 3 — failed to create continuation stream: {}", e);
-                    let llm_result = LlmChatResult {
-                        content: Some(llm_chat_result::MessageContent {
-                            content: Some(message_content::Content::Text(
-                                format!("Continuation error: {}", e),
-                            )),
-                        }),
-                        done: true,
-                        ..Default::default()
-                    };
-                    let bytes = prost::Message::encode_to_vec(&llm_result);
-                    if !bytes.is_empty() {
-                        yield ResultOutputItem {
-                            item: Some(result_output_item::Item::Data(bytes)),
-                        };
-                    }
+                    // Do not emit a success terminal for a failed continuation;
+                    // the caller's collector recognizes the missing done=true.
                     yield ResultOutputItem {
                         item: Some(result_output_item::Item::End(metadata_trailer.clone())),
                     };
@@ -1315,13 +1368,18 @@ impl GenaiChatService {
         metadata: HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let options = self.build_options(&args);
+        let options = self.build_options(&args)?;
         let (tools, _auto_select_names) = self.function_list(&args).await?;
+        let filter_selector_tools = args
+            .function_options
+            .as_ref()
+            .is_some_and(|options| options.auto_select_function_set.unwrap_or(false));
         // Honour args.model when supplied so the span and the actual request
         // target the same model. Falling back to self.model only when args
         // omits it keeps parity with request_chat_internal_with_tracing.
         let model = args.model.clone().unwrap_or_else(|| self.model.clone());
-        let messages = self.trans_messages(args);
+        let mut messages = self.trans_messages(args);
+        Self::apply_system_prompt(&mut messages, self.system_prompt.as_deref());
         let chat_req = if tools.is_empty() {
             ChatRequest::new(messages)
         } else {
@@ -1333,6 +1391,8 @@ impl GenaiChatService {
             &chat_req,
             &options
         );
+
+        let retry_safe = generation_retry_is_safe(&chat_req.messages, &tools, 0);
 
         // Build span attributes BEFORE consuming chat_req into exec_chat_stream so the
         // generation span captures the same input the model receives.
@@ -1349,7 +1409,7 @@ impl GenaiChatService {
             .client
             .exec_chat_stream(&model, chat_req, options.as_ref())
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to request generation: {:#?}", e))?;
+            .map_err(|error| generation_request_error(error, retry_safe))?;
 
         // Clone the model name to use inside the closure
         let model_name = res.model_iden.model_name.to_string();
@@ -1362,13 +1422,12 @@ impl GenaiChatService {
         let mut base_stream = res.stream;
         let stream = async_stream::stream! {
             let mut accumulated_tool_calls: Vec<genai::chat::ToolCall> = Vec::new();
-            let mut stream_error = false;
 
             while let Some(event_result) = base_stream.next().await {
                 match event_result {
                     Ok(event) => match event {
-                        ChatStreamEvent::Start => {
-                            // Ignore start event
+                        ChatStreamEvent::Start | ChatStreamEvent::Heartbeat => {
+                            // Start and keep-alive pings carry no payload
                         }
                         ChatStreamEvent::Chunk(chunk) => {
                             let llm_result = LlmChatResult {
@@ -1429,6 +1488,7 @@ impl GenaiChatService {
                             let pending_calls = finalized_stream_tool_calls(
                                 captured_tool_calls,
                                 &accumulated_tool_calls,
+                                filter_selector_tools,
                             );
                             if !pending_calls.is_empty() {
 
@@ -1500,24 +1560,22 @@ impl GenaiChatService {
                             }
                         }
                     },
-                    Err(e) => {
-                        tracing::error!("Error in chat stream: {:?}", e);
-                        stream_error = true;
-                        break;
+                    Err(_) => {
+                        tracing::warn!("LLM provider stream interrupted");
+                        // Preserve the existing stream-error contract; never emit a successful End.
+                        match generation_stream_error_trailer(metadata_trailer.metadata.clone()) {
+                            Ok(trailer) => yield ResultOutputItem { item: Some(result_output_item::Item::End(trailer)) },
+                            Err(_) => tracing::warn!("LLM stream error trailer could not be constructed"),
+                        }
+                        return;
                     }
                 }
             }
 
-            // Always send End item at the end of the stream
-            if stream_error {
-                yield ResultOutputItem {
-                    item: Some(result_output_item::Item::End(metadata_trailer.clone())),
-                };
-            } else {
-                yield ResultOutputItem {
-                    item: Some(result_output_item::Item::End(metadata_trailer)),
-                };
-            }
+            // End closes the transport stream; only a done=true Data result means success.
+            yield ResultOutputItem {
+                item: Some(result_output_item::Item::End(metadata_trailer)),
+            };
         };
 
         // Wrap the stream with the generation span. The closure decodes each Data item
@@ -1719,12 +1777,182 @@ mod tests {
     use super::*;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::LlmOptions;
 
+    #[test]
+    fn generation_errors_retry_transient_http_only() {
+        for (status, retryable) in [
+            (503, true),
+            (500, true),
+            (401, false),
+            (403, false),
+            (400, false),
+        ] {
+            let error = genai::Error::HttpError {
+                status: reqwest::StatusCode::from_u16(status).unwrap(),
+                canonical_reason: "test".into(),
+                body: "private-provider-response".into(),
+                headers: Box::default(),
+            };
+            let mapped = generation_request_error(error, true);
+            assert_eq!(
+                matches!(&mapped, JobWorkerError::TonicClientError(s) if s.code() == tonic::Code::Unavailable),
+                retryable,
+                "HTTP {status}"
+            );
+            assert!(!mapped.to_string().contains("private-provider-response"));
+        }
+    }
+
+    #[tokio::test]
+    async fn generation_connection_failure_is_retryable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let err = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(err.is_connect());
+        let error = genai::Error::WebAdapterCall {
+            adapter_kind: genai::adapter::AdapterKind::OpenAI,
+            webc_error: genai::webc::Error::Reqwest(err),
+        };
+        let mapped = generation_request_error(error, true);
+        assert!(
+            matches!(&mapped, JobWorkerError::TonicClientError(s) if s.code() == tonic::Code::Unavailable)
+        );
+    }
+
+    #[test]
+    fn generation_stream_failure_uses_the_existing_common_trailer() {
+        let metadata = HashMap::from([("trace_id".into(), "request".into())]);
+        let trailer = generation_stream_error_trailer(metadata).unwrap();
+        assert_eq!(trailer.metadata["trace_id"], "request");
+        assert!(
+            matches!(proto::stream_error::parse_stream_error(&trailer), proto::stream_error::StreamErrorOutcome::Error(error) if error.origin == "LLM")
+        );
+    }
+
+    #[test]
+    fn generation_tool_calls_disable_whole_job_retries() {
+        let plain = vec![ChatMessage::system("judge"), ChatMessage::user("source")];
+        assert!(generation_retry_is_safe(&plain, &[], 0));
+        assert!(!generation_retry_is_safe(&plain, &[], 1));
+        assert!(!generation_retry_is_safe(
+            &plain,
+            &[Tool::new("side_effect")],
+            0
+        ));
+        let mut resumed = plain;
+        resumed.push(ChatMessage::new(genai::chat::ChatRole::Tool, "executed"));
+        assert!(!generation_retry_is_safe(&resumed, &[], 0));
+    }
+
+    #[tokio::test]
+    async fn generation_interrupted_response_body_is_retryable_only_without_tools() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut connection, _) = listener.accept().unwrap();
+            let mut request = [0u8; 8192];
+            assert!(connection.read(&mut request).unwrap() > 0);
+            connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 999\r\nConnection: close\r\n\r\n{}").unwrap();
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+        let error = response.text().await.unwrap_err();
+        server.join().unwrap();
+        assert!(error.is_decode());
+        let mapped = generation_request_error(
+            genai::Error::WebAdapterCall {
+                adapter_kind: genai::adapter::AdapterKind::OpenAI,
+                webc_error: genai::webc::Error::Reqwest(error),
+            },
+            true,
+        );
+        assert!(
+            matches!(mapped, JobWorkerError::TonicClientError(s) if s.code() == tonic::Code::Unavailable)
+        );
+        let error = genai::Error::HttpError {
+            status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            canonical_reason: "test".into(),
+            body: "private".into(),
+            headers: Box::default(),
+        };
+        assert!(matches!(
+            generation_request_error(error, false),
+            JobWorkerError::OtherError(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn generation_invalid_json_is_not_a_transport_retry() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut connection, _) = listener.accept().unwrap();
+            let mut request = [0u8; 8192];
+            assert!(connection.read(&mut request).unwrap() > 0);
+            connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 7\r\nConnection: close\r\n\r\ninvalid").unwrap();
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+        let error = response.json::<serde_json::Value>().await.unwrap_err();
+        server.join().unwrap();
+        assert!(error.is_decode());
+        let mapped = generation_request_error(
+            genai::Error::WebModelCall {
+                model_iden: genai::ModelIden::new(
+                    genai::adapter::AdapterKind::OpenAI,
+                    "gpt-4o-mini",
+                ),
+                webc_error: genai::webc::Error::Reqwest(error),
+            },
+            true,
+        );
+        assert!(matches!(mapped, JobWorkerError::OtherError(_)));
+    }
+
+    #[tokio::test]
+    async fn generation_response_timeout_is_retryable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let error = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(20))
+            .build()
+            .unwrap()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap_err();
+        drop(listener);
+        assert!(error.is_timeout());
+        let mapped = generation_request_error(
+            genai::Error::WebAdapterCall {
+                adapter_kind: genai::adapter::AdapterKind::OpenAI,
+                webc_error: genai::webc::Error::Reqwest(error),
+            },
+            true,
+        );
+        assert!(
+            matches!(mapped, JobWorkerError::TonicClientError(status) if status.code() == tonic::Code::Unavailable)
+        );
+    }
+
     const TEST_OPENAI_MODEL: &str = "gpt-4o-mini";
     const TEST_GEMINI_MODEL: &str = "gemini-3.1-flash-lite";
 
     fn build_test_options(model: &str, args: &LlmChatArgs) -> Option<ChatOptions> {
         let kind = genai::adapter::AdapterKind::from_model(model).ok();
-        GenaiChatService::build_options_with_adapter(args, kind)
+        GenaiChatService::build_options_with_adapter(args, kind).expect("valid options")
     }
 
     fn resolved(call_id: &str, fn_name: &str, content: &str, is_error: bool) -> ResolvedToolResult {
@@ -1845,7 +2073,7 @@ mod tests {
             thought_signatures: None,
         };
 
-        let calls = finalized_stream_tool_calls(Some(vec![finalized]), &[partial]);
+        let calls = finalized_stream_tool_calls(Some(vec![finalized]), &[partial], false);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].call_id, "call-1");
@@ -1867,7 +2095,7 @@ mod tests {
             thought_signatures: None,
         };
 
-        let calls = finalized_stream_tool_calls(None, &[partial]);
+        let calls = finalized_stream_tool_calls(None, &[partial], false);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].fn_arguments, r#"{"query":"fallback"}"#);
@@ -1882,7 +2110,7 @@ mod tests {
             thought_signatures: None,
         };
 
-        let calls = finalized_stream_tool_calls(Some(vec![]), &[partial]);
+        let calls = finalized_stream_tool_calls(Some(vec![]), &[partial], false);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].call_id, "call-1");
@@ -1911,6 +2139,29 @@ mod tests {
             opts.response_format,
             Some(ChatResponseFormat::JsonSpec(_))
         ));
+    }
+
+    #[test]
+    fn split_text_and_reasoning_prefers_provider_reasoning() {
+        let (text, reasoning) =
+            GenaiChatService::split_text_and_reasoning("2", Some("thought".to_string()));
+        assert_eq!(text, "2");
+        assert_eq!(reasoning.as_deref(), Some("thought"));
+    }
+
+    #[test]
+    fn split_text_and_reasoning_falls_back_to_think_tags() {
+        let (text, reasoning) =
+            GenaiChatService::split_text_and_reasoning("<think>inner</think>answer", None);
+        assert_eq!(text, "answer");
+        assert_eq!(reasoning.as_deref(), Some("inner"));
+    }
+
+    #[test]
+    fn split_text_and_reasoning_without_any_reasoning() {
+        let (text, reasoning) = GenaiChatService::split_text_and_reasoning(" plain ", None);
+        assert_eq!(text, "plain");
+        assert_eq!(reasoning, None);
     }
 
     #[test]

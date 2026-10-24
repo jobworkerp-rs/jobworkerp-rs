@@ -3,7 +3,7 @@ use crate::workflow::{
     definition::workflow::{Task, tasks::TaskTrait},
     execute::{
         context::{TaskContext, WorkflowContext, WorkflowStreamEvent},
-        task::{ExecutionId, Result, TaskExecutorTrait},
+        task::{ExecutionId, Result, TaskExecutorTrait, cancel_child_jobs},
     },
 };
 use crate::workflow::{
@@ -28,7 +28,7 @@ type CheckPointRepo =
 #[derive(DebugStub, Clone)]
 pub struct ForkTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
-    default_task_timeout: Duration,
+    default_task_timeout: Option<Duration>,
     named_timeouts: Arc<NamedTimeouts>,
     #[debug_stub = "AppModule"]
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -45,7 +45,7 @@ impl ForkTaskExecutor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        default_task_timeout: Duration,
+        default_task_timeout: Option<Duration>,
         named_timeouts: Arc<NamedTimeouts>,
         task: workflow::ForkTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -79,7 +79,7 @@ impl ForkTaskExecutor {
         prev_context: Arc<TaskContext>,
         task: Arc<Task>,
         execution_id: Option<Arc<ExecutionId>>,
-        default_task_timeout: Duration,
+        default_task_timeout: Option<Duration>,
         named_timeouts: Arc<NamedTimeouts>,
         metadata: Arc<HashMap<String, String>>,
         cx: Arc<opentelemetry::Context>,
@@ -128,6 +128,8 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
             let compete = self.task.fork.compete;
 
             let mut tasks = Vec::new();
+            // Absent only outside a TaskExecutor (unit tests): no scope to cancel.
+            let fork_scope = task_context.child_job_scope.clone();
             let mut original_task_context = task_context.clone();
             let task_context_ref = Arc::new(task_context);
 
@@ -185,8 +187,17 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                         Ok(event) => {
                             // Extract context from completed events
                             if let Some(context) = event.into_context() {
-                                // Found a successful task, return it immediately
-                                // (abandoning all other tasks)
+                                // The winner decides the output: stop the losing
+                                // branches and cancel the child jobs they started.
+                                drop(stream_map);
+                                if let Some(scope) = &fork_scope {
+                                    cancel_child_jobs(
+                                        &self.job_executor_wrapper,
+                                        scope,
+                                        "fork compete lost",
+                                    )
+                                    .await;
+                                }
                                 return Ok(context);
                             }
                             // Start events don't have context, continue polling
@@ -362,7 +373,7 @@ mod tests {
             // TaskExecutor, ForkTaskExecutor
             let fork_task_executor = ForkTaskExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(1200), // default task timeout
+                Some(Duration::from_secs(1200)), // default task timeout
                 Arc::new(NamedTimeouts::new()),
                 fork_task,
                 job_executor_wrapper,
@@ -439,7 +450,7 @@ mod tests {
 
             let fork_task_executor = ForkTaskExecutor::new(
                 workflow_context,
-                Duration::from_secs(1200), // default task timeout
+                Some(Duration::from_secs(1200)), // default task timeout
                 Arc::new(NamedTimeouts::new()),
                 fork_task,
                 job_executor_wrapper,
@@ -523,7 +534,7 @@ mod tests {
 
             let fork_task_executor = ForkTaskExecutor::new(
                 workflow_context,
-                Duration::from_secs(1200), // default task timeout
+                Some(Duration::from_secs(1200)), // default task timeout
                 Arc::new(NamedTimeouts::new()),
                 fork_task,
                 job_executor_wrapper,

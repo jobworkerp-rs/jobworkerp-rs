@@ -122,7 +122,7 @@ fn test_run_stream_task_executor_worker_config() -> Result<()> {
 
         let executor = RunStreamTaskExecutor::new(
             workflow_context.clone(),
-            Duration::from_secs(30),
+            Some(Duration::from_secs(30)),
             Arc::new(NamedTimeouts::new()),
             job_executors.clone(),
             run_task,
@@ -248,7 +248,7 @@ fn test_run_stream_task_executor_rejects_await_false() -> Result<()> {
 
         let executor = RunStreamTaskExecutor::new(
             workflow_context.clone(),
-            Duration::from_secs(30),
+            Some(Duration::from_secs(30)),
             Arc::new(NamedTimeouts::new()),
             job_executors.clone(),
             run_task,
@@ -350,7 +350,7 @@ fn test_run_stream_task_executor_runner_config() -> Result<()> {
 
         let executor = RunStreamTaskExecutor::new(
             workflow_context.clone(),
-            Duration::from_secs(30),
+            Some(Duration::from_secs(30)),
             Arc::new(NamedTimeouts::new()),
             job_executors.clone(),
             run_task,
@@ -485,7 +485,7 @@ fn test_run_stream_task_executor_collect_stream() -> Result<()> {
 
         let executor = RunStreamTaskExecutor::new(
             workflow_context.clone(),
-            Duration::from_secs(30),
+            Some(Duration::from_secs(30)),
             Arc::new(NamedTimeouts::new()),
             job_executors.clone(),
             run_task,

@@ -17,12 +17,15 @@ It also provides [Open Workflow](https://open-workflow-specification.org/)-based
 jobworkerp-rs consists of the following main components:
 
 - **gRPC Frontend**: An interface that accepts requests from clients and handles job registration/retrieval
+- **[Agent Server](agent-server/README.md)**: A separately started HTTP/JSON and SSE service for chat orchestration, Skills, approvals, and Worker tools. It calls the gRPC frontend rather than replacing its existing FunctionSet APIs.
 - **Worker**: The component that performs the actual job processing, configurable with multiple channels and parallelism settings
 - **Storage**: A combination of Redis (for immediate jobs) and RDB (MySQL/SQLite, for scheduled/periodic jobs)
 
 ```mermaid
 graph TB
     Client[Client] --gRPC/gRPC-Web--> Frontend[gRPC Frontend]
+    Client --HTTP/SSE--> AgentServer[Agent Server]
+    AgentServer --gRPC--> Frontend
     Frontend --Job registration--> Storage[(Storage layer)]
     Storage --Job retrieval--> Worker[Worker]
     Worker --Result storage--> Storage
@@ -305,7 +308,7 @@ Place the configuration file at the path specified by the `MCP_CONFIG` environme
 
 1. Prepare an MCP server configuration file
 2. When creating a worker, specify the numeric ID of the specific MCP server as runner_id (you can check available MCP servers using the `jobworkerp-client runner list` command)
-3. Specify tool_name and arg_json in job execution arguments
+3. When enqueueing a job, select the tool with `--using` (gRPC: `JobRequest.using`; may be omitted only for single-tool servers) and pass the tool's own arguments as JSON
 
 ```shell
 # First, check the available runner-id
@@ -317,11 +320,11 @@ $ ./target/release/jobworkerp-client runner list
 $ ./target/release/jobworkerp-client worker create --name "TimeInfo" --description "" --runner-id <runner id> --response-type DIRECT --settings '' --use-static
 
 # Execute a job to retrieve current time information
-$ ./target/release/jobworkerp-client job enqueue --worker "TimeInfo" --args '{"tool_name":"get_current_time","arg_json":"{\"timezone\":\"Asia/Tokyo\"}"}'
+$ ./target/release/jobworkerp-client job enqueue --worker "TimeInfo" --using get_current_time --args '{"timezone":"Asia/Tokyo"}'
 
 # Web page fetching example
 $ ./target/release/jobworkerp-client worker create --name "WebFetch" --description "" --response-type DIRECT --settings '' --runner-id <runner id>
-$ ./target/release/jobworkerp-client job enqueue --worker "WebFetch" --args '{"tool_name":"fetch","arg_json":"{\"url\":\"https://example.com\"}"}'
+$ ./target/release/jobworkerp-client job enqueue --worker "WebFetch" --using fetch --args '{"url":"https://example.com"}'
 ```
 
 Responses from the MCP server can be retrieved as job results and processed directly or asynchronously according to the response_type setting.

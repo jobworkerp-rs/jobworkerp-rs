@@ -7,11 +7,12 @@ use crate::workflow::{
         workflow::{self, RunJobRunner, RunJobWorker},
     },
     execute::{
-        context::{TaskContext, WorkflowContext, WorkflowStreamEvent},
+        context::{RunningJobGuard, TaskContext, WorkflowContext, WorkflowStreamEvent},
         expression::UseExpression,
         task::{
-            NamedTimeouts, StreamTaskExecutorTrait,
-            run::{alias, resolve_run_task_timeout_sec},
+            NamedTimeouts, StreamTaskExecutorTrait, ensure_child_job_can_start,
+            register_started_child_job,
+            run::{alias, job_timeout, resolve_run_task_timeout_sec},
         },
     },
 };
@@ -33,7 +34,7 @@ use tokio::sync::RwLock;
 /// - Final results to be collected and stored in `TaskContext.raw_output`
 pub struct RunStreamTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
-    default_task_timeout: Duration,
+    default_task_timeout: Option<Duration>,
     named_timeouts: Arc<NamedTimeouts>,
     task: workflow::RunTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -48,7 +49,7 @@ impl Tracing for RunStreamTaskExecutor {}
 impl RunStreamTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        default_task_timeout: Duration,
+        default_task_timeout: Option<Duration>,
         named_timeouts: Arc<NamedTimeouts>,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         task: workflow::RunTask,
@@ -133,6 +134,7 @@ struct StreamingPreparation {
     output_adapter: Option<ProcessOutputAdapter>,
     /// Stream subscription - subscribed immediately after job enqueue to avoid race condition
     stream: BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
+    running_job_guard: RunningJobGuard,
 }
 
 struct ProcessOutputAdapter {
@@ -214,7 +216,7 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
 
         // Spawn a task that handles the entire execution
         // This avoids the stream! macro's blocking yield behavior
-        tokio::spawn(async move {
+        let listener = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
             // Run preparation phase
             let prep_result = prepare_streaming_job(
                 &workflow_context,
@@ -259,6 +261,7 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
                 &prep.handle,
                 &job_executor_wrapper,
                 &event_tx,
+                prep.running_job_guard,
             )
             .await;
 
@@ -305,10 +308,19 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
             )));
 
             // Channel is dropped when this task ends, signaling end of stream
-        });
+        }));
 
-        // Return stream from channel receiver
-        tokio_stream::wrappers::UnboundedReceiverStream::new(event_rx)
+        // Return stream from channel receiver. The closure owns the listener
+        // so dropping the stream aborts it: that only stops listening, the
+        // child job stays registered for an explicit cancellation. Without
+        // the capture the listener would be aborted right here.
+        futures::StreamExt::map(
+            tokio_stream::wrappers::UnboundedReceiverStream::new(event_rx),
+            move |event| {
+                let _owned_listener = &listener;
+                event
+            },
+        )
     }
 }
 
@@ -319,7 +331,7 @@ async fn prepare_streaming_job(
     job_executor_wrapper: &Arc<JobExecutorWrapper>,
     task: &workflow::RunTask,
     base_metadata: &Arc<HashMap<String, String>>,
-    default_timeout: Duration,
+    default_timeout: Option<Duration>,
     named_timeouts: &NamedTimeouts,
     cx: &Arc<opentelemetry::Context>,
     task_name: &Arc<String>,
@@ -365,6 +377,14 @@ async fn prepare_streaming_job(
             return Err(e);
         }
     };
+
+    let child_job_scope =
+        match ensure_child_job_can_start(workflow_context, task_context.child_job_scope.as_ref())
+            .await
+        {
+            Ok(scope) => scope,
+            Err(e) => return Err(child_job_gate_error(e, &task_context).await),
+        };
 
     // === 5. Start job based on configuration ===
     let (handle, output_adapter) = match run {
@@ -685,6 +705,18 @@ async fn prepare_streaming_job(
         }
     };
 
+    let running_job_guard = match register_started_child_job(
+        workflow_context,
+        job_executor_wrapper,
+        &child_job_scope,
+        handle.job_id,
+    )
+    .await
+    {
+        Ok(guard) => guard,
+        Err(e) => return Err(child_job_gate_error(e, &task_context).await),
+    };
+
     // Capture position for both success and error cases
     let pos_for_err = task_context.position.read().await.as_error_instance();
     let position = task_context.position.read().await.as_json_pointer();
@@ -692,7 +724,7 @@ async fn prepare_streaming_job(
     // Subscribe to stream IMMEDIATELY after job enqueue to avoid race condition
     // This must happen before worker completes and publishes stream data
     use infra::infra::job_result::pubsub::JobResultSubscriber;
-    let timeout_ms = Some(timeout_sec as u64 * 1000);
+    let timeout_ms = job_timeout(timeout_sec).map(|d| d.as_millis() as u64);
 
     // Try redis repository first (Scalable mode), then channel repository (Standalone mode)
     let stream =
@@ -724,7 +756,19 @@ async fn prepare_streaming_job(
         task_context,
         output_adapter,
         stream,
+        running_job_guard,
     })
+}
+
+async fn child_job_gate_error(
+    e: anyhow::Error,
+    task_context: &TaskContext,
+) -> Box<workflow::Error> {
+    workflow::errors::ErrorFactory::new().service_unavailable(
+        "Failed to start streaming child job".to_string(),
+        Some(task_context.position.read().await.as_error_instance()),
+        Some(e.to_string()),
+    )
 }
 
 /// Process stream: forward events to channel and collect output
@@ -736,6 +780,7 @@ async fn process_stream(
     event_tx: &tokio::sync::mpsc::UnboundedSender<
         Result<WorkflowStreamEvent, Box<workflow::Error>>,
     >,
+    running_job_guard: RunningJobGuard,
 ) -> Result<serde_json::Value> {
     use app::app::job::execute::UseJobExecutor;
     use futures::StreamExt;
@@ -745,11 +790,15 @@ async fn process_stream(
     let mut all_data_chunks: Vec<Vec<u8>> = Vec::new();
     let mut end_trailer = None;
 
-    // Use timeout for each stream item to prevent hanging indefinitely
-    let item_timeout = std::time::Duration::from_secs(handle.timeout_sec as u64);
+    // Bound the wait for each stream item by the job timeout, if any.
+    let item_timeout = job_timeout(handle.timeout_sec);
 
-    loop {
-        match tokio::time::timeout(item_timeout, stream.next()).await {
+    let stream_finished = loop {
+        let next = match item_timeout {
+            Some(item_timeout) => tokio::time::timeout(item_timeout, stream.next()).await,
+            None => Ok(stream.next().await),
+        };
+        match next {
             Ok(Some(item)) => {
                 match item.item {
                     Some(Item::Data(data)) => {
@@ -769,7 +818,7 @@ async fn process_stream(
                     Some(Item::End(trailer)) => {
                         tracing::debug!("Stream ended for job {}", job_id);
                         end_trailer = Some(trailer);
-                        break;
+                        break true;
                     }
                     Some(Item::FinalCollected(data)) => {
                         // Use FinalCollected as the authoritative task output
@@ -781,7 +830,7 @@ async fn process_stream(
             Ok(None) => {
                 // Stream ended without End message
                 tracing::debug!("Stream closed without End message for job {}", job_id);
-                break;
+                break true;
             }
             Err(_) => {
                 // Timeout waiting for next item
@@ -790,9 +839,15 @@ async fn process_stream(
                     job_id,
                     handle.timeout_sec
                 );
-                break;
+                break false;
             }
         }
+    };
+
+    // Only a finished stream proves the job ended; after an idle timeout the
+    // job may still be running, so leave it registered for cancellation.
+    if stream_finished {
+        running_job_guard.mark_completed();
     }
 
     validate_child_stream_end(&handle.runner_data.name, end_trailer.as_ref())?;

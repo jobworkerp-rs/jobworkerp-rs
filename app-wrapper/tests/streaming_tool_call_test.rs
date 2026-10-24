@@ -13,6 +13,7 @@ use app::app::function::function_set::FunctionSetApp;
 use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::chat::ollama::OllamaChatService;
 use futures::StreamExt;
+use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ArgsContent;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequests;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, LlmOptions};
@@ -96,6 +97,7 @@ fn create_manual_mode_args(message: &str) -> LlmChatArgs {
             repeat_last_n: None,
             seed: Some(42),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: Some(FunctionOptions {
@@ -114,9 +116,10 @@ fn create_manual_mode_args(message: &str) -> LlmChatArgs {
 /// Test the full manual mode flow:
 /// 1. First stream request returns pending_tool_calls
 /// 2. Second stream request with ToolExecutionRequests executes tools and gets LLM response
-#[tokio::test]
+#[test]
 #[ignore = "Integration test requiring Ollama server"]
-async fn test_streaming_manual_mode_returns_pending_tool_calls() -> Result<()> {
+fn test_streaming_manual_mode_returns_pending_tool_calls() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let service = create_test_service().await?;
     let metadata = HashMap::new();
@@ -315,148 +318,156 @@ async fn test_streaming_manual_mode_returns_pending_tool_calls() -> Result<()> {
 
     println!("\n=== Test passed: Full manual mode flow completed ===");
     Ok(())
+    })
 }
 
 /// Test basic streaming without tool calls
-#[tokio::test]
+#[test]
 #[ignore = "Integration test requiring Ollama server"]
-async fn test_streaming_without_tools() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-    let service = create_test_service().await?;
-    let metadata = HashMap::new();
+fn test_streaming_without_tools() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        let service = create_test_service().await?;
+        let metadata = HashMap::new();
 
-    let args = LlmChatArgs {
-        messages: vec![ChatMessage {
-            role: ChatRole::User as i32,
-            content: Some(MessageContent {
-                content: Some(ArgsContent::Text("Hello, how are you today?".to_string())),
+        let args = LlmChatArgs {
+            messages: vec![ChatMessage {
+                role: ChatRole::User as i32,
+                content: Some(MessageContent {
+                    content: Some(ArgsContent::Text("Hello, how are you today?".to_string())),
+                }),
+            }],
+            options: Some(LlmOptions {
+                temperature: Some(0.1),
+                max_tokens: Some(1000),
+                top_p: None,
+                repeat_penalty: None,
+                repeat_last_n: None,
+                seed: Some(42),
+                extract_reasoning_content: Some(false),
+                ..Default::default()
             }),
-        }],
-        options: Some(LlmOptions {
-            temperature: Some(0.1),
-            max_tokens: Some(1000),
-            top_p: None,
-            repeat_penalty: None,
-            repeat_last_n: None,
-            seed: Some(42),
-            extract_reasoning_content: Some(false),
-        }),
-        model: Some(TEST_MODEL.to_string()),
-        function_options: None, // No tool calling
-        json_schema: None,
-    };
+            model: Some(TEST_MODEL.to_string()),
+            function_options: None, // No tool calling
+            json_schema: None,
+        };
 
-    println!("Sending streaming request without tools...");
-    let stream = timeout(
-        TEST_TIMEOUT,
-        service.clone().request_stream_chat(args, metadata, None),
-    )
-    .await??;
+        println!("Sending streaming request without tools...");
+        let stream = timeout(
+            TEST_TIMEOUT,
+            service.clone().request_stream_chat(args, metadata, None),
+        )
+        .await??;
 
-    let mut text_content = String::new();
-    let mut chunk_count = 0;
-    let mut stream = stream;
+        let mut text_content = String::new();
+        let mut chunk_count = 0;
+        let mut stream = stream;
 
-    while let Some(result) = stream.next().await {
-        chunk_count += 1;
-        if let Some(ref content) = result.content
-            && let Some(ResultContent::Text(ref text)) = content.content
-        {
-            text_content.push_str(text);
+        while let Some(result) = stream.next().await {
+            chunk_count += 1;
+            if let Some(ref content) = result.content
+                && let Some(ResultContent::Text(ref text)) = content.content
+            {
+                text_content.push_str(text);
+            }
         }
-    }
 
-    println!("Received {} chunks", chunk_count);
-    println!("Full response: {}", text_content);
+        println!("Received {} chunks", chunk_count);
+        println!("Full response: {}", text_content);
 
-    assert!(chunk_count > 0, "Should receive at least one chunk");
-    assert!(!text_content.is_empty(), "Should receive text content");
+        assert!(chunk_count > 0, "Should receive at least one chunk");
+        assert!(!text_content.is_empty(), "Should receive text content");
 
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Test that collected results from streaming match expected format
-#[tokio::test]
+#[test]
 #[ignore = "Integration test requiring Ollama server"]
-async fn test_streaming_result_format() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-    let service = create_test_service().await?;
-    let metadata = HashMap::new();
+fn test_streaming_result_format() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        let service = create_test_service().await?;
+        let metadata = HashMap::new();
 
-    let args = create_manual_mode_args("Run echo hello");
+        let args = create_manual_mode_args("Run echo hello");
 
-    let stream = timeout(
-        TEST_TIMEOUT,
-        service.clone().request_stream_chat(args, metadata, None),
-    )
-    .await??;
+        let stream = timeout(
+            TEST_TIMEOUT,
+            service.clone().request_stream_chat(args, metadata, None),
+        )
+        .await??;
 
-    let mut stream = stream;
-    let mut has_done_chunk = false;
-    let mut has_content = false;
+        let mut stream = stream;
+        let mut has_done_chunk = false;
+        let mut has_content = false;
 
-    while let Some(result) = stream.next().await {
-        if result.done {
-            has_done_chunk = true;
+        while let Some(result) = stream.next().await {
+            if result.done {
+                has_done_chunk = true;
+            }
+            if result.content.is_some() || result.pending_tool_calls.is_some() {
+                has_content = true;
+            }
         }
-        if result.content.is_some() || result.pending_tool_calls.is_some() {
-            has_content = true;
-        }
-    }
 
-    assert!(has_done_chunk, "Stream should have a done=true chunk");
-    assert!(has_content, "Stream should have some content");
+        assert!(has_done_chunk, "Stream should have a done=true chunk");
+        assert!(has_content, "Stream should have some content");
 
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Test streaming with echo command tool call
-#[tokio::test]
+#[test]
 #[ignore = "Integration test requiring Ollama server"]
-async fn test_streaming_echo_tool_call() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-    let service = create_test_service().await?;
-    let metadata = HashMap::new();
+fn test_streaming_echo_tool_call() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        let service = create_test_service().await?;
+        let metadata = HashMap::new();
 
-    let args = create_manual_mode_args(
-        "Execute the echo command with arguments 'Hello from streaming test'",
-    );
+        let args = create_manual_mode_args(
+            "Execute the echo command with arguments 'Hello from streaming test'",
+        );
 
-    println!("Sending streaming request for echo command...");
-    let stream = timeout(
-        TEST_TIMEOUT,
-        service.clone().request_stream_chat(args, metadata, None),
-    )
-    .await??;
+        println!("Sending streaming request for echo command...");
+        let stream = timeout(
+            TEST_TIMEOUT,
+            service.clone().request_stream_chat(args, metadata, None),
+        )
+        .await??;
 
-    let mut stream = stream;
-    let mut found_tool_call = false;
-    let mut tool_fn_name = String::new();
+        let mut stream = stream;
+        let mut found_tool_call = false;
+        let mut tool_fn_name = String::new();
 
-    while let Some(result) = stream.next().await {
-        if let Some(ref pending) = result.pending_tool_calls {
-            for call in &pending.calls {
-                println!(
-                    "Found tool call: {} with args: {}",
-                    call.fn_name, call.fn_arguments
-                );
-                found_tool_call = true;
-                tool_fn_name = call.fn_name.clone();
+        while let Some(result) = stream.next().await {
+            if let Some(ref pending) = result.pending_tool_calls {
+                for call in &pending.calls {
+                    println!(
+                        "Found tool call: {} with args: {}",
+                        call.fn_name, call.fn_arguments
+                    );
+                    found_tool_call = true;
+                    tool_fn_name = call.fn_name.clone();
+                }
             }
         }
-    }
 
-    if found_tool_call {
-        println!("Successfully detected tool call: {}", tool_fn_name);
-        // The function should be COMMAND (the runner name)
-        assert!(
-            tool_fn_name.contains("COMMAND") || tool_fn_name.contains("command"),
-            "Expected COMMAND or similar function name, got: {}",
-            tool_fn_name
-        );
-    } else {
-        println!("No tool call detected - LLM may have responded differently");
-    }
+        if found_tool_call {
+            println!("Successfully detected tool call: {}", tool_fn_name);
+            // The function should be COMMAND (the runner name)
+            assert!(
+                tool_fn_name.contains("COMMAND") || tool_fn_name.contains("command"),
+                "Expected COMMAND or similar function name, got: {}",
+                tool_fn_name
+            );
+        } else {
+            println!("No tool call detected - LLM may have responded differently");
+        }
 
-    Ok(())
+        Ok(())
+    })
 }

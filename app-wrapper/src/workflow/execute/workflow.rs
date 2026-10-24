@@ -14,7 +14,6 @@ use crate::workflow::execute::context::{
 };
 use crate::workflow::execute::task::ExecutionId;
 use anyhow::Result;
-use app::app::job::UseJobApp;
 use app::app::job::execute::JobExecutorWrapper;
 use app::module::AppModule;
 use async_stream::stream;
@@ -26,13 +25,12 @@ use opentelemetry::{
     trace::{SpanRef, TraceContextExt},
 };
 use proto::jobworkerp::data::StorageType;
-use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 
 #[derive(Debug, Clone)]
 pub struct WorkflowExecutor {
-    pub default_task_timeout_sec: u64,
+    pub default_task_timeout: Option<std::time::Duration>,
     pub job_executors: Arc<JobExecutorWrapper>,
     pub workflow: Arc<WorkflowSchema>,
     pub workflow_context: Arc<RwLock<context::WorkflowContext>>,
@@ -45,7 +43,6 @@ impl UseExpressionTransformer for WorkflowExecutor {}
 impl UseExpression for WorkflowExecutor {}
 impl Tracing for WorkflowExecutor {}
 
-const DEFAULT_TASK_TIMEOUT_SEC: u64 = 3600; // 60 minutes
 const ROOT_TASK_NAME: &str = "ROOT";
 
 impl WorkflowTracing for WorkflowExecutor {}
@@ -133,11 +130,10 @@ impl WorkflowExecutor {
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module));
         // let checkpoint_epository = workflow.;
         Ok(Self {
-            default_task_timeout_sec: app_wrapper_module
+            default_task_timeout: app_wrapper_module
                 .config_module
                 .workflow_config
-                .task_default_timeout_sec
-                .unwrap_or(DEFAULT_TASK_TIMEOUT_SEC),
+                .task_default_timeout(),
             job_executors,
             workflow,
             workflow_context,
@@ -187,7 +183,7 @@ impl WorkflowExecutor {
         let cxc = cx.clone();
         let metadata = self.metadata.clone();
         let execution_id = self.execution_id.clone();
-        let default_task_timeout = Duration::from_secs(self.default_task_timeout_sec);
+        let default_task_timeout = self.default_task_timeout;
         let checkpoint_repository = self.checkpoint_repository.clone();
         let emit_streaming_data_flag = emit_streaming_data;
         let named_timeouts: Arc<NamedTimeouts> = Arc::new(
@@ -762,12 +758,9 @@ impl WorkflowExecutor {
     ///
     /// This function sets the workflow status to `Cancelled` and logs the cancellation.
     pub async fn cancel(&self) {
-        // Flip the workflow status to Cancelled and snapshot the in-flight
-        // child jobs in a single write-lock scope. Take the id for logging from
-        // the same guard so we never acquire a second (read) lock on
-        // `workflow_context` while the write guard is held — doing so would
-        // deadlock the task on tokio's RwLock.
-        let (workflow_id, running_jobs) = {
+        // Flipping the status to Cancelled stops new child jobs; closing the
+        // root scope below covers enqueues already past that check.
+        let (workflow_id, root_scope) = {
             let mut lock = self.workflow_context.write().await;
             if lock.status == WorkflowStatus::Running
                 || lock.status == WorkflowStatus::Pending
@@ -775,26 +768,20 @@ impl WorkflowExecutor {
             {
                 lock.status = WorkflowStatus::Cancelled;
             }
-            (lock.id, lock.snapshot_running_jobs().await)
+            (lock.id, lock.child_job_scope.clone())
         };
         tracing::info!(
-            "Cancel workflow: {}, id={}, in-flight child jobs={}",
+            "Cancel workflow: {}, id={}",
             self.workflow.document.name.to_string(),
             workflow_id,
-            running_jobs.len()
         );
 
-        // Actively cancel every in-flight child job so heavy child runners
-        // (e.g. VLM/LLM) stop promptly instead of running to completion as
-        // orphans. `delete_job` routes to `cancel_job` -> broadcast, which for
+        // Actively cancel every in-flight child job, including ones whose
+        // awaiting future was already dropped, so heavy child runners stop
+        // promptly. `delete_job` routes to `cancel_job` -> broadcast, which for
         // a nested WORKFLOW child triggers that child's own cancellation and
-        // recurses down the tree. Best-effort: a child that already finished
-        // (no longer Running) is a no-op.
-        for jid in running_jobs {
-            if let Err(e) = self.job_executors.job_app().delete_job(&jid).await {
-                tracing::warn!("Failed to cancel child job {}: {:?}", jid.value, e);
-            }
-        }
+        // recurses down the tree.
+        super::task::cancel_child_jobs(&self.job_executors, &root_scope, "workflow cancel").await;
     }
 
     /// Apply default values from JSON Schema to input.
@@ -1338,7 +1325,8 @@ mod tests {
                 .workflow_context
                 .read()
                 .await
-                .guard_running_job(child);
+                .child_job_scope
+                .guard(child);
             executor.workflow_context.write().await.status = WorkflowStatus::Running;
 
             // Sanity: the child is registered and Running before cancel().
@@ -1347,8 +1335,8 @@ mod tests {
                     .workflow_context
                     .read()
                     .await
-                    .snapshot_running_jobs()
-                    .await,
+                    .child_job_scope
+                    .snapshot(),
                 vec![child],
                 "child must be registered before cancel"
             );
@@ -1360,6 +1348,101 @@ mod tests {
 
             executor.cancel().await;
             child_guard.mark_completed();
+
+            // Workflow status flips and the child job was actively cancelled.
+            // A running child retains CANCELLING until its result processor decides
+            // whether an actual terminal result or cancellation is published.
+            assert_eq!(
+                executor.workflow_context.read().await.status,
+                WorkflowStatus::Cancelled
+            );
+            let child_status = status_repo.find_status(&child).await.unwrap();
+            assert_eq!(
+                child_status,
+                Some(JobProcessingStatus::Cancelling),
+                "registered child must retain CANCELLING after workflow fan-out"
+            );
+        })
+    }
+
+    #[test]
+    fn test_cancel_deletes_abandoned_child_jobs() {
+        use infra::infra::job::status::JobProcessingStatusRepository;
+        use proto::jobworkerp::data::{JobId, JobProcessingStatus};
+
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // rdb_chan (memory chan + SQLite) so the test runs without Redis,
+            // matching the Memory environment the cancellation issue targets.
+            let app_module = Arc::new(
+                app::module::test::create_rdb_chan_test_app(false, false)
+                    .await
+                    .unwrap(),
+            );
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+            let workflow = create_test_workflow();
+            let input = Arc::new(serde_json::json!({"test": "input"}));
+            let context = Arc::new(serde_json::json!({}));
+
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module,
+                app_module.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                None,
+                context.clone(),
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            // Simulate a running child job: mark it Running in the status
+            // repository and register it as in-flight on the workflow context.
+            // Use the SAME shared memory status repository that RdbChanJobAppImpl
+            // reads through — `AppModule::job_processing_status_repository()`
+            // constructs a fresh empty MemoryJobProcessingStatusRepository on
+            // each call (module.rs), so it would not observe the job app's writes.
+            let child = JobId { value: 4242 };
+            let status_repo = app_module
+                .repositories
+                .rdb_module
+                .as_ref()
+                .unwrap()
+                .memory_job_processing_status_repository
+                .clone();
+            status_repo
+                .upsert_status(&child, &JobProcessingStatus::Running)
+                .await
+                .unwrap();
+            let child_guard = executor
+                .workflow_context
+                .read()
+                .await
+                .child_job_scope
+                .guard(child);
+            executor.workflow_context.write().await.status = WorkflowStatus::Running;
+
+            // Sanity: the child is registered and Running before cancel().
+            assert_eq!(
+                executor
+                    .workflow_context
+                    .read()
+                    .await
+                    .child_job_scope
+                    .snapshot(),
+                vec![child],
+                "child must be registered before cancel"
+            );
+            assert_eq!(
+                status_repo.find_status(&child).await.unwrap(),
+                Some(JobProcessingStatus::Running),
+                "child must be Running before cancel"
+            );
+
+            // The awaiting future was dropped (e.g. task timeout or a
+            // disconnected stream) without deciding to cancel the child.
+            drop(child_guard);
+            executor.cancel().await;
 
             // Workflow status flips and the child job was actively cancelled.
             // A running child retains CANCELLING until its result processor decides
@@ -2239,7 +2322,7 @@ mod tests {
             )));
 
             let executor = WorkflowExecutor {
-                default_task_timeout_sec: 30,
+                default_task_timeout: Some(std::time::Duration::from_secs(30)),
                 job_executors: Arc::new(app::app::job::execute::JobExecutorWrapper::new(
                     app_module,
                 )),

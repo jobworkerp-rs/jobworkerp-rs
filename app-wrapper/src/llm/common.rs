@@ -10,15 +10,13 @@ use ollama_rs::Ollama;
 /// Default Ollama server URL used when settings leave `base_url` unset.
 pub const OLLAMA_DEFAULT_URL: &str = "http://localhost:11434";
 
-/// Normalize a custom base URL into a GenAI endpoint string: ensure the path
-/// ends with a trailing slash, defaulting an empty/root path to `/v1/`, so the
-/// adapter appends request paths correctly. Shared by the completion/chat/
-/// embedding GenAI service target resolvers.
-pub fn normalize_genai_endpoint_url(url: &str) -> Result<String> {
+/// Ensure the custom base URL ends with `/`: adapters resolve request paths
+/// relative to it, which drops or merges the last segment otherwise. The path
+/// is passed through unchanged; callers supply the provider's full base path
+/// (e.g. `.../v1/`), as genai expects.
+fn ensure_trailing_slash(url: &str) -> Result<String> {
     let mut u = url.parse::<url::Url>()?;
-    if u.path().is_empty() || u.path() == "/" {
-        u.set_path("/v1/");
-    } else if !u.path().ends_with('/') {
+    if !u.path().ends_with('/') {
         u.set_path(&format!("{}/", u.path()));
     }
     Ok(u.to_string())
@@ -35,7 +33,7 @@ pub(crate) fn apply_genai_endpoint_override(
         return Ok(());
     };
     service_target.endpoint = Endpoint::from_owned(
-        normalize_genai_endpoint_url(endpoint_url).context("invalid GenAI endpoint URL")?,
+        ensure_trailing_slash(endpoint_url).context("invalid GenAI endpoint URL")?,
     );
     Ok(())
 }
@@ -49,7 +47,7 @@ pub(crate) async fn resolve_fixed_genai_service_target(
     model_name: &str,
     endpoint_url: Option<&str>,
 ) -> Result<ServiceTarget> {
-    let mut service_target = Client::default()
+    let mut service_target = build_genai_client(None)?
         .resolve_service_target(model_name)
         .await
         .with_context(|| {
@@ -57,6 +55,15 @@ pub(crate) async fn resolve_fixed_genai_service_target(
         })?;
     apply_genai_endpoint_override(&mut service_target, endpoint_url)?;
     Ok(service_target)
+}
+
+/// Build a GenAI client, optionally pinned to a service target resolver.
+pub(crate) fn build_genai_client(resolver: Option<ServiceTargetResolver>) -> Result<Client> {
+    let mut builder = Client::builder();
+    if let Some(resolver) = resolver {
+        builder = builder.with_service_target_resolver(resolver);
+    }
+    builder.build().context("failed to build GenAI client")
 }
 
 /// Construct the target resolver shared by GenAI completion and chat.
@@ -125,32 +132,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_normalize_defaults_root_to_v1() {
+    fn test_ensure_trailing_slash_does_not_insert_a_version_path() {
+        for url in ["http://host:8080", "http://host:8080/"] {
+            assert_eq!(ensure_trailing_slash(url).unwrap(), "http://host:8080/");
+        }
         assert_eq!(
-            normalize_genai_endpoint_url("http://host:8080").unwrap(),
-            "http://host:8080/v1/"
-        );
-        assert_eq!(
-            normalize_genai_endpoint_url("http://host:8080/").unwrap(),
+            ensure_trailing_slash("http://host:8080/v1/").unwrap(),
             "http://host:8080/v1/"
         );
     }
 
     #[test]
-    fn test_normalize_appends_trailing_slash() {
-        assert_eq!(
-            normalize_genai_endpoint_url("http://host/custom/path").unwrap(),
-            "http://host/custom/path/"
-        );
-        assert_eq!(
-            normalize_genai_endpoint_url("http://host/custom/path/").unwrap(),
-            "http://host/custom/path/"
-        );
+    fn test_ensure_trailing_slash_appends_trailing_slash() {
+        for url in ["http://host/custom/path", "http://host/custom/path/"] {
+            assert_eq!(
+                ensure_trailing_slash(url).unwrap(),
+                "http://host/custom/path/"
+            );
+        }
     }
 
     #[test]
-    fn test_normalize_rejects_invalid() {
-        assert!(normalize_genai_endpoint_url("not a url").is_err());
+    fn test_ensure_trailing_slash_rejects_invalid() {
+        assert!(ensure_trailing_slash("not a url").is_err());
+    }
+
+    #[tokio::test]
+    async fn fixed_target_passes_a_root_endpoint_through_for_any_adapter() {
+        for model in ["qwen3.5:9b", "openai::fixed-model"] {
+            let target = resolve_fixed_genai_service_target(model, Some("http://host:11434"))
+                .await
+                .expect("target resolves without contacting a provider");
+            assert_eq!(target.endpoint.base_url(), "http://host:11434/", "{model}");
+        }
     }
 
     #[tokio::test]
@@ -168,7 +182,8 @@ mod tests {
 
     #[tokio::test]
     async fn endpoint_override_preserves_a_request_model() {
-        let mut target = Client::default()
+        let mut target = Client::new()
+            .expect("client builds")
             .resolve_service_target("openai::request-model")
             .await
             .expect("target resolves without contacting a provider");

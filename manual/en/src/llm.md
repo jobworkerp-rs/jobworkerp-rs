@@ -88,7 +88,7 @@ Set `base_url` in `GenaiRunnerSettings` to point to a custom endpoint. This is u
 }
 ```
 
-If the path is empty or `/`, it is automatically normalized to `/v1/`.
+`base_url` is used as given; only a trailing `/` is added. Include the provider's API base path: OpenAI-compatible servers usually need `/v1/` (e.g. `http://host:8000/v1/`). The Ollama adapters (`ollama::` and model names whose provider cannot be inferred, e.g. `qwen3.5:9b`) use the native Ollama API at the server root, so specify only the host (e.g. `http://localhost:11434`).
 
 > **Note:** When using an OpenAI-compatible proxy (e.g. LiteLLM) for non-OpenAI models, add the `openai::` prefix to the model name to force the OpenAI adapter (e.g. `openai::claude-sonnet-4-20250514`). Without the prefix, the provider is inferred from the model name and a non-OpenAI protocol will be used, which will not work with the proxy.
 

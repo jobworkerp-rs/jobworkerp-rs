@@ -24,8 +24,31 @@ message LLMChatArgs {
     // The seed to use when generating random samples.
     optional int32 seed = 6;
 
-    // extract reasoning content from the response
+    // Extract reasoning content from the response.
+    // When reasoning_effort is unset, false also requests "no thinking"
+    // (same as reasoning_effort = "none"), and true enables thinking on Ollama.
     optional bool extract_reasoning_content = 7;
+
+    // Reasoning (thinking) intensity: "none", "minimal", "low", "medium",
+    // "high", "xhigh", "max", or a token budget number (e.g. "2048").
+    // Takes precedence over extract_reasoning_content. Invalid values are
+    // rejected before the request is sent.
+    // genai: forwarded as the provider-specific reasoning setting.
+    // Ollama: mapped to `think` (none -> false, minimal/low -> low,
+    // medium -> medium, high/xhigh/max -> high, budget -> true).
+    optional string reasoning_effort = 8;
+
+    // JSON object sent as `chat_template_kwargs` in the request body, intended
+    // for OpenAI-compatible local servers (llama.cpp, vLLM, omlx, ...), e.g.
+    // '{"enable_thinking": false}'. Non-object values are rejected before the
+    // request is sent. genai: forwarded verbatim, so hosted providers that do
+    // not accept the field may reject the request. Ollama: ignored with a
+    // warning (use reasoning_effort / extract_reasoning_content instead).
+    // genai omlx adapter ("omlx::" models): reasoning_effort "none" is sent as
+    // chat_template_kwargs {"enable_thinking": false} (keys given here win),
+    // and other reasoning_effort values are dropped when this field is set,
+    // because the adapter would otherwise overwrite chat_template_kwargs.
+    optional string chat_template_kwargs = 9;
   }
 
   message FunctionOptions {

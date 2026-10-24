@@ -70,14 +70,14 @@ gRPC を公開する環境では `AUTH_TOKEN` を設定してください。保�
    ```shell
    docker build -f worker-main/Dockerfile \
      --build-arg CARGO_FEATURES=mysql \
-     -t gitea.sutr.app/jobworkerp-rs/worker:test-<commit-sha> .
+     -t <registry>/<namespace>/worker:test-<commit-sha> .
    ```
 
-2. Gitea Package Registry にログインしてテストタグを公開します。
+2. 利用するコンテナレジストリにログインしてテストタグを公開します。`<registry>/<namespace>` は環境に合わせて置き換えてください (例: `ghcr.io/<owner>`)。
 
    ```shell
-   docker login gitea.sutr.app
-   docker push gitea.sutr.app/jobworkerp-rs/worker:test-<commit-sha>
+   docker login <registry>
+   docker push <registry>/<namespace>/worker:test-<commit-sha>
    ```
 
 3. デプロイ対象の worker image をこのタグへ更新し、worker の起動ログと job 実行を確認します。

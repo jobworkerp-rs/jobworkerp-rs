@@ -36,7 +36,7 @@ Workflow Runnerは、定義された順序で複数のジョブを実行した�
 |-----------|------|------|
 | `workflow_url` | string (oneof) | ワークフロー定義ファイルへのパスまたはURL（JSON/YAML） |
 | `workflow_data` | string (oneof) | インラインのワークフロー定義（JSON/YAML文字列） |
-| `workflow_context` | string (省略可) | コンテキスト変数（JSONオブジェクト文字列）。設定した場合、実行時引数の`workflow_context`は無視される |
+| `workflow_context` | string (省略可) | コンテキスト変数（JSONオブジェクト文字列）。実行時引数の`workflow_context`とマージされ、キーが重複した場合は設定側が優先される |
 
 > `workflow_url`と`workflow_data`は排他的です（`oneof workflow_source`）。ジョブ引数でワークフローソースを指定する場合、設定は省略可能です。
 
@@ -49,7 +49,7 @@ Workflow Runnerは、定義された順序で複数のジョブを実行した�
 | `workflow_url` | string (oneof, 省略可) | URL/パスでワークフローソースを上書き |
 | `workflow_data` | string (oneof, 省略可) | インライン定義でワークフローソースを上書き |
 | `input` | string | ワークフローコンテキストへの入力（JSONまたはプレーン文字列） |
-| `workflow_context` | string (省略可) | 追加のコンテキスト情報（JSON）。ランナー設定側に`workflow_context`がある場合は無視される |
+| `workflow_context` | string (省略可) | 追加のコンテキスト情報（JSONオブジェクト）。ランナー設定側の`workflow_context`とマージされ、キーが重複した場合は設定側が優先される |
 | `execution_id` | string (省略可) | ワークフロー実行インスタンスの一意識別子 |
 | `from_checkpoint` | Checkpoint (省略可) | 特定のチェックポイントから再開するためのデータ |
 
@@ -225,13 +225,52 @@ raise:
     detail: '${ "requestId=" + $error.detail.requestId }'
 ```
 
+### タスクのタイムアウト
+
+タスクの `timeout`（およびワークフロー全体の `timeout`）は任意指定です。指定しないタスクにタイムアウトはありません。ただし `WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC` を設定した場合は、`timeout` 未指定の run/call タスクだけにその値が適用されます。do/try/for/fork などのタスクには適用されないため、外側のタスクの `timeout` を内側より長く調整する必要はありません。ワークフロー文書直下の `timeout` は暗黙のルートタスクにだけ適用され、内側のタスクの既定値にはなりません（期限に達するとワークフロー全体が中断されます）。
+
+タイムアウトしたタスクの内側で実行中の子ジョブは取り消されます。発生するエラーは Open Workflow Specification の標準エラーで、`type` が `https://open-workflow-specification.org/spec/1.0.0/errors/timeout`、`status` が `408` です。
+
+```yaml
+- guarded:
+    try:
+      - slow:
+          timeout:
+            after:
+              minutes: 10
+          run:
+            function:
+              runnerName: COMMAND
+              arguments:
+                command: ./long-job.sh
+    catch:
+      errors:
+        with:
+          type: https://open-workflow-specification.org/spec/1.0.0/errors/timeout
+      do:
+        - fallback:
+            set:
+              timedOut: true
+```
+
+### 子ジョブの取り消し
+
+ワークフローが実行中の子ジョブ（run/call タスクが発行したジョブ）を取り消すのは、次のように処理を打ち切ると決めた時点だけです。
+
+- ワークフロージョブの明示的な取り消し（JobService の Delete など）
+- ワークフロージョブ自体の job timeout
+- タスクのタイムアウト（タイムアウトしたタスクの内側の子ジョブだけが対象。fork の他の枝や並列 for の他の item は対象外）
+- `inParallel: true` の for で、ある item が失敗して `onError: break` により打ち切られたとき（他の item の子ジョブ）。`onError: continue` では他の item に影響しません
+- `fork` の `compete: true` で勝者が決まったとき（負けた枝の子ジョブ）
+
+ストリームの受信側が切断されただけでは子ジョブは取り消されません。結果は後から ListenStream などで受け取り直せます。
+
 ### 環境変数の参照
 
 jq構文では、jaqクレートの組み込み `env` 関数を通じてプロセスの環境変数を参照できます：
 
 ```yaml
 # jq構文での環境変数参照
-botToken: ${env.SLACK_BOT_TOKEN}
 apiKey: ${env.API_KEY}
 ```
 
@@ -245,7 +284,7 @@ apiKey: ${env.API_KEY}
 
 **ランナー設定（WorkflowRunnerSettings）で指定する場合：**
 
-ワーカー作成時に `runner_settings` の `workflow_context` にJSON文字列を設定します。設定側で指定した場合、実行時引数の `workflow_context` は無視されます。
+ワーカー作成時に `runner_settings` の `workflow_context` にJSON文字列を設定します。実行時引数の `workflow_context` とマージされ、キーが重複した場合は設定側の値が優先されます。
 
 ```shell
 # ワーカー作成時にコンテキスト変数を固定設定
@@ -253,12 +292,12 @@ $ ./target/release/jobworkerp-client worker create \
     --name "MyWorkflow" \
     --runner-name WORKFLOW \
     --response-type DIRECT \
-    --settings '{"workflow_url":"./my-workflow.yaml", "workflow_context":"{\"api_url\":\"https://api.example.com\",\"slack_token\":\"xoxb-xxx\"}"}'
+    --settings '{"workflow_url":"./my-workflow.yaml", "workflow_context":"{\"api_url\":\"https://api.example.com\",\"tenant\":\"example\"}"}'
 ```
 
 **ジョブ引数（WorkflowRunArgs）で指定する場合：**
 
-ランナー設定に `workflow_context` が未設定の場合のみ有効です。
+ランナー設定の `workflow_context` とマージされます。両方に同じキーがある場合は設定側の値が使われます。
 
 ```shell
 # 実行時にコンテキスト変数を渡す

@@ -21,6 +21,7 @@ use app_wrapper::runner::{RunnerFactory, UseRunnerFactory};
 use command_utils::trace::Tracing;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
+use infra_utils::infra::test::TEST_RUNTIME;
 use worker_app::worker::runner::JobRunner;
 use worker_app::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use worker_app::worker::runner::result::RunnerResultHandler;
@@ -150,52 +151,55 @@ fn create_test_data() -> (WorkerData, RunnerData) {
 }
 
 /// Test basic Python script execution with real output verification
-#[tokio::test]
-async fn test_real_python_basic_execution() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+#[test]
+fn test_real_python_basic_execution() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
-    let job_runner = get_real_job_runner().await;
-    let script = r#"
+        let job_runner = get_real_job_runner().await;
+        let script = r#"
 print("Hello Real Python E2E Test")
 print("Python version check successful")
 "#;
-    let job = create_python_job(script, 15000);
-    let (worker_data, runner_data) = create_test_data();
-    let worker_id = WorkerId { value: 1 };
+        let job = create_python_job(script, 15000);
+        let (worker_data, runner_data) = create_test_data();
+        let worker_id = WorkerId { value: 1 };
 
-    let start_time = Instant::now();
-    let (result, _stream) = job_runner
-        .run_job(&runner_data, &worker_id, &worker_data, job)
-        .await;
-    let elapsed_time = start_time.elapsed();
+        let start_time = Instant::now();
+        let (result, _stream) = job_runner
+            .run_job(&runner_data, &worker_id, &worker_data, job)
+            .await;
+        let elapsed_time = start_time.elapsed();
 
-    assert!(result.data.is_some());
-    let data = result.data.unwrap();
-    assert_eq!(data.status, ResultStatus::Success as i32);
+        assert!(result.data.is_some());
+        let data = result.data.unwrap();
+        assert_eq!(data.status, ResultStatus::Success as i32);
 
-    assert!(data.output.is_some());
-    let command_result: PythonCommandResult =
-        ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
+        assert!(data.output.is_some());
+        let command_result: PythonCommandResult =
+            ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
-    tracing::debug!("Command result: {:#?}", command_result);
-    assert_eq!(command_result.exit_code, 0);
-    let stdout = command_result.output;
-    assert!(stdout.contains("Hello Real Python E2E Test"));
-    assert!(stdout.contains("Python version check successful"));
+        tracing::debug!("Command result: {:#?}", command_result);
+        assert_eq!(command_result.exit_code, 0);
+        let stdout = command_result.output;
+        assert!(stdout.contains("Hello Real Python E2E Test"));
+        assert!(stdout.contains("Python version check successful"));
 
-    // Should complete within reasonable time
-    assert!(elapsed_time < Duration::from_secs(10));
+        // Should complete within reasonable time
+        assert!(elapsed_time < Duration::from_secs(10));
 
-    println!("✓ Real PYTHON_COMMAND basic execution test passed");
-    Ok(())
+        println!("✓ Real PYTHON_COMMAND basic execution test passed");
+        Ok(())
+    })
 }
 
 /// Test Python script with actual mathematical computations
-#[tokio::test]
-async fn test_real_python_mathematical_computations() -> Result<()> {
-    let job_runner = get_real_job_runner().await;
+#[test]
+fn test_real_python_mathematical_computations() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let job_runner = get_real_job_runner().await;
 
-    let script = r#"
+        let script = r#"
 import math
 
 # Mathematical computations
@@ -215,41 +219,43 @@ assert result3 == 1048576, f"Expected 1048576, got {result3}"
 print("All mathematical computations verified successfully")
 "#;
 
-    let job = create_python_job(script, 15000);
-    let (worker_data, runner_data) = create_test_data();
-    let worker_id = WorkerId { value: 1 };
+        let job = create_python_job(script, 15000);
+        let (worker_data, runner_data) = create_test_data();
+        let worker_id = WorkerId { value: 1 };
 
-    let (result, _stream) = job_runner
-        .run_job(&runner_data, &worker_id, &worker_data, job)
-        .await;
+        let (result, _stream) = job_runner
+            .run_job(&runner_data, &worker_id, &worker_data, job)
+            .await;
 
-    let data = result.data.unwrap();
-    assert_eq!(data.status, ResultStatus::Success as i32);
+        let data = result.data.unwrap();
+        assert_eq!(data.status, ResultStatus::Success as i32);
 
-    let command_result: PythonCommandResult =
-        ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
+        let command_result: PythonCommandResult =
+            ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
-    assert_eq!(command_result.exit_code, 0);
-    let stdout = command_result.output;
+        assert_eq!(command_result.exit_code, 0);
+        let stdout = command_result.output;
 
-    println!("Command stdout:\n{stdout}");
-    assert!(stdout.contains("Sum result: 499500"));
-    assert!(stdout.contains("Pi calculation: 314.15927"));
-    assert!(stdout.contains("Power calculation: 1048576"));
-    assert!(stdout.contains("All mathematical computations verified successfully"));
+        println!("Command stdout:\n{stdout}");
+        assert!(stdout.contains("Sum result: 499500"));
+        assert!(stdout.contains("Pi calculation: 314.15927"));
+        assert!(stdout.contains("Power calculation: 1048576"));
+        assert!(stdout.contains("All mathematical computations verified successfully"));
 
-    println!("✓ Real PYTHON_COMMAND mathematical computations test passed");
-    Ok(())
+        println!("✓ Real PYTHON_COMMAND mathematical computations test passed");
+        Ok(())
+    })
 }
 
 /// Test Python script with actual file system operations
-#[tokio::test]
-async fn test_real_python_filesystem_operations() -> Result<()> {
-    let job_runner = get_real_job_runner().await;
+#[test]
+fn test_real_python_filesystem_operations() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let job_runner = get_real_job_runner().await;
 
-    let temp_file = format!("/tmp/python_e2e_test_{}.txt", std::process::id());
-    let script = format!(
-        r#"
+        let temp_file = format!("/tmp/python_e2e_test_{}.txt", std::process::id());
+        let script = format!(
+            r#"
 import os
 import json
 
@@ -282,40 +288,42 @@ assert not os.path.exists(temp_file), f"File {{temp_file}} was not cleaned up"
 
 print("File system operations completed successfully")
 "#,
-    );
+        );
 
-    let job = create_python_job(&script, 15000);
-    let (worker_data, runner_data) = create_test_data();
-    let worker_id = WorkerId { value: 1 };
+        let job = create_python_job(&script, 15000);
+        let (worker_data, runner_data) = create_test_data();
+        let worker_id = WorkerId { value: 1 };
 
-    let (result, _stream) = job_runner
-        .run_job(&runner_data, &worker_id, &worker_data, job)
-        .await;
+        let (result, _stream) = job_runner
+            .run_job(&runner_data, &worker_id, &worker_data, job)
+            .await;
 
-    let data = result.data.unwrap();
-    assert_eq!(data.status, ResultStatus::Success as i32);
+        let data = result.data.unwrap();
+        assert_eq!(data.status, ResultStatus::Success as i32);
 
-    let command_result: PythonCommandResult =
-        ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
+        let command_result: PythonCommandResult =
+            ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
-    assert_eq!(command_result.exit_code, 0);
-    let stdout = command_result.output;
+        assert_eq!(command_result.exit_code, 0);
+        let stdout = command_result.output;
 
-    assert!(stdout.contains(&format!("Created file: {temp_file}",)));
-    assert!(stdout.contains("File size:"));
-    assert!(stdout.contains("Real Python E2E Test"));
-    assert!(stdout.contains("File system operations completed successfully"));
+        assert!(stdout.contains(&format!("Created file: {temp_file}",)));
+        assert!(stdout.contains("File size:"));
+        assert!(stdout.contains("Real Python E2E Test"));
+        assert!(stdout.contains("File system operations completed successfully"));
 
-    println!("✓ Real PYTHON_COMMAND filesystem operations test passed");
-    Ok(())
+        println!("✓ Real PYTHON_COMMAND filesystem operations test passed");
+        Ok(())
+    })
 }
 
 /// Test Python script with actual package imports and data processing
-#[tokio::test]
-async fn test_real_python_package_imports_and_data_processing() -> Result<()> {
-    let job_runner = get_real_job_runner().await;
+#[test]
+fn test_real_python_package_imports_and_data_processing() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let job_runner = get_real_job_runner().await;
 
-    let script = r#"
+        let script = r#"
 import json
 import datetime
 import base64
@@ -370,41 +378,43 @@ assert min_val == 10, f"Expected min 10, got {min_val}"
 print("Data processing with packages completed successfully")
 "#;
 
-    let job = create_python_job(script, 20000);
-    let (worker_data, runner_data) = create_test_data();
-    let worker_id = WorkerId { value: 1 };
+        let job = create_python_job(script, 20000);
+        let (worker_data, runner_data) = create_test_data();
+        let worker_id = WorkerId { value: 1 };
 
-    let (result, _stream) = job_runner
-        .run_job(&runner_data, &worker_id, &worker_data, job)
-        .await;
+        let (result, _stream) = job_runner
+            .run_job(&runner_data, &worker_id, &worker_data, job)
+            .await;
 
-    let data = result.data.unwrap();
-    assert_eq!(data.status, ResultStatus::Success as i32);
+        let data = result.data.unwrap();
+        assert_eq!(data.status, ResultStatus::Success as i32);
 
-    let command_result: PythonCommandResult =
-        ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
+        let command_result: PythonCommandResult =
+            ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
-    assert_eq!(command_result.exit_code, 0);
-    let stdout = command_result.output;
+        assert_eq!(command_result.exit_code, 0);
+        let stdout = command_result.output;
 
-    assert!(stdout.contains("Original message: Real Python E2E Test Data Processing"));
-    assert!(stdout.contains("Base64 encoded:"));
-    assert!(stdout.contains("SHA256 hash:"));
-    assert!(stdout.contains("URL encoded:"));
-    assert!(stdout.contains("Statistics - Total: 150, Average: 30"));
-    assert!(stdout.contains("Data timestamp:"));
-    assert!(stdout.contains("Data processing with packages completed successfully"));
+        assert!(stdout.contains("Original message: Real Python E2E Test Data Processing"));
+        assert!(stdout.contains("Base64 encoded:"));
+        assert!(stdout.contains("SHA256 hash:"));
+        assert!(stdout.contains("URL encoded:"));
+        assert!(stdout.contains("Statistics - Total: 150, Average: 30"));
+        assert!(stdout.contains("Data timestamp:"));
+        assert!(stdout.contains("Data processing with packages completed successfully"));
 
-    println!("✓ Real PYTHON_COMMAND package imports and data processing test passed");
-    Ok(())
+        println!("✓ Real PYTHON_COMMAND package imports and data processing test passed");
+        Ok(())
+    })
 }
 
 /// Test Python error handling with actual Python exceptions
-#[tokio::test]
-async fn test_real_python_error_handling() -> Result<()> {
-    let job_runner = get_real_job_runner().await;
+#[test]
+fn test_real_python_error_handling() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let job_runner = get_real_job_runner().await;
 
-    let script = r#"
+        let script = r#"
 # This script will intentionally cause a Python error
 print("Starting error test")
 
@@ -434,43 +444,45 @@ print("Error handling test completed successfully")
 raise ValueError("Intentional error for E2E testing")
 "#;
 
-    let job = create_python_job(script, 15000);
-    let (worker_data, runner_data) = create_test_data();
-    let worker_id = WorkerId { value: 1 };
+        let job = create_python_job(script, 15000);
+        let (worker_data, runner_data) = create_test_data();
+        let worker_id = WorkerId { value: 1 };
 
-    let (result, _stream) = job_runner
-        .run_job(&runner_data, &worker_id, &worker_data, job)
-        .await;
+        let (result, _stream) = job_runner
+            .run_job(&runner_data, &worker_id, &worker_data, job)
+            .await;
 
-    let data = result.data.unwrap();
-    assert_eq!(data.status, ResultStatus::Success as i32); // Runner completed successfully
+        let data = result.data.unwrap();
+        assert_eq!(data.status, ResultStatus::Success as i32); // Runner completed successfully
 
-    let command_result: PythonCommandResult =
-        ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
+        let command_result: PythonCommandResult =
+            ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
-    assert_ne!(command_result.exit_code, 0); // Non-zero exit code
+        assert_ne!(command_result.exit_code, 0); // Non-zero exit code
 
-    let stdout = &command_result.output;
-    let stderr = command_result.output_stderr.as_ref().unwrap();
+        let stdout = &command_result.output;
+        let stderr = command_result.output_stderr.as_ref().unwrap();
 
-    assert!(stdout.contains("Starting error test"));
-    assert!(stdout.contains("Caught expected error: division by zero"));
-    assert!(stdout.contains("Caught expected file error:"));
-    assert!(stdout.contains("Caught expected index error:"));
-    assert!(stdout.contains("Error handling test completed successfully"));
+        assert!(stdout.contains("Starting error test"));
+        assert!(stdout.contains("Caught expected error: division by zero"));
+        assert!(stdout.contains("Caught expected file error:"));
+        assert!(stdout.contains("Caught expected index error:"));
+        assert!(stdout.contains("Error handling test completed successfully"));
 
-    assert!(stderr.contains("ValueError: Intentional error for E2E testing"));
+        assert!(stderr.contains("ValueError: Intentional error for E2E testing"));
 
-    println!("✓ Real PYTHON_COMMAND error handling test passed");
-    Ok(())
+        println!("✓ Real PYTHON_COMMAND error handling test passed");
+        Ok(())
+    })
 }
 
 /// Test Python timeout with actual long-running script
-#[tokio::test]
-async fn test_real_python_timeout() -> Result<()> {
-    let job_runner = get_real_job_runner().await;
+#[test]
+fn test_real_python_timeout() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let job_runner = get_real_job_runner().await;
 
-    let script = r#"
+        let script = r#"
 import time
 
 print("Starting long-running Python script")
@@ -484,93 +496,96 @@ for i in range(10):
 print("This should not be reached due to timeout")
 "#;
 
-    let job = create_python_job(script, 3000); // 3 second timeout
-    let (worker_data, runner_data) = create_test_data();
-    let worker_id = WorkerId { value: 1 };
+        let job = create_python_job(script, 3000); // 3 second timeout
+        let (worker_data, runner_data) = create_test_data();
+        let worker_id = WorkerId { value: 1 };
 
-    let start_time = Instant::now();
-    let (result, _stream) = job_runner
-        .run_job(&runner_data, &worker_id, &worker_data, job)
-        .await;
-    let elapsed_time = start_time.elapsed();
+        let start_time = Instant::now();
+        let (result, _stream) = job_runner
+            .run_job(&runner_data, &worker_id, &worker_data, job)
+            .await;
+        let elapsed_time = start_time.elapsed();
 
-    let data = result.data.unwrap();
-    assert_eq!(data.status, ResultStatus::MaxRetry as i32);
+        let data = result.data.unwrap();
+        assert_eq!(data.status, ResultStatus::MaxRetry as i32);
 
-    assert!(String::from_utf8_lossy(&data.output.unwrap().items).contains("timeout"));
+        assert!(String::from_utf8_lossy(&data.output.unwrap().items).contains("timeout"));
 
-    // Should timeout around 3 seconds, not wait full 10 seconds
-    assert!(elapsed_time >= Duration::from_secs(3));
-    assert!(elapsed_time < Duration::from_secs(9));
+        // Should timeout around 3 seconds, not wait full 10 seconds
+        assert!(elapsed_time >= Duration::from_secs(3));
+        assert!(elapsed_time < Duration::from_secs(9));
 
-    println!("✓ Real PYTHON_COMMAND timeout test passed");
-    Ok(())
+        println!("✓ Real PYTHON_COMMAND timeout test passed");
+        Ok(())
+    })
 }
 
 /// Integration test demonstrating complete PYTHON_COMMAND runner real workflow
-#[tokio::test]
-async fn test_real_python_runner_complete_workflow() -> Result<()> {
-    println!("=== Real PYTHON_COMMAND Runner Complete Workflow Test ===");
+#[test]
+fn test_real_python_runner_complete_workflow() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        println!("=== Real PYTHON_COMMAND Runner Complete Workflow Test ===");
 
-    let job_runner = get_real_job_runner().await;
-    let (worker_data, runner_data) = create_test_data();
-    let worker_id = WorkerId { value: 1 };
+        let job_runner = get_real_job_runner().await;
+        let (worker_data, runner_data) = create_test_data();
+        let worker_id = WorkerId { value: 1 };
 
-    // Test 1: Basic Python execution
-    let basic_script = r#"print("Workflow Test 1: Basic Python")"#;
-    let basic_job = create_python_job(basic_script, 10000);
-    let (result1, _) = job_runner
-        .run_job(&runner_data, &worker_id, &worker_data, basic_job)
-        .await;
-    assert_eq!(result1.data.unwrap().status, ResultStatus::Success as i32);
-    println!("  ✓ Basic Python execution passed");
+        // Test 1: Basic Python execution
+        let basic_script = r#"print("Workflow Test 1: Basic Python")"#;
+        let basic_job = create_python_job(basic_script, 10000);
+        let (result1, _) = job_runner
+            .run_job(&runner_data, &worker_id, &worker_data, basic_job)
+            .await;
+        assert_eq!(result1.data.unwrap().status, ResultStatus::Success as i32);
+        println!("  ✓ Basic Python execution passed");
 
-    // Test 2: Mathematical computation
-    let math_script = r#"
+        // Test 2: Mathematical computation
+        let math_script = r#"
 import math
 result = math.sqrt(16) + math.pow(2, 3)
 print(f"Mathematical result: {result}")
 assert result == 12.0, f"Expected 12.0, got {result}"
 "#;
-    let math_job = create_python_job(math_script, 10000);
-    let (result2, _) = job_runner
-        .run_job(&runner_data, &worker_id, &worker_data, math_job)
-        .await;
-    assert_eq!(result2.data.unwrap().status, ResultStatus::Success as i32);
-    println!("  ✓ Mathematical computation passed");
+        let math_job = create_python_job(math_script, 10000);
+        let (result2, _) = job_runner
+            .run_job(&runner_data, &worker_id, &worker_data, math_job)
+            .await;
+        assert_eq!(result2.data.unwrap().status, ResultStatus::Success as i32);
+        println!("  ✓ Mathematical computation passed");
 
-    // Test 3: Data processing
-    let data_script = r#"
+        // Test 3: Data processing
+        let data_script = r#"
 import json
 data = {"test": "workflow", "values": [1, 2, 3]}
 json_str = json.dumps(data)
 parsed = json.loads(json_str)
 print(f"Data processing: {parsed}")
 "#;
-    let data_job = create_python_job(data_script, 10000);
-    let (result3, _) = job_runner
-        .run_job(&runner_data, &worker_id, &worker_data, data_job)
-        .await;
-    assert_eq!(result3.data.unwrap().status, ResultStatus::Success as i32);
-    println!("  ✓ Data processing passed");
+        let data_job = create_python_job(data_script, 10000);
+        let (result3, _) = job_runner
+            .run_job(&runner_data, &worker_id, &worker_data, data_job)
+            .await;
+        assert_eq!(result3.data.unwrap().status, ResultStatus::Success as i32);
+        println!("  ✓ Data processing passed");
 
-    // Test 4: Memory monitoring verification
-    let memory_script = r#"
+        // Test 4: Memory monitoring verification
+        let memory_script = r#"
 # Create some data to use memory
 data = [i**2 for i in range(1000)]
 total = sum(data)
 print(f"Memory test completed with result: {total}")
 "#;
-    let memory_job = create_python_job(memory_script, 10000);
-    let (result4, _) = job_runner
-        .run_job(&runner_data, &worker_id, &worker_data, memory_job)
-        .await;
-    let data4 = result4.data.unwrap();
-    assert_eq!(data4.status, ResultStatus::Success as i32);
+        let memory_job = create_python_job(memory_script, 10000);
+        let (result4, _) = job_runner
+            .run_job(&runner_data, &worker_id, &worker_data, memory_job)
+            .await;
+        let data4 = result4.data.unwrap();
+        assert_eq!(data4.status, ResultStatus::Success as i32);
 
-    let _command_result: PythonCommandResult =
-        ProstMessageCodec::deserialize_message(&data4.output.unwrap().items)?;
+        let _command_result: PythonCommandResult =
+            ProstMessageCodec::deserialize_message(&data4.output.unwrap().items)?;
 
-    println!("=== Real PYTHON_COMMAND Runner Complete Workflow Test PASSED ===");
-    Ok(())
+        println!("=== Real PYTHON_COMMAND Runner Complete Workflow Test PASSED ===");
+        Ok(())
+    })
 }

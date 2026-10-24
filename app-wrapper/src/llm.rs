@@ -3,6 +3,7 @@ pub mod common;
 pub mod completion;
 pub mod embedding;
 pub mod generic_tracing_helper;
+pub mod reasoning;
 pub(crate) mod schema_sanitize;
 pub mod token_count;
 pub mod tracing;
@@ -23,5 +24,16 @@ pub trait ThinkTagHelper {
             return (new_prompt.trim().to_string(), think);
         }
         (prompt.trim().to_string(), None)
+    }
+
+    /// Reasoning reported by the provider (e.g. OpenAI-compatible `reasoning_content`) takes
+    /// precedence; `<think>` tags inlined in the text are the fallback for servers that do not
+    /// separate it.
+    fn split_text_and_reasoning(
+        text: &str,
+        provider_reasoning: Option<String>,
+    ) -> (String, Option<String>) {
+        let (text, think) = Self::divide_think_tag(text.to_string());
+        (text, provider_reasoning.filter(|r| !r.is_empty()).or(think))
     }
 }

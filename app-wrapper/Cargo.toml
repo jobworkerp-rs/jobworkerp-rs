@@ -38,7 +38,7 @@ dotenvy = { workspace = true }
 envy = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-genai = "0.6.5"
+genai = "0.7.0-rc.4"
 #genai = { git = "https://github.com/jeremychone/rust-genai", branch = "main" }
 # HF tokenizer source download for embedding chunking (Phase 3). rustls-tls
 # avoids a system OpenSSL dependency.

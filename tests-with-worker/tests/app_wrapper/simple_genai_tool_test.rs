@@ -8,6 +8,7 @@
 use anyhow::Result;
 use app::app::function::function_set::FunctionSetApp;
 use app_wrapper::llm::chat::genai::GenaiChatService;
+use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, LlmOptions};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
@@ -96,6 +97,7 @@ fn create_chat_args_with_tools(message: &str) -> LlmChatArgs {
             repeat_last_n: None,
             seed: Some(41),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: Some(FunctionOptions {
@@ -112,9 +114,10 @@ fn create_chat_args_with_tools(message: &str) -> LlmChatArgs {
 }
 
 /// Test basic date command through tool calling
-#[tokio::test]
+#[test]
 #[ignore = "Integration test requiring Ollama server"]
-async fn test_basic_date_command() -> Result<()> {
+fn test_basic_date_command() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
     command_utils::util::tracing::tracing_init_test(tracing::Level::INFO);
     let (service, worker_handle) = create_test_service().await?;
 
@@ -156,12 +159,14 @@ async fn test_basic_date_command() -> Result<()> {
 
     worker_handle.shutdown().await;
     Ok(())
+    })
 }
 
 /// Test echo command through tool calling
-#[tokio::test]
+#[test]
 #[ignore = "Integration test requiring Ollama server"]
-async fn test_echo_command() -> Result<()> {
+fn test_echo_command() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
     let (service, worker_handle) = create_test_service().await?;
 
     let args = create_chat_args_with_tools(
@@ -189,12 +194,14 @@ async fn test_echo_command() -> Result<()> {
 
     worker_handle.shutdown().await;
     Ok(())
+    })
 }
 
 /// Test regular chat without tools (control test)
-#[tokio::test]
+#[test]
 #[ignore = "Integration test requiring Ollama server"]
-async fn test_chat_without_tools() -> Result<()> {
+fn test_chat_without_tools() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
     let (service, worker_handle) = create_test_service().await?;
 
     let args = LlmChatArgs {
@@ -216,6 +223,7 @@ async fn test_chat_without_tools() -> Result<()> {
             repeat_last_n: None,
             seed: Some(42),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: None, // No function calling
@@ -243,12 +251,14 @@ async fn test_chat_without_tools() -> Result<()> {
 
     worker_handle.shutdown().await;
     Ok(())
+    })
 }
 
 /// Test invalid command handling
-#[tokio::test]
+#[test]
 #[ignore = "Integration test requiring Ollama server"]
-async fn test_invalid_command() -> Result<()> {
+fn test_invalid_command() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
     let (service, worker_handle) = create_test_service().await?;
 
     let args =
@@ -275,4 +285,5 @@ async fn test_invalid_command() -> Result<()> {
 
     worker_handle.shutdown().await;
     Ok(())
+    })
 }

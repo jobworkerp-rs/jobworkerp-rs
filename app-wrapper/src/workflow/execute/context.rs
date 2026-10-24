@@ -39,19 +39,12 @@ pub struct WorkflowContext {
     pub checkpoint_position: Option<WorkflowPosition>,
     #[serde(skip)]
     pub context_variables: Arc<Mutex<serde_json::Map<String, serde_json::Value>>>,
-    /// Job IDs of child jobs currently being executed by this workflow's tasks.
-    /// Populated when a task enqueues a child job and cleared on completion so
-    /// that, on cancellation, the workflow can actively cancel every in-flight
-    /// child job. Stored as `JobId.value` (i64) for trivial Hash/Eq. Shared
-    /// across all task clones of the context (Arc), so fork/for parallel tasks
-    /// register their own jobs into the same set. Transient runtime state, so
-    /// `serde(skip)` (never persisted into checkpoints) like `context_variables`.
-    ///
-    /// A `std::sync::Mutex` (not tokio's) because the critical sections are tiny
-    /// set operations with no await inside — register/unregister run on the
-    /// per-task hot path, so we avoid the async lock's scheduling overhead.
+    /// Root of the child job scope tree. Every in-flight child job enqueued by
+    /// this workflow's tasks is registered here (and in the scopes of the tasks
+    /// that enclose it), so a cancellation can reach it even after the future
+    /// awaiting it was dropped. Transient runtime state, never persisted.
     #[serde(skip)]
-    pub running_job_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
+    pub child_job_scope: Arc<ChildJobScope>,
     /// Named authentication policies from `use.authentications`, for resolving
     /// `authentication: { use: <name> }` references. `serde(skip)` so they never
     /// leak into the serialized expression context or persisted checkpoints.
@@ -63,50 +56,109 @@ pub struct WorkflowContext {
     pub declared_secrets: Arc<HashSet<String>>,
 }
 
-#[derive(Debug)]
-pub struct RunningJobGuard {
-    running_job_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
-    job_id: JobId,
-    active: bool,
+/// Registry of in-flight child jobs for one task, linked to the scopes of the
+/// enclosing tasks. A job registered in a scope is also registered in all of
+/// its ancestors, so cancelling a scope reaches every child job started below
+/// it while leaving sibling scopes (fork branches, parallel for items) alone.
+///
+/// A `std::sync::Mutex` (not tokio's) because the critical sections are tiny
+/// set operations with no await inside.
+#[derive(Debug, Default)]
+pub struct ChildJobScope {
+    parent: Option<Arc<ChildJobScope>>,
+    state: std::sync::Mutex<ChildJobScopeState>,
 }
 
-impl RunningJobGuard {
-    fn new(running_job_ids: Arc<std::sync::Mutex<HashSet<i64>>>, job_id: JobId) -> Self {
-        running_job_ids
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(job_id.value);
-        Self {
-            running_job_ids,
+#[derive(Debug, Default)]
+struct ChildJobScopeState {
+    job_ids: HashSet<i64>,
+    closed: bool,
+}
+
+impl ChildJobScope {
+    pub fn new_root() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub fn child(self: &Arc<Self>) -> Arc<Self> {
+        Arc::new(Self {
+            parent: Some(self.clone()),
+            state: Default::default(),
+        })
+    }
+
+    fn lineage(&self) -> impl Iterator<Item = &ChildJobScope> {
+        std::iter::successors(Some(self), |scope| scope.parent.as_deref())
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, ChildJobScopeState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// True once this scope or any enclosing scope has been cancelled; new
+    /// child jobs must not be started below it.
+    pub fn is_closed(&self) -> bool {
+        self.lineage().any(|scope| scope.state().closed)
+    }
+
+    pub fn snapshot(&self) -> Vec<JobId> {
+        self.state().job_ids()
+    }
+
+    pub fn guard(self: &Arc<Self>, job_id: JobId) -> RunningJobGuard {
+        for scope in self.lineage() {
+            scope.state().job_ids.insert(job_id.value);
+        }
+        RunningJobGuard {
+            scope: self.clone(),
             job_id,
-            active: true,
         }
     }
 
+    pub(crate) fn unregister(&self, job_id: JobId) {
+        for scope in self.lineage() {
+            scope.state().job_ids.remove(&job_id.value);
+        }
+    }
+
+    /// Mark the scope cancelled and return the jobs to cancel. Jobs stay
+    /// registered until their cancellation succeeds so that a failed attempt
+    /// can be retried by an enclosing scope.
+    pub(crate) fn close(&self) -> Vec<JobId> {
+        let mut state = self.state();
+        state.closed = true;
+        state.job_ids()
+    }
+}
+
+impl ChildJobScopeState {
+    fn job_ids(&self) -> Vec<JobId> {
+        self.job_ids.iter().map(|&value| JobId { value }).collect()
+    }
+}
+
+/// Registration of one awaited child job in a [`ChildJobScope`].
+///
+/// Dropping the guard without [`RunningJobGuard::mark_completed`] keeps the job
+/// registered: a dropped future or stream (e.g. a disconnected client) is not a
+/// decision to cancel, and the job may still be running, so it must stay
+/// reachable by a later explicit cancellation.
+#[derive(Debug)]
+#[must_use = "call mark_completed() once the child job has finished"]
+pub struct RunningJobGuard {
+    scope: Arc<ChildJobScope>,
+    job_id: JobId,
+}
+
+impl RunningJobGuard {
     pub fn job_id(&self) -> JobId {
         self.job_id
     }
 
-    /// Mark the job as normally completed, unregistering it from the
-    /// in-flight set so a later cancellation does not target it.
-    pub fn mark_completed(mut self) {
-        self.unregister();
-    }
-
-    fn unregister(&mut self) {
-        if self.active {
-            self.running_job_ids
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&self.job_id.value);
-            self.active = false;
-        }
-    }
-}
-
-impl Drop for RunningJobGuard {
-    fn drop(&mut self) {
-        self.unregister();
+    /// Mark the job as finished, unregistering it so a later cancellation
+    /// does not target it.
+    pub fn mark_completed(self) {
+        self.scope.unregister(self.job_id);
     }
 }
 
@@ -136,7 +188,7 @@ impl WorkflowContext {
                 .as_object()
                 .map(|o| Arc::new(Mutex::new(o.clone())))
                 .unwrap_or_else(|| Arc::new(Mutex::new(serde_json::Map::new()))),
-            running_job_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            child_job_scope: ChildJobScope::new_root(),
             authentications: Arc::new(
                 workflow
                     .use_
@@ -171,31 +223,19 @@ impl WorkflowContext {
             position: WorkflowPosition::new(vec![]),
             checkpoint_position: None,
             context_variables: Arc::new(Mutex::new(serde_json::Map::new())),
-            running_job_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            child_job_scope: ChildJobScope::new_root(),
             authentications: Arc::new(std::collections::HashMap::new()),
             declared_secrets: Arc::new(HashSet::new()),
         }
     }
 
-    pub fn guard_running_job(&self, job_id: JobId) -> RunningJobGuard {
-        RunningJobGuard::new(self.running_job_ids.clone(), job_id)
+    /// Resolve a task's scope; `None` stands for the workflow root.
+    pub fn scope_or_root(&self, scope: Option<&Arc<ChildJobScope>>) -> Arc<ChildJobScope> {
+        scope.unwrap_or(&self.child_job_scope).clone()
     }
 
     pub fn is_cancelled(&self) -> bool {
         self.status == WorkflowStatus::Cancelled
-    }
-
-    /// Snapshot the currently in-flight child job IDs. Used on cancellation to
-    /// fan out `delete_job` to every running child without holding the lock
-    /// across the await points of those calls.
-    pub async fn snapshot_running_jobs(&self) -> Vec<JobId> {
-        self.running_job_ids
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .copied()
-            .map(|value| JobId { value })
-            .collect()
     }
 
     pub fn to_descriptor(&self) -> WorkflowDescriptor {
@@ -326,6 +366,10 @@ pub struct TaskContext {
     pub completed_at: Option<DateTime<FixedOffset>>,
     pub flow_directive: Then,
     pub position: Arc<RwLock<WorkflowPosition>>,
+    /// Scope that child jobs started by this task register into. `None` means
+    /// the workflow root, so a context built without one still lets an
+    /// explicit workflow cancellation reach its child jobs.
+    pub child_job_scope: Option<Arc<ChildJobScope>>,
 }
 impl TaskContext {
     pub fn new(
@@ -346,6 +390,7 @@ impl TaskContext {
             completed_at: None,
             flow_directive: Then::Continue,
             position: Arc::new(RwLock::new(WorkflowPosition::new(vec![]))),
+            child_job_scope: None,
         }
     }
     pub fn new_from_cp(
@@ -364,6 +409,7 @@ impl TaskContext {
             flow_directive: Then::from_str(checkpoint.flow_directive.as_str())
                 .unwrap_or(Then::Continue),
             position: Arc::new(RwLock::new(WorkflowPosition::new(vec![]))),
+            child_job_scope: None,
         }
     }
     pub fn new_empty() -> Self {
@@ -378,6 +424,7 @@ impl TaskContext {
             completed_at: None,
             flow_directive: Then::Continue,
             position: Arc::new(RwLock::new(WorkflowPosition::new(vec![]))),
+            child_job_scope: None,
         }
     }
     pub async fn add_position_name(&self, name: String) {
@@ -453,6 +500,7 @@ impl TaskContext {
             completed_at: self.completed_at,
             flow_directive: self.flow_directive.clone(),
             position: Arc::new(RwLock::new(self.position.read().await.clone())),
+            child_job_scope: self.child_job_scope.clone(),
         }
     }
 
@@ -473,6 +521,7 @@ impl TaskContext {
             completed_at: self.completed_at,
             flow_directive: self.flow_directive.clone(),
             position: Arc::new(RwLock::new(self.position.read().await.clone())),
+            child_job_scope: self.child_job_scope.clone(),
         }
     }
 
@@ -731,6 +780,16 @@ impl WorkflowStreamEvent {
         }
     }
 
+    /// Mutable TaskContext reference (only for completed events)
+    pub fn context_mut(&mut self) -> Option<&mut TaskContext> {
+        match self {
+            Self::StreamingJobCompleted { context, .. } => Some(context),
+            Self::JobCompleted { context, .. } => Some(context),
+            Self::TaskCompleted { context, .. } => Some(context),
+            _ => None,
+        }
+    }
+
     /// Consume and get TaskContext (only for completed events)
     pub fn into_context(self) -> Option<TaskContext> {
         match self {
@@ -978,50 +1037,101 @@ impl WorkflowStreamEvent {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_workflow_context_running_job_guards_share_snapshot() {
+    #[test]
+    fn workflow_context_clones_share_root_scope() {
         let context = WorkflowContext::new_empty();
-        let job1 = JobId { value: 101 };
-        let job2 = JobId { value: 202 };
+        let job = JobId { value: 101 };
+        let guard = context.child_job_scope.guard(job);
 
-        let guard1 = context.guard_running_job(job1);
-        let guard2 = context.guard_running_job(job2);
+        assert_eq!(context.clone().child_job_scope.snapshot(), vec![job]);
 
-        let mut snapshot = context.snapshot_running_jobs().await;
-        snapshot.sort_by_key(|j| j.value);
-        assert_eq!(snapshot, vec![job1, job2]);
+        guard.mark_completed();
+        assert!(context.child_job_scope.snapshot().is_empty());
+    }
 
-        // A clone of the context shares the same underlying set (Arc), so an
-        // active guard must be visible from both sides. This mirrors how
-        // fork/for spawn clones of the context.
-        let cloned = context.clone();
-        let mut cloned_snapshot = cloned.snapshot_running_jobs().await;
-        cloned_snapshot.sort_by_key(|j| j.value);
-        assert_eq!(cloned_snapshot, vec![job1, job2]);
+    #[test]
+    fn dropped_guard_keeps_job_registered() {
+        let context = WorkflowContext::new_empty();
+        let job = JobId { value: 333 };
+        drop(context.child_job_scope.guard(job));
 
-        guard1.mark_completed();
-        let snapshot = context.snapshot_running_jobs().await;
-        assert_eq!(snapshot, vec![job2]);
+        assert_eq!(
+            context.child_job_scope.snapshot(),
+            vec![job],
+            "an abandoned child job must stay reachable by explicit cancellation"
+        );
+    }
 
-        drop(guard2);
-        assert!(context.snapshot_running_jobs().await.is_empty());
+    #[test]
+    fn scope_or_root_falls_back_to_workflow_root() {
+        let context = WorkflowContext::new_empty();
+        let task = context.child_job_scope.child();
+        assert!(Arc::ptr_eq(
+            &context.scope_or_root(None),
+            &context.child_job_scope
+        ));
+        assert!(Arc::ptr_eq(&context.scope_or_root(Some(&task)), &task));
+    }
+
+    #[test]
+    fn child_scope_registration_propagates_to_ancestors() {
+        let root = ChildJobScope::new_root();
+        let task = root.child();
+        let sibling = root.child();
+        let job = JobId { value: 7 };
+
+        let guard = task.guard(job);
+        assert_eq!(task.snapshot(), vec![job]);
+        assert_eq!(root.snapshot(), vec![job]);
+        assert!(sibling.snapshot().is_empty());
+
+        guard.mark_completed();
+        assert!(task.snapshot().is_empty());
+        assert!(root.snapshot().is_empty());
+    }
+
+    #[test]
+    fn closed_scope_closes_descendants_but_not_siblings_or_parent() {
+        let root = ChildJobScope::new_root();
+        let task = root.child();
+        let nested = task.child();
+        let sibling = root.child();
+
+        task.close();
+        assert!(task.is_closed());
+        assert!(nested.is_closed());
+        assert!(!sibling.is_closed());
+        assert!(!root.is_closed());
+    }
+
+    #[test]
+    fn close_keeps_jobs_registered_until_unregistered() {
+        let root = ChildJobScope::new_root();
+        let task = root.child();
+        let job = JobId { value: 9 };
+        let _guard = task.guard(job);
+
+        assert_eq!(task.close(), vec![job]);
+        assert_eq!(root.snapshot(), vec![job]);
+
+        task.unregister(job);
+        assert!(root.snapshot().is_empty());
     }
 
     #[tokio::test]
-    async fn test_running_job_guard_unregisters_on_drop() {
-        let context = WorkflowContext::new_empty();
-        let job = JobId { value: 333 };
-
-        {
-            let guard = context.guard_running_job(job);
-            assert_eq!(guard.job_id(), job);
-            assert_eq!(context.snapshot_running_jobs().await, vec![job]);
+    async fn task_context_copies_share_child_job_scope() {
+        let scope = ChildJobScope::new_root();
+        let context = TaskContext {
+            child_job_scope: Some(scope.clone()),
+            ..TaskContext::new_empty()
+        };
+        for copy in [
+            context.deep_copy().await,
+            context.clone_with_isolated_position().await,
+            context.from_flow_directive(None),
+        ] {
+            assert!(Arc::ptr_eq(copy.child_job_scope.as_ref().unwrap(), &scope));
         }
-
-        assert!(
-            context.snapshot_running_jobs().await.is_empty(),
-            "dropping a running job guard must unregister the child job"
-        );
     }
 
     #[tokio::test]

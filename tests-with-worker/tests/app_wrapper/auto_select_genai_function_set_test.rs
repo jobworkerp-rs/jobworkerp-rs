@@ -10,6 +10,7 @@
 use anyhow::Result;
 use app::app::function::function_set::FunctionSetApp;
 use app_wrapper::llm::chat::genai::GenaiChatService;
+use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, LlmOptions};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     ChatRole, FunctionOptions, MessageContent,
@@ -121,6 +122,7 @@ fn create_auto_select_chat_args(message: &str) -> LlmChatArgs {
             repeat_last_n: None,
             seed: Some(41),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: Some(FunctionOptions {
@@ -146,109 +148,114 @@ fn extract_text(result: &LlmChatResult) -> Option<&str> {
 /// LLM should auto-select a FunctionSet and complete the request.
 /// This uses a realistic agent prompt to verify the GenAI client naturally picks
 /// the shell command toolset when asked to run a command.
-#[tokio::test(flavor = "current_thread")]
+#[test]
 #[ignore = "Integration test requiring Ollama server"]
-async fn test_genai_auto_select_picks_function_set() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::INFO);
-    let (service, worker_handle) = create_auto_select_test_service().await?;
+fn test_genai_auto_select_picks_function_set() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        command_utils::util::tracing::tracing_init_test(tracing::Level::INFO);
+        let (service, worker_handle) = create_auto_select_test_service().await?;
 
-    // A natural user request that should trigger COMMAND toolset selection
-    let args = create_auto_select_chat_args(
-        "Please run the shell command 'echo hello world' and show me the output.",
-    );
+        // A natural user request that should trigger COMMAND toolset selection
+        let args = create_auto_select_chat_args(
+            "Please run the shell command 'echo hello world' and show me the output.",
+        );
 
-    let context = opentelemetry::Context::current();
-    let metadata = HashMap::new();
+        let context = opentelemetry::Context::current();
+        let metadata = HashMap::new();
 
-    println!("Sending auto-select request to GenAI (via Ollama)...");
-    let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await;
+        println!("Sending auto-select request to GenAI (via Ollama)...");
+        let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await;
 
-    match result {
-        Ok(Ok(chat_result)) => {
-            println!("Auto-select response. Done: {}", chat_result.done);
-            if let Some(text) = extract_text(&chat_result) {
-                println!("Response text: {}", text);
-                assert!(text.contains("hello world"))
-            }
-            if let Some(pending) = &chat_result.pending_tool_calls {
-                println!(
-                    "Pending tool calls: {:?}",
-                    pending.calls.iter().map(|c| &c.fn_name).collect::<Vec<_>>()
+        match result {
+            Ok(Ok(chat_result)) => {
+                println!("Auto-select response. Done: {}", chat_result.done);
+                if let Some(text) = extract_text(&chat_result) {
+                    println!("Response text: {}", text);
+                    assert!(text.contains("hello world"))
+                }
+                if let Some(pending) = &chat_result.pending_tool_calls {
+                    println!(
+                        "Pending tool calls: {:?}",
+                        pending.calls.iter().map(|c| &c.fn_name).collect::<Vec<_>>()
+                    );
+                }
+                assert!(
+                    chat_result.done || chat_result.pending_tool_calls.is_some(),
+                    "Chat should either complete or return pending tool calls"
                 );
             }
-            assert!(
-                chat_result.done || chat_result.pending_tool_calls.is_some(),
-                "Chat should either complete or return pending tool calls"
-            );
+            Ok(Err(e)) => {
+                panic!("Chat returned error: {}", e);
+            }
+            Err(_) => {
+                println!("WARNING: Request timed out after {:?}", TEST_TIMEOUT);
+                println!("This may indicate a hanging tool execution.");
+                panic!("Request timed out after {:?}", TEST_TIMEOUT);
+            }
         }
-        Ok(Err(e)) => {
-            panic!("Chat returned error: {}", e);
-        }
-        Err(_) => {
-            println!("WARNING: Request timed out after {:?}", TEST_TIMEOUT);
-            println!("This may indicate a hanging tool execution.");
-            panic!("Request timed out after {:?}", TEST_TIMEOUT);
-        }
-    }
 
-    worker_handle.shutdown().await;
-    Ok(())
+        worker_handle.shutdown().await;
+        Ok(())
+    })
 }
 
 /// LLM should auto-select a FunctionSet in streaming mode via GenAI.
 /// Phase 1 selects the toolset non-streaming, Phase 2 streams the response.
-#[tokio::test(flavor = "current_thread")]
+#[test]
 #[ignore = "Integration test requiring Ollama server"]
-async fn test_genai_auto_select_streaming_picks_function_set() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-    let (service, worker_handle) = create_auto_select_test_service().await?;
+fn test_genai_auto_select_streaming_picks_function_set() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        let (service, worker_handle) = create_auto_select_test_service().await?;
 
-    let args = create_auto_select_chat_args(
-        "Please run the shell command 'echo hello world' and show me the output.",
-    );
+        let args = create_auto_select_chat_args(
+            "Please run the shell command 'echo hello world' and show me the output.",
+        );
 
-    let metadata = HashMap::new();
+        let metadata = HashMap::new();
 
-    println!("Sending auto-select streaming request to GenAI (via Ollama)...");
-    let result = timeout(
-        TEST_TIMEOUT,
-        service.request_chat_stream(args, metadata, None),
-    )
-    .await;
+        println!("Sending auto-select streaming request to GenAI (via Ollama)...");
+        let result = timeout(
+            TEST_TIMEOUT,
+            service.request_chat_stream(args, metadata, None),
+        )
+        .await;
 
-    match result {
-        Ok(Ok(mut stream)) => {
-            use futures::StreamExt;
-            let mut chunk_count = 0;
-            while let Some(_chunk) = stream.next().await {
-                chunk_count += 1;
+        match result {
+            Ok(Ok(mut stream)) => {
+                use futures::StreamExt;
+                let mut chunk_count = 0;
+                while let Some(_chunk) = stream.next().await {
+                    chunk_count += 1;
+                }
+                println!(
+                    "Streaming auto-select (GenAI): received {} chunks",
+                    chunk_count
+                );
+                assert!(
+                    chunk_count > 0,
+                    "Should receive at least one streaming chunk"
+                );
             }
-            println!(
-                "Streaming auto-select (GenAI): received {} chunks",
-                chunk_count
-            );
-            assert!(
-                chunk_count > 0,
-                "Should receive at least one streaming chunk"
-            );
+            Ok(Err(e)) => {
+                panic!("Streaming chat returned error: {}", e);
+            }
+            Err(_) => {
+                panic!("Request timed out after {:?}", TEST_TIMEOUT);
+            }
         }
-        Ok(Err(e)) => {
-            panic!("Streaming chat returned error: {}", e);
-        }
-        Err(_) => {
-            panic!("Request timed out after {:?}", TEST_TIMEOUT);
-        }
-    }
 
-    worker_handle.shutdown().await;
-    Ok(())
+        worker_handle.shutdown().await;
+        Ok(())
+    })
 }
 
 /// When no FunctionSets are registered, auto-select should gracefully
 /// fall back to a normal chat without tools (no tools injected).
-#[tokio::test(flavor = "current_thread")]
+#[test]
 #[ignore = "Integration test requiring Ollama server"]
-async fn test_genai_auto_select_without_function_sets_falls_back() -> Result<()> {
+fn test_genai_auto_select_without_function_sets_falls_back() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
     // SAFETY: called in test setup before spawning threads
     unsafe { std::env::set_var("OTLP_ADDR", OTLP_ADDR) };
     let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
@@ -302,6 +309,7 @@ async fn test_genai_auto_select_without_function_sets_falls_back() -> Result<()>
             repeat_last_n: None,
             seed: Some(42),
             extract_reasoning_content: Some(false),
+            ..Default::default()
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: Some(FunctionOptions {
@@ -335,4 +343,5 @@ async fn test_genai_auto_select_without_function_sets_falls_back() -> Result<()>
 
     worker_handle.shutdown().await;
     Ok(())
+    })
 }

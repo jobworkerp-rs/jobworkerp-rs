@@ -61,8 +61,7 @@ before upgrading an existing database.
 | | WORKER_INSTANCE_HEARTBEAT_INTERVAL_SEC | Heartbeat interval | 30 |
 | | WORKER_INSTANCE_TIMEOUT_SEC | Inactive timeout (Scalable only) | 90 |
 | | WORKER_INSTANCE_CLEANUP_INTERVAL_SEC | Cleanup interval (seconds) | 300 |
-| **Workflow Settings** | WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC | Task default timeout (seconds) | None (no limit). dot.env uses 3600 as example |
-| | WORKFLOW_HTTP_TIMEOUT_SEC | HTTP resource fetch timeout (seconds) | 120 (dot.env uses 20 as example) |
+| **Workflow Settings** | WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC | Default timeout (seconds) for run/call tasks without their own `timeout`; used for both the task deadline and the child job timeout. Never applied to other task kinds | None (no limit). 0 also means no limit |
 | | WORKFLOW_CHECKPOINT_EXPIRE_SEC | Checkpoint expiration (seconds) | None (no limit). dot.env uses 86400 as example |
 | | WORKFLOW_CHECKPOINT_MAX_COUNT | Maximum checkpoint count | None (no limit). dot.env uses 100000 as example |
 | | WORKFLOW_SKIP_SCHEMA_VALIDATION | Skip schema validation | false |

@@ -4,11 +4,13 @@ use crate::workflow::{
         workflow::{self, ForOnError, tasks::TaskTrait},
     },
     execute::{
-        context::{TaskContext, WorkflowContext, WorkflowStatus, WorkflowStreamEvent},
+        context::{
+            ChildJobScope, TaskContext, WorkflowContext, WorkflowStatus, WorkflowStreamEvent,
+        },
         expression::UseExpression,
         task::{
-            ExecutionId, NamedTimeouts, StreamTaskExecutorTrait, stream::do_::DoTaskStreamExecutor,
-            trace::TaskTracing,
+            ExecutionId, NamedTimeouts, StreamTaskExecutorTrait, cancel_child_jobs,
+            stream::do_::DoTaskStreamExecutor, trace::TaskTracing,
         },
     },
 };
@@ -21,9 +23,12 @@ use opentelemetry::trace::TraceContextExt;
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::{Mutex, RwLock, mpsc};
 
+const STOP_REASON_UNSUPPORTED_WAIT: &str = "for: unsupported wait directive";
+const STOP_REASON_ON_ERROR_BREAK: &str = "for: onError=break";
+
 pub struct ForTaskStreamExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
-    default_timeout: Duration,
+    default_timeout: Option<Duration>,
     named_timeouts: Arc<NamedTimeouts>,
     task: workflow::ForTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -45,7 +50,7 @@ impl ForTaskStreamExecutor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        default_timeout: Duration,
+        default_timeout: Option<Duration>,
         named_timeouts: Arc<NamedTimeouts>,
         task: workflow::ForTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -173,6 +178,22 @@ impl ForTaskStreamExecutor {
             }
         };
         WorkflowStreamEvent::for_item_failed(task_name, &pos, index as u32, payload)
+    }
+
+    /// Stop the other in-flight items of a parallel `for` once one of them has
+    /// decided to abort the loop, cancelling the child jobs they started.
+    /// `for_scope` is only absent when the executor runs outside a
+    /// `TaskExecutor` (unit tests), where there is no task scope to cancel.
+    async fn stop_parallel_items(
+        cancel_tx: &tokio::sync::watch::Sender<bool>,
+        job_executor_wrapper: &JobExecutorWrapper,
+        for_scope: Option<&Arc<ChildJobScope>>,
+        reason: &str,
+    ) {
+        let _ = cancel_tx.send(true);
+        if let Some(scope) = for_scope {
+            cancel_child_jobs(job_executor_wrapper, scope, reason).await;
+        }
     }
 
     // `then: wait` is structurally unsupported inside a ForTask. The parallel
@@ -385,6 +406,8 @@ impl ForTaskStreamExecutor {
                 let on_error = self.task.on_error;
                 let cancel_tx_clone = cancel_tx.clone();
                 let mut cancel_rx_clone = cancel_rx.clone();
+                let for_scope = original_context.child_job_scope.clone();
+                let job_executor_wrapper_for_stop = self.job_executor_wrapper.clone();
                 let emit_streaming_data = self.emit_streaming_data;
                 let item_value_for_err = item_value.clone();
                 let task_name_for_err = task_name.to_string();
@@ -495,7 +518,13 @@ impl ForTaskStreamExecutor {
                                                 pos_instance,
                                             )
                                             .await;
-                                            let _ = cancel_tx_clone.send(true);
+                                            Self::stop_parallel_items(
+                                                &cancel_tx_clone,
+                                                &job_executor_wrapper_for_stop,
+                                                for_scope.as_ref(),
+                                                STOP_REASON_UNSUPPORTED_WAIT,
+                                            )
+                                            .await;
                                             Self::record_error(&span, &error.to_string());
                                             let _ = tx.send(Err(error)).await;
                                             break;
@@ -514,7 +543,13 @@ impl ForTaskStreamExecutor {
                                         Ok(event) => Ok(event),
                                         Err(e) => match on_error {
                                             ForOnError::Break => {
-                                                let _ = cancel_tx_clone.send(true);
+                                                Self::stop_parallel_items(
+                                                    &cancel_tx_clone,
+                                                    &job_executor_wrapper_for_stop,
+                                                    for_scope.as_ref(),
+                                                    STOP_REASON_ON_ERROR_BREAK,
+                                                )
+                                                .await;
                                                 tracing::warn!("Error occurred, cancelling all parallel tasks due to onError=break");
                                                 Err(e)
                                             }
@@ -583,7 +618,13 @@ impl ForTaskStreamExecutor {
                                             Some(item_position.read().await.as_error_instance()),
                                         )
                                         .await;
-                                        let _ = cancel_tx_clone.send(true);
+                                        Self::stop_parallel_items(
+                                            &cancel_tx_clone,
+                                            &job_executor_wrapper_for_stop,
+                                            for_scope.as_ref(),
+                                            STOP_REASON_UNSUPPORTED_WAIT,
+                                        )
+                                        .await;
                                         Self::record_error(&span, &error.to_string());
                                         let _ = tx.send(Err(error)).await;
                                     }
@@ -1209,7 +1250,7 @@ mod tests {
             )));
 
             let executor = WorkflowExecutor {
-                default_task_timeout_sec: 30,
+                default_task_timeout: Some(std::time::Duration::from_secs(30)),
                 job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
                 workflow: workflow.clone(),
                 workflow_context: workflow_context.clone(),
@@ -1463,7 +1504,7 @@ mod tests {
             )));
 
             let executor = WorkflowExecutor {
-                default_task_timeout_sec: 30,
+                default_task_timeout: Some(std::time::Duration::from_secs(30)),
                 job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
                 workflow: workflow.clone(),
                 workflow_context: workflow_context.clone(),
@@ -1601,7 +1642,7 @@ mod tests {
                 )));
 
                 let executor = WorkflowExecutor {
-                    default_task_timeout_sec: 30,
+                    default_task_timeout: Some(std::time::Duration::from_secs(30)),
                     job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
                     workflow: workflow.clone(),
                     workflow_context: workflow_context.clone(),
@@ -1728,7 +1769,7 @@ mod tests {
             )));
 
             let executor = WorkflowExecutor {
-                default_task_timeout_sec: 30,
+                default_task_timeout: Some(std::time::Duration::from_secs(30)),
                 job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
                 workflow: workflow.clone(),
                 workflow_context: workflow_context.clone(),
@@ -1886,7 +1927,7 @@ mod tests {
 
             println!("[DEBUG BREAK MODE] Creating WorkflowExecutor for break test...");
             let executor = crate::workflow::execute::workflow::WorkflowExecutor {
-                default_task_timeout_sec: 30,
+                default_task_timeout: Some(std::time::Duration::from_secs(30)),
                 job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
                 workflow: Arc::new(workflow.clone()),
                 workflow_context: workflow_context.clone(),
@@ -2058,7 +2099,7 @@ mod tests {
             )));
 
             let executor = WorkflowExecutor {
-                default_task_timeout_sec: 30,
+                default_task_timeout: Some(std::time::Duration::from_secs(30)),
                 job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
                 workflow: workflow.clone(),
                 workflow_context: workflow_context.clone(),
@@ -2669,7 +2710,7 @@ mod tests {
                 )));
 
                 let executor = WorkflowExecutor {
-                    default_task_timeout_sec: 30,
+                    default_task_timeout: Some(std::time::Duration::from_secs(30)),
                     job_executors: Arc::new(JobExecutorWrapper::new(app_module.clone())),
                     workflow: workflow.clone(),
                     workflow_context: workflow_context.clone(),
@@ -2832,7 +2873,7 @@ mod tests {
                 None,
             )));
             let executor = WorkflowExecutor {
-                default_task_timeout_sec: 30,
+                default_task_timeout: Some(std::time::Duration::from_secs(30)),
                 job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
                 workflow: workflow.clone(),
                 workflow_context: workflow_context.clone(),
@@ -2923,7 +2964,7 @@ mod tests {
                 None,
             )));
             let executor = WorkflowExecutor {
-                default_task_timeout_sec: 30,
+                default_task_timeout: Some(std::time::Duration::from_secs(30)),
                 job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
                 workflow: workflow.clone(),
                 workflow_context: workflow_context.clone(),
@@ -3027,7 +3068,7 @@ mod tests {
             )));
 
             let executor = WorkflowExecutor {
-                default_task_timeout_sec: 30,
+                default_task_timeout: Some(std::time::Duration::from_secs(30)),
                 job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
                 workflow: workflow.clone(),
                 workflow_context: workflow_context.clone(),
@@ -3187,7 +3228,7 @@ mod tests {
                 )));
 
                 let executor = WorkflowExecutor {
-                    default_task_timeout_sec: 30,
+                    default_task_timeout: Some(std::time::Duration::from_secs(30)),
                     job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
                     workflow: workflow.clone(),
                     workflow_context: workflow_context.clone(),

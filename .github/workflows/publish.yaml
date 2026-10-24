@@ -1,8 +1,12 @@
-name: Create and publish a Docker image on release
+name: Create and publish Docker images and the GitHub Release
 
+# Release tags are pushed by the internal repository's sync (one sync commit
+# per release), so the tag push is the release trigger. The GitHub Release is
+# created only after every image has been published.
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 # Defines two custom environment variables for the workflow. These are used for the Container registry domain, and a name for the Docker image that this workflow builds.
 env:
@@ -207,67 +211,32 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/jobworkerp:latest
             ghcr.io/${{ github.repository_owner }}/jobworkerp:${{ github.ref_name }}
   #        labels: ${{ steps.meta.outputs.labels }}
-  publish-proto:
+  create-release:
     runs-on: ubuntu-latest
-    # needs: build-and-push-image
-    env:
-      PROTO_REPOSITORY: jobworkerp-rs/jobworkerp-protobuf
+    needs:
+      - build-and-push-image
+      - build-and-push-all-in-one-image
+    permissions:
+      contents: write
     steps:
-      - name: remove large
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
         run: |
-          echo "Removing hosted toolcache..."
-          sudo rm -rf /opt/hostedtoolcache || true
-
-          echo "Removing .NET..."
-          sudo rm -rf /usr/share/dotnet || true
-
-          echo "Removing Android SDK..."
-          sudo rm -rf /usr/local/lib/android || true
-
-          echo "Removing GHC / Haskell..."
-          sudo rm -rf /opt/ghc || true
-          sudo rm -rf /usr/local/.ghcup || true
-
-          echo "Docker prune (just in case runner had leftovers)..."
-          sudo docker container prune -f || true
-          sudo docker image prune -af || true
-          sudo docker volume prune -f || true
-      - name: checkout repository
-        uses: actions/checkout@v4
-        with:
-          path: repo
-          token: ${{ secrets.PAT_TOKEN }}
-      - name: checkout proto repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.PROTO_REPOSITORY }}
-          path: proto
-          token: ${{ secrets.PAT_TOKEN }}
-      - name: copy only proto files to proto repository dir
-        run: |
-          rm -rf proto/*
-          cp -r repo/proto/protobuf/* proto/
-          ls -la proto
-      - name: publish proto files
-        working-directory: proto
-        run: |
-          git add -A .
-          git checkout origin/main -- ./LICENSE
-          git reset --soft origin/main
-          # git add ./LICENSE
-          test 0 -eq $(git diff --cached | wc -l) && exit 0
-          git config --local user.email "91235033+sutr-app@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git commit -m "${{ github.ref_name }}"
-          git tag ${{ github.ref_name }}
-          git push origin main
-
-#    - name: Push changes
-#      uses: ad-m/github-push-action@master
-#      with:
-#        repository: ${{ env.PROTO_REPOSITORY }}
-#        directory: proto
-#        github_token: ${{ secrets.PAT_TOKEN }}
-#        tags: true
-#        # force: true
-#
+          set -euo pipefail
+          # The sync commit body lists the changes since the previous public
+          # release and ends with an "Upstream-Tag: <tag>" trailer. A tag on
+          # an older sync commit means the release had no public changes.
+          message=$(git log -1 --format=%B HEAD)
+          if printf '%s\n' "${message}" | grep -Fqx "Upstream-Tag: ${TAG_NAME}"; then
+            printf '%s\n' "${message}" | awk 'NR > 2 && !/^Upstream-Tag: /' > notes.md
+          else
+            echo "No source changes since the previous release." > notes.md
+          fi
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            echo "Release ${TAG_NAME} already exists; skipping."
+          else
+            gh release create "${TAG_NAME}" --verify-tag --title "${TAG_NAME}" --notes-file notes.md
+          fi

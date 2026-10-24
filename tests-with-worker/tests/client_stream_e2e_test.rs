@@ -12,6 +12,7 @@
 
 use anyhow::Result;
 use futures::StreamExt;
+use infra_utils::infra::test::TEST_RUNTIME;
 use proto::jobworkerp::data::result_output_item;
 use proto::jobworkerp::data::{ResponseType, StreamingType, WorkerData};
 use std::collections::HashMap;
@@ -395,22 +396,24 @@ async fn sub_test_require_check_error(
 
 /// Unified E2E test that shares a single start_test_worker invocation
 /// across all client-stream sub-tests.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_client_stream_e2e() -> Result<()> {
-    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+#[test]
+fn test_client_stream_e2e() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
-    let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-    load_hello_plugin(&app_module).await;
-    let worker_handle = start_test_worker(app_module.clone()).await?;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+        load_hello_plugin(&app_module).await;
+        let worker_handle = start_test_worker(app_module.clone()).await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let runner_id = find_or_create_hello_runner_id(&app_module).await?;
+        let runner_id = find_or_create_hello_runner_id(&app_module).await?;
 
-    // Run all sub-tests sequentially, sharing the same worker.
-    sub_test_normal_flow(&app_module, &runner_id).await?;
-    sub_test_empty_feed(&app_module, &runner_id).await?;
-    sub_test_require_check_error(&app_module, &runner_id).await?;
+        // Run all sub-tests sequentially, sharing the same worker.
+        sub_test_normal_flow(&app_module, &runner_id).await?;
+        sub_test_empty_feed(&app_module, &runner_id).await?;
+        sub_test_require_check_error(&app_module, &runner_id).await?;
 
-    worker_handle.shutdown().await;
-    Ok(())
+        worker_handle.shutdown().await;
+        Ok(())
+    })
 }

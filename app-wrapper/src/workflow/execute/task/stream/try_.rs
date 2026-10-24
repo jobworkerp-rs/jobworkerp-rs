@@ -24,7 +24,7 @@ type CheckPointRepo =
 #[derive(DebugStub, Clone)]
 pub struct TryStreamTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
-    default_timeout: Duration,
+    default_timeout: Option<Duration>,
     named_timeouts: Arc<NamedTimeouts>,
     task: workflow::TryTask,
     #[debug_stub = "JobExecutorWrapper"]
@@ -41,7 +41,7 @@ impl TryStreamTaskExecutor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        default_timeout: Duration,
+        default_timeout: Option<Duration>,
         named_timeouts: Arc<NamedTimeouts>,
         task: workflow::TryTask,
         job_executors: Arc<JobExecutorWrapper>,
@@ -66,7 +66,7 @@ impl TryStreamTaskExecutor {
     #[allow(clippy::too_many_arguments)]
     fn execute_try_stream(
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        default_timeout: Duration,
+        default_timeout: Option<Duration>,
         named_timeouts: Arc<NamedTimeouts>,
         metadata: Arc<HashMap<String, String>>,
         task: workflow::TryTask,
@@ -662,7 +662,7 @@ mod tests {
             let try_task = create_try_task_with_success();
             let executor = TryStreamTaskExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(60),
+                Some(Duration::from_secs(60)),
                 Arc::new(NamedTimeouts::new()),
                 try_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
@@ -746,7 +746,7 @@ mod tests {
 
             let executor = TryStreamTaskExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(60),
+                Some(Duration::from_secs(60)),
                 Arc::new(NamedTimeouts::new()),
                 try_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
@@ -811,7 +811,7 @@ mod tests {
             let try_task = create_try_task_with_success();
             let executor = TryStreamTaskExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(60),
+                Some(Duration::from_secs(60)),
                 Arc::new(NamedTimeouts::new()),
                 try_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
@@ -925,7 +925,7 @@ mod tests {
 
             let executor = TryStreamTaskExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(60),
+                Some(Duration::from_secs(60)),
                 Arc::new(NamedTimeouts::new()),
                 try_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
@@ -1071,7 +1071,7 @@ mod tests {
 
             let executor = TryStreamTaskExecutor::new(
                 workflow_context.clone(),
-                Duration::from_secs(60),
+                Some(Duration::from_secs(60)),
                 Arc::new(NamedTimeouts::new()),
                 try_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),

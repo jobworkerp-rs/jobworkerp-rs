@@ -112,7 +112,7 @@
     },
     "timeout": {
       "title": "DoTimeout",
-      "description": "Workflow-level timeout configuration. Applied to the implicit root task that wraps all tasks declared under `do`. Overrides the `WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC` environment variable (default 3600s) and allows specifying durations longer than 1 hour.",
+      "description": "Workflow-level timeout configuration. Applied to the implicit root task that wraps all tasks declared under `do`. When omitted, the workflow has no overall timeout (timeouts are optional in the Open Workflow Specification).",
       "oneOf": [
         {
           "$ref": "#/$defs/timeout",
@@ -517,7 +517,7 @@
                 {
                   "type": "string",
                   "title": "RaiseErrorReference",
-                  "description": "Reference to named error definition."
+                  "description": "Runtime expression (jq or Liquid) evaluated at execution time. A string result is raised as the detail of a default runtime error (status 500); an Error object result (e.g. a caught $error) is raised unchanged."
                 }
               ]
             }
@@ -1468,7 +1468,7 @@
                 {
                   "type": "string",
                   "title": "RetryPolicyReference",
-                  "description": "Reference to named retry policy."
+                  "description": "Named retry policy reference. Named retry policies are not implemented; a string value disables retry for this catch."
                 }
               ]
             },

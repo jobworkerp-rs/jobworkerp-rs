@@ -38,7 +38,7 @@ envs = { GITHUB_PERSONAL_ACCESS_TOKEN = "github_pat_xxxxx" }
 name = "gitea-sse"
 description = "gitea server mcp"
 transport = "sse"
-url = "http://gitea-mcp.gitea-helm.svc.cluster.local:8080/sse"
+url = "http://localhost:8080/sse"
 
 [server.headers]
 Authorization = "Bearer xxxxx"

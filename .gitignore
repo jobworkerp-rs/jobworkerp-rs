@@ -380,4 +380,7 @@ mcp-settings.toml
 /AGENTS.md
 /CLAUDE.md
 /CONTEXT.md
+/ai-docs/
 
+# Local SQLite database produced by running ag-ui-front from its own directory
+/ag-ui-front/test
