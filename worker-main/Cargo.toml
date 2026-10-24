@@ -34,3 +34,6 @@ hostname = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }

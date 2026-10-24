@@ -3902,6 +3902,7 @@ dependencies = [
  "proto",
  "rand 0.10.3",
  "tokio",
+ "toml",
  "tracing",
  "worker-app",
 ]

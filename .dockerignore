@@ -7,6 +7,8 @@
 !admin-ui/**
 !ag-ui-front/
 !ag-ui-front/**
+!agent-server/
+!agent-server/**
 !app/
 !app/**
 !app-wrapper/
