@@ -222,7 +222,7 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                         }
                     }
                     Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
+                        metadata = proto::stream_error::success_metadata(trailer)?;
                         break;
                     }
                     Some(result_output_item::Item::FinalCollected(data)) => {
@@ -310,7 +310,7 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use futures::stream;
-    use proto::jobworkerp::data::{Trailer, result_output_item};
+    use proto::jobworkerp::data::result_output_item;
 
     fn create_text_chat_result(text: &str, reasoning: Option<&str>, done: bool) -> LlmChatResult {
         LlmChatResult {
@@ -360,9 +360,7 @@ mod tests {
     fn create_end_item(
         metadata: HashMap<String, String>,
     ) -> proto::jobworkerp::data::ResultOutputItem {
-        proto::jobworkerp::data::ResultOutputItem {
-            item: Some(result_output_item::Item::End(Trailer { metadata })),
-        }
+        proto::stream_error::normal_end_item(metadata)
     }
 
     fn create_final_collected_item(data: Vec<u8>) -> proto::jobworkerp::data::ResultOutputItem {

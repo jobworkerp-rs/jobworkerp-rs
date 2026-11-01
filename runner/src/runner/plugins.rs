@@ -396,7 +396,7 @@ pub trait MultiMethodPluginRunner: Send + Sync {
                         final_collected = Some(data);
                     }
                     Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
+                        metadata = proto::stream_error::success_metadata(trailer)?;
                         break;
                     }
                     None => {}

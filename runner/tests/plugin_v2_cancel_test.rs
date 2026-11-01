@@ -201,6 +201,7 @@ async fn v2_plugin_run_stream_emits_chunks_and_end_trailer() -> Result<()> {
         match item.item {
             Some(result_output_item::Item::Data(d)) => chunks.push(d),
             Some(result_output_item::Item::End(t)) => {
+                assert_eq!(t.error, None, "a successful run must not report an error");
                 end_metadata = Some(t.metadata);
                 break;
             }
@@ -278,12 +279,12 @@ async fn v2_plugin_run_stream_is_cancelled_by_token_and_emits_end_trailer() -> R
     // Drain the rest of the stream. The plugin may have one or two more
     // chunks queued before the cancel is observed; we only require the
     // stream to finish promptly with an End trailer.
-    let mut end_metadata: Option<HashMap<String, String>> = None;
+    let mut end_trailer = None;
     while let Some(item) = stream.next().await {
         match item.item {
             Some(result_output_item::Item::Data(d)) => chunks.push(d),
             Some(result_output_item::Item::End(t)) => {
-                end_metadata = Some(t.metadata);
+                end_trailer = Some(t);
                 break;
             }
             _ => {}
@@ -301,12 +302,22 @@ async fn v2_plugin_run_stream_is_cancelled_by_token_and_emits_end_trailer() -> R
         "stream should be cut short by cancel, got {} chunks (full run = 50)",
         chunks.len()
     );
-    // run_stream_v2 substitutes the input metadata on the cancel path
-    // (the plugin task was aborted before it could return its own).
+    // The cancel path keeps the input metadata (the plugin never returned its
+    // own) and reports the cancellation as a stream failure.
+    let trailer = end_trailer.expect("cancelled run_stream must still emit an End trailer");
+    assert_eq!(trailer.metadata.get("trace-id"), meta.get("trace-id"));
+    let error = trailer
+        .error
+        .expect("cancellation must be reported on the End");
     assert_eq!(
-        end_metadata.as_ref(),
-        Some(&meta),
-        "cancelled run_stream must still emit an End trailer with the fallback (input) metadata"
+        error.code,
+        proto::jobworkerp::data::StreamErrorCode::Cancelled as i32
+    );
+    assert_eq!(error.origin, "CancelTest");
+    assert!(
+        trailer
+            .metadata
+            .contains_key(proto::stream_error::LEGACY_PLUGIN_STREAM_ERROR_KEY)
     );
     Ok(())
 }
@@ -395,14 +406,22 @@ async fn v2_plugin_pre_stream_error_is_observable_either_way() -> Result<()> {
         }
         Ok(mut stream) => {
             // Metadata path: drain to the End trailer and verify the key.
-            let mut end_metadata: Option<HashMap<String, String>> = None;
+            let mut end_trailer = None;
             while let Some(item) = stream.next().await {
                 if let Some(result_output_item::Item::End(t)) = item.item {
-                    end_metadata = Some(t.metadata);
+                    end_trailer = Some(t);
                     break;
                 }
             }
-            let meta = end_metadata.expect("End trailer must be present");
+            let trailer = end_trailer.expect("End trailer must be present");
+            let error = trailer.error.as_ref().expect("End must carry the failure");
+            assert_eq!(
+                error.code,
+                proto::jobworkerp::data::StreamErrorCode::ExecutionFailed as i32
+            );
+            assert_eq!(error.origin, "CancelTest");
+            assert!(error.message.contains("eager-or-metadata"));
+            let meta = trailer.metadata;
             let err_msg = meta
                 .get("jobworkerp.plugin.run_stream_error")
                 .expect("error must be recorded under V2_STREAM_ERROR_META_KEY");

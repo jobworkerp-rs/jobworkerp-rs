@@ -383,6 +383,37 @@ async fn stream_byte_limit_is_cumulative_across_data_and_final_collected_items()
 }
 
 #[tokio::test]
+async fn failed_end_marker_fails_the_tool_execution() {
+    let rpc = MockRpc::new(vec![("run", false)], CreateJobResponse::default())
+        .with_result_proto("")
+        .with_stream_items(vec![
+            Ok(ResultOutputItem {
+                item: Some(result_output_item::Item::Data(vec![1, 2, 3])),
+            }),
+            Ok(proto::stream_error::error_end_item(
+                HashMap::new(),
+                proto::jobworkerp::data::StreamErrorCode::ExecutionFailed,
+                "runner failed",
+                "COMMAND",
+            )),
+        ]);
+
+    let error = executor(rpc)
+        .execute(invocation(
+            Some("run"),
+            true,
+            serde_json::json!({ "text": "hello" }),
+        ))
+        .await
+        .unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("COMMAND EXECUTION_FAILED: runner failed"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
 async fn malformed_protobuf_stream_items_are_not_observed() {
     let rpc =
         MockRpc::new(vec![("run", false)], CreateJobResponse::default()).with_stream_items(vec![

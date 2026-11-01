@@ -20,7 +20,6 @@
 //! * [`plugins`] - Support for plugin-based runners
 //! * [`python`] - Python script execution
 //! * [`request`] - HTTP request-based jobs
-//! * [`slack`] - Slack integration
 //! * [`workflow`] - Reusable and inline workflow runners
 //!
 //! # Trait Documentation
@@ -76,7 +75,6 @@ pub mod plugins;
 pub mod python;
 pub mod request;
 pub mod sandbox;
-pub mod slack;
 pub mod timeout_config;
 pub mod workflow_unified;
 
@@ -111,6 +109,34 @@ macro_rules! schema_to_json_string_option {
             }
         }
     }};
+}
+
+/// Keeps only the last Data item (or a FinalCollected payload). Shared by
+/// runners whose chunks cannot be merged (protobuf concatenation is invalid).
+pub fn collect_keep_last(stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
+    use futures::StreamExt;
+    use proto::jobworkerp::data::result_output_item;
+
+    Box::pin(async move {
+        let mut last_data: Option<Vec<u8>> = None;
+        let mut metadata = HashMap::new();
+        let mut stream = stream;
+
+        while let Some(item) = stream.next().await {
+            match item.item {
+                Some(result_output_item::Item::Data(data)) => last_data = Some(data),
+                Some(result_output_item::Item::End(trailer)) => {
+                    metadata = proto::stream_error::success_metadata(trailer)?;
+                    break;
+                }
+                Some(result_output_item::Item::FinalCollected(data)) => {
+                    return Ok((data, metadata));
+                }
+                None => {}
+            }
+        }
+        Ok((last_data.unwrap_or_default(), metadata))
+    })
 }
 
 pub trait RunnerSpec: Send + Sync + Any {
@@ -197,33 +223,7 @@ pub trait RunnerSpec: Send + Sync + Any {
         stream: BoxStream<'static, ResultOutputItem>,
         _using: Option<&str>,
     ) -> CollectStreamFuture {
-        use futures::StreamExt;
-        use proto::jobworkerp::data::result_output_item;
-
-        Box::pin(async move {
-            let mut last_data: Option<Vec<u8>> = None;
-            let mut metadata = HashMap::new();
-            let mut stream = stream;
-
-            while let Some(item) = stream.next().await {
-                match item.item {
-                    Some(result_output_item::Item::Data(data)) => {
-                        // Keep only the last data (memory efficient for most runners)
-                        last_data = Some(data);
-                    }
-                    Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
-                        break;
-                    }
-                    Some(result_output_item::Item::FinalCollected(data)) => {
-                        // FinalCollected already contains the collected data
-                        return Ok((data, metadata));
-                    }
-                    None => {}
-                }
-            }
-            Ok((last_data.unwrap_or_default(), metadata))
-        })
+        collect_keep_last(stream)
     }
 }
 

@@ -1,6 +1,10 @@
 pub mod chan;
 pub mod redis;
 
+#[cfg(feature = "stream-subscription-test-hook")]
+#[doc(hidden)]
+pub mod test_hooks;
+
 use std::pin::Pin;
 
 use anyhow::Result;

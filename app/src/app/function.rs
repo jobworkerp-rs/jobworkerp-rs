@@ -3,7 +3,7 @@ use super::runner::RunnerApp;
 use super::worker::WorkerApp;
 use super::{runner::UseRunnerApp, worker::UseWorkerApp};
 use crate::app::job::execute::UseJobExecutor;
-use crate::app::job_result::UseJobResultApp;
+use crate::app::job_result::{UseJobResultApp, spawn_subscribed_listener, with_deadline};
 use crate::app::runner::{RunnerDataWithDescriptor, UseRunnerParserWithCache};
 use anyhow::Result;
 use async_stream::stream;
@@ -44,9 +44,8 @@ pub struct EnqueuedFunction {
     /// metadata and binary output rather than the LLM-oriented JSON value.
     pub raw_result: Option<proto::jobworkerp::data::JobResult>,
     pub is_streaming: bool,
-    /// Pre-started result listener for streaming jobs (started immediately after enqueue
-    /// to avoid missing pubsub events). None for non-streaming jobs.
-    pub result_handle: Option<tokio::task::JoinHandle<JobListenResult>>,
+    /// Owns the prepared result listener and stream until the caller consumes them.
+    pub result_handle: Option<crate::app::job_result::ResultListenerHandle>,
     /// Method name for multi-method runners (e.g. "streaming" from "jwp-list-workers___streaming").
     /// Used to decode job results with the correct proto schema.
     pub using: Option<String>,
@@ -373,14 +372,29 @@ pub trait FunctionApp:
                             });
                         }
                         Some(result_output_item::Item::End(trailer)) => {
-                            // Yield final result with metadata
+                            // Yield final result with metadata; a failed End
+                            // carries the failure into the terminal result.
                             let completed_at = chrono::Utc::now().timestamp_millis();
+                            let (status, error_message, error_code) =
+                                match proto::stream_error::inspect_end(&trailer) {
+                                    proto::stream_error::StreamErrorOutcome::Success => {
+                                        (ResultStatus::Success, None, None)
+                                    }
+                                    proto::stream_error::StreamErrorOutcome::Failed(error) => (
+                                        proto::stream_error::result_status_for(error.code),
+                                        Some(error.message),
+                                        Some(
+                                            proto::stream_error::code_to_json_str(error.code)
+                                                .to_string(),
+                                        ),
+                                    ),
+                                };
 
                             yield Ok(FunctionResult {
                                 output: "".to_string(),
-                                status: Some(ResultStatus::Success as i32),
-                                error_message: None,
-                                error_code: None,
+                                status: Some(status as i32),
+                                error_message,
+                                error_code,
                                 last_info: Some(FunctionExecutionInfo {
                                     job_id: job_id.clone(),
                                     started_at,
@@ -1004,6 +1018,7 @@ pub trait FunctionApp:
             .as_ref()
             .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
         let supports_streaming = check_method_supports_streaming(rdata, tool_name_opt.as_deref());
+        let deadline = streaming_deadline(supports_streaming, timeout_sec)?;
         // Internal: results streamed via server-side channel, not exposed to client.
         // None: non-streaming runners return results in a single response.
         let streaming_type = if supports_streaming {
@@ -1012,10 +1027,14 @@ pub trait FunctionApp:
             StreamingType::None
         };
         let runner_name = rdata.name.clone();
-        let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
-        let (settings, args) =
-            Self::prepare_runner_call_arguments(arguments.unwrap_or_default()).await?;
-        let worker_data = self.create_worker_data(&runner, settings, None).await?;
+        let prepare = async {
+            let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
+            let (settings, args) =
+                Self::prepare_runner_call_arguments(arguments.unwrap_or_default()).await?;
+            let worker_data = self.create_worker_data(&runner, settings, None).await?;
+            Ok::<_, anyhow::Error>((args, worker_data))
+        };
+        let (args, worker_data) = with_deadline(deadline, "function preparation", prepare).await?;
 
         if supports_streaming {
             let rid_ref = runner
@@ -1026,51 +1045,37 @@ pub trait FunctionApp:
                 .data
                 .as_ref()
                 .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
-            let job_args = self
-                .transform_job_args(rid_ref, rdata_ref, &args, tool_name_opt.as_deref())
-                .await?;
-
-            // Pre-generate job_id and start listening BEFORE enqueue to avoid
-            // race condition where the job completes and publishes results via
-            // pubsub before the listener subscribes.
+            // Pre-generate job_id and subscribe BEFORE enqueue so a job that
+            // finishes immediately cannot publish its result unobserved.
             let job_id = proto::jobworkerp::data::JobId {
                 value: self.id_generator().generate_id()?,
             };
-            let job_result_app = self.job_result_app().clone();
-            let listen_job_id = job_id;
-            let listen_timeout = (timeout_sec as u64) * 1000;
-            let result_handle = tokio::spawn(async move {
-                job_result_app
-                    .listen_result_by_job_id(&listen_job_id, Some(listen_timeout), true)
-                    .await
-            });
+            let (job_args, result_handle) = prepare_streaming_pair(
+                deadline,
+                self.transform_job_args(rid_ref, rdata_ref, &args, tool_name_opt.as_deref()),
+                spawn_subscribed_listener(self.job_result_app().clone(), job_id, deadline),
+            )
+            .await?;
 
             // Use overrides to set NoResult response_type so enqueue returns immediately
             let streaming_overrides = streaming_no_wait_overrides();
 
             let using_for_result = tool_name_opt.clone();
-            let enqueue_result = self
-                .job_app()
-                .enqueue_job_with_temp_worker(
-                    meta,
-                    worker_data,
-                    job_args,
-                    None,
-                    0,
-                    proto::jobworkerp::data::Priority::Medium as i32,
-                    (timeout_sec as u64) * 1000,
-                    Some(job_id),
-                    streaming_type,
-                    true,
-                    tool_name_opt,
-                    streaming_overrides,
-                )
-                .await;
-            if let Err(e) = enqueue_result {
-                // Abort the pre-started listener to avoid orphaned tasks
-                result_handle.abort();
-                return Err(e);
-            }
+            let enqueue_future = self.job_app().enqueue_job_with_temp_worker(
+                meta,
+                worker_data,
+                job_args,
+                None,
+                0,
+                proto::jobworkerp::data::Priority::Medium as i32,
+                (timeout_sec as u64) * 1000,
+                Some(job_id),
+                streaming_type,
+                true,
+                tool_name_opt,
+                streaming_overrides,
+            );
+            await_streaming_enqueue(deadline, enqueue_future).await?;
 
             Ok(EnqueuedFunction {
                 job_id,
@@ -1134,6 +1139,9 @@ pub trait FunctionApp:
     /// Phase A: Enqueue a function for LLM tool execution and return immediately.
     /// For streaming-capable runners, enqueues with StreamingType::Internal (returns immediately).
     /// For non-streaming runners, enqueues with StreamingType::None (waits for completion).
+    /// For streaming calls, `timeout_sec == 0` leaves preparation and result collection unbounded.
+    /// A positive timeout bounds preparation and result collection; once enqueue begins, enqueue
+    /// is awaited to completion even if that deadline passes.
     async fn enqueue_function_for_llm(
         &self,
         meta: Arc<HashMap<String, String>>,
@@ -1179,6 +1187,7 @@ pub trait FunctionApp:
                     } else {
                         (name.to_string(), None, false, None)
                     };
+                let deadline = streaming_deadline(supports_streaming, timeout_sec)?;
 
                 let (worker_name, tool_name_for_worker) =
                     if let Some((server_name, tool_name)) = Self::divide_names(name) {
@@ -1207,49 +1216,36 @@ pub trait FunctionApp:
                     // Streaming path: use overrides + pre-started listener
                     let streaming_overrides = streaming_no_wait_overrides();
 
-                    let job_args = self
-                        .transform_job_args(
+                    let job_id = proto::jobworkerp::data::JobId {
+                        value: self.id_generator().generate_id()?,
+                    };
+                    let (job_args, result_handle) = prepare_streaming_pair(
+                        deadline,
+                        self.transform_job_args(
                             &rid,
                             &rdata,
                             &request_args,
                             tool_name_for_worker.as_deref(),
-                        )
-                        .await?;
+                        ),
+                        spawn_subscribed_listener(self.job_result_app().clone(), job_id, deadline),
+                    )
+                    .await?;
 
-                    let job_id = proto::jobworkerp::data::JobId {
-                        value: self.id_generator().generate_id()?,
-                    };
-                    let job_result_app = self.job_result_app().clone();
-                    let listen_job_id = job_id;
-                    let listen_timeout = (timeout_sec as u64) * 1000;
-                    let result_handle = tokio::spawn(async move {
-                        job_result_app
-                            .listen_result_by_job_id(&listen_job_id, Some(listen_timeout), true)
-                            .await
-                    });
-
-                    let enqueue_result = self
-                        .job_app()
-                        .enqueue_job(
-                            meta,
-                            None,
-                            Some(&worker_name),
-                            job_args,
-                            None,
-                            0,
-                            proto::jobworkerp::data::Priority::Medium as i32,
-                            (timeout_sec as u64) * 1000,
-                            Some(job_id),
-                            StreamingType::Internal,
-                            tool_name_for_worker,
-                            streaming_overrides,
-                        )
-                        .await;
-
-                    if let Err(e) = enqueue_result {
-                        result_handle.abort();
-                        return Err(e);
-                    }
+                    let enqueue_future = self.job_app().enqueue_job(
+                        meta,
+                        None,
+                        Some(&worker_name),
+                        job_args,
+                        None,
+                        0,
+                        proto::jobworkerp::data::Priority::Medium as i32,
+                        (timeout_sec as u64) * 1000,
+                        Some(job_id),
+                        StreamingType::Internal,
+                        tool_name_for_worker,
+                        streaming_overrides,
+                    );
+                    await_streaming_enqueue(deadline, enqueue_future).await?;
 
                     Ok(EnqueuedFunction {
                         job_id,
@@ -1322,25 +1318,26 @@ pub trait FunctionApp:
 
     /// Phase B: Await the result of a previously enqueued streaming function.
     /// Uses the pre-started result_handle from EnqueuedFunction to receive
-    /// the job result via listen_result_by_job_id (pubsub with DB fallback).
+    /// the job result from the listener prepared before enqueue.
     /// Collects FinalCollected or last Data chunk from the stream.
     async fn await_function_result(
         &self,
-        result_handle: tokio::task::JoinHandle<JobListenResult>,
+        result_handle: crate::app::job_result::ResultListenerHandle,
         runner_name: &str,
         using: Option<&str>,
     ) -> Result<serde_json::Value> {
-        use futures::StreamExt;
         use proto::jobworkerp::data::result_output_item;
 
-        let (job_result, stream_opt) = result_handle
-            .await
-            .map_err(|e| anyhow::anyhow!("Result listener task failed: {}", e))??;
+        let crate::app::job_result::PreparedJobResult {
+            result: job_result,
+            stream,
+        } = result_handle.await?;
+        crate::app::job_result::ensure_successful_job_result(&job_result)?;
 
         // For streaming jobs: collect from stream (FinalCollected is authoritative)
-        if let Some(mut stream) = stream_opt {
+        if let Some(mut stream) = stream {
             let mut last_data: Option<Vec<u8>> = None;
-            while let Some(item) = stream.next().await {
+            while let Some(item) = stream.next_stream_item().await? {
                 match item.item {
                     Some(result_output_item::Item::FinalCollected(data)) => {
                         last_data = Some(data);
@@ -1349,7 +1346,10 @@ pub trait FunctionApp:
                     Some(result_output_item::Item::Data(data)) => {
                         last_data = Some(data);
                     }
-                    Some(result_output_item::Item::End(_)) => break,
+                    Some(result_output_item::Item::End(trailer)) => {
+                        proto::stream_error::ensure_end_success(&trailer)?;
+                        break;
+                    }
                     None => {}
                 }
             }
@@ -1532,6 +1532,42 @@ fn streaming_no_wait_overrides() -> Option<proto::jobworkerp::data::JobExecution
         broadcast_results: Some(true),
         retry_policy: None, // Falls back to worker's default retry_policy via resolve_job_params
     })
+}
+
+fn streaming_deadline(
+    supports_streaming: bool,
+    timeout_sec: u32,
+) -> Result<Option<tokio::time::Instant>> {
+    if !supports_streaming || timeout_sec == 0 {
+        return Ok(None);
+    }
+    tokio::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(u64::from(timeout_sec)))
+        .map(Some)
+        .ok_or_else(|| {
+            JobWorkerError::TimeoutError("streaming deadline is out of range".into()).into()
+        })
+}
+
+async fn await_streaming_enqueue<T>(
+    deadline: Option<tokio::time::Instant>,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        return Err(JobWorkerError::TimeoutError("function enqueue timeout".into()).into());
+    }
+    future.await
+}
+
+async fn prepare_streaming_pair<A, B>(
+    deadline: Option<tokio::time::Instant>,
+    transform: impl std::future::Future<Output = Result<A>>,
+    subscribe: impl std::future::Future<Output = Result<B>>,
+) -> Result<(A, B)> {
+    with_deadline(deadline, "function preparation", async {
+        tokio::try_join!(transform, subscribe)
+    })
+    .await
 }
 
 /// Check if the runner method supports streaming output.
@@ -1813,6 +1849,7 @@ pub(crate) fn transform_function_arguments_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
     use serde_json::json;
 
     #[test]
@@ -1828,6 +1865,412 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(input_str).unwrap();
         assert_eq!(parsed["owner"], "foo");
         assert_eq!(parsed["repo"], "bar");
+    }
+
+    #[test]
+    fn streaming_deadline_is_unbounded_for_zero_and_non_streaming_calls() {
+        assert!(streaming_deadline(true, 0).unwrap().is_none());
+        assert!(streaming_deadline(false, 30).unwrap().is_none());
+    }
+
+    #[test]
+    fn streaming_deadline_is_set_for_positive_timeout() {
+        let before = tokio::time::Instant::now();
+        let deadline = streaming_deadline(true, 30)
+            .unwrap()
+            .expect("positive timeout has a deadline");
+        assert!(deadline >= before + std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn started_enqueue_is_not_cancelled_when_deadline_expires() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+            let enqueue = tokio::spawn(async move {
+                await_streaming_enqueue(Some(deadline), async move {
+                    let _ = started_tx.send(());
+                    release_rx.await?;
+                    let _ = completed_tx.send(());
+                    Ok::<_, anyhow::Error>(42)
+                })
+                .await
+            });
+
+            started_rx.await.unwrap();
+            tokio::time::sleep_until(deadline + std::time::Duration::from_millis(10)).await;
+            release_tx.send(()).unwrap();
+            completed_rx.await.unwrap();
+            assert_eq!(enqueue.await.unwrap().unwrap(), 42);
+        });
+    }
+
+    #[test]
+    fn await_function_result_preserves_failure_diagnostic() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app = crate::module::test::create_hybrid_test_app().await?;
+            let job_id = proto::jobworkerp::data::JobId {
+                value: rand::random::<i64>().abs(),
+            };
+            let handle = super::super::job_result::spawn_subscribed_listener(
+                app.job_result_app.clone(),
+                job_id,
+                Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5)),
+            )
+            .await?;
+            let result_id = proto::jobworkerp::data::JobResultId {
+                value: rand::random::<i64>().abs(),
+            };
+            let data = proto::jobworkerp::data::JobResultData {
+                job_id: Some(job_id),
+                worker_id: Some(proto::jobworkerp::data::WorkerId { value: 1 }),
+                status: proto::jobworkerp::data::ResultStatus::FatalError as i32,
+                response_type: proto::jobworkerp::data::ResponseType::NoResult as i32,
+                output: Some(proto::jobworkerp::data::ResultOutput {
+                    items: b"original job failure".to_vec(),
+                }),
+                broadcast_results: true,
+                ..Default::default()
+            };
+            app.job_app.complete_job(&result_id, &data, None).await?;
+
+            let error = app
+                .function_app
+                .await_function_result(handle, "unknown-runner", None)
+                .await
+                .unwrap_err();
+            assert!(format!("{error:#}").contains("original job failure"));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn await_function_result_does_not_poll_failed_result_stream() -> Result<()> {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        struct DropProbe(Arc<AtomicUsize>);
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app = crate::module::test::create_hybrid_test_app().await?;
+            let polls = Arc::new(AtomicUsize::new(0));
+            let drops = Arc::new(AtomicUsize::new(0));
+            let probe = DropProbe(drops.clone());
+            let poll_counter = polls.clone();
+            let stream = futures::stream::poll_fn(move |_| {
+                let _keep_probe = &probe;
+                poll_counter.fetch_add(1, Ordering::SeqCst);
+                std::task::Poll::Ready(Some(proto::jobworkerp::data::ResultOutputItem {
+                    item: Some(
+                        proto::jobworkerp::data::result_output_item::Item::FinalCollected(
+                            b"invalid runner protobuf".to_vec(),
+                        ),
+                    ),
+                }))
+            })
+            .boxed();
+            let handle =
+                crate::app::job_result::ResultListenerHandle::from_result_and_stream_for_test(
+                    proto::jobworkerp::data::JobResult {
+                        data: Some(proto::jobworkerp::data::JobResultData {
+                            status: proto::jobworkerp::data::ResultStatus::FatalError as i32,
+                            output: Some(proto::jobworkerp::data::ResultOutput {
+                                items: b"original job failure".to_vec(),
+                            }),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    Some(stream),
+                );
+
+            let error = app
+                .function_app
+                .await_function_result(handle, "unknown-runner", None)
+                .await
+                .unwrap_err();
+            assert!(format!("{error:#}").contains("original job failure"));
+            assert_eq!(polls.load(Ordering::SeqCst), 0);
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn await_function_result_keeps_failure_diagnostics_for_empty_or_missing_output() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app = crate::module::test::create_hybrid_test_app().await?;
+            let cases = [
+                (
+                    proto::jobworkerp::data::JobResult {
+                        data: Some(proto::jobworkerp::data::JobResultData {
+                            status: proto::jobworkerp::data::ResultStatus::FatalError as i32,
+                            output: Some(proto::jobworkerp::data::ResultOutput::default()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    "job execution failed: job completed with status FatalError",
+                ),
+                (
+                    proto::jobworkerp::data::JobResult {
+                        data: Some(proto::jobworkerp::data::JobResultData {
+                            status: proto::jobworkerp::data::ResultStatus::FatalError as i32,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    "job execution failed: job completed with status FatalError",
+                ),
+                (
+                    proto::jobworkerp::data::JobResult::default(),
+                    "job completed without result data",
+                ),
+            ];
+
+            for (result, expected_diagnostic) in cases {
+                let handle =
+                    crate::app::job_result::ResultListenerHandle::from_result_and_stream_for_test(
+                        result, None,
+                    );
+                let error = app
+                    .function_app
+                    .await_function_result(handle, "unknown-runner", None)
+                    .await
+                    .unwrap_err();
+                assert!(
+                    format!("{error:#}").contains(expected_diagnostic),
+                    "unexpected error: {error:#}"
+                );
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn await_function_result_preserves_success_output_fallbacks() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app = crate::module::test::create_hybrid_test_app().await?;
+            let direct_output_handle =
+                crate::app::job_result::ResultListenerHandle::from_result_and_stream_for_test(
+                    proto::jobworkerp::data::JobResult {
+                        data: Some(proto::jobworkerp::data::JobResultData {
+                            status: proto::jobworkerp::data::ResultStatus::Success as i32,
+                            output: Some(proto::jobworkerp::data::ResultOutput::default()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    None,
+                );
+            let direct_error = app
+                .function_app
+                .await_function_result(direct_output_handle, "unknown-runner", None)
+                .await
+                .unwrap_err();
+            assert!(direct_error.to_string().contains("output is empty"));
+
+            let direct_output_handle =
+                crate::app::job_result::ResultListenerHandle::from_result_and_stream_for_test(
+                    proto::jobworkerp::data::JobResult {
+                        data: Some(proto::jobworkerp::data::JobResultData {
+                            status: proto::jobworkerp::data::ResultStatus::Success as i32,
+                            output: Some(proto::jobworkerp::data::ResultOutput {
+                                items: b"direct output".to_vec(),
+                            }),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    None,
+                );
+            let direct_decode_error = app
+                .function_app
+                .await_function_result(direct_output_handle, "unknown-runner", None)
+                .await
+                .unwrap_err();
+            assert!(direct_decode_error.to_string().contains("Not found runner"));
+
+            let stream = futures::stream::iter([proto::jobworkerp::data::ResultOutputItem {
+                item: Some(
+                    proto::jobworkerp::data::result_output_item::Item::FinalCollected(
+                        b"stream output".to_vec(),
+                    ),
+                ),
+            }])
+            .boxed();
+            let stream_handle =
+                crate::app::job_result::ResultListenerHandle::from_result_and_stream_for_test(
+                    proto::jobworkerp::data::JobResult {
+                        data: Some(proto::jobworkerp::data::JobResultData {
+                            status: proto::jobworkerp::data::ResultStatus::Success as i32,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    Some(stream),
+                );
+            let stream_error = app
+                .function_app
+                .await_function_result(stream_handle, "unknown-runner", None)
+                .await
+                .unwrap_err();
+            assert!(stream_error.to_string().contains("Not found runner"));
+            Ok(())
+        })
+    }
+
+    fn failed_end_stream(
+        code: proto::jobworkerp::data::StreamErrorCode,
+    ) -> futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem> {
+        futures::stream::iter([proto::stream_error::error_end_item(
+            HashMap::new(),
+            code,
+            "runner failed",
+            "COMMAND",
+        )])
+        .boxed()
+    }
+
+    #[test]
+    fn function_result_stream_reports_a_failed_end() -> Result<()> {
+        use proto::jobworkerp::data::{ResultStatus, StreamErrorCode};
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app = crate::module::test::create_hybrid_test_app().await?;
+            for (code, status, error_code) in [
+                (
+                    StreamErrorCode::ExecutionFailed,
+                    ResultStatus::MaxRetry,
+                    "EXECUTION_FAILED",
+                ),
+                (
+                    StreamErrorCode::Cancelled,
+                    ResultStatus::Cancelled,
+                    "CANCELLED",
+                ),
+                (
+                    StreamErrorCode::InvalidArgument,
+                    ResultStatus::OtherError,
+                    "INVALID_ARGUMENT",
+                ),
+            ] {
+                let results: Vec<_> = app
+                    .function_app
+                    .process_job_result_to_stream(
+                        "1".to_string(),
+                        0,
+                        None,
+                        Some(failed_end_stream(code)),
+                        Some("COMMAND".to_string()),
+                        None,
+                    )
+                    .collect()
+                    .await;
+                let last = results.last().unwrap().as_ref().unwrap();
+                assert_eq!(last.status, Some(status as i32), "{code:?}");
+                assert_eq!(last.error_code.as_deref(), Some(error_code));
+                assert_eq!(last.error_message.as_deref(), Some("runner failed"));
+                assert!(last.last_info.is_some());
+            }
+
+            let normal =
+                futures::stream::iter([proto::stream_error::normal_end_item(HashMap::new())])
+                    .boxed();
+            let results: Vec<_> = app
+                .function_app
+                .process_job_result_to_stream(
+                    "1".to_string(),
+                    0,
+                    None,
+                    Some(normal),
+                    Some("COMMAND".to_string()),
+                    None,
+                )
+                .collect()
+                .await;
+            let last = results.last().unwrap().as_ref().unwrap();
+            assert_eq!(last.status, Some(ResultStatus::Success as i32));
+            assert_eq!(last.error_code, None);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn await_function_result_fails_on_a_failed_end() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app = crate::module::test::create_hybrid_test_app().await?;
+            let handle =
+                crate::app::job_result::ResultListenerHandle::from_result_and_stream_for_test(
+                    proto::jobworkerp::data::JobResult {
+                        data: Some(proto::jobworkerp::data::JobResultData {
+                            status: proto::jobworkerp::data::ResultStatus::Success as i32,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    Some(failed_end_stream(
+                        proto::jobworkerp::data::StreamErrorCode::ExecutionFailed,
+                    )),
+                );
+            let error = app
+                .function_app
+                .await_function_result(handle, "COMMAND", None)
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .downcast_ref::<proto::stream_error::StreamFailedError>()
+                    .is_some(),
+                "{error:#}"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn result_stream_as_json_yields_the_end_failure() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app = crate::module::test::create_hybrid_test_app().await?;
+            let items: Vec<_> = app
+                .function_app
+                .result_stream_as_json(
+                    failed_end_stream(proto::jobworkerp::data::StreamErrorCode::Timeout),
+                    "COMMAND",
+                    None,
+                )
+                .collect()
+                .await;
+            assert_eq!(items.len(), 1);
+            assert!(
+                items[0]
+                    .as_ref()
+                    .unwrap_err()
+                    .downcast_ref::<proto::stream_error::StreamFailedError>()
+                    .is_some()
+            );
+
+            let items: Vec<_> = app
+                .function_app
+                .result_stream_as_json(
+                    futures::stream::iter([proto::stream_error::normal_end_item(HashMap::new())])
+                        .boxed(),
+                    "COMMAND",
+                    None,
+                )
+                .collect()
+                .await;
+            assert!(items.is_empty());
+            Ok(())
+        })
     }
 
     #[test]

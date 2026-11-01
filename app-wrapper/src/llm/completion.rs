@@ -1,14 +1,15 @@
+use super::result_stream::{cancellable_result_stream, provider_result_stream};
 use anyhow::{Result, anyhow};
 use app::module::AppModule;
-use async_stream::stream;
 use async_trait::async_trait;
 use command_utils::trace::Tracing;
-use futures::stream::{BoxStream, StreamExt};
+use futures::stream::BoxStream;
 use genai::GenaiCompletionService;
 use jobworkerp_base::APP_WORKER_NAME;
-use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_runner::jobworkerp::runner::llm::{LlmCompletionArgs, LlmRunnerSettings};
+use jobworkerp_runner::jobworkerp::runner::llm::{
+    LlmCompletionArgs, LlmCompletionResult, LlmRunnerSettings,
+};
 use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
 };
@@ -18,7 +19,7 @@ use ollama::OllamaService;
 use opentelemetry::Context;
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
-use proto::jobworkerp::data::{ResultOutputItem, result_output_item};
+use proto::jobworkerp::data::ResultOutputItem;
 use serde_json;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -264,56 +265,16 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 .request_stream_generation(args, metadata.clone(), Some(parent_cx.clone()))
                 .await?;
 
-            let req_meta = Arc::new(metadata.clone());
-            let cancel_token = cancellation_token.clone();
-            let root_cx = parent_cx;
-
-            // Stream processing with mid-stream cancellation capability
-            let output_stream = stream! {
-                let _root_cx = root_cx;
-                tokio::pin!(stream);
-                loop {
-                    tokio::select! {
-                        item = stream.next() => {
-                            match item {
-                                Some(completion_result) => {
-                                    if completion_result
-                                        .content
-                                        .as_ref()
-                                        .is_some_and(|c| c.content.is_some())
-                                    {
-                                        let buf = ProstMessageCodec::serialize_message(&completion_result);
-                                        if let Ok(buf) = buf {
-                                            yield ResultOutputItem {
-                                                item: Some(result_output_item::Item::Data(buf)),
-                                            };
-                                        } else {
-                                            tracing::error!("Failed to serialize LLM completion result");
-                                        }
-                                    }
-
-                                    // If this is the final result (done=true), add an end marker
-                                    if completion_result.done {
-                                        yield ResultOutputItem {
-                                            item: Some(proto::jobworkerp::data::result_output_item::Item::End(
-                                                proto::jobworkerp::data::Trailer {
-                                                    metadata: (*req_meta).clone(),
-                                                },
-                                            )),
-                                        };
-                                        break;
-                                    }
-                                }
-                                None => break,
-                            }
-                        }
-                        _ = cancel_token.cancelled() => {
-                            tracing::info!("LLM completion stream was cancelled");
-                            break;
-                        }
-                    }
-                }
-            }.boxed();
+            let output_stream = provider_result_stream(
+                stream,
+                metadata,
+                cancellation_token.clone(),
+                parent_cx,
+                |result: &LlmCompletionResult| {
+                    result.content.as_ref().is_some_and(|c| c.content.is_some())
+                },
+                |result: &LlmCompletionResult| result.done,
+            );
 
             // Keep cancellation token for mid-stream cancellation
             // The token will be used by cancel() method during stream processing
@@ -321,34 +282,15 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
             let stream = tokio::select! {
-                result = genai.request_chat_stream(args, metadata, Some(parent_cx.clone())) => result?,
+                result = genai.request_chat_stream(args, metadata.clone(), Some(parent_cx.clone())) => result?,
                 _ = cancellation_token.cancelled() => {
                     tracing::info!("LLM completion stream (GenAI) request was cancelled");
                     return Err(JobWorkerError::CancelledError("LLM completion stream (GenAI) request was cancelled".to_string()).into());
                 }
             };
 
-            let cancel_token = cancellation_token.clone();
-            let root_cx = parent_cx;
-            let cancellable_stream = stream! {
-                let _root_cx = root_cx;
-                tokio::pin!(stream);
-                loop {
-                    tokio::select! {
-                        item = stream.next() => {
-                            match item {
-                                Some(result_item) => yield result_item,
-                                None => break,
-                            }
-                        }
-                        _ = cancel_token.cancelled() => {
-                            tracing::info!("LLM completion GenAI stream was cancelled");
-                            break;
-                        }
-                    }
-                }
-            }
-            .boxed();
+            let cancellable_stream =
+                cancellable_result_stream(stream, metadata, cancellation_token.clone(), parent_cx);
 
             // Keep cancellation token for mid-stream cancellation
             // The token will be used by cancel() method during stream processing

@@ -77,8 +77,75 @@ message ResultOutputItem {
 ```
 
 - **Data**: ストリーミング出力の個別チャンク
-- **End**: オプションのメタデータを含むストリーム終了マーカー
+- **End**: ストリーム終了マーカー。メタデータと、失敗した場合のエラー（`Trailer.error`）を持ちます
 - **FinalCollected**: `collect_stream()`による集約結果（Internalモードのみ）
+
+## ストリームエラー契約
+
+ストリームが失敗で終わったかどうかは、End の `Trailer.error` で判定します。すべての Runner と、worker・app 層が送る End が同じ契約に従います。
+
+```protobuf
+message Trailer {
+  map<string, string> metadata = 1;
+  StreamError error = 2;  // 失敗したときだけ設定される
+}
+
+message StreamError {
+  StreamErrorCode code = 1;
+  string message = 2;  // 最大 4096 UTF-8 bytes
+  string origin = 3;   // 失敗を検出したコンポーネント
+}
+```
+
+- **`error` のない End は正常完了**です。`error` があれば、`code` の値に関係なく失敗として扱います（未知の値も失敗です）。
+- **判定基準は非ストリーム実行と同じ**です。非ストリームの実行が失敗（エラー）を返す条件のときだけ、End に `error` が設定されます。結果データとしての失敗は対象外で、従来どおり Data で返ります。例: HTTP の 4xx/5xx、GRPC の下流サービスの非 OK status、COMMAND の非 0 終了（`treat_nonzero_as_error=false` のとき）、MCP ツールの `is_error`、WORKFLOW の Faulted / Cancelled の結果。
+- 失敗時も、Runner がこれまで送っていた Data（エラー内容を入れた `CommandResult` や Faulted の `WorkflowResult` など）は引き続き送られます。
+- grpc-front は End を加工せずにストリームの中で配信します。gRPC のエラー status には変換しません。
+
+### code
+
+| `StreamErrorCode` | 意味 |
+|---|---|
+| `STREAM_ERROR_CODE_EXECUTION_FAILED` | Runner の実行失敗（コマンドの起動失敗、エラー扱いの非 0 終了、plugin の失敗、workflow の実行エラーなど） |
+| `STREAM_ERROR_CODE_TIMEOUT` | 時間制限の超過（ストリームの idle timeout など） |
+| `STREAM_ERROR_CODE_CANCELLED` | jobworkerp によるキャンセル（ジョブのキャンセル要求） |
+| `STREAM_ERROR_CODE_TRANSPORT_FAILED` | 下流サービスとの通信の途中失敗 |
+| `STREAM_ERROR_CODE_INVALID_ARGUMENT` | 実行開始時に検出した不正な入力 |
+| `STREAM_ERROR_CODE_PROVIDER_STREAM_FAILED` | LLM プロバイダのストリームの中断 |
+| `STREAM_ERROR_CODE_UNSPECIFIED` | 分類できない失敗（失敗として扱う） |
+
+### origin
+
+| 生成元 | origin |
+|---|---|
+| Runner（idle timeout など Runner 固有の処理を含む） | Runner 名（`COMMAND`、`HTTP_REQUEST`、`GRPC`、`LLM`、`WORKFLOW`、`SANDBOX`、plugin 名、MCP サーバ名） |
+| worker / app 層（ストリーム開始前に失敗したジョブの End など） | `WORKER` |
+
+### ResultStatus への対応
+
+`StreamError` から `ResultStatus` を求める場合（FunctionService の結果、client の結果など）は次の対応を使います。ストリーム開始後はデータが届いているためリトライできないので、リトライ対象の失敗はリトライ上限到達と同じ `MAX_RETRY` になります。
+
+| `StreamErrorCode` | `ResultStatus` |
+|---|---|
+| `CANCELLED` | `CANCELLED` |
+| `INVALID_ARGUMENT` | `OTHER_ERROR` |
+| それ以外（`UNSPECIFIED`・未知の値を含む） | `MAX_RETRY` |
+
+### 互換用の metadata（deprecated）
+
+移行期間中は、`error` に加えて次の metadata も書き込まれます。どちらも deprecated で、将来削除されます。新しい client は `Trailer.error` を使ってください。
+
+- `metadata["stream_error"]`: JSON v1（`{"version":1,"code":"EXECUTION_FAILED","message":...,"origin":...}`、最大 4096 bytes）。`code` は enum 名から `STREAM_ERROR_CODE_` を除いた文字列です。すべての失敗 End に書き込まれます。
+- `metadata["jobworkerp.plugin.run_stream_error"]`: plugin の失敗と idle timeout（SANDBOX 以外）で書き込まれます。値はエラーメッセージです。
+
+読み取り側は次の優先順で判定します。
+
+1. `error` があれば失敗。
+2. `metadata["stream_error"]` があれば失敗。不正な形式でも失敗（`UNSPECIFIED`）。
+3. `metadata["jobworkerp.plugin.run_stream_error"]` があれば失敗（`EXECUTION_FAILED`、origin `PLUGIN`）。
+4. どれもなければ正常完了。
+
+この2つのキーは予約キーです。ジョブの request metadata などから End の metadata に入っても、正常 End では除去され、失敗 End では正しい値で上書きされます。そのため plugin が正常終了時に返す metadata に予約キーを入れても失敗にはなりません。plugin が失敗を伝える手段は `run_stream` の `Err` だけです。
 
 ## 使用例
 
@@ -290,7 +357,8 @@ minor 1 経路でも最後のチャンク送信後にホストは sink を drop 
 | Runnerがストリーミング出力非対応 | `INVALID_ARGUMENT` | ストリーム開始時 |
 | 最初のメッセージ後に`job_request`送信 | `INVALID_ARGUMENT` | feed中 |
 | Runner 登録前に保留 feed が `PENDING_BUFFER_MAX` (1024) を超過 | 最古の非 final チャンクを破棄し warn ログ | feed中 |
-| Runner ストリームの drain 中、`JobData.timeout` ms 間チャンクが流れない | Runner のキャンセルトークンが発火し、End trailer でストリーム終了 | 実行中 |
+| Runner ストリームの drain 中、`JobData.timeout` ms 間チャンクが流れない | Runner のキャンセルトークンが発火し、`error`（`TIMEOUT`）付きの End でストリーム終了 | 実行中 |
+| ストリーム開始後の Runner の失敗 | gRPC status は OK のまま、`error` 付きの End で終了（[ストリームエラー契約](#ストリームエラー契約)） | 実行中 |
 | Runner実行エラー | `ResultStatus`に応じたコード | 実行中 |
 | クライアント切断（half-closeなし） | Runnerにキャンセル通知 | 任意 |
 
@@ -314,6 +382,7 @@ minor 1 経路でも最後のチャンク送信後にホストは sink を drop 
 ストリーミングを実装する各Runnerは、`RunnerSpec`トレイト実装で`collect_stream()`メソッドを提供する必要があります。このメソッドは：
 1. `ResultOutputItem`のストリームを受信
 2. Runnerタイプに適した方法でデータチャンクを集約/マージ
-3. 最終的な収集バイト列を返却
+3. End が失敗を示していれば（[ストリームエラー契約](#ストリームエラー契約)）エラーを返却
+4. 最終的な収集バイト列を返却
 
 例えば、LLM Runnerはすべてのトークンチャンクを連結し、コマンドRunnerはstdout/stderrを適切にマージします。

@@ -92,59 +92,8 @@ impl JobResultPublisher for RedisJobResultPubSubRepositoryImpl {
 impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
     // subscribe job result of listen after using redis and return got result immediately
     async fn subscribe_result(&self, job_id: &JobId, timeout: Option<u64>) -> Result<JobResult> {
-        let cn = Self::job_result_pubsub_channel_name(job_id);
-        tracing::debug!("subscribe_result: job_id={}, ch={}", &job_id.value, &cn);
-
-        let mut sub = self
-            .subscribe(cn.as_str())
+        self.subscribe_result_with_ready(job_id, timeout, None)
             .await
-            .inspect_err(|e| tracing::error!("redis_err:{:?}", e))?;
-        let res = {
-            let mut message = sub.on_message();
-            let receive_result = async {
-                match tokio_stream::StreamExt::next(&mut message).await {
-                    Some(msg) => {
-                        let payload: Vec<u8> = msg
-                            .get_payload()
-                            .inspect_err(|e| tracing::error!("get_payload:{e:?}"))?;
-                        let result = Self::deserialize_message::<JobResult>(&payload)
-                            .inspect_err(|e| tracing::error!("deserialize_result:{e:?}"))?;
-                        tracing::debug!("subscribe_result_received: result={:?}", &result.id);
-                        Ok(result)
-                    }
-                    None => {
-                        tracing::debug!("message.next() is None");
-                        Err(JobWorkerError::RuntimeError("result is empty?".to_string()).into())
-                    }
-                }
-            };
-            if let Some(timeout) = timeout {
-                tokio::select! {
-                    _ = command_utils::util::shutdown::shutdown_signal() => {
-                        tracing::debug!("got shutdown signal....");
-                        Err(JobWorkerError::RuntimeError("interrupted".to_string()).into())
-                    },
-                    result = receive_result => result,
-                    _ = tokio::time::sleep(Duration::from_millis(timeout)) => {
-                        Err(JobWorkerError::TimeoutError(format!(
-                            "subscribe timeout: job_id:{}",
-                            job_id.value
-                        )).into())
-                    }
-                }
-            } else {
-                tokio::select! {
-                    _ = command_utils::util::shutdown::shutdown_signal() => {
-                        tracing::debug!("got shutdown signal....");
-                        Err(JobWorkerError::RuntimeError("interrupted".to_string()).into())
-                    },
-                    result = receive_result => result,
-                }
-            }
-        };
-        sub.unsubscribe(&cn.clone()).await?;
-        tracing::info!("subscribe_result_changed end");
-        res
     }
     // subscribe job result of streaming using redis
     async fn subscribe_result_stream(
@@ -179,6 +128,9 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                 .await
                 .inspect_err(|e| tracing::error!("redis_err:{:?}", e))
         }?;
+
+        #[cfg(feature = "stream-subscription-test-hook")]
+        super::test_hooks::hold_stream_subscription(job_id).await;
 
         let repo = Arc::new(self.clone());
         let cn2 = Arc::new(cn);
@@ -252,6 +204,7 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
             .take_while(|opt| futures::future::ready(opt.is_some()))
             // Unwrap Option
             .filter_map(futures::future::ready);
+
         Ok(msg_stream.boxed())
         // }
     }
@@ -293,6 +246,101 @@ pub struct RedisJobResultPubSubRepositoryImpl {
     job_queue_config: Arc<JobQueueConfig>,
 }
 impl RedisJobResultPubSubRepositoryImpl {
+    /// Subscribe to a job's result and send on `ready` once the subscription is
+    /// active. Callers that enqueue right after `ready` cannot lose a fast result.
+    pub async fn subscribe_result_with_ready(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        ready: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> Result<JobResult> {
+        self.subscribe_result_with_fallback(job_id, timeout, || async move {
+            if let Some(ready) = ready {
+                let _ = ready.send(());
+            }
+            None
+        })
+        .await
+        .map(|(result, _)| result)
+    }
+
+    /// Subscribe to a job's result, then run `check` for a result that already
+    /// exists (stored or cached before the subscription). Running the check only
+    /// after subscribing closes the gap where a result published between a
+    /// lookup and a later subscription would never be seen. Returns the result
+    /// and whether it came from `check`.
+    ///
+    /// `check` is called exactly once, after the subscription is active;
+    /// callers rely on that to signal readiness from inside it.
+    pub async fn subscribe_result_with_fallback<F, Fut>(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        check: F,
+    ) -> Result<(JobResult, bool)>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Option<JobResult>> + Send,
+    {
+        let cn = Self::job_result_pubsub_channel_name(job_id);
+        tracing::debug!("subscribe_result: job_id={}, ch={}", &job_id.value, &cn);
+
+        let mut sub = self
+            .subscribe(cn.as_str())
+            .await
+            .inspect_err(|e| tracing::error!("redis_err:{:?}", e))?;
+        if let Some(found) = check().await {
+            sub.unsubscribe(&cn).await?;
+            return Ok((found, true));
+        }
+        let res = {
+            let mut message = sub.on_message();
+            let receive_result = async {
+                match tokio_stream::StreamExt::next(&mut message).await {
+                    Some(msg) => {
+                        let payload: Vec<u8> = msg
+                            .get_payload()
+                            .inspect_err(|e| tracing::error!("get_payload:{e:?}"))?;
+                        let result = Self::deserialize_message::<JobResult>(&payload)
+                            .inspect_err(|e| tracing::error!("deserialize_result:{e:?}"))?;
+                        tracing::debug!("subscribe_result_received: result={:?}", &result.id);
+                        Ok(result)
+                    }
+                    None => {
+                        tracing::debug!("message.next() is None");
+                        Err(JobWorkerError::RuntimeError("result is empty?".to_string()).into())
+                    }
+                }
+            };
+            if let Some(timeout) = timeout {
+                tokio::select! {
+                    _ = command_utils::util::shutdown::shutdown_signal() => {
+                        tracing::debug!("got shutdown signal....");
+                        Err(JobWorkerError::RuntimeError("interrupted".to_string()).into())
+                    },
+                    result = receive_result => result,
+                    _ = tokio::time::sleep(Duration::from_millis(timeout)) => {
+                        Err(JobWorkerError::TimeoutError(format!(
+                            "subscribe timeout: job_id:{}",
+                            job_id.value
+                        )).into())
+                    }
+                }
+            } else {
+                tokio::select! {
+                    _ = command_utils::util::shutdown::shutdown_signal() => {
+                        tracing::debug!("got shutdown signal....");
+                        Err(JobWorkerError::RuntimeError("interrupted".to_string()).into())
+                    },
+                    result = receive_result => result,
+                }
+            }
+        };
+        sub.unsubscribe(&cn).await?;
+        tracing::info!("subscribe_result_changed end");
+        res.map(|result| (result, false))
+    }
+
     pub fn new(redis_client: RedisClient, job_queue_config: Arc<JobQueueConfig>) -> Self {
         Self {
             redis_client,
@@ -313,6 +361,7 @@ impl UseJobQueueConfig for RedisJobResultPubSubRepositoryImpl {
         &self.job_queue_config
     }
 }
+
 pub trait UseRedisJobResultPubSubRepository {
     fn job_result_pubsub_repository(&self) -> &RedisJobResultPubSubRepositoryImpl;
 }
@@ -425,6 +474,126 @@ mod test {
                 .id,
             Some(result_id)
         );
+        Ok(())
+    }
+
+    fn fallback_test_result(job_id: JobId, result_id: i64) -> (JobResultId, JobResultData) {
+        // A worker id no other test listens on: results are also published
+        // to the per-worker channel.
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(WorkerId { value: 9_999_001 }),
+            ..JobResultData::default()
+        };
+        (JobResultId { value: result_id }, data)
+    }
+
+    #[tokio::test]
+    async fn subscribe_result_with_fallback_returns_result_found_by_check() -> Result<()> {
+        let app = RedisJobResultPubSubRepositoryImpl {
+            redis_client: setup_test_redis_client()?,
+            job_queue_config: Arc::new(JobQueueConfig::default()),
+        };
+        let job_id = JobId { value: 9_101 };
+        let (result_id, data) = fallback_test_result(job_id, 9_102);
+        let stored = JobResult {
+            id: Some(result_id),
+            data: Some(data),
+            ..Default::default()
+        };
+        let (res, from_fallback) = tokio::time::timeout(
+            Duration::from_secs(1),
+            app.subscribe_result_with_fallback(&job_id, Some(5_000), || async { Some(stored) }),
+        )
+        .await??;
+        assert!(from_fallback);
+        assert_eq!(res.id, Some(result_id));
+        Ok(())
+    }
+
+    // The check runs only once the subscription is active, so a result
+    // published at that point (a job finishing right then) is not missed.
+    #[tokio::test]
+    async fn subscribe_result_with_fallback_checks_after_subscribing() -> Result<()> {
+        let app = RedisJobResultPubSubRepositoryImpl {
+            redis_client: setup_test_redis_client()?,
+            job_queue_config: Arc::new(JobQueueConfig::default()),
+        };
+        let job_id = JobId { value: 9_201 };
+        let (result_id, data) = fallback_test_result(job_id, 9_202);
+        let publisher = app.clone();
+        let (res, from_fallback) = tokio::time::timeout(
+            Duration::from_secs(2),
+            app.subscribe_result_with_fallback(&job_id, Some(5_000), || async move {
+                publisher
+                    .publish_result(&result_id, &data, true)
+                    .await
+                    .unwrap();
+                None
+            }),
+        )
+        .await??;
+        assert!(!from_fallback);
+        assert_eq!(res.id, Some(result_id));
+        Ok(())
+    }
+
+    async fn wait_for_job_subscription_counts(
+        client: &redis::Client,
+        job_id: &JobId,
+        expected: usize,
+    ) -> Result<()> {
+        let result_channel =
+            RedisJobResultPubSubRepositoryImpl::job_result_pubsub_channel_name(job_id);
+        let stream_channel =
+            RedisJobResultPubSubRepositoryImpl::job_result_stream_pubsub_channel_name(job_id);
+        let mut connection = client.get_multiplexed_async_connection().await?;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let counts: Vec<(String, usize)> = redis::cmd("PUBSUB")
+                    .arg("NUMSUB")
+                    .arg(&result_channel)
+                    .arg(&stream_channel)
+                    .query_async(&mut connection)
+                    .await?;
+                if counts.len() == 2 && counts.iter().all(|(_, count)| *count == expected) {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for {expected} Redis subscribers"))??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropping_result_and_stream_listeners_releases_redis_subscriptions() -> Result<()> {
+        let redis_client = setup_test_redis_client()?;
+        let app = Arc::new(RedisJobResultPubSubRepositoryImpl {
+            redis_client: redis_client.clone(),
+            job_queue_config: Arc::new(JobQueueConfig::default()),
+        });
+        let job_id = JobId { value: 9_301 };
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let result_app = app.clone();
+        // Aborts the subscription even if an assertion below returns early.
+        let result_task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+            result_app
+                .subscribe_result_with_ready(&job_id, None, Some(ready_tx))
+                .await
+        }));
+
+        tokio::time::timeout(Duration::from_secs(2), ready_rx)
+            .await
+            .map_err(|_| anyhow::anyhow!("result subscription did not become ready"))??;
+        let stream = app.subscribe_result_stream(&job_id, None).await?;
+        wait_for_job_subscription_counts(&redis_client, &job_id, 1).await?;
+
+        result_task.abort();
+        let _ = result_task.await;
+        drop(stream);
+        wait_for_job_subscription_counts(&redis_client, &job_id, 0).await?;
         Ok(())
     }
 

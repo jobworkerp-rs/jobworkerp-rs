@@ -99,19 +99,17 @@ pub mod common {
     /// Test runner types with limited cancellation support
     pub enum LimitedCancellationRunner {
         Mcp,
-        Slack,
     }
 
     impl LimitedCancellationRunner {
         pub fn name(&self) -> &'static str {
             match self {
                 Self::Mcp => "MCP",
-                Self::Slack => "SLACK",
             }
         }
 
         pub fn all() -> Vec<Self> {
-            vec![Self::Mcp, Self::Slack]
+            vec![Self::Mcp]
         }
     }
 }

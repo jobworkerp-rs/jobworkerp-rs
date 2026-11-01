@@ -17,7 +17,6 @@ use jobworkerp_runner::runner::{
     python::PythonCommandRunner,
     request::RequestRunner,
     sandbox::SandboxRunner,
-    slack::SlackPostMessageRunner,
 };
 use proto::jobworkerp::data::RunnerType;
 use std::sync::Arc;
@@ -92,10 +91,6 @@ impl RunnerFactory {
                 as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::HttpRequest) => Some(Box::new(
                 RequestRunner::new_with_cancel_monitoring(create_cancel_helper()),
-            )
-                as Box<dyn CancellableRunner + Send + Sync>),
-            Some(RunnerType::SlackPostMessage) => Some(Box::new(
-                SlackPostMessageRunner::new_with_cancel_monitoring(create_cancel_helper()),
             )
                 as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::FunctionSetSelector) => Some(Box::new(

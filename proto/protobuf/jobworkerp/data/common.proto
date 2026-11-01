@@ -6,11 +6,46 @@ package jobworkerp.data;
 // Represents an empty message with no fields, used as a placeholder
 message Empty {}
 
+// # Stream Error Code
+// Classification of a failure that terminated a result stream.
+enum StreamErrorCode {
+  // Unknown or unclassified failure. Readers must still treat it as a failure.
+  STREAM_ERROR_CODE_UNSPECIFIED = 0;
+  // Runner execution failed (e.g. command spawn failure, non-zero exit treated as error,
+  // plugin failure, workflow execution error).
+  STREAM_ERROR_CODE_EXECUTION_FAILED = 1;
+  // Execution exceeded a time limit (e.g. stream idle timeout).
+  STREAM_ERROR_CODE_TIMEOUT = 2;
+  // Execution was cancelled by jobworkerp (job cancel request).
+  STREAM_ERROR_CODE_CANCELLED = 3;
+  // Communication with a downstream service failed mid-request.
+  STREAM_ERROR_CODE_TRANSPORT_FAILED = 4;
+  // Invalid input detected before or at the start of execution.
+  STREAM_ERROR_CODE_INVALID_ARGUMENT = 5;
+  // An LLM provider stream was interrupted.
+  STREAM_ERROR_CODE_PROVIDER_STREAM_FAILED = 6;
+}
+
+// # Stream Error
+// Failure that terminated a result stream.
+message StreamError {
+  StreamErrorCode code = 1;
+  // Human-readable diagnostic. At most 4096 UTF-8 bytes.
+  string message = 2;
+  // Component that detected the failure: the runner name (e.g. "COMMAND", a plugin name)
+  // or "WORKER" for failures detected outside a runner. Never empty, at most 256 UTF-8 bytes.
+  string origin = 3;
+}
+
 // # Trailer
 message Trailer {
   // # metadata
   // Additional metadata information
   map<string, string> metadata = 1;
+  // # Error
+  // Set when the stream terminated with a failure. An End whose Trailer has no error
+  // means the execution completed successfully.
+  StreamError error = 2;
 }
 
 // # Storage Type
@@ -51,9 +86,8 @@ enum RunnerType {
   // Executes commands inside Docker containers
   DOCKER = 4;
 
-  // # Slack Message Runner
-  // Posts messages to Slack channels
-  SLACK_POST_MESSAGE = 5;
+  reserved 5;
+  reserved "SLACK_POST_MESSAGE";
 
   // # Python Command Runner
   // Executes Python scripts as commands

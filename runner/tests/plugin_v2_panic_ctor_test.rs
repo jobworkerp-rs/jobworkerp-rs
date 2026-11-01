@@ -1,7 +1,7 @@
 //! V2 plugin loader: constructor-panic safety.
 //!
-//! Uses the `plugin_runner_panic_ctor_test` dylib whose constructor calls
-//! `panic!`. Without the macro's `catch_unwind` wrap, the unwind would
+//! Uses the `plugin_runner_panic_ctor_test` dylib whose constructor unwinds
+//! via `std::panic::resume_unwind`. Without the macro's `catch_unwind` wrap, the unwind would
 //! cross the `extern "C"` boundary and abort the host. This test asserts
 //! that `load_plugin_file` returns a normal error and the host stays up.
 
@@ -82,6 +82,67 @@ fn v2_plugin_free_handles_sentinel_instance_after_constructor_panic() {
         // (the pre-fix behaviour), Box::from_raw(null) would segfault here.
         free(inst);
     }
+}
+
+const SILENT_LOAD_CHILD_ENV: &str = "PANIC_CTOR_SILENT_LOAD_CHILD";
+
+/// Every test that scans `target/{debug,release}` for plugins loads this
+/// dylib, so a hook-triggering `panic!` would flood their stderr. The
+/// constructor must unwind without invoking the panic hook. The check runs
+/// in a child process because the plugin's std (and hook) may not be shared
+/// with this test binary, so only the process's real stderr is reliable.
+#[test]
+fn v2_plugin_constructor_panic_does_not_print_panic_message() {
+    let Some(path) = locate_panic_ctor_plugin() else {
+        eprintln!(
+            "skipping: plugin_runner_panic_ctor_test dylib not found under ./target or ../target"
+        );
+        return;
+    };
+
+    if std::env::var_os(SILENT_LOAD_CHILD_ENV).is_some() {
+        unsafe {
+            let lib = Library::new(&path).expect("dylib loads");
+            let load: Symbol<extern "C" fn() -> PluginInstanceRaw> = lib
+                .get(b"load_multi_method_plugin_v2\0")
+                .expect("V2 load symbol present");
+            let free: Symbol<unsafe extern "C" fn(PluginInstanceRaw)> = lib
+                .get(b"free_multi_method_plugin_v2\0")
+                .expect("V2 free symbol present");
+            let inst = load();
+            assert!(inst.state.is_null(), "expected sentinel state");
+            free(inst);
+        }
+        return;
+    }
+
+    let output = std::process::Command::new(std::env::current_exe().expect("test binary path"))
+        .args([
+            "--exact",
+            "v2_plugin_constructor_panic_does_not_print_panic_message",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(SILENT_LOAD_CHILD_ENV, "1")
+        .output()
+        .expect("spawn child test process");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "child load failed: status={:?}, stderr={stderr}",
+        output.status
+    );
+    // Guard against a vacuous pass: if the filter matched nothing, the child
+    // would exit successfully with empty stderr without loading the plugin.
+    assert!(
+        stdout.contains("1 passed"),
+        "child process did not run the load test, stdout: {stdout}"
+    );
+    assert!(
+        !stderr.contains("panicked at"),
+        "constructor panic must not invoke the panic hook, got stderr: {stderr}"
+    );
 }
 
 #[tokio::test]

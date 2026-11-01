@@ -4,6 +4,7 @@ mod validation;
 pub use validation::MAX_RECURSIVE_DEPTH;
 
 use super::super::TaskExecutorTrait;
+use crate::workflow::execute::expression::ExpressionContext;
 use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
@@ -80,7 +81,7 @@ impl PythonTaskExecutor {
         &self,
         script_config: &workflow::ScriptConfiguration,
         task_context: &TaskContext,
-        expression: &std::collections::BTreeMap<String, Arc<serde_json::Value>>,
+        expression: &ExpressionContext,
     ) -> Result<PythonCommandArgs> {
         let mut script_code = String::new();
 

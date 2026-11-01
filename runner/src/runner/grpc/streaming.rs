@@ -5,7 +5,7 @@ use futures::stream::BoxStream;
 use grpc_utils::RawBytesCodec;
 use jobworkerp_base::error::JobWorkerError;
 use prost_reflect::DescriptorPool;
-use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
+use proto::jobworkerp::data::{ResultOutputItem, result_output_item};
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -114,11 +114,7 @@ impl GrpcConnection {
                                             .map(|t| t.map(|m| GrpcConnection::metadata_map_to_hashmap(&m)).unwrap_or_default())
                                             .unwrap_or_default();
                                         merged_metadata.extend(trailer_metadata);
-                                        yield ResultOutputItem {
-                                            item: Some(result_output_item::Item::End(Trailer {
-                                                metadata: merged_metadata,
-                                            })),
-                                        };
+                                        yield proto::stream_error::normal_end_item(merged_metadata);
                                         break;
                                     }
                                     Err(status) => {
@@ -135,31 +131,14 @@ impl GrpcConnection {
                                                 status.message().to_string(),
                                             );
                                         }
-                                        yield ResultOutputItem {
-                                            item: Some(result_output_item::Item::End(Trailer {
-                                                metadata: trailer_metadata,
-                                            })),
-                                        };
+                                        yield proto::stream_error::normal_end_item(trailer_metadata);
                                         break;
                                     }
                                 }
                             }
                             _ = cancellation_token.cancelled() => {
                                 tracing::info!("gRPC streaming cancelled");
-                                let mut cancel_metadata = HashMap::new();
-                                cancel_metadata.insert(
-                                    "grpc-status".to_string(),
-                                    (tonic::Code::Cancelled as i32).to_string(),
-                                );
-                                cancel_metadata.insert(
-                                    "grpc-message".to_string(),
-                                    "Stream cancelled by client".to_string(),
-                                );
-                                yield ResultOutputItem {
-                                    item: Some(result_output_item::Item::End(Trailer {
-                                        metadata: cancel_metadata,
-                                    })),
-                                };
+                                yield cancelled_end_item();
                                 break;
                             }
                         }
@@ -173,5 +152,48 @@ impl GrpcConnection {
                 Err(e)
             }
         }
+    }
+}
+
+/// End for a stream cancelled by jobworkerp. `grpc-status` is kept for
+/// readers that inspect it; the typed error marks the stream as failed.
+fn cancelled_end_item() -> ResultOutputItem {
+    let metadata = HashMap::from([
+        (
+            "grpc-status".to_string(),
+            (tonic::Code::Cancelled as i32).to_string(),
+        ),
+        (
+            "grpc-message".to_string(),
+            "Stream cancelled by client".to_string(),
+        ),
+    ]);
+    proto::stream_error::error_end_item(
+        metadata,
+        proto::jobworkerp::data::StreamErrorCode::Cancelled,
+        "gRPC streaming was cancelled",
+        proto::jobworkerp::data::RunnerType::Grpc.as_str_name(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancelled_end_reports_cancellation_and_keeps_grpc_status() {
+        let Some(result_output_item::Item::End(trailer)) = cancelled_end_item().item else {
+            panic!("expected an End item");
+        };
+        assert_eq!(
+            trailer.metadata.get("grpc-status").map(String::as_str),
+            Some("1")
+        );
+        let error = trailer.error.expect("cancellation is a stream failure");
+        assert_eq!(
+            error.code,
+            proto::jobworkerp::data::StreamErrorCode::Cancelled as i32
+        );
+        assert_eq!(error.origin, "GRPC");
     }
 }

@@ -324,7 +324,7 @@ impl RunnerTrait for FunctionSetSelectorImpl {
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let (result, metadata) = self.run(arg, metadata.clone(), using).await;
         let data = result?;
-        let trailer = proto::jobworkerp::data::Trailer { metadata };
+        let trailer = proto::stream_error::normal_trailer(metadata);
 
         use async_stream::stream;
         let stream = stream! {

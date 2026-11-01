@@ -16,7 +16,9 @@ use jobworkerp_base::{
     error::JobWorkerError,
 };
 use proto::DEFAULT_METHOD_NAME;
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
+use proto::jobworkerp::data::{
+    ResultOutputItem, RunnerType, StreamErrorCode, StreamingOutputType, Trailer,
+};
 use reqwest::{
     Method, Url,
     header::{HeaderMap, HeaderName},
@@ -166,7 +168,7 @@ impl RunnerSpec for RequestRunner {
                         }
                     }
                     Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
+                        metadata = proto::stream_error::success_metadata(trailer)?;
                         break;
                     }
                     Some(result_output_item::Item::FinalCollected(_)) | None => {}
@@ -299,13 +301,14 @@ impl RunnerTrait for RequestRunner {
         let args = ProstMessageCodec::deserialize_message::<HttpRequestArgs>(arg)?;
 
         use async_stream::stream;
-        use proto::jobworkerp::data::{Trailer, result_output_item::Item};
+        use proto::jobworkerp::data::result_output_item::Item;
 
-        let trailer = Arc::new(Trailer {
-            metadata: metadata.clone(),
-        });
+        let trailer = Arc::new(proto::stream_error::normal_trailer(metadata.clone()));
 
         let stream = stream! {
+            // HTTP status codes are result data; only failures that make
+            // run() return Err are reported on the End.
+            let mut failure: Option<(StreamErrorCode, String)> = None;
             // Build the request
             let method = Method::from_str(&args.method);
             let url_result = url.join(&args.path);
@@ -364,9 +367,7 @@ impl RunnerTrait for RequestRunner {
                         result = req.send() => result,
                         _ = cancellation_token.cancelled() => {
                             tracing::info!("HTTP stream request was cancelled");
-                            yield ResultOutputItem {
-                                item: Some(Item::End((*trailer).clone())),
-                            };
+                            yield request_error_end(&trailer, StreamErrorCode::Cancelled, "HTTP request was cancelled");
                             return;
                         }
                     };
@@ -385,9 +386,7 @@ impl RunnerTrait for RequestRunner {
                                     chunk = bytes_stream.next() => chunk,
                                     _ = cancellation_token.cancelled() => {
                                         tracing::info!("HTTP stream response reading was cancelled");
-                                        yield ResultOutputItem {
-                                            item: Some(Item::End((*trailer).clone())),
-                                        };
+                                        yield request_error_end(&trailer, StreamErrorCode::Cancelled, "HTTP response reading was cancelled");
                                         return;
                                     }
                                 };
@@ -400,6 +399,7 @@ impl RunnerTrait for RequestRunner {
                                     }
                                     Some(Err(e)) => {
                                         tracing::error!("HTTP response stream error: {}", e);
+                                        failure = Some((StreamErrorCode::TransportFailed, format!("HTTP response stream error: {e}")));
                                         break;
                                     }
                                     None => {
@@ -427,6 +427,7 @@ impl RunnerTrait for RequestRunner {
                                             }
                                             Err(e) => {
                                                 tracing::error!("Failed to serialize HTTP response: {}", e);
+                                                failure = Some((StreamErrorCode::ExecutionFailed, format!("Failed to serialize HTTP response: {e}")));
                                             }
                                         }
                                         break;
@@ -436,20 +437,23 @@ impl RunnerTrait for RequestRunner {
                         }
                         Err(e) => {
                             tracing::error!("HTTP request failed: {}", e);
+                            failure = Some((StreamErrorCode::TransportFailed, format!("HTTP request failed: {e}")));
                         }
                     }
                 }
                 (Err(e), _) => {
                     tracing::error!("Invalid HTTP method: {}", e);
+                    failure = Some((StreamErrorCode::InvalidArgument, format!("Invalid HTTP method: {e}")));
                 }
                 (_, Err(e)) => {
                     tracing::error!("Invalid URL: {}", e);
+                    failure = Some((StreamErrorCode::InvalidArgument, format!("Invalid URL: {e}")));
                 }
             }
 
-            // Send end marker
-            yield ResultOutputItem {
-                item: Some(Item::End((*trailer).clone())),
+            yield match failure {
+                Some((code, message)) => request_error_end(&trailer, code, message),
+                None => proto::stream_error::end_item((*trailer).clone()),
             };
         };
 
@@ -457,6 +461,19 @@ impl RunnerTrait for RequestRunner {
         // Note: The token will be cleared when cancel() is called
         Ok(Box::pin(stream))
     }
+}
+
+fn request_error_end(
+    trailer: &Trailer,
+    code: StreamErrorCode,
+    message: impl Into<String>,
+) -> ResultOutputItem {
+    proto::stream_error::error_end_item(
+        trailer.metadata.clone(),
+        code,
+        message,
+        RunnerType::HttpRequest.as_str_name(),
+    )
 }
 
 // DI trait implementation (with optional support)
@@ -604,6 +621,148 @@ pub mod tests {
         assert!(error_msg.contains("cancelled before"));
     }
 
+    /// Serves one connection with a raw HTTP response (or holds it open when
+    /// `response` is None) and returns the base URL.
+    async fn serve_once(response: Option<&'static str>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            match response {
+                Some(response) => {
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+                None => tokio::time::sleep(std::time::Duration::from_secs(30)).await,
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    fn http_args(method: &str) -> Vec<u8> {
+        ProstMessageCodec::serialize_message(&crate::jobworkerp::runner::HttpRequestArgs {
+            method: method.to_string(),
+            path: "/".to_string(),
+            headers: vec![],
+            queries: vec![],
+            body: None,
+        })
+        .unwrap()
+    }
+
+    async fn http_stream_end(
+        runner: &mut RequestRunner,
+        method: &str,
+    ) -> (bool, proto::jobworkerp::data::Trailer) {
+        let mut stream = runner
+            .run_stream(&http_args(method), HashMap::new(), None)
+            .await
+            .unwrap();
+        let mut saw_data = false;
+        while let Some(item) = stream.next().await {
+            match item.item {
+                Some(proto::jobworkerp::data::result_output_item::Item::Data(_)) => saw_data = true,
+                Some(proto::jobworkerp::data::result_output_item::Item::End(trailer)) => {
+                    return (saw_data, trailer);
+                }
+                _ => {}
+            }
+        }
+        panic!("HTTP stream ended without an End item");
+    }
+
+    fn assert_http_error(
+        trailer: &proto::jobworkerp::data::Trailer,
+        code: proto::jobworkerp::data::StreamErrorCode,
+    ) {
+        let error = trailer.error.as_ref().expect("End must carry the failure");
+        assert_eq!(error.code, code as i32, "{error:?}");
+        assert_eq!(error.origin, "HTTP_REQUEST");
+    }
+
+    #[tokio::test]
+    async fn stream_end_keeps_http_status_codes_as_result_data() {
+        for response in [
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbusy",
+        ] {
+            let mut runner = RequestRunner::new();
+            runner.create(&serve_once(Some(response)).await).unwrap();
+            let (saw_data, trailer) = http_stream_end(&mut runner, "GET").await;
+            assert!(saw_data);
+            assert_eq!(trailer.error, None, "{response}");
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_end_reports_transport_failures() {
+        use proto::jobworkerp::data::StreamErrorCode;
+
+        // The body is cut short after the headers promised more bytes.
+        let mut runner = RequestRunner::new();
+        runner
+            .create(
+                &serve_once(Some(
+                    "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\npartial",
+                ))
+                .await,
+            )
+            .unwrap();
+        let (_, trailer) = http_stream_end(&mut runner, "GET").await;
+        assert_http_error(&trailer, StreamErrorCode::TransportFailed);
+
+        // Nothing listens on the port any more.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mut runner = RequestRunner::new();
+        runner.create(&format!("http://{addr}/")).unwrap();
+        let (_, trailer) = http_stream_end(&mut runner, "GET").await;
+        assert_http_error(&trailer, StreamErrorCode::TransportFailed);
+    }
+
+    #[tokio::test]
+    async fn stream_end_reports_invalid_method() {
+        let mut runner = RequestRunner::new();
+        runner.create("http://127.0.0.1:1/").unwrap();
+        let (saw_data, trailer) = http_stream_end(&mut runner, "BAD METHOD").await;
+        assert!(!saw_data);
+        assert_http_error(
+            &trailer,
+            proto::jobworkerp::data::StreamErrorCode::InvalidArgument,
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_end_reports_cancellation() {
+        use crate::runner::cancellation_helper::CancelMonitoringHelper;
+        use crate::runner::test_common::mock::MockCancellationManager;
+
+        let cancel_token = CancellationToken::new();
+        let cancel_helper = CancelMonitoringHelper::new(Box::new(
+            MockCancellationManager::new_with_token(cancel_token.clone()),
+        ));
+        let mut runner = RequestRunner::new_with_cancel_monitoring(cancel_helper);
+        runner.create(&serve_once(None).await).unwrap();
+        let canceller = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            cancel_token.cancel();
+        });
+        let (_, trailer) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            http_stream_end(&mut runner, "GET"),
+        )
+        .await
+        .expect("cancellation must end the stream");
+        canceller.await.unwrap();
+        assert_http_error(
+            &trailer,
+            proto::jobworkerp::data::StreamErrorCode::Cancelled,
+        );
+    }
+
     // Note: Complex cancellation tests moved to app-wrapper integration tests
     // runner crate level tests focus on basic functionality only
 
@@ -625,7 +784,7 @@ pub mod tests {
                 };
             }
             yield ResultOutputItem {
-                item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata })),
+                item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata, ..Default::default() })),
             };
         };
         Box::pin(stream)

@@ -1,3 +1,4 @@
+use crate::workflow::execute::expression::ExpressionContext;
 use crate::workflow::{
     definition::{
         transform::UseJqAndTemplateTransformer,
@@ -14,15 +15,33 @@ pub use proto::jobworkerp::data::{
     ForItemFailedEvent, JobCompletedEvent, JobStartedEvent, StreamingDataEvent, TaskCompletedEvent,
     TaskStartedEvent, WorkflowEvent, workflow_event,
 };
-use std::{
-    collections::{BTreeMap, HashSet},
-    fmt,
-    ops::Deref,
-    str::FromStr,
-    sync::Arc,
-};
+use std::{collections::HashSet, fmt, ops::Deref, str::FromStr, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
+
+/// Workflow and task variables (`set`, `export`, `for` item/index).
+///
+/// Values are never mutated in place, only replaced, so they are shared via
+/// `Arc`: snapshotting the variables for an expression or a parallel branch
+/// clones pointers instead of whole JSON trees. `IndexMap` keeps the insertion
+/// order that `serde_json::Map` (with `preserve_order`) had.
+pub type ContextVariables = indexmap::IndexMap<String, Arc<serde_json::Value>>;
+
+pub fn context_variables_from_json(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> ContextVariables {
+    map.iter()
+        .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+        .collect()
+}
+
+pub fn context_variables_to_json(
+    vars: &ContextVariables,
+) -> serde_json::Map<String, serde_json::Value> {
+    vars.iter()
+        .map(|(k, v)| (k.clone(), (**v).clone()))
+        .collect()
+}
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct WorkflowContext {
@@ -38,7 +57,7 @@ pub struct WorkflowContext {
     #[serde(skip)]
     pub checkpoint_position: Option<WorkflowPosition>,
     #[serde(skip)]
-    pub context_variables: Arc<Mutex<serde_json::Map<String, serde_json::Value>>>,
+    pub context_variables: Arc<Mutex<ContextVariables>>,
     /// Root of the child job scope tree. Every in-flight child job enqueued by
     /// this workflow's tasks is registered here (and in the scopes of the tasks
     /// that enclose it), so a cancellation can reach it even after the future
@@ -184,10 +203,12 @@ impl WorkflowContext {
             output: None,
             position: WorkflowPosition::new(vec![]),
             checkpoint_position,
-            context_variables: context
-                .as_object()
-                .map(|o| Arc::new(Mutex::new(o.clone())))
-                .unwrap_or_else(|| Arc::new(Mutex::new(serde_json::Map::new()))),
+            context_variables: Arc::new(Mutex::new(
+                context
+                    .as_object()
+                    .map(context_variables_from_json)
+                    .unwrap_or_default(),
+            )),
             child_job_scope: ChildJobScope::new_root(),
             authentications: Arc::new(
                 workflow
@@ -222,7 +243,7 @@ impl WorkflowContext {
             output: None,
             position: WorkflowPosition::new(vec![]),
             checkpoint_position: None,
-            context_variables: Arc::new(Mutex::new(serde_json::Map::new())),
+            context_variables: Arc::new(Mutex::new(ContextVariables::new())),
             child_job_scope: ChildJobScope::new_root(),
             authentications: Arc::new(std::collections::HashMap::new()),
             declared_secrets: Arc::new(HashSet::new()),
@@ -294,11 +315,13 @@ impl WorkflowContext {
     // add context variable
     pub async fn add_context_value(&mut self, key: String, value: serde_json::Value) {
         // overwrite
-        self.context_variables.lock().await.insert(key, value);
+        self.context_variables
+            .lock()
+            .await
+            .insert(key, Arc::new(value));
     }
     pub async fn remove_context_value(&mut self, key: &str) {
-        // overwrite
-        self.context_variables.lock().await.remove(key);
+        self.context_variables.lock().await.shift_remove(key);
     }
     // return None if not necessary to checkpoint
     pub async fn match_checkpoint(&self, task: &workflow::Task) -> Option<bool> {
@@ -360,7 +383,7 @@ pub struct TaskContext {
     pub raw_output: Arc<serde_json::Value>,
     pub output: Arc<serde_json::Value>,
     // #[serde(skip)]
-    pub context_variables: Arc<Mutex<serde_json::Map<String, serde_json::Value>>>,
+    pub context_variables: Arc<Mutex<ContextVariables>>,
 
     pub started_at: DateTime<FixedOffset>,
     pub completed_at: Option<DateTime<FixedOffset>>,
@@ -377,7 +400,7 @@ impl TaskContext {
         // input: input data. if not set explicitly, use empty key, previous output
         input: Arc<serde_json::Value>,
         // context_variables: workflow context variables.
-        context_variables: Arc<Mutex<serde_json::Map<String, serde_json::Value>>>,
+        context_variables: Arc<Mutex<ContextVariables>>,
     ) -> Self {
         Self {
             definition: task.clone(),
@@ -403,7 +426,9 @@ impl TaskContext {
             input: checkpoint.input.clone(),
             raw_output: checkpoint.output.clone(),
             output: checkpoint.output.clone(),
-            context_variables: Arc::new(Mutex::new((*checkpoint.context_variables).clone())),
+            context_variables: Arc::new(Mutex::new(context_variables_from_json(
+                &checkpoint.context_variables,
+            ))),
             started_at: command_utils::util::datetime::now(),
             completed_at: None,
             flow_directive: Then::from_str(checkpoint.flow_directive.as_str())
@@ -419,7 +444,7 @@ impl TaskContext {
             input: Arc::new(serde_json::Value::Null),
             raw_output: Arc::new(serde_json::Value::Null),
             output: Arc::new(serde_json::Value::Null),
-            context_variables: Arc::new(Mutex::new(serde_json::Map::new())),
+            context_variables: Arc::new(Mutex::new(ContextVariables::new())),
             started_at: command_utils::util::datetime::now(),
             completed_at: None,
             flow_directive: Then::Continue,
@@ -445,14 +470,25 @@ impl TaskContext {
     // add context variable
     pub async fn add_context_value(&self, key: String, value: serde_json::Value) {
         // overwrite
-        self.context_variables.lock().await.insert(key, value);
+        self.context_variables
+            .lock()
+            .await
+            .insert(key, Arc::new(value));
     }
     pub async fn remove_context_value(&self, key: &str) -> Option<serde_json::Value> {
-        self.context_variables.lock().await.remove(key)
+        self.context_variables
+            .lock()
+            .await
+            .shift_remove(key)
+            .map(Arc::unwrap_or_clone)
     }
     //cloned
     pub async fn get_context_value(&self, key: &str) -> Option<serde_json::Value> {
-        self.context_variables.lock().await.get(key).cloned()
+        self.context_variables
+            .lock()
+            .await
+            .get(key)
+            .map(|v| (**v).clone())
     }
     pub fn set_completed_at(&mut self) {
         self.completed_at = Some(command_utils::util::datetime::now());
@@ -574,7 +610,7 @@ impl Then {
     pub fn create(
         output: Arc<serde_json::Value>,
         directive: &FlowDirective,
-        expression: &BTreeMap<String, Arc<serde_json::Value>>,
+        expression: &ExpressionContext,
     ) -> Result<Self, Box<workflow::Error>> {
         match directive {
             FlowDirective::Variant0(subtype_0) => match subtype_0 {
@@ -1369,8 +1405,71 @@ mod tests {
         cloned
             .add_context_value("k".to_string(), serde_json::json!("v"))
             .await;
-        let original_value = original.context_variables.lock().await.get("k").cloned();
+        let original_value = original.get_context_value("k").await;
         assert_eq!(original_value, Some(serde_json::json!("v")));
+    }
+
+    #[test]
+    fn context_variables_json_round_trip_preserves_values_and_order() {
+        let mut map = serde_json::Map::new();
+        map.insert("zeta".to_string(), serde_json::json!({"nested": [1, 2]}));
+        map.insert("alpha".to_string(), serde_json::json!("a"));
+        map.insert("mid".to_string(), serde_json::Value::Null);
+        let vars = context_variables_from_json(&map);
+        assert_eq!(
+            vars.keys().collect::<Vec<_>>(),
+            vec!["zeta", "alpha", "mid"]
+        );
+        let back = context_variables_to_json(&vars);
+        assert_eq!(back, map);
+        assert_eq!(
+            back.keys().collect::<Vec<_>>(),
+            vec!["zeta", "alpha", "mid"]
+        );
+    }
+
+    #[tokio::test]
+    async fn deep_copy_isolates_context_variable_updates() {
+        let original = TaskContext::new_empty();
+        original
+            .add_context_value("k".to_string(), serde_json::json!(1))
+            .await;
+        let copy = original.deep_copy().await;
+        copy.add_context_value("k".to_string(), serde_json::json!(2))
+            .await;
+        copy.add_context_value("only_copy".to_string(), serde_json::json!(3))
+            .await;
+        assert_eq!(
+            original.get_context_value("k").await,
+            Some(serde_json::json!(1))
+        );
+        assert_eq!(original.get_context_value("only_copy").await, None);
+        assert_eq!(
+            copy.get_context_value("k").await,
+            Some(serde_json::json!(2))
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_context_value_keeps_remaining_order() {
+        let ctx = TaskContext::new_empty();
+        for k in ["a", "b", "c"] {
+            ctx.add_context_value(k.to_string(), serde_json::json!(k))
+                .await;
+        }
+        assert_eq!(
+            ctx.remove_context_value("a").await,
+            Some(serde_json::json!("a"))
+        );
+        assert_eq!(
+            ctx.context_variables
+                .lock()
+                .await
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["b".to_string(), "c".to_string()]
+        );
     }
 
     #[tokio::test]

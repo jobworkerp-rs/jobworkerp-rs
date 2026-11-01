@@ -1,6 +1,6 @@
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::{StorageConfig, UseStorageConfig};
-use super::{JobResultApp, JobResultAppHelper};
+use super::{JobResultApp, JobResultAppHelper, listen_for_new_job};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -74,42 +74,61 @@ impl HybridJobResultAppImpl {
         }
     }
 
+    /// Subscribe to the result and stream concurrently for existing job listens.
     async fn subscribe_result_with_check(
         &self,
         job_id: &JobId,
         timeout: Option<&u64>,
         request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
+        let pubsub = self.job_result_pubsub_repository();
         if request_streaming {
-            // IMPORTANT: For streaming, subscribe to stream BEFORE waiting for result.
-            // If we wait for result first (subscribe_result blocks until job completes),
-            // the stream data may have already been published and missed.
-            // Use tokio::join! to subscribe to both in parallel.
-            let result_future = self
-                .job_result_pubsub_repository()
-                .subscribe_result(job_id, timeout.copied());
-            let stream_future = self
-                .job_result_pubsub_repository()
-                .subscribe_result_stream(job_id, timeout.copied());
-
-            let (result_res, stream_res) = tokio::join!(result_future, stream_future);
-            let res = result_res?;
-            let stream = stream_res.ok(); // Stream subscription may fail, but result is primary
-
-            Ok((res, stream))
+            let result_future = pubsub.subscribe_result(job_id, timeout.copied());
+            let stream_future = pubsub.subscribe_result_stream(job_id, timeout.copied());
+            let (result, stream) = tokio::join!(result_future, stream_future);
+            Ok((result?, stream.ok()))
         } else {
-            // Non-streaming: wait for result data (long polling with grpc)
-            let res = self
-                .job_result_pubsub_repository()
-                .subscribe_result(job_id, timeout.copied())
-                .await?;
-            Ok((res, None))
+            Ok((
+                pubsub.subscribe_result(job_id, timeout.copied()).await?,
+                None,
+            ))
         }
+    }
+
+    /// Return an existing finished result or wait for an existing job's result.
+    async fn listen_existing_job_result(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        request_streaming: bool,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
+        let streaming = match self.find_job_result_by_job_id(job_id).await? {
+            Some(v) if self.is_finished(&v) => return Ok((v, None)),
+            // A stored but unfinished result (store_failure) tells whether the
+            // job streams.
+            Some(v) => v
+                .data
+                .map(|r| r.streaming_type != 0)
+                .unwrap_or(request_streaming),
+            None => request_streaming,
+        };
+        self.subscribe_result_with_check(job_id, timeout.as_ref(), streaming)
+            .await
     }
 }
 
 #[async_trait]
 impl JobResultApp for HybridJobResultAppImpl {
+    async fn listen_result_by_job_id(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        request_streaming: bool,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
+        self.listen_existing_job_result(job_id, timeout, request_streaming)
+            .await
+    }
+
     async fn create_job_result_if_necessary(
         &self,
         id: &JobResultId,
@@ -222,30 +241,8 @@ impl JobResultApp for HybridJobResultAppImpl {
             self.worker_app()
                 .check_worker_streaming(&wid, request_streaming, None, Some(using))
                 .await?;
-            // check job result (already finished or not)
-            let res = self.find_job_result_by_job_id(job_id).await?;
-            match res {
-                // already finished: return resolved result
-                Some(v) if self.is_finished(&v) => Ok((v, None)),
-                // result in rdb (not finished by store_failure option)
-                Some(v) => {
-                    // found not finished result: wait for result data
-                    self.subscribe_result_with_check(
-                        job_id,
-                        timeout.as_ref(),
-                        v.data
-                            .map(|r| r.streaming_type != 0)
-                            .unwrap_or(request_streaming),
-                    )
-                    .await
-                }
-                None => {
-                    // not found result: wait for job
-                    tracing::debug!("job result not found: find job: {:?}", job_id);
-                    self.subscribe_result_with_check(job_id, timeout.as_ref(), request_streaming)
-                        .await
-                }
-            }
+            self.listen_existing_job_result(job_id, timeout, request_streaming)
+                .await
         } else {
             Err(JobWorkerError::WorkerNotFound(
                 "cannot listen job which worker is None".to_string(),
@@ -254,39 +251,22 @@ impl JobResultApp for HybridJobResultAppImpl {
         }
     }
 
-    async fn listen_result_by_job_id(
+    async fn listen_new_job_result_when_subscribed(
         &self,
         job_id: &JobId,
         timeout: Option<u64>,
-        request_streaming: bool,
+        subscribed: tokio::sync::oneshot::Sender<()>,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
     where
         Self: Send + 'static,
     {
-        // Check if result already exists
-        let res = self.find_job_result_by_job_id(job_id).await?;
-        match res {
-            // already finished: return resolved result
-            Some(v) if self.is_finished(&v) => Ok((v, None)),
-            // result in rdb (not finished by store_failure option)
-            Some(v) => {
-                // found not finished result: wait for result data
-                self.subscribe_result_with_check(
-                    job_id,
-                    timeout.as_ref(),
-                    v.data
-                        .map(|r| r.streaming_type != 0)
-                        .unwrap_or(request_streaming),
-                )
-                .await
-            }
-            None => {
-                // not found result: wait for job
-                tracing::debug!("job result not found: find job: {:?}", job_id);
-                self.subscribe_result_with_check(job_id, timeout.as_ref(), request_streaming)
-                    .await
-            }
-        }
+        let pubsub = self.job_result_pubsub_repository();
+        listen_for_new_job(
+            |ready| pubsub.subscribe_result_with_ready(job_id, timeout, Some(ready)),
+            pubsub.subscribe_result_stream(job_id, timeout),
+            subscribed,
+        )
+        .await
     }
 
     async fn subscribe_stream_by_job_id(

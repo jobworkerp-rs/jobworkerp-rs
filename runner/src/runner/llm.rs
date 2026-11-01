@@ -162,7 +162,7 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
                         }
                     }
                     Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
+                        metadata = proto::stream_error::success_metadata(trailer)?;
                         break;
                     }
                     Some(result_output_item::Item::FinalCollected(data)) => {
@@ -216,7 +216,7 @@ mod tests {
         GenerationContext, MessageContent, Usage, message_content,
     };
     use futures::stream;
-    use proto::jobworkerp::data::{Trailer, result_output_item};
+    use proto::jobworkerp::data::result_output_item;
 
     fn create_completion_result(
         text: &str,
@@ -247,9 +247,7 @@ mod tests {
     }
 
     fn create_end_item(metadata: HashMap<String, String>) -> ResultOutputItem {
-        ResultOutputItem {
-            item: Some(result_output_item::Item::End(Trailer { metadata })),
-        }
+        proto::stream_error::normal_end_item(metadata)
     }
 
     fn create_final_collected_item(data: Vec<u8>) -> ResultOutputItem {

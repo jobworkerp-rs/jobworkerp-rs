@@ -190,17 +190,30 @@ fn ollama_terminal_chunk_is_forwarded_and_collected() -> Result<()> {
 }
 
 #[test]
-fn ollama_early_eof_without_done_is_rejected_by_collector() -> Result<()> {
+fn ollama_early_eof_without_done_ends_with_a_provider_failure() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         let body = format!("{}\n", ollama_text_chunk("partial", false));
         let output = run_adapter_stream(body).await?;
 
-        assert_eq!(
-            output.len(),
-            1,
-            "early EOF must not synthesize a terminal item"
-        );
+        assert_eq!(output.len(), 2, "partial data, then a failed End");
         assert!(!decode_data(&output[0]).done);
+        match output[1].item.as_ref() {
+            Some(result_output_item::Item::End(trailer)) => {
+                let error = trailer
+                    .error
+                    .as_ref()
+                    .expect("early EOF is a provider failure");
+                assert_eq!(
+                    error.code,
+                    proto::jobworkerp::data::StreamErrorCode::ProviderStreamFailed as i32
+                );
+                assert_eq!(
+                    trailer.metadata.get("request-id").map(String::as_str),
+                    Some("terminal-test")
+                );
+            }
+            other => panic!("expected a failed End after early EOF, got {other:?}"),
+        }
 
         let spec = LLMChatRunnerSpecImpl::new();
         let error = spec
@@ -209,8 +222,9 @@ fn ollama_early_eof_without_done_is_rejected_by_collector() -> Result<()> {
             .expect_err("collector must reject a stream without done=true");
         assert!(
             error
-                .to_string()
-                .contains("without a successful done=true chunk")
+                .downcast_ref::<proto::stream_error::StreamFailedError>()
+                .is_some(),
+            "{error:#}"
         );
         Ok(())
     })

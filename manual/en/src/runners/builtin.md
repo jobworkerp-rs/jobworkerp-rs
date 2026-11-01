@@ -15,6 +15,22 @@ Each feature requires setting necessary values in protobuf format for worker.run
 | MCP_SERVER | MCP server tool execution | Executes MCP server tools | See [MCP Proxy](mcp-proxy.md) for details |
 | FUNCTION_SET_SELECTOR | FunctionSet listing | Lists available FunctionSets with tool summaries for LLM tool selection | - |
 
+## Failures in streaming execution
+
+Streaming failures are returned in `Trailer.error` on the End. See [Streaming — Stream Error Contract](../streaming.md#stream-error-contract) for the rules and the list of codes. The main runners behave as follows.
+
+| Runner | Failures that set `error` on the End | Returned as result data (no `error`) |
+|---|---|---|
+| COMMAND | Spawn failure, stdout/stderr not available, stdin write failure (`EXECUTION_FAILED`). Non-zero exit with `treat_nonzero_as_error=true` (`EXECUTION_FAILED`). Cancellation (`CANCELLED`) | Non-zero exit with `treat_nonzero_as_error=false` |
+| HTTP_REQUEST | Connection failure or a body cut off mid-transfer (`TRANSPORT_FAILED`). Invalid method / URL (`INVALID_ARGUMENT`). Cancellation (`CANCELLED`) | HTTP 4xx/5xx responses |
+| GRPC | Cancellation (`CANCELLED`; the `grpc-status` metadata on the End is kept) | Non-OK status from the downstream service (`grpc-status` / `grpc-message` metadata) |
+| LLM | Interrupted provider stream, or a stream that ends before the terminal result (`PROVIDER_STREAM_FAILED`). Cancellation (`CANCELLED`) | — |
+| WORKFLOW | Workflow execution error (`EXECUTION_FAILED`, sent after the Faulted `WorkflowResult` Data) | Faulted / Cancelled results |
+| MCP_SERVER | Tool call failure (`EXECUTION_FAILED`). Cancellation (`CANCELLED`) | Tool `is_error` |
+| Plugin | Error from the plugin's `run_stream` (`EXECUTION_FAILED`). Cancellation (`CANCELLED`) | — |
+
+A stream idle timeout caused by the worker's `JobData.timeout` is reported as `TIMEOUT` for every runner.
+
 ## GRPC runner proto sources
 
 The GRPC runner resolves the schema of the target service and method in one of two ways:

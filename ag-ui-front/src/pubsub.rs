@@ -32,6 +32,8 @@ use std::sync::Arc;
 /// * `job_id` - The job ID to listen for
 /// * `worker_name` - Optional worker name for filtering
 /// * `timeout` - Optional timeout in milliseconds
+/// * `run_id` - Run that a failed stream is reported against. A failed stream ends
+///   with RUN_ERROR, after which the caller must not emit RUN_FINISHED.
 ///
 /// # Returns
 /// Tuple of (JobResult, Option<AG-UI event stream>)
@@ -40,6 +42,7 @@ pub async fn subscribe_llm_stream(
     job_id: &JobId,
     worker_name: Option<&String>,
     timeout: Option<u64>,
+    run_id: impl Into<String>,
 ) -> anyhow::Result<(
     proto::jobworkerp::data::JobResult,
     Option<BoxStream<'static, AgUiEvent>>,
@@ -55,9 +58,11 @@ pub async fn subscribe_llm_stream(
         )
         .await?;
 
+    let run_id = run_id.into();
     let event_stream = stream_opt.map(|stream| {
         let message_id = MessageId::random();
-        let events = result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id);
+        let events =
+            result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id, run_id);
         Box::pin(events) as BoxStream<'static, AgUiEvent>
     });
 
@@ -186,14 +191,17 @@ pub async fn subscribe_result_stream_for_job(
 /// # Arguments
 /// * `stream` - Stream of ResultOutputItem
 /// * `message_id` - Custom message ID to use
+/// * `run_id` - Run that a failed stream is reported against. A failed stream ends
+///   with RUN_ERROR, after which the caller must not emit RUN_FINISHED.
 ///
 /// # Returns
 /// Stream of AG-UI TEXT_MESSAGE_* events
 pub fn convert_result_stream_to_events(
     stream: BoxStream<'static, ResultOutputItem>,
     message_id: MessageId,
+    run_id: impl Into<String>,
 ) -> impl futures::Stream<Item = AgUiEvent> + Send + 'static {
-    result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id)
+    result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id, run_id)
 }
 
 /// Convert a JSON stream to AG-UI TEXT_MESSAGE_* events.

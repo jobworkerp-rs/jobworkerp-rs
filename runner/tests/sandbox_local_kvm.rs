@@ -263,7 +263,7 @@ async fn failed_and_timed_out_non_static_commands_report_errors_and_remove_vms()
         .unwrap();
     let failed = failed_stream.collect::<Vec<_>>().await;
     assert!(failed.iter().any(|item| matches!(&item.item, Some(Item::Data(bytes)) if matches!(SandboxExecResult::decode(bytes.as_slice()).unwrap().result, Some(SandboxResult::Exit(exit)) if exit.exit_code == 7))));
-    assert!(failed.iter().any(|item| matches!(&item.item, Some(Item::End(trailer)) if matches!(proto::stream_error::parse_stream_error(trailer), proto::stream_error::StreamErrorOutcome::Error(error) if error.code == "EXECUTION_FAILED"))));
+    assert!(failed.iter().any(|item| matches!(&item.item, Some(Item::End(trailer)) if matches!(proto::stream_error::inspect_end(trailer), proto::stream_error::StreamErrorOutcome::Failed(error) if error.code == proto::jobworkerp::data::StreamErrorCode::ExecutionFailed as i32))));
 
     runner.set_job_context(JobId { value: 73108 });
     let timed_out_stream = runner
@@ -284,7 +284,7 @@ async fn failed_and_timed_out_non_static_commands_report_errors_and_remove_vms()
         tokio::time::timeout(Duration::from_secs(8), timed_out_stream.collect::<Vec<_>>())
             .await
             .unwrap();
-    assert!(timed_out.iter().any(|item| matches!(&item.item, Some(Item::End(trailer)) if matches!(proto::stream_error::parse_stream_error(trailer), proto::stream_error::StreamErrorOutcome::Error(error) if error.code == "TIMEOUT"))), "{timed_out:?}");
+    assert!(timed_out.iter().any(|item| matches!(&item.item, Some(Item::End(trailer)) if matches!(proto::stream_error::inspect_end(trailer), proto::stream_error::StreamErrorOutcome::Failed(error) if error.code == proto::jobworkerp::data::StreamErrorCode::Timeout as i32))), "{timed_out:?}");
     assert!(!timed_out.iter().any(|item| matches!(&item.item, Some(Item::Data(bytes)) if matches!(SandboxExecResult::decode(bytes.as_slice()).unwrap().result, Some(SandboxResult::Exit(_))))));
 
     shutdown_sender.send(true).unwrap();
@@ -326,7 +326,7 @@ async fn cancelled_non_static_command_reports_error_and_removes_vm() {
     let results = tokio::time::timeout(Duration::from_secs(8), stream.collect::<Vec<_>>())
         .await
         .unwrap();
-    assert!(results.iter().any(|item| matches!(&item.item, Some(Item::End(trailer)) if matches!(proto::stream_error::parse_stream_error(trailer), proto::stream_error::StreamErrorOutcome::Error(error) if error.code == "CANCELLED"))), "{results:?}");
+    assert!(results.iter().any(|item| matches!(&item.item, Some(Item::End(trailer)) if matches!(proto::stream_error::inspect_end(trailer), proto::stream_error::StreamErrorOutcome::Failed(error) if error.code == proto::jobworkerp::data::StreamErrorCode::Cancelled as i32))), "{results:?}");
     shutdown_sender.send(true).unwrap();
     registry.shutdown().await;
     drop(runner);

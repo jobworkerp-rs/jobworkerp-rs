@@ -1015,7 +1015,7 @@ mod tests {
                 "catch.do should execute when try block fails - catch_do_executed should be set in workflow context"
             );
             assert_eq!(
-                catch_do_value.unwrap(),
+                catch_do_value.unwrap().as_ref(),
                 &serde_json::json!(true),
                 "catch.do should have set catch_do_executed to true in workflow context"
             );
@@ -1520,7 +1520,7 @@ mod tests {
                 "catch.do should execute when retry limit is reached"
             );
             assert_eq!(
-                catch_do_value.unwrap(),
+                catch_do_value.unwrap().as_ref(),
                 &serde_json::json!(true),
                 "catch.do should have set catch_do_after_retry to true"
             );

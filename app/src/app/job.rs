@@ -19,13 +19,15 @@ pub mod rdb_chan_cancellation_test;
 #[cfg(test)]
 pub mod rdb_chan_indexing_integration_test;
 use super::JobBuilder;
+use super::job_result::stream_for_successful_result;
 use super::worker::WorkerApp;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
-use infra::infra::job_result::pubsub::JobResultPublisher;
+use infra::infra::job_result::pubsub::redis::UseRedisJobResultPubSubRepository;
+use infra::infra::job_result::pubsub::{JobResultPublisher, JobResultSubscriber};
 use infra::infra::{
     UseJobQueueConfig,
     job::{
@@ -41,7 +43,7 @@ use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobData, JobExecutionOverrides, JobId, JobProcessingStatus, JobResult, JobResultData,
     JobResultId, QueueType, ResponseType, ResultOutputItem, ResultStatus, RetryPolicy,
-    StreamingType, Trailer, Worker, WorkerData, WorkerId, result_output_item,
+    StreamingType, Worker, WorkerData, WorkerId,
 };
 use std::{
     collections::HashMap,
@@ -51,6 +53,36 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+
+/// Subscribe to a job's result stream when requested. Callers do this before the
+/// job becomes visible because pubsub channels do not retain stream messages.
+pub(crate) async fn subscribe_stream_if_requested(
+    pubsub: &impl JobResultSubscriber,
+    job_id: &JobId,
+    requested: bool,
+) -> Result<Option<BoxStream<'static, ResultOutputItem>>> {
+    if requested {
+        pubsub.subscribe_result_stream(job_id, None).await.map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+fn should_subscribe_result_stream_before_enqueue(
+    load_only: bool,
+    response_type: i32,
+    streaming_type: StreamingType,
+    is_run_after_job: bool,
+    worker: &WorkerData,
+) -> bool {
+    !load_only
+        && response_type == ResponseType::Direct as i32
+        && streaming_type == StreamingType::Response
+        && !is_run_after_job
+        && worker.periodic_interval == 0
+        && (worker.queue_type == QueueType::Normal as i32
+            || worker.queue_type == QueueType::WithBackup as i32)
+}
 
 /// Receiver that the dispatcher awaits to know when a spawned stream-publishing
 /// task has finished. `None` means there is no background task to wait for.
@@ -841,11 +873,25 @@ pub(crate) fn spawn_end_marker_if_needed<P: JobResultPublisher + Clone + Send + 
     if data.streaming_type != StreamingType::None as i32
         && data.status != ResultStatus::Success as i32
     {
-        let end_item = ResultOutputItem {
-            item: Some(result_output_item::Item::End(Trailer {
-                metadata: Default::default(),
-            })),
+        // The job ended before a runner stream existed; the End must still
+        // tell subscribers that the execution failed.
+        let (code, message) = if data.status == ResultStatus::Cancelled as i32 {
+            (
+                proto::jobworkerp::data::StreamErrorCode::Cancelled,
+                "job was cancelled before its result stream started",
+            )
+        } else {
+            (
+                proto::jobworkerp::data::StreamErrorCode::ExecutionFailed,
+                "job failed before its result stream started",
+            )
         };
+        let end_item = proto::stream_error::error_end_item(
+            Default::default(),
+            code,
+            message,
+            proto::stream_error::WORKER_ORIGIN,
+        );
         let end_stream = futures::stream::once(async move { end_item }).boxed();
         let pubsub_repo = pubsub_repo.clone();
         let job_id_for_stream = *jid;
@@ -871,7 +917,11 @@ pub(crate) fn spawn_end_marker_if_needed<P: JobResultPublisher + Clone + Send + 
 
 #[async_trait]
 pub(crate) trait RedisJobAppHelper:
-    UseRedisJobRepository + JobBuilder + UseJobQueueConfig + UseJobProcessingStatusRepository
+    UseRedisJobRepository
+    + UseRedisJobResultPubSubRepository
+    + JobBuilder
+    + UseJobQueueConfig
+    + UseJobProcessingStatusRepository
 where
     Self: Sized + 'static,
 {
@@ -894,6 +944,7 @@ where
     ) {
         // Default: no-op
     }
+
     /// TODO move to job/hybrid.rs
     async fn enqueue_job_to_redis_with_wait_if_needed(
         &self,
@@ -911,6 +962,27 @@ where
         Self: Send + 'static,
     {
         let job_id = job.id.unwrap();
+        let resolved = resolve_job_params(
+            worker,
+            job.data.as_ref().and_then(|data| data.overrides.as_ref()),
+        );
+        // Register before visibility only for immediately dispatched Redis jobs.
+        // Load-only requests have no response stream to collect; scheduled and
+        // periodic jobs could otherwise hold a subscriber until execution begins.
+        // DB-only and standalone RDB jobs use a different queue path. Response
+        // streaming is distinct from Internal streaming, matching the wait below.
+        let prepared_stream = subscribe_stream_if_requested(
+            self.job_result_pubsub_repository(),
+            &job_id,
+            should_subscribe_result_stream_before_enqueue(
+                load_only,
+                resolved.response_type,
+                streaming_type,
+                self.is_run_after_job(job),
+                worker,
+            ),
+        )
+        .await?;
         let should_record_pending = !load_only && pending_status_publication.creates_status();
 
         if should_record_pending {
@@ -968,10 +1040,6 @@ where
                 // chunk. This is typically used by workflow steps that need the final result but
                 // want to leverage streaming-capable runners for better resource management.
                 // The caller subscribes to the stream, collects chunks, and receives FinalCollected.
-                let resolved = resolve_job_params(
-                    worker,
-                    job.data.as_ref().and_then(|d| d.overrides.as_ref()),
-                );
                 if resolved.response_type == ResponseType::Direct as i32 {
                     if streaming_type == StreamingType::Internal {
                         // For Internal streaming jobs with Direct response_type:
@@ -989,9 +1057,18 @@ where
                     } else {
                         // Non-Internal streaming or no streaming: wait for job completion
                         let request_streaming = streaming_type == StreamingType::Response;
-                        self._wait_job_for_direct_response(&job_id, None, request_streaming)
-                            .await
-                            .map(|(r, stream)| (job_id, Some(r), stream))
+                        let (result, waited_stream) = self
+                            ._wait_job_for_direct_response(
+                                &job_id,
+                                None,
+                                request_streaming && prepared_stream.is_none(),
+                            )
+                            .await?;
+                        let stream = match prepared_stream {
+                            Some(stream) => stream_for_successful_result(&result, Some(stream)),
+                            None => waited_stream,
+                        };
+                        Ok((job_id, Some(result), stream))
                     }
                 } else {
                     Ok((job_id, None, None))
@@ -1263,6 +1340,67 @@ mod resolve_tests {
         // no result is treated as a timeout
         assert!(load_result_to_outcome(&wid, None).is_err());
     }
+
+    #[test]
+    fn pre_enqueue_subscription_is_limited_to_immediate_direct_response_jobs() {
+        use ResponseType::{Direct, NoResult};
+        use StreamingType::{Internal, Response};
+        // (load_only, response_type, streaming_type, run_after, periodic_interval, queue_type, expected)
+        let cases = [
+            (false, Direct, Response, false, 0, QueueType::Normal, true),
+            (
+                false,
+                Direct,
+                Response,
+                false,
+                0,
+                QueueType::WithBackup,
+                true,
+            ),
+            (true, Direct, Response, false, 0, QueueType::Normal, false),
+            (false, Direct, Internal, false, 0, QueueType::Normal, false),
+            (
+                false,
+                NoResult,
+                Response,
+                false,
+                0,
+                QueueType::Normal,
+                false,
+            ),
+            (false, Direct, Response, true, 0, QueueType::Normal, false),
+            (false, Direct, Response, false, 1, QueueType::Normal, false),
+            (false, Direct, Response, false, 0, QueueType::DbOnly, false),
+        ];
+
+        for case @ (
+            load_only,
+            response_type,
+            streaming_type,
+            run_after,
+            periodic,
+            queue,
+            expected,
+        ) in cases
+        {
+            let worker = WorkerData {
+                periodic_interval: periodic,
+                queue_type: queue as i32,
+                ..Default::default()
+            };
+            assert_eq!(
+                should_subscribe_result_stream_before_enqueue(
+                    load_only,
+                    response_type as i32,
+                    streaming_type,
+                    run_after,
+                    &worker,
+                ),
+                expected,
+                "unexpected decision for {case:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1431,5 +1569,81 @@ mod cancellation_lifecycle_tests {
                 retried: 0,
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod end_marker_tests {
+    use super::*;
+    use futures::StreamExt;
+    use proto::jobworkerp::data::{Trailer, result_output_item};
+    use std::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    struct RecordingPublisher {
+        items: Arc<Mutex<Vec<ResultOutputItem>>>,
+    }
+
+    #[async_trait]
+    impl JobResultPublisher for RecordingPublisher {
+        async fn publish_result(
+            &self,
+            _id: &JobResultId,
+            _data: &JobResultData,
+            _to_listen: bool,
+        ) -> Result<bool> {
+            Ok(true)
+        }
+
+        async fn publish_result_stream_data(
+            &self,
+            _job_id: JobId,
+            stream: BoxStream<'static, ResultOutputItem>,
+        ) -> Result<bool> {
+            let items: Vec<_> = stream.collect().await;
+            self.items.lock().unwrap().extend(items);
+            Ok(true)
+        }
+    }
+
+    async fn published_end(status: ResultStatus) -> Option<Trailer> {
+        let publisher = RecordingPublisher::default();
+        let data = JobResultData {
+            status: status as i32,
+            streaming_type: StreamingType::Response as i32,
+            ..Default::default()
+        };
+        if let Some(rx) = spawn_end_marker_if_needed(&data, &JobId { value: 1 }, &publisher) {
+            let _ = rx.await;
+        }
+        let items = publisher.items.lock().unwrap().clone();
+        items.into_iter().find_map(|item| match item.item {
+            Some(result_output_item::Item::End(trailer)) => Some(trailer),
+            _ => None,
+        })
+    }
+
+    #[tokio::test]
+    async fn end_marker_reports_why_the_stream_never_started() {
+        use proto::jobworkerp::data::StreamErrorCode;
+
+        assert!(published_end(ResultStatus::Success).await.is_none());
+
+        for (status, code) in [
+            (ResultStatus::Cancelled, StreamErrorCode::Cancelled),
+            (ResultStatus::OtherError, StreamErrorCode::ExecutionFailed),
+            (ResultStatus::MaxRetry, StreamErrorCode::ExecutionFailed),
+            (
+                ResultStatus::ErrorAndRetry,
+                StreamErrorCode::ExecutionFailed,
+            ),
+        ] {
+            let trailer = published_end(status).await.expect("End marker");
+            let error = trailer
+                .error
+                .expect("a failed job must not end successfully");
+            assert_eq!(error.code, code as i32, "{status:?}");
+            assert_eq!(error.origin, proto::stream_error::WORKER_ORIGIN);
+        }
     }
 }

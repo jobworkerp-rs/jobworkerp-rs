@@ -166,7 +166,7 @@ impl RunnerSpec for WorkflowUnifiedRunnerSpecImpl {
             Ok(METHOD_RUN) => collect_workflow_stream(stream),
             Ok(METHOD_CREATE) => {
                 // create is non-streaming, use default collect (keep last data item)
-                collect_keep_last(stream)
+                crate::runner::collect_keep_last(stream)
             }
             Ok(_) => {
                 Box::pin(
@@ -176,35 +176,6 @@ impl RunnerSpec for WorkflowUnifiedRunnerSpecImpl {
             Err(e) => Box::pin(async move { Err(e) }),
         }
     }
-}
-
-/// Default collect: keep last data item (for non-streaming methods like create).
-fn collect_keep_last(stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
-    use proto::jobworkerp::data::result_output_item;
-
-    Box::pin(async move {
-        let mut last_data: Option<Vec<u8>> = None;
-        let mut metadata = HashMap::new();
-        let mut stream = stream;
-
-        while let Some(item) = stream.next().await {
-            match item.item {
-                Some(result_output_item::Item::Data(data)) => {
-                    last_data = Some(data);
-                }
-                Some(result_output_item::Item::End(trailer)) => {
-                    metadata = trailer.metadata;
-                    break;
-                }
-                Some(result_output_item::Item::FinalCollected(data)) => {
-                    return Ok((data, metadata));
-                }
-                None => {}
-            }
-        }
-
-        Ok((last_data.unwrap_or_default(), metadata))
-    })
 }
 
 /// Collect workflow stream: decode WorkflowResult items and return the final result.
@@ -239,7 +210,7 @@ fn collect_workflow_stream(stream: BoxStream<'static, ResultOutputItem>) -> Coll
                     }
                 }
                 Some(result_output_item::Item::End(trailer)) => {
-                    metadata = trailer.metadata;
+                    metadata = proto::stream_error::success_metadata(trailer)?;
                     break;
                 }
                 Some(result_output_item::Item::FinalCollected(data)) => {
@@ -423,10 +394,7 @@ mod tests {
     }
 
     fn create_end_item(metadata: HashMap<String, String>) -> ResultOutputItem {
-        use proto::jobworkerp::data::{Trailer, result_output_item};
-        ResultOutputItem {
-            item: Some(result_output_item::Item::End(Trailer { metadata })),
-        }
+        proto::stream_error::normal_end_item(metadata)
     }
 
     fn create_final_collected_item(data: Vec<u8>) -> ResultOutputItem {

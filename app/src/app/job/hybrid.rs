@@ -7,6 +7,7 @@ use super::{
     JobApp, JobCacheKeys, JobCancellationLifecycle, PendingCancellationDisposition,
     PendingStatusPublication, RedisJobAppHelper, remove_pending_rdb_job,
     remove_unpublished_rdb_only_job, resolve_and_validate_job_params, resolve_job_params,
+    subscribe_stream_if_requested,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -18,10 +19,10 @@ use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::redis::{RedisJobRepository, UseRedisJobRepository};
 use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
+use infra::infra::job_result::pubsub::JobResultPublisher;
 use infra::infra::job_result::pubsub::redis::{
     RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
 };
-use infra::infra::job_result::pubsub::{JobResultPublisher, JobResultSubscriber};
 use infra::infra::module::HybridRepositoryModule;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
@@ -921,15 +922,12 @@ impl JobApp for HybridJobAppImpl {
         // Subscribe before publishing the job: Redis pub/sub does not retain
         // stream messages, and a fast runner may otherwise publish End before
         // the front-end starts listening.
-        let result_stream = if request_streaming {
-            Some(
-                self.job_result_pubsub_repository()
-                    .subscribe_result_stream(&jid, None)
-                    .await?,
-            )
-        } else {
-            None
-        };
+        let result_stream = subscribe_stream_if_requested(
+            self.job_result_pubsub_repository(),
+            &jid,
+            request_streaming,
+        )
+        .await?;
 
         // Enqueue phase: mark Pending, push to the Redis queue, run the hook,
         // and create the TTL record for running-job visibility — everything

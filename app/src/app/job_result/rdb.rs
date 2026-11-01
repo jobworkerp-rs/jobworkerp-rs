@@ -1,6 +1,6 @@
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::{StorageConfig, UseStorageConfig};
-use super::{JobResultApp, JobResultAppHelper};
+use super::{JobResultApp, JobResultAppHelper, is_successful_result, listen_for_new_job};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
@@ -130,54 +130,65 @@ impl RdbJobResultAppImpl {
         }
     }
 
-    // same as hybrid implementation
+    /// Subscribe to the result and stream concurrently for existing job listens.
     async fn subscribe_result_with_check(
         &self,
         job_id: &JobId,
         timeout: Option<&u64>,
         request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
+        let pubsub = self.job_result_pubsub_repository();
+        let rdb_check = Self::make_rdb_check(self.rdb_job_result_repository().clone(), *job_id);
+        let result_future =
+            pubsub.subscribe_result_with_fallback(job_id, timeout.copied(), rdb_check);
         if request_streaming {
-            // IMPORTANT: For streaming, subscribe to stream BEFORE waiting for result.
-            // If we wait for result first (subscribe_result blocks until job completes),
-            // the stream data may have already been published and missed.
-            // Use tokio::join! to subscribe to both in parallel.
-            let rdb_check = Self::make_rdb_check(self.rdb_job_result_repository().clone(), *job_id);
-            let result_future = self
-                .job_result_pubsub_repository()
-                .subscribe_result_with_fallback(job_id, timeout.copied(), rdb_check);
-            let stream_future = self
-                .job_result_pubsub_repository()
-                .subscribe_result_stream(job_id, timeout.copied());
-
-            let (result_res, stream_res) = tokio::join!(result_future, stream_future);
-            let (res, from_fallback) = result_res?;
-            let should_disable_stream = from_fallback
-                || res
-                    .data
-                    .as_ref()
-                    .is_some_and(|d| d.status != ResultStatus::Success as i32);
-            let stream = if should_disable_stream {
-                None
-            } else {
-                stream_res.ok()
-            };
-
-            Ok((res, stream))
+            let stream_future = pubsub.subscribe_result_stream(job_id, timeout.copied());
+            let (result, stream) = tokio::join!(result_future, stream_future);
+            let (result, from_fallback) = result?;
+            let disable_stream = from_fallback || !is_successful_result(&result);
+            Ok((result, if disable_stream { None } else { stream.ok() }))
         } else {
-            // wait for result data (long polling with grpc (keep connection)))
-            let rdb_check = Self::make_rdb_check(self.rdb_job_result_repository().clone(), *job_id);
-            let (res, _) = self
-                .job_result_pubsub_repository()
-                .subscribe_result_with_fallback(job_id, timeout.copied(), rdb_check)
-                .await?;
-            Ok((res, None))
+            let (result, _) = result_future.await?;
+            Ok((result, None))
         }
+    }
+
+    async fn listen_existing_job_result(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        request_streaming: bool,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
+        let result = self
+            .find_job_result_list_by_job_id(job_id)
+            .await?
+            .into_iter()
+            .next();
+        let streaming = match result {
+            Some(result) if self.is_finished(&result) => return Ok((result, None)),
+            Some(result) => result
+                .data
+                .map(|data| data.streaming_type != 0)
+                .unwrap_or(request_streaming),
+            None => request_streaming,
+        };
+        self.subscribe_result_with_check(job_id, timeout.as_ref(), streaming)
+            .await
     }
 }
 
 #[async_trait]
 impl JobResultApp for RdbJobResultAppImpl {
+    async fn listen_result_by_job_id(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        request_streaming: bool,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
+        self.listen_existing_job_result(job_id, timeout, request_streaming)
+            .await
+    }
+
     // from job_app
     async fn create_job_result_if_necessary(
         &self,
@@ -379,43 +390,22 @@ impl JobResultApp for RdbJobResultAppImpl {
         }
     }
 
-    async fn listen_result_by_job_id(
+    async fn listen_new_job_result_when_subscribed(
         &self,
         job_id: &JobId,
         timeout: Option<u64>,
-        request_streaming: bool,
+        subscribed: tokio::sync::oneshot::Sender<()>,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
     where
         Self: Send + 'static,
     {
-        // Check if result already exists (get latest result for this job)
-        let res = self
-            .find_job_result_list_by_job_id(job_id)
-            .await?
-            .into_iter()
-            .next();
-        match res {
-            // already finished: return resolved result
-            Some(v) if self.is_finished(&v) => Ok((v, None)),
-            // result in rdb (not finished by store_failure option)
-            Some(v) => {
-                // found not finished result: wait for result data
-                self.subscribe_result_with_check(
-                    job_id,
-                    timeout.as_ref(),
-                    v.data
-                        .map(|r| r.streaming_type != 0)
-                        .unwrap_or(request_streaming),
-                )
-                .await
-            }
-            None => {
-                // not found result: wait for job
-                tracing::debug!("job result not found: find job: {:?}", job_id);
-                self.subscribe_result_with_check(job_id, timeout.as_ref(), request_streaming)
-                    .await
-            }
-        }
+        let pubsub = self.job_result_pubsub_repository();
+        listen_for_new_job(
+            |ready| pubsub.subscribe_result_with_ready(job_id, timeout, Some(ready)),
+            pubsub.subscribe_result_stream(job_id, timeout),
+            subscribed,
+        )
+        .await
     }
 
     async fn subscribe_stream_by_job_id(

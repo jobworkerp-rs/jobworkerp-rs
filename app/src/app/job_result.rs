@@ -6,10 +6,11 @@ use super::job::resolve_job_params;
 use super::worker::UseWorkerApp;
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::stream::BoxStream;
+use futures::{StreamExt, stream::BoxStream};
 use infra::infra::job::overrides::find_overrides_batch_tx;
 use infra::infra::job_result::rdb::{RdbJobResultRepository, UseRdbJobResultRepository};
 use infra_utils::infra::rdb::UseRdbPool;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobExecutionOverrides, JobId, JobResult, JobResultData, JobResultId, JobResultSortField,
     ResultOutputItem, ResultStatus, WorkerId,
@@ -17,6 +18,28 @@ use proto::jobworkerp::data::{
 use std::collections::HashMap;
 use std::{fmt, pin::Pin, sync::Arc};
 use tokio_stream::Stream;
+
+/// Reject failed executions before a consumer interprets their output as runner data.
+///
+/// Failure output is diagnostic text for MCP and must not be decoded with the
+/// runner's success schema by FunctionApp or another consumer.
+pub fn ensure_successful_job_result(result: &JobResult) -> Result<&JobResultData> {
+    let data = result
+        .data
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("job completed without result data"))?;
+    if data.status() != ResultStatus::Success {
+        let diagnostic = data
+            .output
+            .as_ref()
+            .filter(|output| !output.items.is_empty())
+            .map(|output| String::from_utf8_lossy(&output.items).into_owned())
+            .filter(|message| !message.trim().is_empty())
+            .unwrap_or_else(|| format!("job completed with status {:?}", data.status()));
+        return Err(anyhow::anyhow!("job execution failed: {diagnostic}"));
+    }
+    Ok(data)
+}
 
 #[async_trait]
 pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
@@ -202,6 +225,222 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
     }
 }
 
+/// Await `future` until `deadline`, failing with a `TimeoutError` labelled by
+/// `stage`. An already expired deadline fails without starting the work.
+pub(crate) async fn with_deadline<T>(
+    deadline: Option<tokio::time::Instant>,
+    stage: &str,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    match deadline {
+        Some(deadline) if tokio::time::Instant::now() >= deadline => {
+            Err(JobWorkerError::TimeoutError(format!("{stage} timeout")).into())
+        }
+        Some(deadline) => tokio::time::timeout_at(deadline, future)
+            .await
+            .map_err(|_| JobWorkerError::TimeoutError(format!("{stage} timeout")))?,
+        None => future.await,
+    }
+}
+
+/// Spawn a streaming listener for a job that is about to be enqueued and
+/// return once it is subscribed (see `listen_new_job_result_when_subscribed`).
+/// Spawning alone does not order the subscription before the enqueue.
+pub async fn spawn_subscribed_listener(
+    job_result_app: Arc<dyn JobResultApp + 'static>,
+    job_id: JobId,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<ResultListenerHandle> {
+    let (subscribed_tx, subscribed_rx) = tokio::sync::oneshot::channel();
+    let timeout = deadline.map(|deadline| {
+        deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64
+    });
+    // Dropping the handle (readiness failure or caller cancellation) aborts the listener.
+    let handle = ResultListenerHandle {
+        task: tokio::spawn(async move {
+            with_deadline(
+                deadline,
+                "result listener",
+                job_result_app.listen_new_job_result_when_subscribed(
+                    &job_id,
+                    timeout,
+                    subscribed_tx,
+                ),
+            )
+            .await
+        }),
+        deadline,
+    };
+    // The listener's own deadline drops the sender, so this wait is bounded too.
+    wait_for_listener_readiness(subscribed_rx, deadline).await?;
+    Ok(handle)
+}
+
+fn listener_readiness_error(deadline: Option<tokio::time::Instant>) -> anyhow::Error {
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        JobWorkerError::TimeoutError("subscription preparation timeout".into()).into()
+    } else {
+        anyhow::anyhow!("result listener stopped before subscriptions were ready")
+    }
+}
+
+async fn wait_for_listener_readiness(
+    subscribed: tokio::sync::oneshot::Receiver<()>,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<()> {
+    subscribed
+        .await
+        .map_err(|_| listener_readiness_error(deadline))
+}
+
+async fn signal_ready_after_subscriptions<F, T>(
+    result_ready: tokio::sync::oneshot::Receiver<()>,
+    stream_subscription: F,
+    subscribed: tokio::sync::oneshot::Sender<()>,
+) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    let wait_for_result_subscription = async {
+        result_ready
+            .await
+            .map_err(|_| anyhow::anyhow!("result subscription ended before becoming ready"))
+    };
+    let ((), stream) = tokio::try_join!(wait_for_result_subscription, stream_subscription)?;
+    subscribed
+        .send(())
+        .map_err(|_| anyhow::anyhow!("subscription receiver was dropped"))?;
+    Ok(stream)
+}
+
+/// Run the result and stream subscriptions together, report `subscribed` once
+/// both are active, then keep the stream only for a successful execution.
+/// `subscribe_result` must send on the given sender once its subscription is active.
+async fn listen_for_new_job<FResult, FStream>(
+    subscribe_result: impl FnOnce(tokio::sync::oneshot::Sender<()>) -> FResult,
+    stream_subscription: FStream,
+    subscribed: tokio::sync::oneshot::Sender<()>,
+) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
+where
+    FResult: std::future::Future<Output = Result<JobResult>>,
+    FStream: std::future::Future<Output = Result<BoxStream<'static, ResultOutputItem>>>,
+{
+    let (result_ready_tx, result_ready_rx) = tokio::sync::oneshot::channel();
+    let (result, stream) = tokio::try_join!(
+        subscribe_result(result_ready_tx),
+        signal_ready_after_subscriptions(result_ready_rx, stream_subscription, subscribed),
+    )?;
+    let stream = stream_for_successful_result(&result, Some(stream));
+    Ok((result, stream))
+}
+
+/// Keep the output stream only when the result confirms successful execution:
+/// a failed job may never produce the stream, so waiting on it could hang.
+/// A result without data cannot confirm success and is treated the same way.
+pub(crate) fn stream_for_successful_result(
+    result: &JobResult,
+    stream: Option<BoxStream<'static, ResultOutputItem>>,
+) -> Option<BoxStream<'static, ResultOutputItem>> {
+    stream.filter(|_| is_successful_result(result))
+}
+
+fn is_successful_result(result: &JobResult) -> bool {
+    result
+        .data
+        .as_ref()
+        .is_some_and(|data| data.status == ResultStatus::Success as i32)
+}
+
+/// Owns the streaming result data returned by a listener and applies its deadline.
+pub struct PreparedResultStream {
+    stream: Option<BoxStream<'static, ResultOutputItem>>,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl PreparedResultStream {
+    pub async fn next_stream_item(&mut self) -> Result<Option<ResultOutputItem>> {
+        let Some(stream) = self.stream.as_mut() else {
+            return Ok(None);
+        };
+        let next = if let Some(deadline) = self.deadline {
+            match tokio::time::timeout_at(deadline, stream.next()).await {
+                Ok(item) => item,
+                Err(_) => {
+                    self.stream.take();
+                    return Err(JobWorkerError::TimeoutError("stream result timeout".into()).into());
+                }
+            }
+        } else {
+            stream.next().await
+        };
+        Ok(next)
+    }
+}
+
+pub struct PreparedJobResult {
+    pub result: JobResult,
+    pub stream: Option<PreparedResultStream>,
+}
+
+impl PreparedJobResult {
+    pub async fn next_stream_item(&mut self) -> Result<Option<ResultOutputItem>> {
+        match self.stream.as_mut() {
+            Some(stream) => stream.next_stream_item().await,
+            None => Ok(None),
+        }
+    }
+}
+
+pub struct ResultListenerHandle {
+    task:
+        tokio::task::JoinHandle<Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>>,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl ResultListenerHandle {
+    #[cfg(test)]
+    pub(crate) fn from_result_and_stream_for_test(
+        result: JobResult,
+        stream: Option<BoxStream<'static, ResultOutputItem>>,
+    ) -> Self {
+        Self {
+            task: tokio::spawn(async move { Ok::<_, anyhow::Error>((result, stream)) }),
+            deadline: None,
+        }
+    }
+}
+
+impl std::future::Future for ResultListenerHandle {
+    type Output = Result<PreparedJobResult>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        match std::pin::Pin::new(&mut self.task).poll(cx) {
+            std::task::Poll::Pending => std::task::Poll::Pending,
+            std::task::Poll::Ready(Err(error)) => std::task::Poll::Ready(Err(error.into())),
+            std::task::Poll::Ready(Ok(Err(error))) => std::task::Poll::Ready(Err(error)),
+            std::task::Poll::Ready(Ok(Ok((result, stream)))) => {
+                let stream = stream.map(|stream| PreparedResultStream {
+                    stream: Some(stream),
+                    deadline: self.deadline,
+                });
+                std::task::Poll::Ready(Ok(PreparedJobResult { result, stream }))
+            }
+        }
+    }
+}
+
+impl Drop for ResultListenerHandle {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 #[async_trait]
 pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
     // from job_app
@@ -243,7 +482,7 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
     where
         Self: Send + 'static;
 
-    /// Listen for job result by job_id only (without worker validation)
+    /// Listen for job result by job_id only (without worker validation).
     ///
     /// This method listens for results by job_id without validating the worker.
     /// It is intended for temporary/ephemeral streaming workers that are not persisted.
@@ -251,14 +490,27 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
     /// When `request_streaming` is true, the implementation may return a stream alongside
     /// the final `JobResult`, allowing callers to receive intermediate streaming data.
     ///
-    /// NOTE: Callers are responsible for authorization and lifecycle management,
-    /// including honoring the optional timeout. The server does not perform worker
-    /// validation or persistence for such jobs.
+    /// Callers are responsible for authorization and lifecycle management, including
+    /// honoring the optional timeout. The server does not perform worker validation or
+    /// persistence for such jobs.
     async fn listen_result_by_job_id(
         &self,
         job_id: &JobId,
         timeout: Option<u64>,
         request_streaming: bool,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
+    where
+        Self: Send + 'static;
+
+    /// Listen for a newly allocated streaming job and send on `subscribed` once its
+    /// result and stream subscriptions are active, so the caller can enqueue the job
+    /// without losing a fast result. Existing-result lookup is skipped because the
+    /// job does not exist yet.
+    async fn listen_new_job_result_when_subscribed(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+        subscribed: tokio::sync::oneshot::Sender<()>,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
     where
         Self: Send + 'static;
@@ -377,4 +629,360 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
 
 pub trait UseJobResultApp {
     fn job_result_app(&self) -> &Arc<dyn JobResultApp + 'static>;
+}
+
+#[cfg(test)]
+mod subscribed_listener_tests {
+    use super::{
+        PreparedResultStream, ensure_successful_job_result, signal_ready_after_subscriptions,
+        spawn_subscribed_listener,
+    };
+    use crate::module::AppModule;
+    use crate::module::test::{create_hybrid_test_app, create_rdb_chan_test_app};
+    use anyhow::Result;
+    use futures::StreamExt;
+    use infra_utils::infra::test::TEST_RUNTIME;
+    use proto::jobworkerp::data::{
+        JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultOutputItem, ResultStatus,
+        Trailer, WorkerId, result_output_item,
+    };
+    use std::time::Duration;
+
+    /// Signals when the owning future or task is dropped.
+    struct NotifyOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for NotifyOnDrop {
+        fn drop(&mut self) {
+            if let Some(tx) = self.0.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    fn unique_id() -> i64 {
+        rand::random::<i64>().abs()
+    }
+
+    #[test]
+    fn failed_result_returns_runner_diagnostic_without_decoding_it() {
+        let result = JobResult {
+            data: Some(JobResultData {
+                status: ResultStatus::FatalError as i32,
+                output: Some(proto::jobworkerp::data::ResultOutput {
+                    items: b"original failure".to_vec(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let error = ensure_successful_job_result(&result).unwrap_err();
+        assert!(error.to_string().contains("job execution failed"));
+        assert!(error.to_string().contains("original failure"));
+    }
+
+    #[test]
+    fn failed_result_diagnostics_preserve_mcp_fallback_and_lossy_utf8_rules() {
+        let cases = [
+            (None, "job completed with status FatalError"),
+            (Some(Vec::new()), "job completed with status FatalError"),
+            (
+                Some(b" \t\n".to_vec()),
+                "job completed with status FatalError",
+            ),
+            (Some(vec![0xff, 0xfe]), "��"),
+        ];
+
+        for (output_items, expected_diagnostic) in cases {
+            let result = JobResult {
+                data: Some(JobResultData {
+                    status: ResultStatus::FatalError as i32,
+                    output: output_items
+                        .map(|items| proto::jobworkerp::data::ResultOutput { items }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+
+            let error = ensure_successful_job_result(&result).unwrap_err();
+            assert!(
+                error.to_string().contains(expected_diagnostic),
+                "unexpected diagnostic: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_result_data_returns_mcp_compatible_diagnostic() {
+        let error = ensure_successful_job_result(&JobResult::default()).unwrap_err();
+        assert_eq!(error.to_string(), "job completed without result data");
+    }
+
+    #[test]
+    fn successful_result_data_passes_validation() {
+        let result = JobResult {
+            data: Some(JobResultData {
+                status: ResultStatus::Success as i32,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(ensure_successful_job_result(&result).is_ok());
+    }
+
+    // A job enqueued only after the listener reports `subscribed` must be
+    // observed (result and stream) even if it completes immediately.
+    async fn receives_job_completed_right_after_subscribed(app: &AppModule) -> Result<()> {
+        let job_id = JobId { value: unique_id() };
+        let listener = spawn_subscribed_listener(
+            app.job_result_app.clone(),
+            job_id,
+            Some(tokio::time::Instant::now() + Duration::from_secs(5)),
+        )
+        .await?;
+
+        let result_id = JobResultId { value: unique_id() };
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(WorkerId { value: 1 }),
+            status: ResultStatus::Success as i32,
+            response_type: ResponseType::NoResult as i32,
+            broadcast_results: true,
+            ..Default::default()
+        };
+        let items = vec![
+            ResultOutputItem {
+                item: Some(result_output_item::Item::Data(b"chunk".to_vec())),
+            },
+            ResultOutputItem {
+                item: Some(result_output_item::Item::End(Trailer::default())),
+            },
+        ];
+        app.job_app
+            .complete_job(
+                &result_id,
+                &data,
+                Some(futures::stream::iter(items).boxed()),
+            )
+            .await?;
+
+        let mut result = tokio::time::timeout(Duration::from_secs(5), listener).await??;
+        assert_eq!(result.result.id, Some(result_id));
+        let mut received = Vec::new();
+        while let Some(item) = result.next_stream_item().await? {
+            received.push(item);
+        }
+        assert!(matches!(
+            received.first().and_then(|i| i.item.as_ref()),
+            Some(result_output_item::Item::Data(d)) if d == b"chunk"
+        ));
+        Ok(())
+    }
+
+    async fn failed_job_does_not_wait_for_stream(app: &AppModule) -> Result<()> {
+        let job_id = JobId { value: unique_id() };
+        let listener = spawn_subscribed_listener(app.job_result_app.clone(), job_id, None).await?;
+        let result_id = JobResultId { value: unique_id() };
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(WorkerId { value: 1 }),
+            status: ResultStatus::FatalError as i32,
+            response_type: ResponseType::NoResult as i32,
+            broadcast_results: true,
+            ..Default::default()
+        };
+        app.job_app.complete_job(&result_id, &data, None).await?;
+
+        let result = tokio::time::timeout(Duration::from_secs(1), listener).await??;
+        assert_eq!(result.result.id, Some(result_id));
+        assert!(result.stream.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn hybrid_failed_result_does_not_wait_for_stream() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            failed_job_does_not_wait_for_stream(&create_hybrid_test_app().await?).await
+        })
+    }
+
+    #[test]
+    fn standalone_failed_result_does_not_wait_for_stream() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            failed_job_does_not_wait_for_stream(&create_rdb_chan_test_app(true, false).await?).await
+        })
+    }
+
+    #[test]
+    fn hybrid_listener_receives_job_completed_right_after_subscribed() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            receives_job_completed_right_after_subscribed(&create_hybrid_test_app().await?).await
+        })
+    }
+
+    #[test]
+    fn standalone_listener_receives_job_completed_right_after_subscribed() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            receives_job_completed_right_after_subscribed(
+                &create_rdb_chan_test_app(true, false).await?,
+            )
+            .await
+        })
+    }
+
+    #[test]
+    fn prepared_stream_expires_at_shared_deadline_and_releases_stream() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let mut stream = PreparedResultStream {
+                stream: Some(futures::stream::pending().boxed()),
+                deadline: Some(tokio::time::Instant::now()),
+            };
+
+            assert!(stream.next_stream_item().await.is_err());
+            assert!(stream.stream.is_none());
+            assert!(stream.next_stream_item().await?.is_none());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn dropping_result_listener_handle_aborts_listener_task() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                let _notify = NotifyOnDrop(Some(dropped_tx));
+                let _ = started_tx.send(());
+                std::future::pending::<()>().await;
+                Ok::<_, anyhow::Error>((proto::jobworkerp::data::JobResult::default(), None))
+            });
+            started_rx.await?;
+            drop(super::ResultListenerHandle {
+                task,
+                deadline: None,
+            });
+            tokio::time::timeout(Duration::from_secs(1), dropped_rx).await??;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn dropped_readiness_receiver_fails_prepared_listener() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = create_hybrid_test_app().await?;
+            let job_id = JobId { value: unique_id() };
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            drop(ready_rx);
+
+            let result = tokio::time::timeout(
+                Duration::from_secs(2),
+                app.job_result_app.listen_new_job_result_when_subscribed(
+                    &job_id,
+                    Some(2_000),
+                    ready_tx,
+                ),
+            )
+            .await?;
+            assert!(result.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn listener_deadline_returns_the_standard_timeout_error() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = create_hybrid_test_app().await?;
+            let handle = spawn_subscribed_listener(
+                app.job_result_app.clone(),
+                JobId { value: unique_id() },
+                Some(tokio::time::Instant::now() + Duration::from_millis(50)),
+            )
+            .await?;
+            let error = match tokio::time::timeout(Duration::from_secs(2), handle).await? {
+                Err(error) => error,
+                Ok(_) => anyhow::bail!("listener unexpectedly received a result"),
+            };
+
+            assert!(matches!(
+                error.downcast_ref::<jobworkerp_base::error::JobWorkerError>(),
+                Some(jobworkerp_base::error::JobWorkerError::TimeoutError(_))
+            ));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn dropped_listener_readiness_uses_timeout_only_after_deadline() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            drop(ready_tx);
+            let expired = super::wait_for_listener_readiness(
+                ready_rx,
+                Some(tokio::time::Instant::now() - Duration::from_secs(1)),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(
+                expired.downcast_ref::<jobworkerp_base::error::JobWorkerError>(),
+                Some(jobworkerp_base::error::JobWorkerError::TimeoutError(_))
+            ));
+
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            drop(ready_tx);
+            let early = super::wait_for_listener_readiness(
+                ready_rx,
+                Some(tokio::time::Instant::now() + Duration::from_secs(1)),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                early
+                    .downcast_ref::<jobworkerp_base::error::JobWorkerError>()
+                    .is_none()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn failed_stream_subscription_does_not_report_ready() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let (result_ready_tx, result_ready_rx) = tokio::sync::oneshot::channel();
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            result_ready_tx.send(()).unwrap();
+
+            let result = signal_ready_after_subscriptions(
+                result_ready_rx,
+                async { Err::<(), _>(anyhow::anyhow!("simulated stream subscribe failure")) },
+                ready_tx,
+            )
+            .await;
+            assert!(result.is_err());
+            assert!(ready_rx.await.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn failed_result_subscription_does_not_report_ready_or_keep_stream_task() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let (result_ready_tx, result_ready_rx) = tokio::sync::oneshot::channel();
+            drop(result_ready_tx);
+            let (stream_dropped_tx, stream_dropped_rx) = tokio::sync::oneshot::channel();
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            let notify_on_drop = NotifyOnDrop(Some(stream_dropped_tx));
+            let stream_subscription = async move {
+                let _notify = notify_on_drop;
+                std::future::pending::<Result<()>>().await
+            };
+
+            let result =
+                signal_ready_after_subscriptions(result_ready_rx, stream_subscription, ready_tx)
+                    .await;
+            assert!(result.is_err());
+            assert!(ready_rx.await.is_err());
+            tokio::time::timeout(Duration::from_secs(1), stream_dropped_rx).await??;
+            Ok(())
+        })
+    }
 }

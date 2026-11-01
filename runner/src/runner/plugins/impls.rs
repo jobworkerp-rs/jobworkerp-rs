@@ -11,7 +11,7 @@ use futures::executor::block_on;
 use futures::stream::BoxStream;
 use futures::stream::StreamExt;
 use proto::jobworkerp::data::ResultOutputItem;
-use proto::jobworkerp::data::Trailer;
+use proto::jobworkerp::data::StreamErrorCode;
 use proto::jobworkerp::data::result_output_item;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
@@ -76,17 +76,8 @@ fn pending_now<T>(
     }
 }
 
-/// Metadata key used to surface a V2 plugin `run_stream` error to callers
-/// when the host has already returned its `BoxStream` and can no longer
-/// fail the outer call. Downstream consumers (e.g. `run_and_stream` /
-/// `collect_stream`) inspect the End trailer for this key to decide whether
-/// the job succeeded or failed.
-///
-/// Exposed crate-publicly so out-of-crate callers (notably
-/// `worker_app::worker::runner` building synthetic End trailers for
-/// idle-timeout terminations) can plant the same key — `collect_stream`
-/// here treats any matching value as a failure regardless of source.
-pub const V2_STREAM_ERROR_META_KEY: &str = "jobworkerp.plugin.run_stream_error";
+/// Compatibility alias of [`proto::stream_error::LEGACY_PLUGIN_STREAM_ERROR_KEY`].
+pub use proto::stream_error::LEGACY_PLUGIN_STREAM_ERROR_KEY as V2_STREAM_ERROR_META_KEY;
 
 /**
  * PluginRunner wrapper
@@ -149,8 +140,8 @@ impl PluginRunnerWrapperImpl {
     /// function — they happen before `plugin_fut` is spawned. Errors that
     /// surface from the plugin itself (the default `Err("not implemented")`
     /// impl, mid-stream Err) are recorded in the End trailer metadata under
-    /// `V2_STREAM_ERROR_META_KEY` so the job can be marked failed by
-    /// `run_and_stream` / `collect_stream` after the stream is drained.
+    /// `V2_STREAM_ERROR_META_KEY`; every End consumer reads that key through
+    /// `proto::stream_error::inspect_end`, so the job is still marked failed.
     /// This is a semantic change vs. earlier revisions that returned
     /// pre-stream Err as an outer `Err(...)`: returning Err once the stream
     /// has been handed back to gRPC is no longer possible without
@@ -173,6 +164,7 @@ impl PluginRunnerWrapperImpl {
         // returns before the stream is built), so a single owned copy
         // covers both.
         let metadata_fallback = metadata.clone();
+        let origin = self.name();
         let mut plugin_fut = tokio::spawn(async move {
             // Hold the write guard for the lifetime of the FfiFuture: the
             // proc-macro-generated thunk captures `&mut PluginTy` across
@@ -228,8 +220,8 @@ impl PluginRunnerWrapperImpl {
         // JobResult instead of a Success with the error hidden in End
         // trailer metadata. Plugins that genuinely wait for I/O before
         // returning will not be Ready yet; they fall through to the stream
-        // body where their error lands in the End trailer (and the
-        // collect_stream path picks it up via `V2_STREAM_ERROR_META_KEY`).
+        // body where their error lands in the End trailer (and End
+        // consumers detect it through `proto::stream_error::inspect_end`).
         //
         // The eager peek is best-effort. A few yields cover the FFI thunk
         // plus the `variant.write().await` lock acquisition on an
@@ -255,9 +247,7 @@ impl PluginRunnerWrapperImpl {
             match res {
                 Ok(Ok(meta)) if pending_chunks.is_empty() => {
                     // Pre-stream Ok with no chunks: empty success stream.
-                    let end = ResultOutputItem {
-                        item: Some(result_output_item::Item::End(Trailer { metadata: meta })),
-                    };
+                    let end = proto::stream_error::normal_end_item(meta);
                     return Ok(futures::stream::iter(std::iter::once(end)).boxed());
                 }
                 Ok(Err(e)) if pending_chunks.is_empty() => {
@@ -278,35 +268,18 @@ impl PluginRunnerWrapperImpl {
                     // Hand back a stream that yields the buffered chunks
                     // followed by the End trailer (error, if any, lands in
                     // metadata) — the consumer has already started reading.
-                    let final_meta = match other {
-                        Ok(Ok(meta)) => meta,
-                        Ok(Err(e)) => {
-                            tracing::error!("v2 plugin run_stream error after partial output: {e}");
-                            let mut m = metadata_fallback;
-                            m.insert(V2_STREAM_ERROR_META_KEY.to_string(), e);
-                            m
-                        }
-                        Err(join_err) if join_err.is_cancelled() => metadata_fallback,
-                        Err(join_err) => {
-                            tracing::error!("v2 plugin task join error: {join_err:?}");
-                            let mut m = metadata_fallback;
-                            m.insert(
-                                V2_STREAM_ERROR_META_KEY.to_string(),
-                                format!("plugin task join error: {join_err:?}"),
-                            );
-                            m
-                        }
-                    };
+                    let end = v2_end_item(
+                        other,
+                        metadata_fallback,
+                        &origin,
+                        is_cancelled(&cancel_token),
+                    );
                     let items = pending_chunks
                         .into_iter()
                         .map(|c| ResultOutputItem {
                             item: Some(result_output_item::Item::Data(c)),
                         })
-                        .chain(std::iter::once(ResultOutputItem {
-                            item: Some(result_output_item::Item::End(Trailer {
-                                metadata: final_meta,
-                            })),
-                        }));
+                        .chain(std::iter::once(end));
                     return Ok(futures::stream::iter(items).boxed());
                 }
             }
@@ -385,36 +358,9 @@ impl PluginRunnerWrapperImpl {
                 Some(o) => o,
                 None => plugin_fut.await,
             };
-            let final_meta = match outcome {
-                Ok(Ok(meta)) => meta,
-                Ok(Err(e)) => {
-                    // Plugin returned Err. We can no longer fail the outer
-                    // `run_stream` call (the BoxStream was already handed
-                    // back), so record the error in the End trailer
-                    // metadata and let callers decide. Covers both
-                    // pre-stream and mid-stream errors — they look the
-                    // same from the consumer's point of view.
-                    tracing::error!("v2 plugin run_stream error: {}", e);
-                    let mut meta = metadata_fallback;
-                    meta.insert(V2_STREAM_ERROR_META_KEY.to_string(), e);
-                    meta
-                }
-                Err(join_err) if join_err.is_cancelled() => metadata_fallback,
-                Err(join_err) => {
-                    tracing::error!("v2 plugin task join error: {:?}", join_err);
-                    let mut meta = metadata_fallback;
-                    meta.insert(
-                        V2_STREAM_ERROR_META_KEY.to_string(),
-                        format!("plugin task join error: {join_err:?}"),
-                    );
-                    meta
-                }
-            };
-            yield ResultOutputItem {
-                item: Some(result_output_item::Item::End(Trailer {
-                    metadata: final_meta,
-                })),
-            };
+            // The BoxStream was already handed back, so a plugin Err can
+            // no longer fail the outer call; it is reported on the End.
+            yield v2_end_item(outcome, metadata_fallback, &origin, is_cancelled(&cancel_token));
         }
         .boxed();
         Ok(st)
@@ -551,7 +497,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                                 last_data = Some(data);
                             }
                             Some(result_output_item::Item::End(trailer)) => {
-                                metadata = trailer.metadata;
+                                metadata = proto::stream_error::success_metadata(trailer)?;
                                 break;
                             }
                             Some(result_output_item::Item::FinalCollected(data)) => {
@@ -561,17 +507,6 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                         }
                     }
 
-                    // V2 plugins can no longer surface a pre-stream error
-                    // through `run_stream`'s outer `Err` (the BoxStream is
-                    // handed back before the plugin runs). Instead, the
-                    // host injects the error message into the End trailer
-                    // metadata; failing the collect here keeps the job's
-                    // failure semantics consistent with the pre-rewrite
-                    // behaviour.
-                    if let Some(err) = metadata.remove(V2_STREAM_ERROR_META_KEY) {
-                        return Err(anyhow!("v2 plugin run_stream error: {err}"));
-                    }
-
                     if let Some(data) = final_collected {
                         return Ok((data, metadata));
                     }
@@ -579,6 +514,9 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                     Ok((last_data.unwrap_or_default(), metadata))
                 }
                 PluginVariantType::MultiMethod => {
+                    // Plugin-defined collectors may ignore the End trailer, so
+                    // the host records a failed End and enforces it afterwards.
+                    let (stream, end_failure) = observe_end_failure(stream);
                     // Get the collect_stream future from plugin (brief lock).
                     let future = {
                         let guard = variant.read().await;
@@ -594,12 +532,75 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                         }
                     };
                     // Lock released, now await the future which processes the stream
-                    future?.await
+                    let collected = future?.await;
+                    match end_failure.get() {
+                        Some(error) => {
+                            Err(proto::stream_error::StreamFailedError(error.clone()).into())
+                        }
+                        None => collected,
+                    }
                 }
             }
         })
     }
 }
+
+/// Builds the End item for a finished V2 `run_stream` task. Failures carry
+/// the typed error plus the legacy key that older readers understand.
+///
+/// A plugin that observes the cancel token usually returns its own Err, so a
+/// failure after the token fired is reported as a cancellation.
+fn v2_end_item(
+    outcome: V2RunStreamOutcome,
+    metadata_fallback: HashMap<String, String>,
+    origin: &str,
+    cancelled: bool,
+) -> ResultOutputItem {
+    let cancelled = cancelled || matches!(&outcome, Err(join_err) if join_err.is_cancelled());
+    let (code, message) = match outcome {
+        Ok(Ok(meta)) => return proto::stream_error::normal_end_item(meta),
+        _ if cancelled => (StreamErrorCode::Cancelled, PLUGIN_CANCELLED.to_string()),
+        Ok(Err(e)) => {
+            tracing::error!("v2 plugin run_stream error: {e}");
+            (StreamErrorCode::ExecutionFailed, e)
+        }
+        Err(join_err) => {
+            tracing::error!("v2 plugin task join error: {join_err:?}");
+            (
+                StreamErrorCode::ExecutionFailed,
+                "plugin execution terminated unexpectedly".to_string(),
+            )
+        }
+    };
+    proto::stream_error::error_end_item_with_legacy_key(metadata_fallback, code, message, origin)
+}
+
+const PLUGIN_CANCELLED: &str = "plugin execution was cancelled";
+
+fn is_cancelled(token: &Option<CancellationToken>) -> bool {
+    token.as_ref().is_some_and(CancellationToken::is_cancelled)
+}
+
+type EndFailure = Arc<std::sync::OnceLock<proto::jobworkerp::data::StreamError>>;
+
+/// Passes the stream through unchanged while remembering a failed End.
+fn observe_end_failure(
+    stream: BoxStream<'static, ResultOutputItem>,
+) -> (BoxStream<'static, ResultOutputItem>, EndFailure) {
+    let failure = EndFailure::default();
+    let observed = failure.clone();
+    let stream = stream
+        .inspect(move |item| {
+            if let Some(result_output_item::Item::End(trailer)) = &item.item
+                && let Some(error) = proto::stream_error::end_failure(trailer)
+            {
+                let _ = observed.set(error);
+            }
+        })
+        .boxed();
+    (stream, failure)
+}
+
 #[async_trait]
 impl RunnerTrait for PluginRunnerWrapperImpl {
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
@@ -822,6 +823,8 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
             })?;
         }
         let variant_clone = self.variant.clone();
+        let origin = self.name();
+        let origin_for_blocking = origin.clone();
 
         // Per-iteration lock acquisition so request_cancellation can call
         // plugin.cancel() between iterations. Lock is released before send()
@@ -866,29 +869,34 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                         }
                     }
                     Ok(None) => {
-                        let _ = block_on(result_tx.send(ResultOutputItem {
-                            item: Some(result_output_item::Item::End(Trailer {
-                                metadata: metadata_for_blocking,
-                            })),
-                        }));
+                        let _ = block_on(
+                            result_tx
+                                .send(proto::stream_error::normal_end_item(metadata_for_blocking)),
+                        );
                         break;
                     }
                     Err(e) => {
                         tracing::warn!("Error occurred: {:}", e);
-                        let _ = block_on(result_tx.send(ResultOutputItem {
-                            item: Some(result_output_item::Item::End(Trailer {
-                                metadata: metadata_for_blocking,
-                            })),
-                        }));
+                        let _ = block_on(result_tx.send(
+                            proto::stream_error::error_end_item_with_legacy_key(
+                                metadata_for_blocking,
+                                StreamErrorCode::ExecutionFailed,
+                                e.to_string(),
+                                origin_for_blocking.as_str(),
+                            ),
+                        ));
                         break;
                     }
                 }
                 if is_cancelled {
-                    let _ = block_on(result_tx.send(ResultOutputItem {
-                        item: Some(result_output_item::Item::End(Trailer {
-                            metadata: metadata_for_blocking.clone(),
-                        })),
-                    }));
+                    let _ = block_on(result_tx.send(
+                        proto::stream_error::error_end_item_with_legacy_key(
+                            metadata_for_blocking.clone(),
+                            StreamErrorCode::Cancelled,
+                            PLUGIN_CANCELLED,
+                            origin_for_blocking.as_str(),
+                        ),
+                    ));
                     break;
                 }
             }
@@ -901,6 +909,12 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                         result = result_rx.recv() => result,
                         _ = token.cancelled() => {
                             tracing::info!("Plugin stream cancelled by token");
+                            yield proto::stream_error::error_end_item_with_legacy_key(
+                                metadata.clone(),
+                                StreamErrorCode::Cancelled,
+                                PLUGIN_CANCELLED,
+                                origin.as_str(),
+                            );
                             break;
                         }
                     }
@@ -920,10 +934,12 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                         }
                     }
                     None => {
-                        // Channel closed without End marker (abnormal termination)
-                        yield ResultOutputItem {
-                            item: Some(result_output_item::Item::End(Trailer { metadata })),
-                        };
+                        yield proto::stream_error::error_end_item_with_legacy_key(
+                            metadata.clone(),
+                            StreamErrorCode::ExecutionFailed,
+                            "plugin stream ended without an End marker",
+                            origin.as_str(),
+                        );
                         break;
                     }
                 }

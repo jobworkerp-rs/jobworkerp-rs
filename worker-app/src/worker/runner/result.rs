@@ -153,6 +153,16 @@ pub trait RunnerResultHandler {
 
     #[inline]
     fn handle_error(err: anyhow::Error) -> (ResultStatus, Option<String>) {
+        // A failed stream End is classified by the stream error contract so
+        // every runner reports cancellation and invalid input the same way.
+        if let Some(proto::stream_error::StreamFailedError(failure)) =
+            err.downcast_ref::<proto::stream_error::StreamFailedError>()
+        {
+            return (
+                proto::stream_error::result_status_for(failure.code),
+                Some(format!("stream error: {err:#}")),
+            );
+        }
         match err.downcast_ref::<JobWorkerError>() {
             Some(JobWorkerError::RuntimeError(mes)) => (
                 ResultStatus::ErrorAndRetry,
@@ -322,6 +332,27 @@ mod tests {
         }
     }
     impl RunnerResultHandler for MockResultHandler {}
+
+    #[test]
+    fn stream_failures_map_to_the_contract_status() {
+        use proto::jobworkerp::data::StreamErrorCode;
+
+        for (code, status) in [
+            (StreamErrorCode::Cancelled, ResultStatus::Cancelled),
+            (StreamErrorCode::InvalidArgument, ResultStatus::OtherError),
+            (StreamErrorCode::ExecutionFailed, ResultStatus::MaxRetry),
+            (StreamErrorCode::TransportFailed, ResultStatus::MaxRetry),
+        ] {
+            let trailer =
+                proto::stream_error::error_trailer(Default::default(), code, "failed", "COMMAND");
+            let error = proto::stream_error::ensure_end_success(&trailer)
+                .unwrap_err()
+                .context("collect failed");
+            let (actual, message) = MockResultHandler::handle_error(error);
+            assert_eq!(actual, status, "{code:?}");
+            assert!(message.unwrap().contains("failed"));
+        }
+    }
 
     // create test for job_result_status(): variation test
     #[tokio::test]

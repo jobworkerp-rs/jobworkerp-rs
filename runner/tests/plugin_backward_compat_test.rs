@@ -7,6 +7,13 @@ use prost::Message;
 use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
 use std::collections::HashMap;
 
+/// Mirror of the HelloPlugin result message, used to build mock chunks.
+#[derive(prost::Message, Clone)]
+pub struct HelloRunnerResult {
+    #[prost(string, tag = "1")]
+    pub data: String,
+}
+
 #[cfg(debug_assertions)]
 const TEST_PLUGIN_DIR: &str = "./target/debug,../target/debug";
 #[cfg(not(debug_assertions))]
@@ -381,6 +388,7 @@ async fn test_legacy_plugin_collect_stream_uses_last_chunk() -> Result<()> {
     let end = ResultOutputItem {
         item: Some(result_output_item::Item::End(Trailer {
             metadata: HashMap::from([("key".to_string(), "value".to_string())]),
+            ..Default::default()
         })),
     };
 
@@ -416,12 +424,6 @@ async fn test_hello_plugin_collect_stream_merges_chunks() -> Result<()> {
     plugin_wrapper.load(vec![]).await?;
 
     // HelloPlugin has custom collect_stream that merges HelloRunnerResult.data fields
-    // Create mock HelloRunnerResult chunks
-    #[derive(prost::Message, Clone)]
-    pub struct HelloRunnerResult {
-        #[prost(string, tag = "1")]
-        pub data: String,
-    }
 
     let result1 = HelloRunnerResult {
         data: "Hello".to_string(),
@@ -445,6 +447,7 @@ async fn test_hello_plugin_collect_stream_merges_chunks() -> Result<()> {
     let end = ResultOutputItem {
         item: Some(result_output_item::Item::End(Trailer {
             metadata: HashMap::new(),
+            ..Default::default()
         })),
     };
 
@@ -460,5 +463,51 @@ async fn test_hello_plugin_collect_stream_merges_chunks() -> Result<()> {
         "HelloPlugin should merge data fields from all chunks"
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_plugin_collect_stream_rejects_failed_end() -> Result<()> {
+    let plugins = Plugins::new();
+    plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+
+    let runner_loader = plugins.runner_plugins();
+    let loader = runner_loader.read().await;
+
+    // LegacyCompat uses the host-side collect; HelloPlugin supplies its own.
+    for name in ["LegacyCompat", "HelloPlugin"] {
+        let mut plugin_wrapper = loader
+            .find_plugin_runner_by_name(name)
+            .await
+            .unwrap_or_else(|| panic!("{name} plugin should be found"));
+        plugin_wrapper.load(vec![]).await?;
+
+        let data = ResultOutputItem {
+            item: Some(result_output_item::Item::Data(
+                HelloRunnerResult {
+                    data: "partial".to_string(),
+                }
+                .encode_to_vec(),
+            )),
+        };
+        let end = proto::stream_error::error_end_item(
+            HashMap::new(),
+            proto::jobworkerp::data::StreamErrorCode::ExecutionFailed,
+            "failed",
+            name,
+        );
+        let stream = futures::stream::iter(vec![data, end]).boxed();
+
+        let error = plugin_wrapper
+            .collect_stream(stream, None)
+            .await
+            .expect_err("a failed End must fail the collect");
+        assert!(
+            error
+                .downcast_ref::<proto::stream_error::StreamFailedError>()
+                .is_some(),
+            "{name}: {error:#}"
+        );
+    }
     Ok(())
 }

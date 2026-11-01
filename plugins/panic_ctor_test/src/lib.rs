@@ -15,9 +15,14 @@ pub struct PanicCtorPlugin;
 impl PanicCtorPlugin {
     // Deliberately panics — see crate docs. A Default impl would just
     // re-panic, so we suppress the clippy lint instead of adding one.
+    //
+    // `resume_unwind` takes the same unwinding path as `panic!` (so the
+    // macro's `catch_unwind` is still exercised) but skips the panic hook.
+    // Any test that scans target/{debug,release} for plugins loads this
+    // dylib, and `panic!` would print a message to stderr on every load.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        panic!("simulated plugin constructor failure");
+        std::panic::resume_unwind(Box::new("simulated plugin constructor failure"));
     }
 }
 

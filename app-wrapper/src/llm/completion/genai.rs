@@ -1,4 +1,5 @@
 use crate::llm::reasoning::ReasoningParams;
+use crate::llm::result_stream::{PROVIDER_STREAM_INTERRUPTED, llm_error_end};
 use anyhow::Result;
 use command_utils::trace::impls::GenericOtelClient;
 use futures::StreamExt;
@@ -14,7 +15,7 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunner
 use jobworkerp_runner::jobworkerp::runner::llm::{
     LlmCompletionArgs, LlmCompletionResult, llm_completion_result,
 };
-use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
+use proto::jobworkerp::data::{ResultOutputItem, StreamErrorCode, result_output_item};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -303,140 +304,8 @@ impl GenaiCompletionService {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to request generation: {:#?}", e))?;
 
-        // Clone the model name to use inside the closure
-        let model_name = Arc::new(res.model_iden.model_name.to_string().clone());
-
-        let metadata_clone = metadata.clone();
-        let stream = res.stream
-            .filter_map(move |event_result| {
-            let value = model_name.clone();
-            let metadata_clone = metadata_clone.clone();
-            async move {
-                match event_result {
-                    Ok(event) => match event {
-                        ChatStreamEvent::Start | ChatStreamEvent::Heartbeat => {
-                            // Start and keep-alive pings carry no payload
-                            None
-                        },
-                        ChatStreamEvent::Chunk(chunk) => {
-                            let llm_result = LlmCompletionResult {
-                                content: Some(llm_completion_result::MessageContent {
-                                    content: Some(message_content::Content::Text(chunk.content)),
-                                }),
-                                done: false,
-                                // Set other fields as needed
-                                ..Default::default()
-                            };
-                            // Encode LlmCompletionResult to Protobuf
-                            let bytes = match prost::Message::encode_to_vec(&llm_result) {
-                                bytes if !bytes.is_empty() => bytes,
-                                _ => {
-                                    tracing::error!("Failed to encode LlmCompletionResult to protobuf");
-                                    return None;
-                                }
-                            };
-                            Some(ResultOutputItem {
-                                item: Some(result_output_item::Item::Data(bytes)),
-                            })
-                        },
-                        ChatStreamEvent::ReasoningChunk(chunk) => {
-                            let llm_result = LlmCompletionResult {
-                                reasoning_content: Some(chunk.content),
-                                done: false,
-                                // Set other fields as needed
-                                ..Default::default()
-                            };
-                            // Encode LlmCompletionResult to Protobuf
-                            let bytes = match prost::Message::encode_to_vec(&llm_result) {
-                                bytes if !bytes.is_empty() => bytes,
-                                _ => {
-                                    tracing::error!("Failed to encode reasoning LlmCompletionResult to protobuf");
-                                    return None;
-                                }
-                            };
-                            Some(ResultOutputItem {
-                                item: Some(result_output_item::Item::Data(bytes)),
-                            })
-                        },
-                        ChatStreamEvent::ThoughtSignatureChunk(chunk) => {
-                            let llm_result = LlmCompletionResult {
-                                reasoning_content: Some(chunk.content),
-                                done: false,
-                                ..Default::default()
-                            };
-                            let bytes = prost::Message::encode_to_vec(&llm_result);
-                            match bytes.is_empty() {
-                                true => None,
-                                false => Some(ResultOutputItem {
-                                    item: Some(result_output_item::Item::Data(bytes)),
-                                }),
-                            }
-                        },
-                        ChatStreamEvent::ToolCallChunk(_) => {
-                            // Handle tool call chunks - for now, we'll ignore them
-                            // as they're not directly supported in the current LlmCompletionResult structure
-                            None
-                        },
-                        ChatStreamEvent::End(end) => {
-                            // End event - send LlmCompletionResult with done flag set to true
-                            let mut llm_result = LlmCompletionResult {
-                                done: true,
-                                ..Default::default()
-                            };
-                            if let Some(usage) = end.captured_usage {
-                                llm_result.usage = Some(llm_completion_result::Usage {
-                                    model: value.to_string(),
-                                    prompt_tokens: usage.prompt_tokens.map(|v| v as u32),
-                                    completion_tokens: usage.completion_tokens.map(|v| v as u32),
-                                    ..Default::default()
-                                });
-                            }
-                            if let Some(text) = end.captured_content.as_ref().and_then(|c| c.first_text()) {
-                                llm_result.content = Some(llm_completion_result::MessageContent {
-                                    content: Some(message_content::Content::Text(text.to_string())),
-                                });
-                            }
-                            if let Some(reasoning) = end.captured_reasoning_content {
-                                llm_result.reasoning_content = Some(reasoning);
-                            }
-                            // Encode completion message to Protobuf
-                            let bytes = match prost::Message::encode_to_vec(&llm_result) {
-                                bytes if !bytes.is_empty() => bytes,
-                                _ => {
-                                    // If encoding fails, send an empty End signal
-                                    return Some(ResultOutputItem {
-                                        item: Some(result_output_item::Item::End(Trailer {
-                                            metadata: metadata_clone,
-                                        })),
-                                    });
-                                }
-                            };
-                            Some(ResultOutputItem {
-                                item: Some(result_output_item::Item::Data(bytes)),
-                            })
-                        },
-                    },
-                    Err(e) => {
-                        tracing::error!("Error in chat stream: {:?}", e);
-                        // On error, send termination signal
-                        Some(ResultOutputItem {
-                            item: Some(result_output_item::Item::End(Trailer {
-                                metadata: metadata_clone,
-                            })),
-                        })
-                    },
-                }
-            }
-            })
-            .chain(futures::stream::once(async move {
-                // Always send End item at the end of the stream
-                ResultOutputItem {
-                    item: Some(result_output_item::Item::End(Trailer {
-                        metadata,
-                    })),
-                }
-            }))
-            .boxed();
+        let model_name = res.model_iden.model_name.to_string();
+        let stream = completion_result_stream(res.stream, model_name, metadata);
 
         let traced = if let Some(span_attrs) = span_attributes {
             use prost::Message as _;
@@ -541,9 +410,129 @@ impl GenericLLMTracingHelper for GenaiCompletionService {
 
 impl GenaiCompletionTracingHelper for GenaiCompletionService {}
 
+/// Converts a provider event stream into result items. A provider error ends
+/// the stream with a failed End; otherwise exactly one normal End follows.
+fn completion_result_stream<E: std::fmt::Debug + Send + 'static>(
+    events: impl futures::Stream<Item = std::result::Result<ChatStreamEvent, E>> + Send + 'static,
+    model: String,
+    metadata: HashMap<String, String>,
+) -> BoxStream<'static, ResultOutputItem> {
+    async_stream::stream! {
+        futures::pin_mut!(events);
+        while let Some(event_result) = events.next().await {
+            match event_result {
+                Ok(event) => {
+                    if let Some(item) = completion_event_item(event, &model) {
+                        yield item;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Error in chat stream: {:?}", e);
+                    yield llm_error_end(
+                        metadata,
+                        StreamErrorCode::ProviderStreamFailed,
+                        PROVIDER_STREAM_INTERRUPTED,
+                    );
+                    return;
+                }
+            }
+        }
+        yield proto::stream_error::normal_end_item(metadata);
+    }
+    .boxed()
+}
+
+fn completion_event_item(event: ChatStreamEvent, model: &str) -> Option<ResultOutputItem> {
+    let llm_result = match event {
+        // Start and keep-alive pings carry no payload.
+        ChatStreamEvent::Start | ChatStreamEvent::Heartbeat => return None,
+        // LlmCompletionResult has no field for tool calls.
+        ChatStreamEvent::ToolCallChunk(_) => return None,
+        ChatStreamEvent::Chunk(chunk) => LlmCompletionResult {
+            content: Some(llm_completion_result::MessageContent {
+                content: Some(message_content::Content::Text(chunk.content)),
+            }),
+            ..Default::default()
+        },
+        ChatStreamEvent::ReasoningChunk(chunk) | ChatStreamEvent::ThoughtSignatureChunk(chunk) => {
+            LlmCompletionResult {
+                reasoning_content: Some(chunk.content),
+                ..Default::default()
+            }
+        }
+        ChatStreamEvent::End(end) => LlmCompletionResult {
+            done: true,
+            usage: end
+                .captured_usage
+                .map(|usage| llm_completion_result::Usage {
+                    model: model.to_string(),
+                    prompt_tokens: usage.prompt_tokens.map(|v| v as u32),
+                    completion_tokens: usage.completion_tokens.map(|v| v as u32),
+                    ..Default::default()
+                }),
+            content: end
+                .captured_content
+                .as_ref()
+                .and_then(|c| c.first_text())
+                .map(|text| llm_completion_result::MessageContent {
+                    content: Some(message_content::Content::Text(text.to_string())),
+                }),
+            reasoning_content: end.captured_reasoning_content,
+            ..Default::default()
+        },
+    };
+    Some(ResultOutputItem {
+        item: Some(result_output_item::Item::Data(
+            prost::Message::encode_to_vec(&llm_result),
+        )),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn completion_items(
+        events: Vec<std::result::Result<ChatStreamEvent, &'static str>>,
+    ) -> Vec<ResultOutputItem> {
+        completion_result_stream(futures::stream::iter(events), "m".into(), HashMap::new())
+            .collect()
+            .await
+    }
+
+    fn end_trailers(items: &[ResultOutputItem]) -> Vec<&proto::jobworkerp::data::Trailer> {
+        items
+            .iter()
+            .filter_map(|item| match &item.item {
+                Some(result_output_item::Item::End(trailer)) => Some(trailer),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn provider_error_ends_the_stream_once_with_a_failure() {
+        let chunk = || {
+            Ok(ChatStreamEvent::Chunk(genai::chat::StreamChunk {
+                content: "partial".into(),
+            }))
+        };
+        let items = completion_items(vec![chunk(), Err("connection reset"), chunk()]).await;
+        let ends = end_trailers(&items);
+        assert_eq!(ends.len(), 1, "exactly one End: {items:?}");
+        assert!(matches!(
+            items.last().unwrap().item,
+            Some(result_output_item::Item::End(_))
+        ));
+        let error = ends[0].error.as_ref().expect("provider error is a failure");
+        assert_eq!(error.code, StreamErrorCode::ProviderStreamFailed as i32);
+        assert_eq!(error.origin, "LLM");
+
+        let items = completion_items(vec![chunk()]).await;
+        let ends = end_trailers(&items);
+        assert_eq!(ends.len(), 1);
+        assert_eq!(ends[0].error, None);
+    }
     use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_args::LlmOptions;
 
     const TEST_OPENAI_MODEL: &str = "gpt-4o-mini";

@@ -595,3 +595,56 @@ fn test_workflow_context_invalid_json_rejected() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn test_unified_runner_stream_reports_execution_failure_on_end() -> Result<()> {
+    use futures::StreamExt;
+    use jobworkerp_runner::jobworkerp::runner::{WorkflowResult, workflow_result::WorkflowStatus};
+    use proto::jobworkerp::data::{StreamErrorCode, result_output_item};
+
+    TEST_RUNTIME.block_on(async {
+        let mut runner = create_test_unified_runner().await?;
+        runner.load(vec![]).await?;
+
+        let workflow_json = create_simple_workflow_json().replace(
+            r#""name": "COMMAND""#,
+            r#""name": "NO_SUCH_RUNNER_FOR_TEST""#,
+        );
+        let args = WorkflowRunArgs {
+            workflow_source: Some(RunWorkflowSource::WorkflowData(workflow_json)),
+            input: r#"{"testInput": "test"}"#.to_string(),
+            ..Default::default()
+        };
+
+        let mut stream = runner
+            .run_stream(&args.encode_to_vec(), HashMap::new(), Some("run"))
+            .await?;
+        let mut statuses = Vec::new();
+        let mut end = None;
+        while let Some(item) = stream.next().await {
+            match item.item {
+                Some(result_output_item::Item::Data(data)) => {
+                    statuses.push(WorkflowResult::decode(data.as_slice())?.status);
+                }
+                Some(result_output_item::Item::End(trailer)) => {
+                    end = Some(trailer);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            statuses.last().copied(),
+            Some(WorkflowStatus::Faulted as i32),
+            "the Faulted result is still sent as data"
+        );
+        let error = end
+            .expect("End must be sent")
+            .error
+            .expect("a workflow execution error must be reported on the End");
+        assert_eq!(error.code, StreamErrorCode::ExecutionFailed as i32);
+        assert_eq!(error.origin, "WORKFLOW");
+        Ok(())
+    })
+}

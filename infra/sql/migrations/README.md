@@ -23,6 +23,24 @@ MySQL の migration はアプリケーション起動時には自動適用され
 新しい MySQL migration を追加する場合は、現在の最大番号の次に連番を割り当て、
 完成形の `schema.sql` とスナップショット一致テストも更新します。
 
+### `SLACK_POST_MESSAGE` runner の削除
+
+このリリースでは、MySQL の `runner` 表から `id = 5`、`name = 'SLACK_POST_MESSAGE'`、
+`type = 5` がすべて一致する組み込み runner 定義を削除します。MySQL は自動移行しないため、
+アプリケーションを停止し、バックアップを取得した後、次の差分を手動適用してください。
+
+```bash
+mysql -h HOST -u USER -p DATABASE < infra/sql/migrations/mysql/004_remove_slack_post_message_runner.sql
+```
+
+この差分は一致する runner 定義だけを削除し、runner の ID が異なる行、名前または種別が異なる行、
+worker/job の記録は保持します。既存の Slack worker とその未処理 job は記録として残りますが、
+このリリースでは実行できません。更新前に対象 job を完了またはキャンセルし、worker を停止して、
+必要な処理を別の runner に移行してください。
+
+新規データベースでは `infra/sql/mysql/schema.sql` が削除後の完成形です。既存データベースには上記の番号付き
+差分だけを適用してください。
+
 ## SQLite
 
 このディレクトリの SQLite migration は、アプリケーションに埋め込まれて起動時に
@@ -33,6 +51,8 @@ SQLx が自動適用する正規 migration です。ファイルを個別に `sq
 - `sqlite/001_base_schema.sql`: 011 の変更直前に相当する初期スキーマ
 - `sqlite/002_worker_instance_rdb_status_recovery.sql`: worker instance の復旧用列と索引
 - `sqlite/003_add_job_result_search_indexes.sql`: JobResult の検索・集計・一括削除用索引
+- `sqlite/004_register_sandbox_runner.sql`: SANDBOX runner 定義の登録
+- `sqlite/005_remove_slack_post_message_runner.sql`: 対象条件に一致する Slack runner 定義の削除
 - `../sqlite/schema.sql`: 全 migration 適用後の完成形を確認する参照用スキーマ
 - `mysql/`: MySQL 用の既存 migration（SQLite の起動時 migration とは別系統）
 
@@ -71,6 +91,10 @@ SQLite は単一プロセス運用を前提とします。更新中に別の wor
    ```
 
 6. ジョブの受付を再開し、worker を起動します。
+
+`SLACK_POST_MESSAGE` を使っていた worker 定義と job の行は SQLite migration では削除されませんが、
+このリリースではその worker/job を実行できません。更新前に対象 job を完了またはキャンセルし、
+worker を停止して、必要な処理を別の runner に移行してください。
 
 ### migration に失敗した場合
 

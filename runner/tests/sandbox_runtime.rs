@@ -536,6 +536,7 @@ async fn stream_collection_requires_a_normal_end_and_rejects_error_end() {
         ResultOutputItem {
             item: Some(Item::End(Trailer {
                 metadata: HashMap::from([("trace".to_string(), "abc".to_string())]),
+                ..Default::default()
             })),
         },
     ])
@@ -545,15 +546,12 @@ async fn stream_collection_requires_a_normal_end_and_rejects_error_end() {
     assert_eq!(metadata.get("trace").map(String::as_str), Some("abc"));
 
     let error_end = stream::iter([ResultOutputItem {
-        item: Some(Item::End(
-            proto::stream_error::build_stream_error_trailer(
-                HashMap::new(),
-                "TIMEOUT",
-                "execution timed out",
-                "SANDBOX",
-            )
-            .unwrap(),
-        )),
+        item: Some(Item::End(proto::stream_error::error_trailer(
+            HashMap::new(),
+            proto::jobworkerp::data::StreamErrorCode::Timeout,
+            "execution timed out",
+            "SANDBOX",
+        ))),
     }])
     .boxed();
     assert!(runner.collect_stream(error_end, None).await.is_err());
@@ -561,6 +559,7 @@ async fn stream_collection_requires_a_normal_end_and_rejects_error_end() {
     let malformed_end = stream::iter([ResultOutputItem {
         item: Some(Item::End(Trailer {
             metadata: HashMap::from([("stream_error".to_string(), "not-json".to_string())]),
+            ..Default::default()
         })),
     }])
     .boxed();

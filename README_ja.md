@@ -225,7 +225,6 @@ worker_runnerに組み込み定義されている機能を以下に記載しま�
 | HTTP_REQUEST | HTTPリクエスト | reqwestによるHTTP通信 | worker.runner_settings: base URL, job.args: headers, method, body, path など |
 | GRPC | gRPC通信（マルチメソッド） | gRPC unary/streamingリクエスト | worker.runner_settings: URL+接続設定, job.args: method, request, metadata |
 | DOCKER | Dockerコンテナ実行 | docker run相当 | worker.runner_settings: FromImage/Tag, job.args: Image/Cmd など |
-| SLACK_POST_MESSAGE | Slackメッセージ投稿 | Slackチャンネルにメッセージを投稿 | worker.runner_settings: Slack API設定, job.args: チャンネル、メッセージ内容など |
 | LLM | LLM実行（マルチメソッド） | 各種LLMを外部サーバ経由で利用 | 詳細は[llm.md](manual/ja/src/llm.md)を参照 |
 | WORKFLOW | ワークフロー実行（マルチメソッド） | 複数のジョブを定義された順序で実行 | 詳細は[workflow.md](manual/ja/src/workflow.md)を参照 |
 

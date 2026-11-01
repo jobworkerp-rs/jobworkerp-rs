@@ -45,7 +45,7 @@ all-in-one と worker の GPU／CPU Dockerfile は microsandbox 0.7.2 の `msb` 
 両メソッドは stdout/stderr を `ResultOutputItem::Data` として逐次返し、終了時に `End` を返します。
 
 - `EnqueueForStream` で `using` を省略すると `run` を使用します。ただし `JobService.Enqueue` は非ストリーミング実行専用のため、SANDBOX の `run` は呼び出せません。
-- `run` では出力チャンク間に `JobRequest.timeout` で指定した時間だけ出力がないと実行をキャンセルし、`End.metadata["stream_error"]` に `TIMEOUT` を記録します。コマンド全体の上限を指定する `timeout_ms` とは別です。
+- `run` では出力チャンク間に `JobRequest.timeout` で指定した時間だけ出力がないと実行をキャンセルし、End の `Trailer.error` に `TIMEOUT` を設定します。コマンド全体の上限を指定する `timeout_ms` とは別です。
 - `run` は通常の enqueue を使用できないため、定期ジョブには使用できません。
 - `run_with_client` も client streaming 専用のため、定期ジョブには使用できません。
 - `run_with_client` は `EnqueueWithClientStream` 専用です。最初の `job_request.using` に `run_with_client` を指定し、以後に stdin のバイト列である `feed_data` を送信します。`is_final=true` では、通常の端末入力で EOF を伝える EOT を送って stdin を閉じます。ゲストが端末を raw mode に切り替えた場合、EOT は EOF として解釈されず、制御文字（`0x04`）としてアプリケーションへ届き、入力内容や挙動に影響することがあります。その場合はアプリケーション固有の終了操作か `timeout_ms` を使用してください。
@@ -223,26 +223,23 @@ microsandbox local backend では、**一つの sandbox が一つの独立した
 | `SandboxExecOutput` | `stream: string`, `data: bytes` | stream は `stdout` または `stderr`。PTY では stdout に併合。 |
 | `SandboxExecExit` | `exit_code: int32`, `execution_time_ms: uint64`, `sandbox_id: string` | exit_code はプロセスの終了コード。sandbox_id は比較・記録用の不透明な VM 識別子。 |
 
-非成功終了をエラーとして扱う場合でも、終了コードを取得できた場合は最終 `exit` の Data を返します。起動失敗や timeout のように終了コードを得られない場合は `exit` を作りません。stream を返す前の失敗は JobResult に反映されますが、**stream 開始後の失敗は次の `End.metadata` で通知**します。先に決まった JobResult の status が `Success` でも、コマンドが最後まで成功したとは限りません。`EnqueueForStream` / `EnqueueWithClientStream` の初期応答に入るのは JobResult ではなく job ID です。
+非成功終了をエラーとして扱う場合でも、終了コードを取得できた場合は最終 `exit` の Data を返します。起動失敗や timeout のように終了コードを得られない場合は `exit` を作りません。stream を返す前の失敗は JobResult に反映されますが、**stream 開始後の失敗は End の `Trailer.error` で通知**します。先に決まった JobResult の status が `Success` でも、コマンドが最後まで成功したとは限りません。`EnqueueForStream` / `EnqueueWithClientStream` の初期応答に入るのは JobResult ではなく job ID です。
 
 ### 実行完了と終端エラー
 
-SANDBOX は `ResultOutputItem::End` の `metadata["stream_error"]` に実行後のエラーを入れます。値は **最大 4096 UTF-8 bytes の JSON 文字列**で、Runner 設定を protobuf bytes に変換する JSON とは異なります。長い診断文は SANDBOX が UTF-8 の文字境界で切り詰めます。例えば次の値は、終了コード 7 の `exit` Data に続くエラー End を表します。
+SANDBOX は実行後のエラーを End の `Trailer.error` で返します。判定規則、code、互換用の metadata は全 Runner 共通で、[ストリーミング — ストリームエラー契約](../streaming.md#ストリームエラー契約)に記載しています。SANDBOX が使う値は次のとおりです。
 
-```json
-{"version":1,"code":"EXECUTION_FAILED","message":"Sandbox command exited with code 7","origin":"SANDBOX"}
-```
-
-| 項目 | 意味 |
+| 項目 | SANDBOX での値 |
 | --- | --- |
-| `version` | 形式の版。現在は整数の `1`。 |
-| `code` | エラー分類。SANDBOX は `EXECUTION_FAILED`、`TIMEOUT`、`CANCELLED` を使用。未知の分類もエラーとして扱う。 |
-| `message` | 表示用の診断文。コマンドの引数、stdin、env は含めない。 |
-| `origin` | エラーを作成した Runner。SANDBOX では `SANDBOX`。 |
+| `code` | `STREAM_ERROR_CODE_EXECUTION_FAILED`、`STREAM_ERROR_CODE_TIMEOUT`、`STREAM_ERROR_CODE_CANCELLED` |
+| `message` | 表示用の診断文。コマンドの引数、stdin、env は含めない。長い診断文は UTF-8 の文字境界で切り詰める。 |
+| `origin` | `SANDBOX` |
 
-クライアントは最後まで stream を読み、**`End` があり、かつこのキーがない場合にだけ SANDBOX の実行完了を成功と判定**してください。キーがある場合は、その JSON を読んで失敗として扱います。JSON が不正・上限超過、`version` が非対応、または `End` を受け取る前に stream が途切れた場合も成功とみなさないでください。Data が先に届いていても取り消されません。クライアント切断などではエラー End の送達自体を保証できません。現行の gRPC 配信処理は `End.metadata` を gRPC のエラー status に自動変換しないため、gRPC 呼出し自体が正常終了した場合もこの確認が必要です。
+例えば終了コード 7 の `exit` Data に続くエラー End では、`code` が `STREAM_ERROR_CODE_EXECUTION_FAILED`、`message` が `Sandbox command exited with code 7` になります。互換用に `metadata["stream_error"]` にも同じ内容の JSON（`{"version":1,"code":"EXECUTION_FAILED",...}`）が書き込まれますが、この JSON は deprecated です。
 
-このキーは将来ほかの Runner と共有できる形ですが、**現時点で LLM・WORKFLOW を含む全 Runner が同じ形式を返すわけではありません**。既存の Runner 固有の `End` キーも変更しません。WORKFLOW が SANDBOX を子ジョブとして実行する場合は、SANDBOX のエラー End、不正な `stream_error`、`End` 不在を子ジョブの失敗として扱います。この対応は、WORKFLOW 自体がすべての終端エラーを同じキーで返すことを意味しません。
+クライアントは最後まで stream を読み、**`End` があり、かつ `Trailer.error` がない場合にだけ SANDBOX の実行完了を成功と判定**してください。`End` を受け取る前に stream が途切れた場合も成功とみなさないでください。Data が先に届いていても取り消されません。クライアント切断などではエラー End の送達自体を保証できません。gRPC 配信処理は End を gRPC のエラー status に変換しないため、gRPC 呼出し自体が正常終了した場合もこの確認が必要です。
+
+WORKFLOW が子ジョブをストリーミング実行する場合は、子ジョブのエラー End と `End` 不在を子ジョブの失敗として扱います。
 
 クライアント切断、キャンセル、timeout 時は実行プロセスを終了します。non-static VM は削除し、static VM は再利用できない場合に破棄して次回実行時に作り直します。
 

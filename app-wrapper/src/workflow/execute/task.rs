@@ -1,7 +1,11 @@
 use super::{
-    context::{ChildJobScope, TaskContext, WorkflowContext, WorkflowStreamEvent},
+    context::{
+        ChildJobScope, TaskContext, WorkflowContext, WorkflowStreamEvent,
+        context_variables_from_json,
+    },
     expression::UseExpression,
 };
+use crate::workflow::execute::expression::ExpressionContext;
 use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
@@ -25,12 +29,7 @@ use jobworkerp_base::APP_NAME;
 use opentelemetry::trace::TraceContextExt;
 use run::RunTaskExecutor;
 use set::SetTaskExecutor;
-use std::{
-    collections::{BTreeMap, HashMap},
-    future::Future,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 use stream::{do_::DoTaskStreamExecutor, for_::ForTaskStreamExecutor, try_::TryStreamTaskExecutor};
 use switch::SwitchTaskExecutor;
 use tokio::sync::{Mutex, RwLock};
@@ -282,8 +281,9 @@ impl TaskExecutor {
                     let mut lock = self.workflow_context.write().await;
                     lock.position = checkpoint.position.clone();
                     lock.input = checkpoint.workflow.input.clone();
-                    lock.context_variables =
-                        Arc::new(Mutex::new((*checkpoint.workflow.context_variables).clone()));
+                    lock.context_variables = Arc::new(Mutex::new(context_variables_from_json(
+                        &checkpoint.workflow.context_variables,
+                    )));
                     drop(lock);
                     Ok(Some(TaskContext::new_from_cp(None, &checkpoint.task)))
                 }
@@ -723,7 +723,7 @@ impl TaskExecutor {
     // Transform, validate, and update the task context with the input of a task
     async fn update_context_by_input(
         &self,
-        expression: &BTreeMap<String, Arc<serde_json::Value>>,
+        expression: &ExpressionContext,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         // XXX invalid by input transformation? (transform argument inner each task)
@@ -763,7 +763,7 @@ impl TaskExecutor {
         execution_id: Option<Arc<ExecutionId>>,
         task: Arc<Task>,
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        expression: &mut BTreeMap<String, Arc<serde_json::Value>>,
+        expression: &mut ExpressionContext,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         // Transform output
@@ -1393,7 +1393,7 @@ impl RaiseTaskExecutor {
     fn execute_error_transform(
         input: Arc<serde_json::Value>,
         value: &str,
-        expression: &BTreeMap<String, Arc<serde_json::Value>>,
+        expression: &ExpressionContext,
     ) -> Result<serde_json::Value, Box<workflow::Error>> {
         if Self::is_transform_template(value) {
             // Error fields are strings. Unlike general workflow values, a Liquid
@@ -1407,7 +1407,7 @@ impl RaiseTaskExecutor {
     async fn evaluate_text(
         &self,
         task_context: &TaskContext,
-        expression: &BTreeMap<String, Arc<serde_json::Value>>,
+        expression: &ExpressionContext,
         field: &str,
         value: Option<&String>,
     ) -> Result<Option<String>, Box<workflow::Error>> {
@@ -2134,7 +2134,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             let stream = task_executor
@@ -2205,7 +2205,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             let stream = task_executor
@@ -2246,7 +2246,7 @@ mod tests {
     fn test_workflow_stream_event_into_context() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let input = Arc::new(serde_json::json!({"test": "value"}));
-            let context_vars = Arc::new(Mutex::new(serde_json::Map::new()));
+            let context_vars = Arc::new(Mutex::new(Default::default()));
             let task_context = TaskContext::new(None, input, context_vars);
 
             // Create a TaskCompleted event
@@ -2270,7 +2270,7 @@ mod tests {
     fn test_workflow_stream_event_context_ref() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let input = Arc::new(serde_json::json!({"key": "data"}));
-            let context_vars = Arc::new(Mutex::new(serde_json::Map::new()));
+            let context_vars = Arc::new(Mutex::new(Default::default()));
             let task_context = TaskContext::new(None, input, context_vars);
 
             let event =
@@ -2288,7 +2288,7 @@ mod tests {
     fn test_workflow_stream_event_variants() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let input = Arc::new(serde_json::json!({}));
-            let context_vars = Arc::new(Mutex::new(serde_json::Map::new()));
+            let context_vars = Arc::new(Mutex::new(Default::default()));
             let task_context = TaskContext::new(None, input, context_vars);
 
             // TaskCompleted - has context
@@ -2351,7 +2351,7 @@ mod tests {
     fn test_workflow_stream_event_position() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let input = Arc::new(serde_json::json!({}));
-            let context_vars = Arc::new(Mutex::new(serde_json::Map::new()));
+            let context_vars = Arc::new(Mutex::new(Default::default()));
             let task_context = TaskContext::new(None, input, context_vars);
 
             let task_started = WorkflowStreamEvent::task_started("runTask", "t1", "/do/task1");
@@ -2516,7 +2516,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             let stream = task_executor

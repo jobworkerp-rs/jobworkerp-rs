@@ -10,7 +10,7 @@ use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use crate::app::runner::rdb::RdbRunnerAppImpl;
 use crate::app::runner::{
@@ -20,6 +20,21 @@ use crate::app::runner::{
 
 use super::super::{StorageConfig, UseStorageConfig};
 use super::{WorkerApp, WorkerAppCacheHelper, is_unique_violation};
+
+async fn cache_temp_worker_after_moka<F, Fut>(
+    temp_worker_cache: &DashMap<i64, Worker>,
+    worker_id: WorkerId,
+    worker: Worker,
+    cache_worker: F,
+) -> Result<()>
+where
+    F: FnOnce(Worker) -> Fut + Send,
+    Fut: Future<Output = Result<Worker>> + Send,
+{
+    let worker = cache_worker(worker).await?;
+    temp_worker_cache.insert(worker_id.value, worker);
+    Ok(())
+}
 
 #[derive(Clone, Debug)]
 pub struct RdbWorkerAppImpl {
@@ -108,11 +123,13 @@ impl WorkerApp for RdbWorkerAppImpl {
             data: Some(wdata),
         };
 
-        // Store in TTL-free cache to survive MokaCache expiration for long-running jobs
-        self.temp_worker_cache.insert(wid.value, worker.clone());
-
-        // Also store in MokaCache for fast lookup (fallback to temp_worker_cache if expired)
-        self.create_cache(&wid, &worker).await?;
+        // Populate the expiring cache first so cancellation cannot leave a
+        // permanent temporary-worker entry in the TTL-free fallback map.
+        cache_temp_worker_after_moka(&self.temp_worker_cache, wid, worker, |worker| async move {
+            self.create_cache(&wid, &worker).await?;
+            Ok(worker)
+        })
+        .await?;
         // not broadcast to runner (single instance for rdb only)
         Ok(wid)
     }
@@ -464,6 +481,7 @@ impl UseRunnerAppParserWithCache for RdbWorkerAppImpl {}
 
 #[cfg(test)]
 mod tests {
+    use super::cache_temp_worker_after_moka;
     use crate::app::StorageConfig;
     use crate::app::runner::RunnerApp;
     use crate::app::runner::rdb::RdbRunnerAppImpl;
@@ -471,6 +489,7 @@ mod tests {
     use crate::app::worker::rdb::RdbWorkerAppImpl;
     use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
+    use dashmap::DashMap;
     use infra::infra::IdGeneratorWrapper;
     use infra::infra::job::rows::JobqueueAndCodec;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
@@ -478,7 +497,7 @@ mod tests {
     use jobworkerp_base::codec::UseProstCodec;
     use memory_utils::cache::moka::MokaCacheImpl;
     use proto::TestRunnerSettings;
-    use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
+    use proto::jobworkerp::data::{RunnerId, StorageType, Worker, WorkerData, WorkerId};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -696,6 +715,34 @@ mod tests {
             let not_found = app.find(&id).await?;
             assert!(not_found.is_none());
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn cancelling_temp_worker_cache_creation_leaves_no_fallback_entry() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let temp_worker_cache = Arc::new(DashMap::new());
+            let worker_id = WorkerId { value: 9_901 };
+            let worker = Worker {
+                id: Some(worker_id),
+                data: Some(WorkerData::default()),
+            };
+            let (cache_started_tx, cache_started_rx) = tokio::sync::oneshot::channel();
+            let cache = temp_worker_cache.clone();
+            let task = tokio::spawn(async move {
+                cache_temp_worker_after_moka(&cache, worker_id, worker, move |worker| async move {
+                    let _worker = worker;
+                    let _ = cache_started_tx.send(());
+                    std::future::pending::<Result<Worker>>().await
+                })
+                .await
+            });
+            cache_started_rx.await?;
+            task.abort();
+            let _ = task.await;
+
+            assert!(!temp_worker_cache.contains_key(&worker_id.value));
             Ok(())
         })
     }

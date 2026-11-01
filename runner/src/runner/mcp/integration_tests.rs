@@ -1010,7 +1010,7 @@ async fn test_collect_stream_single_chunk() -> Result<()> {
             item: Some(Item::Data(chunk.encode_to_vec())),
         };
         yield ResultOutputItem {
-            item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata })),
+            item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata, ..Default::default() })),
         };
     };
 
@@ -1026,6 +1026,38 @@ async fn test_collect_stream_single_chunk() -> Result<()> {
     assert_eq!(result_metadata.get("tool"), Some(&"test_tool".to_string()));
 
     eprintln!("✅ collect_stream single chunk test passed");
+    Ok(())
+}
+
+/// Test: collect_stream fails when the End reports a stream failure
+#[tokio::test]
+async fn test_collect_stream_rejects_failed_end() -> Result<()> {
+    use crate::runner::RunnerSpec;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::mcp::config::McpConfig;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let runner = McpServerRunnerImpl::new(client, None).await?;
+
+    let stream = futures::stream::iter([proto::stream_error::error_end_item(
+        HashMap::new(),
+        proto::jobworkerp::data::StreamErrorCode::TransportFailed,
+        "connection lost",
+        "MCP_SERVER",
+    )]);
+    let error = runner
+        .collect_stream(Box::pin(stream), None)
+        .await
+        .expect_err("a failed End must fail the collect");
+    assert!(
+        error
+            .downcast_ref::<proto::stream_error::StreamFailedError>()
+            .is_some()
+    );
     Ok(())
 }
 
@@ -1076,7 +1108,7 @@ async fn test_collect_stream_multiple_chunks_merges_text() -> Result<()> {
             item: Some(Item::Data(chunk2.encode_to_vec())),
         };
         yield ResultOutputItem {
-            item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata: HashMap::new() })),
+            item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata: HashMap::new(), ..Default::default() })),
         };
     };
 
@@ -1142,7 +1174,7 @@ async fn test_collect_stream_propagates_error_flag() -> Result<()> {
             item: Some(Item::Data(chunk2.encode_to_vec())),
         };
         yield ResultOutputItem {
-            item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata: HashMap::new() })),
+            item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata: HashMap::new(), ..Default::default() })),
         };
     };
 
@@ -1179,7 +1211,7 @@ async fn test_collect_stream_empty_chunks() -> Result<()> {
     // Create stream with only end marker (no data chunks)
     let stream = async_stream::stream! {
         yield ResultOutputItem {
-            item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata: HashMap::new() })),
+            item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata: HashMap::new(), ..Default::default() })),
         };
     };
 

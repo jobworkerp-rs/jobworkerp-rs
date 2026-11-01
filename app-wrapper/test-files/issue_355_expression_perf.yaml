@@ -1,0 +1,33 @@
+document:
+  dsl: "1.0.0"
+  namespace: "test"
+  name: "issue-355-expression-perf"
+  title: "Expression evaluation cost with a large workflow context"
+  version: "1.0.0"
+  metadata: {}
+
+input:
+  schema:
+    document:
+      type: object
+      default: {}
+
+do:
+  - Loop:
+      for:
+        in: "${[range(0; 1000)]}"
+        each: "item"
+        at: "index"
+      do:
+        - SetEven:
+            if: "${$item % 2 == 0}"
+            set:
+              even: "${$item}"
+        - SetThird:
+            if: "${$item % 3 == 0}"
+            set:
+              third: "${$item}"
+        - SetLast:
+            if: "${$item >= 0}"
+            set:
+              last: "${$index}"

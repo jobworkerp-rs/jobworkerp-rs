@@ -16,6 +16,22 @@ worker_runnerに組み込み定義されている機能を以下に記載しま�
 | MCP_SERVER | MCPサーバーツール実行 | MCPサーバーのツールを実行 | 詳細は[MCPプロキシ](mcp-proxy.md)を参照 |
 | FUNCTION_SET_SELECTOR | FunctionSet一覧 | LLMのツール選択支援のために利用可能なFunctionSetをツール概要付きで一覧表示 | - |
 
+## ストリーミング実行時の失敗
+
+ストリーミング実行の失敗は End の `Trailer.error` で返します。判定規則と code の一覧は[ストリーミング — ストリームエラー契約](../streaming.md#ストリームエラー契約)を参照してください。主な Runner の扱いは次のとおりです。
+
+| Runner | End に `error` を設定する失敗 | 結果データとして返す（`error` なし） |
+|---|---|---|
+| COMMAND | 起動失敗、stdout/stderr を取得できない、stdin 書き込み失敗（`EXECUTION_FAILED`）。`treat_nonzero_as_error=true` での非 0 終了（`EXECUTION_FAILED`）。キャンセル（`CANCELLED`） | `treat_nonzero_as_error=false` での非 0 終了 |
+| HTTP_REQUEST | 接続失敗や本文受信の途中失敗（`TRANSPORT_FAILED`）。不正な method / URL（`INVALID_ARGUMENT`）。キャンセル（`CANCELLED`） | HTTP の 4xx/5xx 応答 |
+| GRPC | キャンセル（`CANCELLED`。End の `grpc-status` metadata も維持） | 下流サービスの非 OK status（`grpc-status` / `grpc-message` metadata） |
+| LLM | プロバイダのストリームの中断、終端の結果が届く前の終了（`PROVIDER_STREAM_FAILED`）。キャンセル（`CANCELLED`） | — |
+| WORKFLOW | workflow の実行エラー（`EXECUTION_FAILED`。Faulted の `WorkflowResult` Data の後に送る） | Faulted / Cancelled の結果 |
+| MCP_SERVER | ツール呼び出しの失敗（`EXECUTION_FAILED`）。キャンセル（`CANCELLED`） | ツールの `is_error` |
+| Plugin | plugin の `run_stream` のエラー（`EXECUTION_FAILED`）。キャンセル（`CANCELLED`） | — |
+
+Worker の `JobData.timeout` による stream の idle timeout は、どの Runner でも `TIMEOUT` になります。
+
 ## GRPC runner の proto ソースについて
 
 GRPC runnerは、呼び出し対象のサービス・メソッドのスキーマを次の2つの方法で解決します。

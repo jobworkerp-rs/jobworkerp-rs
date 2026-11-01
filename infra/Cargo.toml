@@ -24,6 +24,7 @@ bb8 = { workspace = true }
 debug_stub_derive = { workspace = true }
 dotenvy = { workspace = true }
 envy = { workspace = true }
+moka = { workspace = true, features = ["sync"] }
 futures = { workspace = true }
 futures-util = { workspace = true }
 itertools = { workspace = true }
@@ -40,6 +41,7 @@ regress = "0.10"
 reqwest = { workspace = true }
 #rmcp = { workspace = true }
 serde = { workspace = true }
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 serde_yaml = { workspace = true }
@@ -61,10 +63,11 @@ url = { workspace = true }
 #tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
-infra = { path = ".", features = ["test-utils"] }
+infra = { path = ".", features = ["test-utils", "stream-subscription-test-hook"] }
 jobworkerp-runner = { path = "../runner", features = ["test-utils"] }
 
 [features]
 default = []
 test-utils = []
+stream-subscription-test-hook = []
 mysql = ["infra-utils/mysql"]

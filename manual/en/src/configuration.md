@@ -65,6 +65,9 @@ before upgrading an existing database.
 | | WORKFLOW_CHECKPOINT_EXPIRE_SEC | Checkpoint expiration (seconds) | None (no limit). dot.env uses 86400 as example |
 | | WORKFLOW_CHECKPOINT_MAX_COUNT | Maximum checkpoint count | None (no limit). dot.env uses 100000 as example |
 | | WORKFLOW_SKIP_SCHEMA_VALIDATION | Skip schema validation | false |
+| | WORKFLOW_JQ_CACHE_MAX_BYTES | Upper bound (bytes) of the estimated memory held by the cache of compiled jq expressions. 0 disables the cache | 1/64 of available memory (the lower of the cgroup limit and physical memory), clamped to 16-256 MiB; 32 MiB if it cannot be determined |
+| | WORKFLOW_LIQUID_CACHE_MAX_BYTES | Upper bound (bytes) of the estimated memory held by the cache of parsed Liquid templates. 0 disables the cache | 1/512 of available memory, clamped to 4-32 MiB; 8 MiB if it cannot be determined |
+| | WORKFLOW_EXPRESSION_CACHE_TTI_SEC | Evict cached expressions not used for this many seconds. 0 disables idle expiry | 1800 |
 | **Runner/Plugin Settings** | PLUGIN_LOAD_TIMEOUT_SECS | Plugin load timeout (seconds) | 10 |
 | | MCP_CONNECTION_TIMEOUT_SECS | MCP connection timeout (seconds) | 15 |
 

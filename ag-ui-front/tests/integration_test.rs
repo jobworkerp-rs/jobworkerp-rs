@@ -31,6 +31,7 @@ fn create_end_item() -> ResultOutputItem {
     ResultOutputItem {
         item: Some(result_output_item::Item::End(Trailer {
             metadata: HashMap::new(),
+            ..Default::default()
         })),
     }
 }
@@ -49,7 +50,7 @@ async fn test_complete_llm_streaming_flow() {
     let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
 
     let message_id = MessageId::new("msg_llm_flow");
-    let event_stream = result_output_stream_to_ag_ui_events(stream, message_id);
+    let event_stream = result_output_stream_to_ag_ui_events(stream, message_id, "run_test");
     let events: Vec<_> = event_stream.collect().await;
 
     // Verify event sequence: START, CONTENT x4, END
@@ -257,8 +258,11 @@ async fn test_stream_end_guarantee() {
     let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
 
     let message_id = MessageId::new("msg_incomplete");
-    let event_stream =
-        result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id.clone());
+    let event_stream = result_output_stream_to_ag_ui_events_with_end_guarantee(
+        stream,
+        message_id.clone(),
+        "run_test",
+    );
     let events: Vec<_> = event_stream.collect().await;
 
     // Should still have START, 2 CONTENT, and guaranteed END

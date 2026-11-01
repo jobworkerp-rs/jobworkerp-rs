@@ -13,8 +13,10 @@ use crate::workflow::definition::{
     transform::{self, TransformExpression},
     workflow,
 };
+use crate::workflow::execute::expression::ExpressionContext;
 use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use infra::workflow::definition::expression_context::SECRETS_VARIABLE;
 use serde_json::{Map, Value};
 use std::{collections::HashSet, sync::Arc};
 
@@ -54,22 +56,22 @@ where
 
 /// Merge newly resolved secrets into the `$secrets` object of an expression
 /// context, preserving any already present (e.g. those referenced by `with`).
-pub(crate) fn merge_secrets(
-    expression: &mut std::collections::BTreeMap<String, Arc<Value>>,
-    secrets: Value,
-) {
+pub(crate) fn merge_secrets(expression: &mut ExpressionContext, secrets: Value) {
     let Value::Object(new_secrets) = secrets else {
         return;
     };
     if new_secrets.is_empty() {
         return;
     }
+    // `secrets` is only ever inserted eagerly, so lookup cannot fail.
     let mut merged = expression
-        .get("secrets")
+        .get(SECRETS_VARIABLE)
+        .ok()
+        .flatten()
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
     merged.extend(new_secrets);
-    expression.insert("secrets".to_string(), Arc::new(Value::Object(merged)));
+    expression.insert(SECRETS_VARIABLE, Arc::new(Value::Object(merged)));
 }
 
 /// Build the `$secrets` object for expression evaluation, resolving only the
@@ -184,7 +186,7 @@ fn collect_secret_names_from_string(value: &str, names: &mut std::collections::H
             collect_bracket_names(span, "$secrets[\"", "\"]", false, names);
         }
         Some(TransformExpression::Liquid(span)) => {
-            for tag in transform::liquid_template_tag_bodies(span) {
+            for tag in transform::liquid_tag_bodies(span) {
                 let unquoted = without_quoted_literals(tag);
                 collect_dot_notation_names(&unquoted, "secrets.", true, names);
                 collect_bracket_names(tag, "secrets['", "']", true, names);

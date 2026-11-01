@@ -1,13 +1,13 @@
+use super::result_stream::{cancellable_result_stream, provider_result_stream};
 use anyhow::{Result, anyhow};
 use app::module::AppModule;
-use async_stream::stream;
 use async_trait::async_trait;
 use command_utils::trace::Tracing;
-use futures::stream::{BoxStream, StreamExt};
+use futures::stream::BoxStream;
 use genai::GenaiChatService;
 use jobworkerp_base::APP_WORKER_NAME;
-use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_runner::jobworkerp::runner::llm::LlmChatResult;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmRunnerSettings};
 use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
@@ -18,7 +18,7 @@ use ollama::OllamaChatService;
 use opentelemetry::Context;
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
-use proto::jobworkerp::data::{ResultOutputItem, result_output_item};
+use proto::jobworkerp::data::ResultOutputItem;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -256,88 +256,28 @@ impl RunnerTrait for LLMChatRunnerImpl {
                 .request_stream_chat_ref(args, metadata.clone(), Some(parent_cx.clone()))
                 .await?;
 
-            let req_meta = Arc::new(metadata.clone());
-            let cancel_token = cancellation_token.clone();
-            let root_cx = parent_cx;
-
-            // Stream processing with mid-stream cancellation capability
-            let output_stream = stream! {
-                // async_stream::stream! does not support `move` capture, so binding the
-                // Context inside the block keeps the root span alive for the stream's lifetime.
-                let _root_cx = root_cx;
-                tokio::pin!(stream);
-                loop {
-                    tokio::select! {
-                        item = stream.next() => {
-                            match item {
-                                Some(completion_result) => {
-                                    // A terminal chunk carries completion metadata even when it
-                                    // has no content or tool execution results.
-                                    let has_content = completion_result
-                                        .content
-                                        .as_ref()
-                                        .is_some_and(|c| c.content.is_some());
-                                    let has_tool_results = !completion_result.tool_execution_results.is_empty();
-                                    if has_content || has_tool_results || completion_result.done {
-                                        let buf = ProstMessageCodec::serialize_message(&completion_result);
-                                        if let Ok(buf) = buf {
-                                            yield ResultOutputItem {
-                                                item: Some(result_output_item::Item::Data(buf)),
-                                            };
-                                        } else {
-                                            tracing::error!("Failed to serialize LLM completion result");
-                                        }
-                                    }
-
-                                    if completion_result.done {
-                                        yield ResultOutputItem {
-                                            item: Some(result_output_item::Item::End(
-                                                proto::jobworkerp::data::Trailer {
-                                                    metadata: (*req_meta).clone(),
-                                                },
-                                            )),
-                                        };
-                                        break;
-                                    }
-                                }
-                                None => break,
-                            }
-                        }
-                        _ = cancel_token.cancelled() => {
-                            tracing::info!("LLM chat stream was cancelled");
-                            break;
-                        }
-                    }
-                }
-            }.boxed();
+            // A terminal chunk carries completion metadata even when it has
+            // no content or tool execution results.
+            let output_stream = provider_result_stream(
+                stream,
+                metadata,
+                cancellation_token.clone(),
+                parent_cx,
+                |result: &LlmChatResult| {
+                    result.done
+                        || !result.tool_execution_results.is_empty()
+                        || result.content.as_ref().is_some_and(|c| c.content.is_some())
+                },
+                |result: &LlmChatResult| result.done,
+            );
 
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
             let stream = genai
-                .request_chat_stream(args, metadata, Some(parent_cx.clone()))
+                .request_chat_stream(args, metadata.clone(), Some(parent_cx.clone()))
                 .await?;
-
-            let cancel_token = cancellation_token.clone();
-            let root_cx = parent_cx;
-            let cancellable_stream = stream! {
-                let _root_cx = root_cx;
-                tokio::pin!(stream);
-                loop {
-                    tokio::select! {
-                        item = stream.next() => {
-                            match item {
-                                Some(result_item) => yield result_item,
-                                None => break,
-                            }
-                        }
-                        _ = cancel_token.cancelled() => {
-                            tracing::info!("LLM chat GenAI stream was cancelled");
-                            break;
-                        }
-                    }
-                }
-            }
-            .boxed();
+            let cancellable_stream =
+                cancellable_result_stream(stream, metadata, cancellation_token.clone(), parent_cx);
 
             Ok(cancellable_stream)
         } else {

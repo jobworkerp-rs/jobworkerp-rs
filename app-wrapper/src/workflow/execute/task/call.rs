@@ -10,6 +10,7 @@ pub mod grpc;
 pub mod http;
 
 use super::TaskExecutorTrait;
+use crate::workflow::execute::expression::ExpressionContext;
 use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
@@ -28,6 +29,7 @@ use app::app::{
     runner::UseRunnerApp,
 };
 use command_utils::trace::Tracing;
+use infra::workflow::definition::expression_context::SECRETS_VARIABLE;
 use proto::jobworkerp::data::{QueueType, ResponseType, StreamingType, WorkerData};
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc, time::Duration};
@@ -114,7 +116,7 @@ impl CallTaskExecutor {
         named: &HashMap<String, workflow::AuthenticationPolicy>,
         declared_secrets: &std::collections::HashSet<String>,
         raw_input: Arc<Value>,
-        expression: &std::collections::BTreeMap<String, Arc<Value>>,
+        expression: &ExpressionContext,
     ) -> Result<workflow::AuthenticationPolicy, Box<workflow::Error>> {
         if let Some(policy) = inline {
             return Ok(policy.clone());
@@ -272,7 +274,7 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
         let secrets = secret::resolve_secrets_for(&declared_secrets, &call_value.to_string())
             .map_err(|e| Self::unsupported("authentication", e.to_string()))?;
         if !declared_secrets.is_empty() {
-            expression.insert("secrets".to_string(), Arc::new(secrets));
+            expression.insert(SECRETS_VARIABLE, Arc::new(secrets));
         }
 
         let transformed_call =
@@ -494,6 +496,60 @@ mod tests {
         .to_string();
         let names = secret::referenced_secret_names(&serialized);
         assert!(names.contains("API_TOKEN"));
+    }
+
+    #[test]
+    fn liquid_secret_after_quoted_closing_delimiter_is_detected() {
+        let serialized = serde_json::json!({
+            "headers": {"Authorization": r#"$${{{ "}}" | append: secrets.API_TOKEN }}}"#},
+        })
+        .to_string();
+        let names = secret::referenced_secret_names(&serialized);
+        assert!(names.contains("API_TOKEN"));
+    }
+
+    #[test]
+    fn liquid_secret_with_whitespace_control_is_detected() {
+        let serialized = serde_json::json!({
+            "headers": {"Authorization": "$${{{-secrets.API_TOKEN-}}}"},
+        })
+        .to_string();
+        let names = secret::referenced_secret_names(&serialized);
+        assert!(names.contains("API_TOKEN"), "{names:?}");
+    }
+
+    #[test]
+    fn liquid_secret_after_unbalanced_quote_in_raw_block_is_detected() {
+        for template in [
+            r#"$${{% raw %}{{ " }}{% endraw %}{{ secrets.API_TOKEN }}}"#,
+            r#"$${{% raw %}{{ "{% endraw %}{% if secrets.API_TOKEN %}x{% endif %}}"#,
+            // The quote inside raw pairs with a quote after the real tag.
+            r#"$${{% raw %}{{ "{% endraw %}{{ secrets.API_TOKEN }}" junk }}}"#,
+        ] {
+            let serialized =
+                serde_json::json!({ "headers": {"Authorization": template} }).to_string();
+            let names = secret::referenced_secret_names(&serialized);
+            assert!(names.contains("API_TOKEN"), "{template}: {names:?}");
+        }
+    }
+
+    #[test]
+    fn liquid_secret_like_text_in_string_literal_or_raw_block_is_not_a_reference() {
+        for template in [
+            r#"$${{{ "{{ secrets.UNUSED }}" }}}"#,
+            "$${{% raw %}{{ secrets.UNUSED }}{% endraw %}}",
+            "$${{% comment %}{{ secrets.UNUSED }}{% endcomment %}}",
+        ] {
+            let serialized = serde_json::json!({ "headers": {"X-Doc": template} }).to_string();
+            assert!(
+                secret::referenced_secret_names(&serialized).is_empty(),
+                "{template}"
+            );
+            assert!(
+                secret::ensure_no_undeclared_secret_references(&no_secrets(), &serialized).is_ok(),
+                "{template}"
+            );
+        }
     }
 
     #[test]

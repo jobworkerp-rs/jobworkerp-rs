@@ -3,8 +3,9 @@ use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::{
     JobApp, JobCacheKeys, JobCancellationLifecycle, PendingCancellationDisposition,
     PendingStatusPublication, remove_pending_rdb_job, remove_unpublished_rdb_only_job,
-    resolve_and_validate_job_params, resolve_job_params,
+    resolve_and_validate_job_params, resolve_job_params, subscribe_stream_if_requested,
 };
+use crate::app::job_result::stream_for_successful_result;
 use crate::app::{UseWorkerConfig, WorkerConfig};
 use crate::module::AppConfigModule;
 use anyhow::Result;
@@ -31,13 +32,14 @@ use memory_utils::cache::stretto::{self as memory, MemoryCacheConfig, UseMemoryC
 use memory_utils::lock::RwLockWithKey;
 use proto::jobworkerp::data::{
     Job, JobData, JobExecutionOverrides, JobId, JobProcessingStatus, JobResult, JobResultData,
-    JobResultId, QueueType, ResponseType, ResultOutputItem, ResultStatus, StreamingType, Worker,
-    WorkerData, WorkerId,
+    JobResultId, QueueType, ResponseType, ResultOutputItem, StreamingType, Worker, WorkerData,
+    WorkerId,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use stretto::TokioCache;
+use tokio_util::task::AbortOnDropHandle;
 
 #[derive(Clone)]
 pub struct RdbChanJobAppImpl {
@@ -774,36 +776,12 @@ impl JobApp for RdbChanJobAppImpl {
             data: Some(job_data.clone()),
             metadata: (*metadata).clone(),
         };
-        // Establish the output subscription before making the job visible to a
-        // worker. Broadcast channels do not retain messages, so doing this
-        // after enqueue can lose an instant runner's Data/End items.
-        let result_stream = if request_streaming {
-            Some(
-                self.job_result_pubsub_repository()
-                    .subscribe_result_stream(&jid, None)
-                    .await?,
-            )
-        } else {
-            None
-        };
-
-        // The result channel is also a broadcast channel. Register its receiver
-        // before making the job visible, otherwise a fast runner can publish the
-        // final JobResult before the deferred future is first polled. The
-        // subscription itself has no timeout; its wait timeout starts below,
-        // after enqueue/cache admission succeeds.
-        let (result_ready_tx, result_ready_rx) = tokio::sync::oneshot::channel();
-        let result_pubsub = self.job_result_pubsub_repository().clone();
-        let result_job_id = jid;
-        let result_handle = tokio::spawn(async move {
-            result_pubsub
-                .subscribe_result_with_ready(&result_job_id, None, Some(result_ready_tx))
-                .await
-        });
-        let result_subscription_abort_handle = result_handle.abort_handle();
-        result_ready_rx.await.map_err(|_| {
-            JobWorkerError::RuntimeError("result subscriber stopped before registering".to_string())
-        })?;
+        let prepared = PreparedDirectResponse::prepare(
+            self.job_result_pubsub_repository(),
+            &jid,
+            request_streaming,
+        )
+        .await?;
 
         // Enqueue phase only — the JobId is now live and the job is Pending.
         // If making it visible to a worker fails, neither of the subscriptions
@@ -815,7 +793,7 @@ impl JobApp for RdbChanJobAppImpl {
         {
             Ok(job_id) => job_id,
             Err(error) => {
-                abort_deferred_result_wait(result_handle, result_stream).await;
+                prepared.abort().await;
                 return Err(error);
             }
         };
@@ -832,6 +810,8 @@ impl JobApp for RdbChanJobAppImpl {
 
         // Keep the registered receiver until the job reaches a terminal state.
         // JobData.timeout bounds runner execution, not queue residence time.
+        let (result_handle, result_subscription_abort_handle, result_stream) =
+            prepared.into_parts();
         let result_handle = start_deferred_result_wait(result_handle, None);
         let fut = self.wait_for_direct_response_future(
             result_handle,
@@ -1487,6 +1467,67 @@ impl UseChanJobResultPubSubRepository for RdbChanJobAppImpl {
     }
 }
 
+/// Result and stream subscriptions registered before a Direct job becomes visible.
+/// Dropping it aborts the pending result subscription.
+struct PreparedDirectResponse {
+    result_handle: AbortOnDropHandle<Result<JobResult>>,
+    stream: Option<BoxStream<'static, ResultOutputItem>>,
+}
+
+impl PreparedDirectResponse {
+    /// The result subscription runs in its own task so a deferred wait can
+    /// outlive the enqueue call; this returns once its receiver is registered.
+    async fn prepare(
+        pubsub: &ChanJobResultPubSubRepositoryImpl,
+        job_id: &JobId,
+        request_streaming: bool,
+    ) -> Result<Self> {
+        let stream = subscribe_stream_if_requested(pubsub, job_id, request_streaming).await?;
+        let (result_ready_tx, result_ready_rx) = tokio::sync::oneshot::channel();
+        let result_pubsub = pubsub.clone();
+        let result_job_id = *job_id;
+        let prepared = Self {
+            result_handle: AbortOnDropHandle::new(tokio::spawn(async move {
+                result_pubsub
+                    .subscribe_result_with_ready(&result_job_id, None, Some(result_ready_tx))
+                    .await
+            })),
+            stream,
+        };
+        if result_ready_rx.await.is_err() {
+            prepared.abort().await;
+            anyhow::bail!("result subscriber stopped before registering");
+        }
+        Ok(prepared)
+    }
+
+    async fn wait(self) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
+        let Self {
+            result_handle,
+            stream,
+        } = self;
+        let result = result_handle.await??;
+        let stream = stream_for_successful_result(&result, stream);
+        Ok((result, stream))
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        tokio::task::JoinHandle<Result<JobResult>>,
+        tokio::task::AbortHandle,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    ) {
+        let result_handle = self.result_handle.detach();
+        let result_abort_handle = result_handle.abort_handle();
+        (result_handle, result_abort_handle, self.stream)
+    }
+
+    async fn abort(self) {
+        abort_deferred_result_wait(self.result_handle.detach(), self.stream).await;
+    }
+}
+
 // for rdb chan
 #[async_trait]
 pub(crate) trait RdbChanJobAppHelper:
@@ -1511,25 +1552,45 @@ where
         Option<JobResult>,
         Option<BoxStream<'static, ResultOutputItem>>,
     )> {
-        // Enqueue (queue write + cache admission + Pending status), then, for a
-        // Direct-response worker, block on the result. Splitting the enqueue and
-        // wait phases keeps this method's behavior identical while letting
-        // `enqueue_job_with_channel` reuse the enqueue phase and defer the wait.
-        let job_id = self
-            .enqueue_job_sync_enqueue_only(job, worker, false, PendingStatusPublication::NewEnqueue)
-            .await?;
         let resolved =
             resolve_job_params(worker, job.data.as_ref().and_then(|d| d.overrides.as_ref()));
-        if resolved.response_type == ResponseType::Direct as i32 {
-            self._wait_job_for_direct_response(
-                &job_id,
-                None,
-                job.data.as_ref().is_some_and(|j| j.streaming_type != 0),
+        let request_streaming = job
+            .data
+            .as_ref()
+            .is_some_and(|data| data.streaming_type != 0);
+        let prepared = if resolved.response_type == ResponseType::Direct as i32 {
+            let job_id = job
+                .id
+                .ok_or_else(|| JobWorkerError::InvalidParameter("job id is missing".to_string()))?;
+            Some(
+                PreparedDirectResponse::prepare(
+                    self.job_result_pubsub_repository(),
+                    &job_id,
+                    request_streaming,
+                )
+                .await?,
             )
-            .await
-            .map(|(r, st)| (job_id, Some(r), st))
         } else {
-            Ok((job_id, None, None))
+            None
+        };
+        let job_id = match self
+            .enqueue_job_sync_enqueue_only(job, worker, false, PendingStatusPublication::NewEnqueue)
+            .await
+        {
+            Ok(job_id) => job_id,
+            Err(error) => {
+                if let Some(prepared) = prepared {
+                    prepared.abort().await;
+                }
+                return Err(error);
+            }
+        };
+        match prepared {
+            Some(prepared) => {
+                let (result, stream) = prepared.wait().await?;
+                Ok((job_id, Some(result), stream))
+            }
+            None => Ok((job_id, None, None)),
         }
     }
 
@@ -1682,9 +1743,6 @@ fn start_deferred_result_wait(
 }
 
 /// Wait for a Direct-response job's result via the chan pubsub repository.
-/// Shared by the blocking (`_wait_job_for_direct_response`) and deferred
-/// (`wait_for_direct_response_future`) wait paths so the streaming
-/// subscribe + "discard stream on non-Success" logic lives in one place.
 async fn subscribe_direct_response(
     pubsub: &ChanJobResultPubSubRepositoryImpl,
     job_id: &JobId,
@@ -1699,14 +1757,8 @@ async fn subscribe_direct_response(
     let (res, stream) = futures::join!(fut, fut2);
     tracing::debug!("wait_job_for_direct_response: job={:?}", job_id);
     let (r, st) = (res?, stream?);
-    // When the status is not Success the stream was never produced, so discard
-    // it to avoid hanging on data that will never arrive. On Success the stream
-    // carries intermediate results + error data + the End marker.
-    let should_disable_stream = r
-        .data
-        .as_ref()
-        .is_some_and(|d| d.status != ResultStatus::Success as i32);
-    Ok((r, (!should_disable_stream).then_some(st)))
+    let stream = stream_for_successful_result(&r, Some(st));
+    Ok((r, stream))
 }
 
 //TODO
@@ -1722,10 +1774,15 @@ mod tests {
     use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
     use command_utils::util::datetime;
+    use futures::StreamExt;
+    use infra::infra::job::queue::chan::{
+        ChanJobQueueRepository, ChanJobQueueRepositoryImpl, UseChanJobQueueRepository,
+    };
     use infra::infra::job::rows::JobqueueAndCodec;
     use jobworkerp_base::codec::UseProstCodec;
     // use command_utils::util::tracing::tracing_init_test;
     use infra::infra::IdGeneratorWrapper;
+    use infra::infra::job_result::pubsub::JobResultPublisher;
     use infra::infra::job_result::pubsub::JobResultSubscriber;
     use infra::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
@@ -1734,12 +1791,43 @@ mod tests {
     use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
     use proto::jobworkerp::data::{
-        JobResult, JobResultId, Priority, QueueType, ResponseType, ResultOutput, ResultStatus,
-        RunnerId, WorkerData,
+        Job, JobData, JobId, JobResult, JobResultData, JobResultId, Priority, QueueType,
+        ResponseType, ResultOutput, ResultOutputItem, ResultStatus, RunnerId, StreamingType,
+        Trailer, WorkerData, result_output_item,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+    use tokio_util::task::AbortOnDropHandle;
+
+    #[test]
+    fn stream_is_retained_only_for_successful_result() {
+        let cases = [
+            (Some(ResultStatus::Success as i32), true),
+            (Some(ResultStatus::OtherError as i32), false),
+            (Some(i32::MAX), false),
+            (None, false),
+        ];
+
+        for (status, expected_stream) in cases {
+            let result = JobResult {
+                data: status.map(|status| JobResultData {
+                    status,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let stream = Box::pin(futures::stream::empty()) as BoxStream<'static, ResultOutputItem>;
+
+            assert_eq!(
+                stream_for_successful_result(&result, Some(stream)).is_some(),
+                expected_stream,
+                "unexpected stream retention for status {status:?}"
+            );
+        }
+
+        assert!(stream_for_successful_result(&JobResult::default(), None).is_none());
+    }
 
     struct DropFlag(Arc<AtomicBool>);
 
@@ -1894,6 +1982,134 @@ mod tests {
             ),
             subscrber,
         ))
+    }
+
+    #[test]
+    fn rdb_chan_direct_stream_subscribes_before_queue_visibility() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let (app, pubsub) = create_test_app(false).await?;
+            let worker_data = WorkerData {
+                name: "stream-subscription-order".to_string(),
+                description: "test worker".to_string(),
+                runner_id: Some(RunnerId { value: 1 }),
+                runner_settings: vec![],
+                response_type: ResponseType::Direct as i32,
+                queue_type: QueueType::Normal as i32,
+                store_success: false,
+                store_failure: false,
+                ..Default::default()
+            };
+            let worker_id = app.worker_app().create(&worker_data).await?;
+            let job_id = JobId {
+                value: app.id_generator().generate_id()?,
+            };
+            let job = Job {
+                id: Some(job_id),
+                data: Some(JobData {
+                    worker_id: Some(worker_id),
+                    enqueue_time: datetime::now_millis(),
+                    priority: Priority::Medium as i32,
+                    streaming_type: StreamingType::Response as i32,
+                    ..Default::default()
+                }),
+                metadata: HashMap::new(),
+            };
+            let queue = app.chan_job_queue_repository();
+            let queue_count_before = queue.count_queue(None, Priority::Medium).await?;
+            let mut subscription_gate = infra::infra::job_result::pubsub::test_hooks::ResultStreamSubscriptionGate::install(job_id)?;
+
+            let app_for_enqueue = app.clone();
+            let job_for_enqueue = job.clone();
+            let worker_for_enqueue = worker_data.clone();
+            let enqueue_task = AbortOnDropHandle::new(tokio::spawn(async move {
+                app_for_enqueue
+                    .enqueue_job_sync(&job_for_enqueue, &worker_for_enqueue)
+                    .await
+            }));
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                subscription_gate.wait_until_blocked(),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("Timed out waiting for RDB stream subscription"))??;
+            let queue_count_while_gated = queue.count_queue(None, Priority::Medium).await?;
+            subscription_gate.release();
+
+            let queue_channel = ChanJobQueueRepositoryImpl::queue_channel_name(
+                ChanJobQueueRepositoryImpl::DEFAULT_CHANNEL_NAME,
+                Some(Priority::Medium as i32).as_ref(),
+            );
+            let (dequeued, load_only) = tokio::time::timeout(
+                Duration::from_secs(5),
+                queue.receive_job_from_channels(vec![queue_channel]),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("Timed out waiting for the enqueued RDB job"))??;
+            assert!(!load_only);
+            assert_eq!(dequeued.id, Some(job_id));
+
+            let result_data = JobResultData {
+                job_id: Some(job_id),
+                worker_id: Some(worker_id),
+                status: ResultStatus::Success as i32,
+                response_type: ResponseType::Direct as i32,
+                ..Default::default()
+            };
+            let stream_items = vec![
+                ResultOutputItem {
+                    item: Some(result_output_item::Item::Data(b"first".to_vec())),
+                },
+                ResultOutputItem {
+                    item: Some(result_output_item::Item::End(Trailer::default())),
+                },
+            ];
+            assert!(
+                pubsub
+                    .publish_result_stream_data(
+                        job_id,
+                        Box::pin(futures::stream::iter(stream_items)) as BoxStream<'static, _>,
+                    )
+                    .await?
+            );
+            assert!(
+                pubsub
+                    .publish_result(
+                        &JobResultId {
+                            value: app.id_generator().generate_id()?,
+                        },
+                        &result_data,
+                        true,
+                    )
+                    .await?
+            );
+
+            let (returned_job_id, result, stream) = tokio::time::timeout(
+                Duration::from_secs(5),
+                enqueue_task,
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("Timed out waiting for the RDB enqueue task"))???;
+            assert_eq!(returned_job_id, job_id);
+            assert!(result.is_some());
+            let stream = stream.expect("Response streaming should return the prepared stream");
+            let items = tokio::time::timeout(Duration::from_secs(5), stream.collect::<Vec<_>>())
+                .await
+                .map_err(|_| anyhow::anyhow!("Timed out collecting the RDB result stream"))?;
+
+            assert_eq!(
+                queue_count_while_gated, queue_count_before,
+                "A Direct streaming RDB job must not be visible before both result subscriptions are ready"
+            );
+            assert!(matches!(
+                items.first().and_then(|item| item.item.as_ref()),
+                Some(result_output_item::Item::Data(data)) if data == b"first"
+            ));
+            assert!(matches!(
+                items.last().and_then(|item| item.item.as_ref()),
+                Some(result_output_item::Item::End(_))
+            ));
+            Ok(())
+        })
     }
     #[test]
     fn test_create_direct_job_complete() -> Result<()> {

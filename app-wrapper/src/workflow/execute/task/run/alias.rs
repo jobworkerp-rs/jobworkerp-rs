@@ -1,8 +1,9 @@
 use crate::workflow::definition::{transform::UseExpressionTransformer, workflow};
-use crate::workflow::execute::context::TaskContext;
+use crate::workflow::execute::context::{TaskContext, context_variables_to_json};
+use crate::workflow::execute::expression::ExpressionContext;
 use anyhow::{Result, anyhow};
 use serde_json::{Map, Value, json};
-use std::{collections::BTreeMap, str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NormalizedRun {
@@ -43,7 +44,7 @@ pub(crate) enum AliasError {
 pub(crate) fn interpret_run_alias<E: UseExpressionTransformer>(
     run: &workflow::RunTaskConfiguration,
     raw_input: Arc<Value>,
-    expression: &BTreeMap<String, Arc<Value>>,
+    expression: &ExpressionContext,
 ) -> Result<NormalizedRun, AliasError> {
     let alias_value = serde_json::to_value(run).map_err(|e| AliasError::BadArgument {
         message: "Failed to serialize run alias".to_string(),
@@ -122,7 +123,7 @@ fn restore_workflow_data(transformed: &mut Value, workflow_data: Option<Value>) 
 pub(crate) async fn resolve_run_alias<E: UseExpressionTransformer>(
     run: &workflow::RunTaskConfiguration,
     task_context: &TaskContext,
-    expression: &BTreeMap<String, Arc<Value>>,
+    expression: &ExpressionContext,
 ) -> Result<NormalizedRun, Box<workflow::Error>> {
     let factory = workflow::errors::ErrorFactory::new;
     let mut normalized = match interpret_run_alias::<E>(run, task_context.input.clone(), expression)
@@ -140,7 +141,8 @@ pub(crate) async fn resolve_run_alias<E: UseExpressionTransformer>(
     // Only workflow aliases inherit the parent context, so avoid cloning the
     // (potentially large) context map for shell/container aliases.
     let inherit_result = if normalized.position_name == "workflow" {
-        let context_variables = task_context.context_variables.lock().await.clone();
+        let context_variables =
+            context_variables_to_json(&*task_context.context_variables.lock().await);
         attach_inherited_workflow_context(&mut normalized, context_variables)
     } else {
         Ok(())
@@ -687,7 +689,8 @@ mod tests {
         let raw_input = Arc::new(json!({ "cmd": "echo hi" }));
 
         let normalized =
-            interpret_run_alias::<TestTransformer>(&run, raw_input, &BTreeMap::new()).unwrap();
+            interpret_run_alias::<TestTransformer>(&run, raw_input, &ExpressionContext::new())
+                .unwrap();
 
         assert_eq!(normalized.runner_name, "COMMAND");
         // The jq expression resolved against raw_input before normalization.
@@ -717,7 +720,8 @@ do:
         }));
 
         let normalized =
-            interpret_run_alias::<TestTransformer>(&run, raw_input, &BTreeMap::new()).unwrap();
+            interpret_run_alias::<TestTransformer>(&run, raw_input, &ExpressionContext::new())
+                .unwrap();
 
         assert_eq!(normalized.runner_name, "WORKFLOW");
         assert_eq!(normalized.arguments["workflowData"], child_workflow);
@@ -748,7 +752,8 @@ do:
         let raw_input = Arc::new(json!({ "child_workflow": child_workflow }));
 
         let normalized =
-            interpret_run_alias::<TestTransformer>(&run, raw_input, &BTreeMap::new()).unwrap();
+            interpret_run_alias::<TestTransformer>(&run, raw_input, &ExpressionContext::new())
+                .unwrap();
 
         assert_eq!(normalized.runner_name, "WORKFLOW");
         assert_eq!(normalized.arguments["workflowData"], child_workflow);
@@ -778,7 +783,8 @@ do:
         let raw_input = Arc::new(json!({ "child_workflow": child_workflow }));
 
         let normalized =
-            interpret_run_alias::<TestTransformer>(&run, raw_input, &BTreeMap::new()).unwrap();
+            interpret_run_alias::<TestTransformer>(&run, raw_input, &ExpressionContext::new())
+                .unwrap();
 
         assert_eq!(normalized.runner_name, "WORKFLOW");
         assert_eq!(normalized.arguments["workflowData"], child_workflow);
@@ -796,9 +802,12 @@ do:
             shell: ShellConfiguration::Variant0("${ . | invalid_jq_func }".to_string()),
         });
 
-        let err =
-            interpret_run_alias::<TestTransformer>(&run, Arc::new(json!({})), &BTreeMap::new())
-                .unwrap_err();
+        let err = interpret_run_alias::<TestTransformer>(
+            &run,
+            Arc::new(json!({})),
+            &ExpressionContext::new(),
+        )
+        .unwrap_err();
 
         assert!(matches!(err, AliasError::Transform(_)));
     }

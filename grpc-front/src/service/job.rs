@@ -35,11 +35,19 @@ fn wrap_result_output_stream(
             match st.next().await {
                 Some(output_item) => {
                     match &output_item.item {
-                        Some(result_output_item::Item::End(_)) => {
+                        Some(result_output_item::Item::End(trailer)) => {
                             tracing::debug!(
                                 "gRPC {} received End item (sending and ending stream)",
                                 method_name
                             );
+                            // The failure stays in-band for the client; only log it here.
+                            if let Some(error) = proto::stream_error::end_failure(trailer) {
+                                tracing::warn!(
+                                    "gRPC {} result stream ended with failure: {}",
+                                    method_name,
+                                    proto::stream_error::describe(&error)
+                                );
+                            }
                             yield Ok(output_item);
                             break;
                         }
@@ -1622,6 +1630,39 @@ mod tests {
             items[1].as_ref().unwrap().item,
             Some(result_output_item::Item::End(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn failed_end_is_delivered_in_band_unchanged() {
+        use futures::stream;
+        use proto::jobworkerp::data::{ResultOutputItem, StreamErrorCode, result_output_item};
+
+        let failed_end = proto::stream_error::error_end_item(
+            std::collections::HashMap::from([("trace".to_string(), "t".to_string())]),
+            StreamErrorCode::ExecutionFailed,
+            "runner failed",
+            "COMMAND",
+        );
+        let output_stream = Box::pin(stream::iter(vec![
+            ResultOutputItem {
+                item: Some(result_output_item::Item::Data(b"chunk".to_vec())),
+            },
+            failed_end.clone(),
+        ])) as BoxStream<'static, ResultOutputItem>;
+        let items = deferred_result_output_stream(
+            JobId { value: 43 },
+            tokio::spawn(Box::pin(async { Ok(None) })),
+            Some(output_stream),
+            "failed_end_is_delivered_in_band_unchanged",
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[1].as_ref().expect("not a gRPC error status"),
+            &failed_end
+        );
     }
 
     #[tokio::test]

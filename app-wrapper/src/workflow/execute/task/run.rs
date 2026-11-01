@@ -2,6 +2,7 @@ pub(crate) mod alias;
 pub mod python;
 
 use super::TaskExecutorTrait;
+use crate::workflow::execute::expression::ExpressionContext;
 use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
@@ -141,7 +142,7 @@ impl RunTaskExecutor {
     fn transform_string_field(
         input: Arc<serde_json::Value>,
         field: &str,
-        expression: &std::collections::BTreeMap<String, Arc<serde_json::Value>>,
+        expression: &ExpressionContext,
     ) -> Result<String, Box<workflow::Error>> {
         let transformed = Self::execute_transform(input, field, expression)?;
         match transformed {
@@ -443,7 +444,9 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
         };
 
         // Log workflow.input for debugging input value propagation
-        if let Some(workflow_val) = expression.get("workflow")
+        // Guarded so the lazy `$workflow` is not built just for logging.
+        if tracing::enabled!(tracing::Level::DEBUG)
+            && let Ok(Some(workflow_val)) = expression.get("workflow")
             && let Some(input_val) = workflow_val.get("input")
         {
             tracing::debug!(

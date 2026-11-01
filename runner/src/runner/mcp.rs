@@ -460,7 +460,7 @@ impl RunnerSpec for McpServerRunnerImpl {
                         }
                     }
                     Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
+                        metadata = proto::stream_error::success_metadata(trailer)?;
                         break;
                     }
                     Some(result_output_item::Item::FinalCollected(_)) | None => {}
@@ -634,11 +634,10 @@ impl McpServerRunnerImpl {
         let tool_name_owned = tool_name.to_string();
 
         use async_stream::stream;
-        use proto::jobworkerp::data::{Trailer, result_output_item::Item};
+        use proto::jobworkerp::data::result_output_item::Item;
 
-        let trailer = Arc::new(Trailer {
-            metadata: metadata.clone(),
-        });
+        let trailer = Arc::new(proto::stream_error::normal_trailer(metadata.clone()));
+        let origin = self.name();
 
         let stream = stream! {
             // Call MCP tool with cancellation support via proxy
@@ -671,21 +670,15 @@ impl McpServerRunnerImpl {
                         }
                         Err(e) => {
                             tracing::error!("Failed to serialize MCP result: {}", e);
+                            yield mcp_failure_end(&trailer, &e, &origin);
+                            return;
                         }
                     }
                 }
                 Err(e) => {
-                    // Check if it's a cancellation error
-                    if e.downcast_ref::<JobWorkerError>()
-                        .is_some_and(|je| matches!(je, JobWorkerError::CancelledError(_)))
-                    {
-                        tracing::info!("MCP stream request was cancelled");
-                        yield ResultOutputItem {
-                            item: Some(Item::End((*trailer).clone())),
-                        };
-                        return;
-                    }
                     tracing::error!("MCP tool call failed: {}", e);
+                    yield mcp_failure_end(&trailer, &e, &origin);
+                    return;
                 }
             }
 
@@ -769,11 +762,58 @@ impl UseCancelMonitoringHelper for McpServerRunnerImpl {
 
 // MCP Runner integration tests are in integration_tests.rs
 
+/// End for a tool call that failed the way run() reports as Err. A
+/// tool-level `is_error` result is result data and does not come here.
+fn mcp_failure_end(
+    trailer: &proto::jobworkerp::data::Trailer,
+    error: &anyhow::Error,
+    origin: &str,
+) -> ResultOutputItem {
+    let code = if matches!(
+        error.downcast_ref::<JobWorkerError>(),
+        Some(JobWorkerError::CancelledError(_))
+    ) {
+        proto::jobworkerp::data::StreamErrorCode::Cancelled
+    } else {
+        proto::jobworkerp::data::StreamErrorCode::ExecutionFailed
+    };
+    proto::stream_error::error_end_item(
+        trailer.metadata.clone(),
+        code,
+        format!("MCP tool call failed: {error}"),
+        origin,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use mcp_server_result::content::RawContent;
     use mcp_server_result::{Content, TextContent};
+
+    #[test]
+    fn mcp_failure_end_classifies_cancellation() {
+        use proto::jobworkerp::data::{StreamErrorCode, result_output_item::Item};
+
+        let trailer = proto::stream_error::normal_trailer(HashMap::new());
+        for (error, code) in [
+            (
+                anyhow::Error::from(JobWorkerError::CancelledError("stop".into())),
+                StreamErrorCode::Cancelled,
+            ),
+            (
+                anyhow::anyhow!("connection lost"),
+                StreamErrorCode::ExecutionFailed,
+            ),
+        ] {
+            let Some(Item::End(end)) = mcp_failure_end(&trailer, &error, "time").item else {
+                panic!("expected an End item");
+            };
+            let failure = end.error.expect("tool call failure is a stream failure");
+            assert_eq!(failure.code, code as i32);
+            assert_eq!(failure.origin, "time");
+        }
+    }
 
     fn text_content(text: &str) -> Content {
         Content {

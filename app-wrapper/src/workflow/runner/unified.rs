@@ -546,10 +546,16 @@ impl WorkflowUnifiedRunnerImpl {
         let last_output: Arc<std::sync::Mutex<Option<String>>> =
             Arc::new(std::sync::Mutex::new(None));
         let last_output_for_then = last_output.clone();
+        // Faulted/Cancelled contexts are result data; only an execution Err
+        // (which makes run() fail) or a failed cancel synthesis fails the End.
+        let stream_failure: Arc<std::sync::OnceLock<String>> = Arc::default();
+        let stream_failure_for_then = stream_failure.clone();
+        let stream_failure_for_synth = stream_failure.clone();
         let executor_for_tail = executor.clone();
         let output_stream = workflow_stream
             .then(move |result| {
                 let last_output = last_output_for_then.clone();
+                let stream_failure = stream_failure_for_then.clone();
                 async move {
                     let workflow_result = match result {
                         Ok(context) => WorkflowResult {
@@ -569,12 +575,14 @@ impl WorkflowUnifiedRunnerImpl {
                         },
                         Err(e) => {
                             tracing::error!("Error in workflow execution: {:?}", e);
+                            let message = format!("Failed to execute workflow: {e}");
+                            let _ = stream_failure.set(message.clone());
                             WorkflowResult {
                                 id: "error".to_string(),
                                 output: "".to_string(),
                                 position: e.as_ref().instance.clone().unwrap_or_default(),
                                 status: WorkflowStatus::Faulted as i32,
-                                error_message: Some(format!("Failed to execute workflow: {e}")),
+                                error_message: Some(message),
                             }
                         }
                     };
@@ -613,6 +621,9 @@ impl WorkflowUnifiedRunnerImpl {
                                     "Failed to synthesise Cancelled result on drain timeout: {:?}",
                                     e
                                 );
+                                let _ = stream_failure_for_synth.set(format!(
+                                    "Failed to synthesise the cancelled workflow result: {e}"
+                                ));
                                 None
                             }
                         }
@@ -631,10 +642,14 @@ impl WorkflowUnifiedRunnerImpl {
                     ));
                 }
                 drop(root_cx);
-                ResultOutputItem {
-                    item: Some(proto::jobworkerp::data::result_output_item::Item::End(
-                        proto::jobworkerp::data::Trailer { metadata },
-                    )),
+                match stream_failure.get() {
+                    Some(message) => proto::stream_error::error_end_item(
+                        metadata,
+                        proto::jobworkerp::data::StreamErrorCode::ExecutionFailed,
+                        message.as_str(),
+                        RunnerType::Workflow.as_str_name(),
+                    ),
+                    None => proto::stream_error::normal_end_item(metadata),
                 }
             }))
             .boxed();

@@ -80,7 +80,7 @@ impl Default for GrpcRunnerSpecImpl {
 /// Aggregate stream items into collected bodies and trailer metadata.
 async fn collect_stream_items(
     stream: &mut BoxStream<'static, ResultOutputItem>,
-) -> (Vec<Vec<u8>>, HashMap<String, String>, Option<Vec<u8>>) {
+) -> Result<(Vec<Vec<u8>>, HashMap<String, String>, Option<Vec<u8>>)> {
     let mut bodies: Vec<Vec<u8>> = Vec::new();
     let mut metadata = HashMap::new();
 
@@ -90,17 +90,17 @@ async fn collect_stream_items(
                 bodies.push(data);
             }
             Some(result_output_item::Item::End(trailer)) => {
-                metadata = trailer.metadata;
+                metadata = proto::stream_error::success_metadata(trailer)?;
                 break;
             }
             Some(result_output_item::Item::FinalCollected(data)) => {
-                return (bodies, metadata, Some(data));
+                return Ok((bodies, metadata, Some(data)));
             }
             None => {}
         }
     }
 
-    (bodies, metadata, None)
+    Ok((bodies, metadata, None))
 }
 
 /// Build GrpcStreamingResult from collected stream data.
@@ -201,7 +201,7 @@ impl RunnerSpec for GrpcRunnerSpecImpl {
     ) -> CollectStreamFuture {
         Box::pin(async move {
             let mut stream = stream;
-            let (bodies, metadata, final_collected) = collect_stream_items(&mut stream).await;
+            let (bodies, metadata, final_collected) = collect_stream_items(&mut stream).await?;
 
             if let Some(data) = final_collected {
                 return Ok((data, metadata));
@@ -260,7 +260,7 @@ impl RunnerTrait for GrpcRunnerSpecImpl {
                         .await?;
 
                     let (bodies, trailer_metadata, final_collected) =
-                        collect_stream_items(&mut stream).await;
+                        collect_stream_items(&mut stream).await?;
 
                     if let Some(data) = final_collected {
                         return Ok(data);

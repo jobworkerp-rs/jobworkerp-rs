@@ -293,7 +293,7 @@ mod tests {
             TaskContext::new(
                 None,
                 Arc::new(input),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             )
         }
     }

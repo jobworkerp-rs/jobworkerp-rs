@@ -12,7 +12,7 @@ use jobworkerp_base::{
     error::JobWorkerError,
 };
 use proto::DEFAULT_METHOD_NAME;
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamErrorCode, Trailer};
 use proto::jobworkerp::data::{StreamingOutputType, result_output_item::Item};
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -71,6 +71,19 @@ fn configure_stdin(command: &mut Command, has_input: bool) {
     } else {
         Stdio::inherit()
     });
+}
+
+fn command_error_end(
+    trailer: &Trailer,
+    code: StreamErrorCode,
+    message: impl Into<String>,
+) -> ResultOutputItem {
+    proto::stream_error::error_end_item(
+        trailer.metadata.clone(),
+        code,
+        message,
+        RunnerType::Command.as_str_name(),
+    )
 }
 
 fn spawn_stdin_writer(
@@ -315,20 +328,13 @@ impl RunnerSpec for CommandRunnerImpl {
                         }
                     }
                     Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
+                        // Keep stderr in the diagnostic like run() does.
+                        metadata = proto::stream_error::success_metadata(trailer)
+                            .map_err(|error| error.context(format!("stderr: {stderr}")))?;
                         break;
                     }
                     Some(result_output_item::Item::FinalCollected(_)) | None => {}
                 }
-            }
-
-            // Check for exit code error from run_stream
-            if let Some(error_msg) = metadata.remove("__command_exit_error") {
-                return Err(JobWorkerError::RuntimeError(format!(
-                    "{}. stderr: {}",
-                    error_msg, stderr
-                ))
-                .into());
             }
 
             let result = CommandResult {
@@ -773,9 +779,7 @@ impl RunnerTrait for CommandRunnerImpl {
         // let mut metadata = metadata.clone();
         // Self::inject_metadata_from_context(&mut metadata, &cx);
 
-        let trailer = Arc::new(proto::jobworkerp::data::Trailer {
-            metadata: metadata.clone(),
-        });
+        let trailer = Arc::new(proto::stream_error::normal_trailer(metadata.clone()));
 
         // Stream_process_pid already cloned above
 
@@ -790,6 +794,7 @@ impl RunnerTrait for CommandRunnerImpl {
                 Ok(mut child) => {
                     tracing::debug!("spawned child in stream mode: {:?}", child);
                     let mut stdin_write = spawn_stdin_writer(&mut child, stdin_input);
+                    let mut cancelled = false;
                     let process_id = child.id();
 
                     // Store the process ID for cancellation from outside the stream
@@ -858,9 +863,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                 };
                             }
 
-                            yield ResultOutputItem {
-                                item: Some(Item::End((*trailer).clone() )),
-                            };
+                            yield command_error_end(&trailer, StreamErrorCode::ExecutionFailed, "Failed to capture command stdout");
 
                             return;
                         }
@@ -885,9 +888,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                 };
                             }
 
-                            yield ResultOutputItem {
-                                item: Some(Item::End((*trailer).clone() )),
-                            };
+                            yield command_error_end(&trailer, StreamErrorCode::ExecutionFailed, "Failed to capture command stderr");
 
                             return;
                         }
@@ -1067,6 +1068,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                 *pid_guard = None;
                                 drop(pid_guard);
 
+                                cancelled = true;
                                 break;
                             }
                             write_result = wait_for_stdin_writer(&mut stdin_write), if stdin_write.is_some() => {
@@ -1082,11 +1084,11 @@ impl RunnerTrait for CommandRunnerImpl {
                                 let mut pid_guard = stream_pid_ref.write().await;
                                 *pid_guard = None;
                                 drop(pid_guard);
-                                let error_result = stdin_write_error_result(message, started_at);
+                                let error_result = stdin_write_error_result(message.clone(), started_at);
                                 if let Ok(serialized) = ProstMessageCodec::serialize_message(&error_result) {
                                     yield ResultOutputItem { item: Some(Item::Data(serialized)) };
                                 }
-                                yield ResultOutputItem { item: Some(Item::End((*trailer).clone())) };
+                                yield command_error_end(&trailer, StreamErrorCode::ExecutionFailed, message);
                                 return;
                             }
                         }
@@ -1111,26 +1113,22 @@ impl RunnerTrait for CommandRunnerImpl {
                                     Ok(Ok(())) => stdin_write = None,
                                     Ok(Err(e)) => {
                                         Self::graceful_kill_process(&mut child).await;
-                                        let error_result = stdin_write_error_result(
-                                            format!("Failed to write command stdin: {e}"),
-                                            started_at,
-                                        );
+                                        let message = format!("Failed to write command stdin: {e}");
+                                        let error_result = stdin_write_error_result(message.clone(), started_at);
                                         if let Ok(serialized) = ProstMessageCodec::serialize_message(&error_result) {
                                             yield ResultOutputItem { item: Some(Item::Data(serialized)) };
                                         }
-                                        yield ResultOutputItem { item: Some(Item::End((*trailer).clone())) };
+                                        yield command_error_end(&trailer, StreamErrorCode::ExecutionFailed, message);
                                         return;
                                     }
                                     Err(e) => {
                                         Self::graceful_kill_process(&mut child).await;
-                                        let error_result = stdin_write_error_result(
-                                            format!("Command stdin writer task failed: {e}"),
-                                            started_at,
-                                        );
+                                        let message = format!("Command stdin writer task failed: {e}");
+                                        let error_result = stdin_write_error_result(message.clone(), started_at);
                                         if let Ok(serialized) = ProstMessageCodec::serialize_message(&error_result) {
                                             yield ResultOutputItem { item: Some(Item::Data(serialized)) };
                                         }
-                                        yield ResultOutputItem { item: Some(Item::End((*trailer).clone())) };
+                                        yield command_error_end(&trailer, StreamErrorCode::ExecutionFailed, message);
                                         return;
                                     }
                                 }
@@ -1141,6 +1139,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                     handle.abort();
                                 }
                                 Self::graceful_kill_process(&mut child).await;
+                                cancelled = true;
                                 break None;
                             }
                         }
@@ -1235,21 +1234,15 @@ impl RunnerTrait for CommandRunnerImpl {
                     // Stream completed - cancellation monitoring cleanup is handled by process lifecycle
                     tracing::debug!("Stream completed for job, keeping cancellation monitoring active for process lifetime");
 
-                    // Create trailer with error info if needed
-                    let final_trailer = if let Some(error_msg) = exit_code_error {
-                        let mut metadata_with_error = trailer.metadata.clone();
-                        metadata_with_error.insert("__command_exit_error".to_string(), error_msg);
-                        proto::jobworkerp::data::Trailer {
-                            metadata: metadata_with_error,
-                        }
+                    // Mirror run(): cancellation and a non-zero exit treated as
+                    // an error are failures, the rest is result data.
+                    if cancelled {
+                        yield command_error_end(&trailer, StreamErrorCode::Cancelled, "Command stream execution was cancelled");
+                    } else if let Some(error_msg) = exit_code_error {
+                        yield command_error_end(&trailer, StreamErrorCode::ExecutionFailed, error_msg);
                     } else {
-                        (*trailer).clone()
-                    };
-
-                    // Send the end of stream marker
-                    yield ResultOutputItem {
-                        item: Some(Item::End(final_trailer)),
-                    };
+                        yield proto::stream_error::end_item((*trailer).clone());
+                    }
                 },
                 Err(e) => {
                     tracing::error!(
@@ -1289,10 +1282,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     // Stream failed - cancellation monitoring cleanup is handled by process lifecycle
                     tracing::debug!("Stream failed for job, keeping cancellation monitoring active for process lifetime");
 
-                    // Always send end marker even on error
-                    yield ResultOutputItem {
-                        item: Some(Item::End((*trailer).clone())),
-                    };
+                    yield command_error_end(&trailer, StreamErrorCode::ExecutionFailed, format!("Failed to run command '{command_str}': {e}"));
                 }
             }
         };
@@ -1986,7 +1976,7 @@ mod tests {
                 };
             }
             yield ResultOutputItem {
-                item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata })),
+                item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata, ..Default::default() })),
             };
         };
         Box::pin(stream)
@@ -2269,6 +2259,122 @@ mod tests {
         );
     }
 
+    fn command_args(command: &str, args: &[&str], treat_nonzero_as_error: bool) -> Vec<u8> {
+        ProstMessageCodec::serialize_message(&CommandArgs {
+            command: command.to_string(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            with_memory_monitoring: false,
+            treat_nonzero_as_error,
+            success_exit_codes: vec![],
+            working_dir: "".to_string(),
+            stdin: String::new(),
+        })
+        .unwrap()
+    }
+
+    /// Drains a COMMAND stream and returns its Data results and End trailer.
+    async fn drain_command_stream(
+        runner: &mut CommandRunnerImpl,
+        arg: &[u8],
+    ) -> (Vec<CommandResult>, proto::jobworkerp::data::Trailer) {
+        let mut stream = runner.run_stream(arg, HashMap::new(), None).await.unwrap();
+        let mut results = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item.item {
+                Some(Item::Data(data)) => results
+                    .push(ProstMessageCodec::deserialize_message::<CommandResult>(&data).unwrap()),
+                Some(Item::End(trailer)) => return (results, trailer),
+                Some(Item::FinalCollected(_)) | None => {}
+            }
+        }
+        panic!("COMMAND stream ended without an End item");
+    }
+
+    fn assert_command_error(
+        trailer: &proto::jobworkerp::data::Trailer,
+        code: proto::jobworkerp::data::StreamErrorCode,
+    ) {
+        let error = trailer.error.as_ref().expect("End must carry the failure");
+        assert_eq!(error.code, code as i32, "{error:?}");
+        assert_eq!(error.origin, "COMMAND");
+        assert!(!trailer.metadata.contains_key("__command_exit_error"));
+    }
+
+    #[tokio::test]
+    async fn stream_end_reports_success_and_result_data_failures_without_error() {
+        let mut runner = CommandRunnerImpl::new();
+        let (_, trailer) =
+            drain_command_stream(&mut runner, &command_args("/bin/true", &[], true)).await;
+        assert_eq!(trailer.error, None);
+
+        // A non-zero exit is result data unless treat_nonzero_as_error is set.
+        let (results, trailer) = drain_command_stream(
+            &mut runner,
+            &command_args("/bin/bash", &["-c", "exit 3"], false),
+        )
+        .await;
+        assert_eq!(trailer.error, None);
+        assert!(results.iter().any(|r| r.exit_code == Some(3)));
+    }
+
+    #[tokio::test]
+    async fn stream_end_reports_nonzero_exit_treated_as_error() {
+        let mut runner = CommandRunnerImpl::new();
+        let arg = command_args("/bin/bash", &["-c", "exit 3"], true);
+        let (results, trailer) = drain_command_stream(&mut runner, &arg).await;
+        assert!(results.iter().any(|r| r.exit_code == Some(3)));
+        assert_command_error(
+            &trailer,
+            proto::jobworkerp::data::StreamErrorCode::ExecutionFailed,
+        );
+
+        let stream = runner.run_stream(&arg, HashMap::new(), None).await.unwrap();
+        assert!(runner.collect_stream(stream, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn stream_end_reports_spawn_failure_after_the_error_result() {
+        let mut runner = CommandRunnerImpl::new();
+        let (results, trailer) = drain_command_stream(
+            &mut runner,
+            &command_args("/nonexistent/command-for-test", &[], false),
+        )
+        .await;
+        assert!(!results.is_empty(), "the error CommandResult is still sent");
+        assert_command_error(
+            &trailer,
+            proto::jobworkerp::data::StreamErrorCode::ExecutionFailed,
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_end_reports_cancellation() {
+        use crate::runner::cancellation_helper::CancelMonitoringHelper;
+        use crate::runner::test_common::mock::MockCancellationManager;
+
+        let cancellation_token = CancellationToken::new();
+        let cancel_helper = CancelMonitoringHelper::new(Box::new(
+            MockCancellationManager::new_with_token(cancellation_token.clone()),
+        ));
+        let mut runner = CommandRunnerImpl::new_with_cancel_monitoring(cancel_helper);
+        let arg = command_args("/bin/bash", &["-c", "echo started; sleep 30"], false);
+        let canceller = tokio::spawn(async move {
+            sleep(Duration::from_millis(300)).await;
+            cancellation_token.cancel();
+        });
+        let (_, trailer) = tokio::time::timeout(
+            Duration::from_secs(10),
+            drain_command_stream(&mut runner, &arg),
+        )
+        .await
+        .expect("cancellation must end the stream");
+        canceller.await.unwrap();
+        assert_command_error(
+            &trailer,
+            proto::jobworkerp::data::StreamErrorCode::Cancelled,
+        );
+    }
+
     #[tokio::test]
     async fn test_collect_stream_with_exit_code_error() {
         let runner = CommandRunnerImpl::new();
@@ -2291,26 +2397,32 @@ mod tests {
             },
         ];
 
-        // Include error marker in metadata
-        let mut metadata = HashMap::new();
-        metadata.insert(
-            "__command_exit_error".to_string(),
-            "Command 'test' exited with code Some(1)".to_string(),
-        );
+        let items = chunks
+            .into_iter()
+            .map(|chunk| ResultOutputItem {
+                item: Some(Item::Data(
+                    ProstMessageCodec::serialize_message(&chunk).unwrap(),
+                )),
+            })
+            .chain(std::iter::once(command_error_end(
+                &Trailer::default(),
+                StreamErrorCode::ExecutionFailed,
+                "Command 'test' exited with code Some(1)",
+            )));
+        let result = runner
+            .collect_stream(futures::stream::iter(items).boxed(), None)
+            .await;
 
-        let stream = create_mock_command_stream(chunks, metadata);
-        let result = runner.collect_stream(stream, None).await;
-
-        // Should return error
+        let err = result.expect_err("a failed End must fail the collect");
         assert!(
-            result.is_err(),
-            "collect_stream should return error when __command_exit_error is in metadata"
+            err.downcast_ref::<proto::stream_error::StreamFailedError>()
+                .is_some()
         );
-        let err = result.unwrap_err();
-        let err_str = err.to_string();
+        let err_str = format!("{err:#}");
+        assert!(err_str.contains("exited with code"), "{err_str}");
         assert!(
-            err_str.contains("exit"),
-            "Error message should contain exit info"
+            err_str.contains("error output"),
+            "stderr is kept: {err_str}"
         );
     }
 

@@ -384,3 +384,6 @@ mcp-settings.toml
 
 # Local SQLite database produced by running ag-ui-front from its own directory
 /ag-ui-front/test
+
+/clef-evaluator-plugin/
+/proposition-evaluator-plugin/

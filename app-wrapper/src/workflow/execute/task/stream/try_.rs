@@ -675,7 +675,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             let mut stream = executor
@@ -759,7 +759,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             let mut stream = executor
@@ -824,7 +824,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
             // Add initial position
             task_context.add_position_name("ROOT".to_string()).await;
@@ -938,7 +938,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             let mut stream = executor
@@ -1084,7 +1084,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             let mut stream = executor
@@ -1127,7 +1127,7 @@ mod tests {
                 catch_do_value.is_some(),
                 "catch.do should have set catch_do_executed"
             );
-            assert_eq!(catch_do_value.unwrap(), &serde_json::json!(true));
+            assert_eq!(catch_do_value.unwrap().as_ref(), &serde_json::json!(true));
         });
     }
 }

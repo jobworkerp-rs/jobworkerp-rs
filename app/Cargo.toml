@@ -39,6 +39,7 @@ strum = { workspace = true }
 strum_macros = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 
@@ -51,4 +52,4 @@ dotenvy = { workspace = true }
 sqlx = { workspace = true }
 tracing-subscriber = { workspace = true }
 app = { path = ".", features = ["test-utils"] }
-infra = { path = "../infra", features = ["test-utils"] }
+infra = { path = "../infra", features = ["test-utils", "stream-subscription-test-hook"] }

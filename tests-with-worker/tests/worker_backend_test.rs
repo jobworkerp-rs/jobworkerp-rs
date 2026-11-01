@@ -243,19 +243,16 @@ async fn sub_test_workflow_progress_realtime(
     // Use the pre-started result_handle to get the stream (avoids race condition
     // where listen_result_by_job_id called after enqueue misses early events)
     let result_handle = enqueued.result_handle.expect("Should have result_handle");
-    let (job_result, stream_opt) = timeout(Duration::from_secs(30), result_handle)
-        .await?
-        .map_err(|e| anyhow::anyhow!("Result listener task failed: {}", e))??;
+    let mut prepared = timeout(Duration::from_secs(30), result_handle).await??;
 
     let mut positions: Vec<String> = Vec::new();
 
-    if let Some(mut stream) = stream_opt {
-        use futures::StreamExt;
+    if prepared.stream.is_some() {
         use prost::Message;
         use proto::jobworkerp::data::result_output_item;
 
-        while let Ok(Some(item)) =
-            tokio::time::timeout(Duration::from_secs(30), stream.next()).await
+        while let Some(item) =
+            tokio::time::timeout(Duration::from_secs(30), prepared.next_stream_item()).await??
         {
             match item.item {
                 Some(result_output_item::Item::Data(data)) => {
@@ -304,10 +301,13 @@ async fn sub_test_workflow_progress_realtime(
     );
 
     // Verify final result is available
-    assert!(job_result.data.is_some(), "Job result should have data");
+    assert!(
+        prepared.result.data.is_some(),
+        "Job result should have data"
+    );
     println!(
         "Final job result received: job_id={:?}",
-        job_result.data.as_ref().and_then(|d| d.job_id)
+        prepared.result.data.as_ref().and_then(|d| d.job_id)
     );
 
     println!("sub_test_workflow_progress_realtime passed");
@@ -366,6 +366,33 @@ async fn sub_test_short_tool_execution_skips_progress(
             println!("Short execution: listen timed out (expected for fast jobs)");
         }
     }
+
+    // Observe the persisted result before consuming the pre-prepared listener.
+    // This exercises the case where a fast worker finishes before its caller
+    // starts reading the result stream.
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let results = app_module
+                .job_result_app
+                .find_job_result_list_by_job_id(&enqueued.job_id)
+                .await?;
+            if let Some(result) = results
+                .iter()
+                .find(|result| app_module.job_result_app.is_finished(result))
+            {
+                let persisted_output = result.data.as_ref().and_then(|data| data.output.as_ref());
+                assert!(
+                    persisted_output
+                        .map(|output| output.items.is_empty())
+                        .unwrap_or(true),
+                    "streaming output may be absent from persisted result data; the listener must supply it"
+                );
+                return Ok::<(), anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await??;
 
     // The key assertion: final result is always available regardless of progress
     let result_handle = enqueued.result_handle.expect("Should have result_handle");

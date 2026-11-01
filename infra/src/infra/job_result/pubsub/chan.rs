@@ -267,6 +267,9 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
             .receive_active_stream_from_chan(cn.clone().to_string(), None, None)
             .await
             .inspect_err(|e| tracing::error!("receive_from_chan_err:{e:?}"))?;
+        #[cfg(feature = "stream-subscription-test-hook")]
+        super::test_hooks::hold_stream_subscription(job_id).await;
+
         tracing::debug!(
             "subscribe_result_stream_receiving: job_id={}",
             &job_id.value
@@ -301,6 +304,7 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
             // Unwrap Option
             .filter_map(futures::future::ready)
             .boxed();
+
         Ok(Box::pin(ManagedStream {
             inner: transformed_stream,
             _lease: lease,
@@ -725,6 +729,7 @@ mod test {
                 item: Some(result_output_item::Item::End(
                     proto::jobworkerp::data::Trailer {
                         metadata: HashMap::new(),
+                        ..Default::default()
                     },
                 )),
             },
@@ -801,6 +806,7 @@ mod test {
                     item: Some(result_output_item::Item::End(
                         proto::jobworkerp::data::Trailer {
                             metadata: HashMap::new(),
+                            ..Default::default()
                         },
                     )),
                 },
@@ -979,6 +985,7 @@ mod test {
                 item: Some(result_output_item::Item::End(
                     proto::jobworkerp::data::Trailer {
                         metadata: HashMap::new(),
+                        ..Default::default()
                     },
                 )),
             },

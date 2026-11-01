@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS `runner` (
     `name` TEXT NOT NULL UNIQUE,
     `description` TEXT NOT NULL,
     `definition` TEXT NOT NULL, -- runner definition (mcp definition or plugin file name)
-    `type` INT(10) NOT NULL, -- runner type. enum: command, request, docker, slack, python, grpc, plugin
+    `type` INT(10) NOT NULL, -- runner type. enum: command, request, docker, python, grpc, plugin
     `created_at` BIGINT NOT NULL DEFAULT 0
 );
 
@@ -104,10 +104,6 @@ INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`definition`, `type`) 
   4, 'DOCKER',
   'Runs Docker containers with specified images, environment variables, and command arguments.',
   'builtin4', 4
-), (
-  5, 'SLACK_POST_MESSAGE',
-  'Posts messages to Slack channels using specified workspace tokens and customizable message content.',
-  'builtin5', 5
 ), (
   6, 'PYTHON_COMMAND',
   'Executes Python scripts or commands with specified arguments and environment.',

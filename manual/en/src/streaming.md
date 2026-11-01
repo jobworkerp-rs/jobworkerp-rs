@@ -77,8 +77,75 @@ message ResultOutputItem {
 ```
 
 - **Data**: Individual chunks of streaming output
-- **End**: Marks the end of the stream with optional metadata
+- **End**: Marks the end of the stream. Carries metadata and, when the stream failed, the error (`Trailer.error`)
 - **FinalCollected**: Contains the result of `collect_stream()` aggregation (only in Internal mode)
+
+## Stream Error Contract
+
+Whether a stream ended in failure is decided by `Trailer.error` on its End. Every runner, and the End items sent by the worker and app layers, follow the same contract.
+
+```protobuf
+message Trailer {
+  map<string, string> metadata = 1;
+  StreamError error = 2;  // set only when the stream failed
+}
+
+message StreamError {
+  StreamErrorCode code = 1;
+  string message = 2;  // at most 4096 UTF-8 bytes
+  string origin = 3;   // component that detected the failure
+}
+```
+
+- **An End without `error` means successful completion.** An End with `error` is a failure whatever its `code` is, including values unknown to the reader.
+- **The criterion matches non-streaming execution.** `error` is set only when non-streaming execution of the same request would return an error. Failures that are result data are not covered and still arrive as Data: HTTP 4xx/5xx, a non-OK status from a downstream gRPC service, a non-zero COMMAND exit with `treat_nonzero_as_error=false`, an MCP tool `is_error`, and Faulted / Cancelled WORKFLOW results.
+- On failure, runners still send the Data they sent before (for example a `CommandResult` carrying the error, or a Faulted `WorkflowResult`).
+- grpc-front delivers the End in-band without changes. It is never converted into a gRPC error status.
+
+### code
+
+| `StreamErrorCode` | Meaning |
+|---|---|
+| `STREAM_ERROR_CODE_EXECUTION_FAILED` | Runner execution failed (command spawn failure, non-zero exit treated as error, plugin failure, workflow execution error, ...) |
+| `STREAM_ERROR_CODE_TIMEOUT` | A time limit was exceeded (e.g. stream idle timeout) |
+| `STREAM_ERROR_CODE_CANCELLED` | Cancelled by jobworkerp (job cancel request) |
+| `STREAM_ERROR_CODE_TRANSPORT_FAILED` | Communication with a downstream service failed mid-request |
+| `STREAM_ERROR_CODE_INVALID_ARGUMENT` | Invalid input detected when execution started |
+| `STREAM_ERROR_CODE_PROVIDER_STREAM_FAILED` | An LLM provider stream was interrupted |
+| `STREAM_ERROR_CODE_UNSPECIFIED` | Unclassified failure (still a failure) |
+
+### origin
+
+| Producer | origin |
+|---|---|
+| Runner (including runner-specific handling such as idle timeout) | Runner name (`COMMAND`, `HTTP_REQUEST`, `GRPC`, `LLM`, `WORKFLOW`, `SANDBOX`, plugin name, MCP server name) |
+| Worker / app layer (e.g. the End of a job that failed before its stream started) | `WORKER` |
+
+### Mapping to ResultStatus
+
+Consumers that report a `ResultStatus` for a stream failure (FunctionService results, client results) use the mapping below. Once a stream has started, data has reached the consumer and the job cannot be retried, so retryable failures map to `MAX_RETRY`, the same as exhausted retries.
+
+| `StreamErrorCode` | `ResultStatus` |
+|---|---|
+| `CANCELLED` | `CANCELLED` |
+| `INVALID_ARGUMENT` | `OTHER_ERROR` |
+| Anything else (including `UNSPECIFIED` and unknown values) | `MAX_RETRY` |
+
+### Compatibility metadata (deprecated)
+
+During the migration period the following metadata is written in addition to `error`. Both keys are deprecated and will be removed. New clients should use `Trailer.error`.
+
+- `metadata["stream_error"]`: JSON v1 (`{"version":1,"code":"EXECUTION_FAILED","message":...,"origin":...}`, at most 4096 bytes). `code` is the enum name without the `STREAM_ERROR_CODE_` prefix. Written on every failed End.
+- `metadata["jobworkerp.plugin.run_stream_error"]`: written for plugin failures and idle timeouts (except SANDBOX). The value is the error message.
+
+Readers decide in this order:
+
+1. `error` is set: failure.
+2. `metadata["stream_error"]` is present: failure, also when it is malformed (`UNSPECIFIED`).
+3. `metadata["jobworkerp.plugin.run_stream_error"]` is present: failure (`EXECUTION_FAILED`, origin `PLUGIN`).
+4. None of them: successful completion.
+
+Both keys are reserved. If they reach the End metadata from elsewhere (for example the job's request metadata), a successful End removes them and a failed End overwrites them with the real values. A plugin therefore cannot fail a stream by returning these keys in its success metadata; returning `Err` from `run_stream` is the only way.
 
 ## Usage Examples
 
@@ -290,7 +357,8 @@ The host also drops the sink after the final chunk in the minor-1 path, so plugi
 | Runner does not support streaming output | `INVALID_ARGUMENT` | Stream start |
 | `job_request` sent after first message | `INVALID_ARGUMENT` | During feed |
 | Pending feed buffer exceeds `PENDING_BUFFER_MAX` (1024) before runner registers | Oldest non-final chunk dropped, warning logged | During feed |
-| No chunk emitted for `JobData.timeout` ms while the runner stream is being drained | Runner cancellation token fired, stream terminated with End trailer | During execution |
+| No chunk emitted for `JobData.timeout` ms while the runner stream is being drained | Runner cancellation token fired, stream terminated with an End carrying `error` (`TIMEOUT`) | During execution |
+| Runner failure after the stream started | gRPC status stays OK; the stream ends with an End carrying `error` (see [Stream Error Contract](#stream-error-contract)) | During execution |
 | Runner execution error | Status code per `ResultStatus` | During execution |
 | Client disconnect (no half-close) | Cancel notification to runner | Any time |
 
@@ -314,6 +382,7 @@ For `Internal` mode, the enqueue returns immediately to allow the caller to subs
 Each runner implementing streaming should provide a `collect_stream()` method in its `RunnerSpec` trait implementation. This method:
 1. Receives the stream of `ResultOutputItem`
 2. Aggregates/merges the data chunks appropriately for the runner type
-3. Returns the final collected bytes
+3. Returns an error when the End reports a failure (see [Stream Error Contract](#stream-error-contract))
+4. Returns the final collected bytes
 
 For example, an LLM runner might concatenate all token chunks, while a command runner might merge stdout/stderr appropriately.

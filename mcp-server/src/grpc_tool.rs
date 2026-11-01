@@ -4,6 +4,7 @@ use crate::description::{self, ParsedDescription};
 use crate::proto_schema::{message_to_protojson_schema_with_depth, oneof_exclusion_constraints};
 use anyhow::Result;
 use app::app::function::{EnqueuedFunction, FunctionApp, FunctionAppImpl};
+use app::app::job_result::ensure_successful_job_result;
 use app::app::worker::UseWorkerApp;
 use base64::Engine;
 use command_utils::protobuf::ProtobufDescriptor;
@@ -382,24 +383,19 @@ async fn collect_raw_result(enqueued: EnqueuedFunction) -> Result<CollectedRawRe
     let handle = enqueued
         .result_handle
         .ok_or_else(|| anyhow::anyhow!("streaming job has no result listener"))?;
-    let (result, stream) = handle
-        .await
-        .map_err(|error| anyhow::anyhow!("result listener failed: {error}"))??;
-    ensure_successful_job_result(&result)?;
-    if let Some(mut stream) = stream {
-        use futures::StreamExt;
-        while let Some(item) = stream.next().await {
-            if let Some(result_output_item::Item::FinalCollected(bytes)) = item.item {
-                return Ok(CollectedRawResult {
-                    bytes,
-                    execution_info: execution_info(&result, job_id),
-                });
-            }
+    let mut prepared = handle.await?;
+    ensure_successful_job_result(&prepared.result)?;
+    while let Some(item) = prepared.next_stream_item().await? {
+        if let Some(result_output_item::Item::FinalCollected(bytes)) = item.item {
+            return Ok(CollectedRawResult {
+                bytes,
+                execution_info: execution_info(&prepared.result, job_id),
+            });
         }
     }
     Ok(CollectedRawResult {
-        bytes: output_bytes(&result)?,
-        execution_info: execution_info(&result, job_id),
+        bytes: output_bytes(&prepared.result)?,
+        execution_info: execution_info(&prepared.result, job_id),
     })
 }
 
@@ -448,26 +444,6 @@ fn output_bytes(result: &proto::jobworkerp::data::JobResult) -> Result<Vec<u8>> 
         .filter(|output| !output.items.is_empty())
         .map(|output| output.items.clone())
         .ok_or_else(|| anyhow::anyhow!("job completed without runner output"))
-}
-
-fn ensure_successful_job_result(
-    result: &proto::jobworkerp::data::JobResult,
-) -> Result<&proto::jobworkerp::data::JobResultData> {
-    let data = result
-        .data
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("job completed without result data"))?;
-    if data.status() != proto::jobworkerp::data::ResultStatus::Success {
-        let diagnostic = data
-            .output
-            .as_ref()
-            .filter(|output| !output.items.is_empty())
-            .map(|output| String::from_utf8_lossy(&output.items).into_owned())
-            .filter(|message| !message.trim().is_empty())
-            .unwrap_or_else(|| format!("job completed with status {:?}", data.status()));
-        return Err(anyhow::anyhow!("job execution failed: {diagnostic}"));
-    }
-    Ok(data)
 }
 
 fn decode_result(

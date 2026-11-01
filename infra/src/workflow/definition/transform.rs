@@ -1,18 +1,21 @@
-use super::workflow::{self, ExportAs, InputFrom, OutputAs};
+pub use super::liquid_tags::liquid_tag_bodies;
+use super::{
+    expression_cache::{JQ_FILTERS, LIQUID_TEMPLATES},
+    expression_context::ExpressionContext,
+    liquid_globals::LazyLiquidGlobals,
+    workflow::{self, ExportAs, InputFrom, OutputAs},
+};
 use anyhow::Result;
 use command_utils::util::liquid::{JsonDecode, JsonEncode};
 use liquid::Parser;
 use once_cell::sync::OnceCell;
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 static LIQUID_PARSER: OnceCell<Parser> = OnceCell::new();
 const FILTER_START: &str = "${";
 const FILTER_END: &str = "}";
 const TEMPLATE_START: &str = "$${";
 const TEMPLATE_END: &str = "}";
-/// Expression-context key holding authentication secrets. Reserved so that raw
-/// workflow input cannot shadow it during Liquid global construction.
-const RESERVED_SECRETS_KEY: &str = "secrets";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransformExpression<'a> {
@@ -53,34 +56,11 @@ pub fn liquid_template_body(template: &str) -> &str {
     template.strip_suffix(TEMPLATE_END).unwrap_or(template)
 }
 
-pub fn liquid_template_tag_bodies(template: &str) -> Vec<&str> {
-    let mut spans = Vec::new();
-    let mut rest = template;
-    while let Some(start_rel) = rest.find("{") {
-        let after_start = &rest[start_rel..];
-        let (inner_start_len, close) = if after_start.starts_with("{{") {
-            (2, "}}")
-        } else if after_start.starts_with("{%") {
-            (2, "%}")
-        } else {
-            rest = &after_start[1..];
-            continue;
-        };
-        let inner = &after_start[inner_start_len..];
-        let Some(end_rel) = inner.find(close) else {
-            break;
-        };
-        spans.push(&inner[..end_rel]);
-        rest = &inner[end_rel + close.len()..];
-    }
-    spans
-}
-
 pub trait UseJqAndTemplateTransformer {
     fn execute_transform(
         input: Arc<serde_json::Value>,
         filter: &str,
-        context: &BTreeMap<String, Arc<serde_json::Value>>,
+        context: &ExpressionContext,
     ) -> Result<serde_json::Value, Box<workflow::Error>> {
         if Self::is_transform_template(filter) {
             Self::execute_liquid_template(input, filter, context).map(|r| {
@@ -108,7 +88,7 @@ pub trait UseJqAndTemplateTransformer {
     fn execute_transform_ref(
         raw_input: Arc<serde_json::Value>,
         filter: &str,
-        context: &BTreeMap<String, Arc<serde_json::Value>>,
+        context: &ExpressionContext,
     ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         Self::execute_transform(raw_input, filter, context).map(Arc::new)
     }
@@ -128,9 +108,6 @@ pub trait UseJqAndTemplateTransformer {
     fn liquid_template_body(template: &str) -> &str {
         liquid_template_body(template)
     }
-    fn liquid_template_tag_bodies(template: &str) -> Vec<&str> {
-        liquid_template_tag_bodies(template)
-    }
     fn eval_as_bool(value: &serde_json::Value) -> bool {
         match value {
             serde_json::Value::Bool(b) => *b,
@@ -144,7 +121,7 @@ pub trait UseJqAndTemplateTransformer {
     fn execute_transform_as_bool(
         input: Arc<serde_json::Value>,
         if_cond_filter: &str,
-        expression: &BTreeMap<String, Arc<serde_json::Value>>,
+        expression: &ExpressionContext,
     ) -> Result<bool, Box<workflow::Error>> {
         Self::execute_transform(input.clone(), if_cond_filter, expression)
             .map(|v| Self::eval_as_bool(&v))
@@ -156,27 +133,36 @@ pub trait UseJqAndTemplateTransformer {
     fn execute_jq_filter_ref(
         raw_input: Arc<serde_json::Value>,
         filter: &str,
-        context: &BTreeMap<String, Arc<serde_json::Value>>,
+        context: &ExpressionContext,
     ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         Self::execute_jq_filter(raw_input, filter, context).map(Arc::new)
     }
     fn execute_jq_filter(
         raw_input: Arc<serde_json::Value>,
         filter: &str,
-        context: &BTreeMap<String, Arc<serde_json::Value>>,
+        context: &ExpressionContext,
     ) -> Result<serde_json::Value, Box<workflow::Error>> {
         if Self::is_transform_filter(filter) {
             let filter = Self::jq_filter_body(filter);
-            command_utils::util::jq::execute_jq((*raw_input).clone(), filter, context).map_err(
-                |e| {
+            let variables =
+                context.resolve_subset(command_utils::util::jq::referenced_variables(filter))?;
+            JQ_FILTERS
+                .execute(&raw_input, filter, &variables)
+                .map_err(|e| {
+                    // Only referenced variables reach the engine, so list every
+                    // name here to make typos in variable names diagnosable.
+                    tracing::debug!(
+                        "jq error for '{}'. Variables in context: {:?}",
+                        filter,
+                        context.names()
+                    );
                     workflow::errors::ErrorFactory::create(
                         workflow::errors::ErrorCode::BadArgument,
                         Some("failed to parse jq filter".to_string()),
                         None,
                         Some(&e),
                     )
-                },
-            )
+                })
         } else {
             // treat as value(no transform)
             Ok(serde_json::Value::String(filter.to_owned()))
@@ -185,16 +171,15 @@ pub trait UseJqAndTemplateTransformer {
     fn execute_liquid_template(
         input: Arc<serde_json::Value>,
         template: &str,
-        context: &BTreeMap<String, Arc<serde_json::Value>>,
+        context: &ExpressionContext,
     ) -> Result<String, Box<workflow::Error>> {
         if Self::is_transform_template(template) {
             // for error transformation
             fn transform_inner(
                 raw_in: &serde_json::Value,
-                con: &BTreeMap<String, Arc<serde_json::Value>>,
+                context: &ExpressionContext,
                 templ: &str,
             ) -> Result<String, liquid::Error> {
-                let templ = liquid_template_body(templ);
                 let liquid_parser = LIQUID_PARSER.get_or_init(|| {
                     liquid::ParserBuilder::with_stdlib()
                         .filter(JsonEncode)
@@ -202,35 +187,15 @@ pub trait UseJqAndTemplateTransformer {
                         .build()
                         .unwrap()
                 });
-                let templ = liquid_parser.parse(templ)?;
-
-                let mut globals = liquid::to_object(con)?;
-                // overwrite with raw_input if key is duplicated
-                match raw_in {
-                    serde_json::Value::Object(map) => {
-                        globals.extend(liquid::to_object(&map)?);
-                    }
-                    _ => {
-                        globals.extend(liquid::to_object(
-                            &serde_json::json!({"raw_input":(*raw_in).clone()}),
-                        )?);
-                    }
-                }
-                // `secrets` is reserved for authentication material injected by the
-                // call-task context; raw input must never shadow it (otherwise a
-                // workflow input containing {"secrets": {...}} could override the
-                // env-derived secret and forge Authorization headers). Re-apply the
-                // context value after the raw-input merge so it always wins.
-                if let Some(secrets) = con.get(RESERVED_SECRETS_KEY) {
-                    globals.insert(
-                        RESERVED_SECRETS_KEY.into(),
-                        liquid::model::to_value(&**secrets)?,
-                    );
-                }
-                let output = templ.render(&globals)?;
-                Ok(output)
+                let templ = LIQUID_TEMPLATES
+                    .try_get_with(templ.to_owned(), || {
+                        liquid_parser.parse(templ).map(Arc::new)
+                    })
+                    .map_err(|e| (*e).clone())?;
+                templ.render(&LazyLiquidGlobals::new(raw_in, context))
             }
-            transform_inner(&input, context, template).map_err(|e| {
+            let body = liquid_template_body(template);
+            transform_inner(&input, context, body).map_err(|e| {
                 workflow::errors::ErrorFactory::create_from_liquid(
                     &e,
                     Some("failed to parse liquid template"),
@@ -293,27 +258,13 @@ mod test_use_jq_and_template_transformer {
     }
 
     #[test]
-    fn test_liquid_template_tag_bodies_extracts_only_liquid_tags() {
-        assert_eq!(
-            DefaultTransformer::liquid_template_tag_bodies(
-                "literal secrets.PUBLIC_PATH {{ secrets.API_TOKEN }} {% assign x = y %}"
-            ),
-            vec![" secrets.API_TOKEN ", " assign x = y "]
-        );
-        assert!(
-            DefaultTransformer::liquid_template_tag_bodies("literal secrets.PUBLIC_PATH")
-                .is_empty()
-        );
-    }
-
-    #[test]
     fn test_execute_jq_filter() {
         let input = Arc::new(json!({
             "key": 1,
             "key2": 2,
         }));
         let filter = "${.key}";
-        let context = BTreeMap::new();
+        let context = ExpressionContext::new();
         let result =
             DefaultTransformer::execute_jq_filter(input.clone(), filter, &context).unwrap();
         assert_eq!(result, json!(1));
@@ -351,7 +302,7 @@ mod test_use_jq_and_template_transformer {
             "key2": 2,
         }));
         let template = "$${{{ key }}}";
-        let context = BTreeMap::new();
+        let context = ExpressionContext::new();
         let result =
             DefaultTransformer::execute_liquid_template(input.clone(), template, &context).unwrap();
         assert_eq!(result, "1");
@@ -372,10 +323,189 @@ mod test_use_jq_and_template_transformer {
         assert_eq!(result, "2");
     }
 
+    fn context_with_poisoned_lazy(name: &str) -> ExpressionContext {
+        // A lazy variable that fails if built: evaluation must succeed as long
+        // as the expression never references it.
+        let mut context = ExpressionContext::new();
+        context.insert_lazy(name.to_string(), || serde_json::from_str("{"));
+        context
+    }
+
+    #[test]
+    fn jq_does_not_build_unreferenced_lazy_variables() {
+        let mut context = context_with_poisoned_lazy("context");
+        context.insert("item", Arc::new(json!(3)));
+        let result =
+            DefaultTransformer::execute_transform(Arc::new(json!({})), "${$item * 2}", &context)
+                .unwrap();
+        assert_eq!(result, json!(6));
+        assert!(
+            DefaultTransformer::execute_transform(Arc::new(json!({})), "${$context}", &context)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn jq_builds_referenced_lazy_variables() {
+        let mut context = ExpressionContext::new();
+        context.insert_lazy("workflow", || Ok(json!({"input": {"k": "v"}})));
+        let result = DefaultTransformer::execute_transform(
+            Arc::new(json!({})),
+            "${$workflow.input.k}",
+            &context,
+        )
+        .unwrap();
+        assert_eq!(result, json!("v"));
+    }
+
+    #[test]
+    fn liquid_does_not_build_unreferenced_lazy_variables() {
+        let mut context = context_with_poisoned_lazy("task");
+        context.insert("name", Arc::new(json!("Taro")));
+        let result = DefaultTransformer::execute_liquid_template(
+            Arc::new(json!({})),
+            "$${Hello {{ name }}}",
+            &context,
+        )
+        .unwrap();
+        assert_eq!(result, "Hello Taro");
+    }
+
+    #[test]
+    fn liquid_resolves_variables_used_in_tags() {
+        let mut context = context_with_poisoned_lazy("context");
+        context.insert("items", Arc::new(json!([1, 2])));
+        context.insert("flag", Arc::new(json!(true)));
+        context.insert("src", Arc::new(json!("x")));
+        let template = "$${{% for i in items %}{{ i }}{% endfor %}{% if flag %}T{% endif %}{% assign y = src %}{{ y }}}";
+        let result =
+            DefaultTransformer::execute_liquid_template(Arc::new(json!({})), template, &context)
+                .unwrap();
+        assert_eq!(result, "12Tx");
+    }
+
+    #[test]
+    fn liquid_quoted_index_after_identifier_is_resolved() {
+        let mut context = context_with_poisoned_lazy("task");
+        context.insert_lazy("obj", || Ok(json!({"odd key": "found"})));
+        let result = DefaultTransformer::execute_liquid_template(
+            Arc::new(json!({})),
+            "$${{{ obj[\"odd key\"] }}}",
+            &context,
+        )
+        .unwrap();
+        assert_eq!(result, "found");
+    }
+
+    #[test]
+    fn liquid_template_cache_rebinds_variables() {
+        for name in ["A", "B"] {
+            let mut context = ExpressionContext::new();
+            context.insert("who", Arc::new(json!(name)));
+            let result = DefaultTransformer::execute_liquid_template(
+                Arc::new(json!({})),
+                "$${hi {{ who }}}",
+                &context,
+            )
+            .unwrap();
+            assert_eq!(result, format!("hi {name}"));
+        }
+    }
+
+    #[test]
+    fn liquid_resolves_variables_after_quoted_closing_delimiter() {
+        let mut context = context_with_poisoned_lazy("task");
+        context.insert("name", Arc::new(json!("Taro")));
+        let result = DefaultTransformer::execute_liquid_template(
+            Arc::new(json!({})),
+            r#"$${{{ "}}" | append: name }}}"#,
+            &context,
+        )
+        .unwrap();
+        assert_eq!(result, "}}Taro");
+    }
+
+    #[test]
+    fn liquid_resolves_variables_after_unbalanced_quote_in_raw_or_comment() {
+        let mut context = context_with_poisoned_lazy("task");
+        context.insert("name", Arc::new(json!("Taro")));
+        for (template, expected) in [
+            (
+                r#"$${{% raw %}{{ " }}{% endraw %}{{ name }}}"#,
+                r#"{{ " }}Taro"#,
+            ),
+            ("$${{% comment %}{{ ' }}{% endcomment %}{{ name }}}", "Taro"),
+            // No closing `}}` anywhere after the unbalanced quote.
+            (
+                r#"$${{% raw %}{{ "{% endraw %}{% if name %}YES{% endif %}}"#,
+                r#"{{ "YES"#,
+            ),
+            (
+                r#"$${{% comment %}{{ "{% endcomment %}{% if name %}YES{% endif %}}"#,
+                "YES",
+            ),
+            // The quote inside raw pairs with a quote after the real tag.
+            (
+                r#"$${{% raw %}{{ "{% endraw %}{{ name }}" junk }}}"#,
+                r#"{{ "Taro" junk }}"#,
+            ),
+        ] {
+            let result = DefaultTransformer::execute_liquid_template(
+                Arc::new(json!({})),
+                template,
+                &context,
+            )
+            .unwrap_or_else(|e| panic!("{template}: {e:?}"));
+            assert_eq!(result, expected, "{template}");
+        }
+    }
+
+    #[test]
+    fn liquid_resolves_hyphen_leading_names() {
+        let mut context = context_with_poisoned_lazy("task");
+        context.insert("-name", Arc::new(json!("Hyphen")));
+        for template in [
+            "$${{{ -name }}}",
+            "$${{{ -name-}}}",
+            "$${{{--name}}}",
+            "$${{{--name-}}}",
+            "$${{{- -name -}}}",
+        ] {
+            let result = DefaultTransformer::execute_liquid_template(
+                Arc::new(json!({})),
+                template,
+                &context,
+            )
+            .unwrap_or_else(|e| panic!("{template}: {e:?}"));
+            assert_eq!(result, "Hyphen", "{template}");
+        }
+    }
+
+    #[test]
+    fn liquid_whitespace_control_without_spaces_resolves_variables() {
+        let mut context = context_with_poisoned_lazy("task");
+        context.insert("name", Arc::new(json!("Taro")));
+        context.insert("x", Arc::new(json!(true)));
+        for (template, expected) in [
+            ("$${[{{name-}}]}", "[Taro]"),
+            ("$${[{{-name}}]}", "[Taro]"),
+            ("$${[{{-name-}}]}", "[Taro]"),
+            ("$${[{%-if x-%}Y{%-endif-%}]}", "[Y]"),
+        ] {
+            let result = DefaultTransformer::execute_liquid_template(
+                Arc::new(json!({})),
+                template,
+                &context,
+            )
+            .unwrap_or_else(|e| panic!("{template}: {e:?}"));
+            assert_eq!(result, expected, "{template}");
+        }
+    }
+
     #[test]
     fn liquid_raw_input_cannot_shadow_context_secrets() {
         // Context (call-task expression) injects the env-derived secret.
-        let mut context = BTreeMap::new();
+        let mut context = ExpressionContext::new();
         context.insert(
             "secrets".to_string(),
             Arc::new(json!({ "API_TOKEN": "env-secret" })),
@@ -394,7 +524,7 @@ mod test_use_jq_and_template_transformer {
     #[test]
     fn liquid_raw_input_non_secret_keys_still_shadow_context() {
         // Non-reserved keys keep the documented raw-input-wins behavior.
-        let mut context = BTreeMap::new();
+        let mut context = ExpressionContext::new();
         context.insert("key".to_string(), Arc::new(json!("from-context")));
         let input = Arc::new(json!({ "key": "from-input" }));
         let template = "$${{{ key }}}";
@@ -410,7 +540,7 @@ mod test_use_jq_and_template_transformer {
             "key2": 2.55,
         }));
         let filter = "${.key}";
-        let context = BTreeMap::new();
+        let context = ExpressionContext::new();
         let result =
             DefaultTransformer::execute_transform(input.clone(), filter, &context).unwrap();
         assert_eq!(result, json!(1));
@@ -448,7 +578,7 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
     fn transform_input(
         raw_input: Arc<serde_json::Value>,
         transform_filter: &InputFrom,
-        context: &BTreeMap<String, Arc<serde_json::Value>>,
+        context: &ExpressionContext,
     ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         match transform_filter {
             InputFrom::Variant0(filter) => Self::execute_transform_ref(raw_input, filter, context),
@@ -459,7 +589,7 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
     fn transform_output(
         raw_input: Arc<serde_json::Value>,
         transform_filter: &OutputAs,
-        context: &BTreeMap<String, Arc<serde_json::Value>>,
+        context: &ExpressionContext,
     ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         match transform_filter {
             OutputAs::Variant0(filter) => Self::execute_transform_ref(raw_input, filter, context),
@@ -469,7 +599,7 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
     fn transform_export(
         raw_input: Arc<serde_json::Value>,
         transform_filter: &ExportAs,
-        context: &BTreeMap<String, Arc<serde_json::Value>>,
+        context: &ExpressionContext,
     ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         match transform_filter {
             ExportAs::Variant0(filter) => Self::execute_transform_ref(raw_input, filter, context),
@@ -479,7 +609,7 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
     fn transform_value(
         raw_input: Arc<serde_json::Value>,
         value: serde_json::Value,
-        context: &BTreeMap<String, Arc<serde_json::Value>>,
+        context: &ExpressionContext,
     ) -> Result<serde_json::Value, Box<workflow::Error>> {
         match value {
             serde_json::Value::Object(map) => {
@@ -507,7 +637,7 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
     fn transform_map(
         raw_input: Arc<serde_json::Value>,
         map_filter_or_value: serde_json::Map<String, serde_json::Value>,
-        context: &BTreeMap<String, Arc<serde_json::Value>>,
+        context: &ExpressionContext,
     ) -> Result<serde_json::Value, Box<workflow::Error>> {
         let mut result = serde_json::Map::new();
         for (key, value) in map_filter_or_value {
@@ -547,7 +677,7 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
     fn transform_ref_value(
         raw_input: Arc<serde_json::Value>,
         value_filter: &serde_json::Value,
-        context: &BTreeMap<String, Arc<serde_json::Value>>,
+        context: &ExpressionContext,
     ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         match value_filter {
             serde_json::Value::String(filter) => {
@@ -573,7 +703,7 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
     fn transform_ref_map(
         raw_input: Arc<serde_json::Value>,
         map_filter_or_value: &serde_json::Map<String, serde_json::Value>,
-        context: &BTreeMap<String, Arc<serde_json::Value>>,
+        context: &ExpressionContext,
     ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         let mut result = serde_json::Map::new();
         for (key, value) in map_filter_or_value {
@@ -630,13 +760,13 @@ mod test {
             "key3": 3
         }));
         let map = serde_json::Map::from_iter(vec![("otherKey".to_owned(), json!("${.key1}"))]);
-        let context = BTreeMap::new();
+        let context = ExpressionContext::new();
         let result = DefaultTransformer::transform_ref_map(input.clone(), &map, &context).unwrap();
         assert_eq!(result, Arc::new(json!({"otherKey": 1})));
 
         // no transform
         let map = serde_json::Map::from_iter(vec![("otherKey".to_owned(), json!("value1"))]);
-        let context = BTreeMap::new();
+        let context = ExpressionContext::new();
         let result = DefaultTransformer::transform_ref_map(input.clone(), &map, &context).unwrap();
         assert_eq!(result, Arc::new(json!({"otherKey": "value1"})));
 
@@ -645,7 +775,7 @@ mod test {
             "otherKey".to_owned(),
             json!({"innerKey": "${.key3}"}),
         )]);
-        let context = BTreeMap::new();
+        let context = ExpressionContext::new();
         let result = DefaultTransformer::transform_ref_map(input.clone(), &map, &context).unwrap();
         assert_eq!(result, Arc::new(json!({"otherKey": {"innerKey": 3}})));
     }
@@ -657,7 +787,7 @@ mod test {
             "key2": 2,
         }));
         let value = json!("${.}");
-        let context = BTreeMap::new();
+        let context = ExpressionContext::new();
         let result =
             DefaultTransformer::transform_ref_value(input.clone(), &value, &context).unwrap();
         assert_eq!(result, input);
@@ -670,7 +800,7 @@ mod test {
             "key2": 2,
         }));
         let value = json!(r#"${"My Name is \($name)"}"#); // double quote is required for string
-        let context = BTreeMap::from_iter(vec![(
+        let context = ExpressionContext::from_iter(vec![(
             "name".to_owned(),
             Arc::new(serde_json::Value::String("Taro".to_string())),
         )]);
@@ -690,7 +820,7 @@ mod test {
             "key2": 2,
         }));
         let value = json!("."); // no transform without '${}'
-        let context = BTreeMap::new();
+        let context = ExpressionContext::new();
         let result =
             DefaultTransformer::transform_ref_value(input.clone(), &value, &context).unwrap();
         assert_eq!(result, Arc::new(serde_json::Value::String(".".to_string())));
@@ -703,7 +833,7 @@ mod test {
             "key2": 2,
         }));
         let output = OutputAs::Variant0("${.}".to_owned());
-        let context = BTreeMap::new();
+        let context = ExpressionContext::new();
         let result =
             DefaultTransformer::transform_output(input.clone(), &output, &context).unwrap();
         assert_eq!(result, input);
@@ -716,7 +846,7 @@ mod test {
             "key2": 2,
         }));
         let input_transform = InputFrom::Variant0("${.key1}".to_owned());
-        let context = BTreeMap::new();
+        let context = ExpressionContext::new();
         let result =
             DefaultTransformer::transform_input(input.clone(), &input_transform, &context).unwrap();
         assert_eq!(result, Arc::new(json!(1)));
@@ -729,7 +859,7 @@ mod test {
             "key2": {"key3":"fuga\n piyo"},
         }));
         let input_transform = InputFrom::Variant0("${. | @text}".to_owned());
-        let context = BTreeMap::new();
+        let context = ExpressionContext::new();
         let result =
             DefaultTransformer::transform_input(input.clone(), &input_transform, &context).unwrap();
         assert_eq!(
@@ -754,7 +884,7 @@ mod test {
             }]),
         });
         let input_transform = InputFrom::Variant1(val.as_object().unwrap().clone());
-        let context = BTreeMap::new();
+        let context = ExpressionContext::new();
         let result =
             DefaultTransformer::transform_input(input.clone(), &input_transform, &context).unwrap();
         assert_eq!(
@@ -778,7 +908,7 @@ mod test {
         });
         let json_context = json_value.as_object().unwrap();
 
-        let context: BTreeMap<String, Arc<serde_json::Value>> = json_context
+        let context: ExpressionContext = json_context
             .iter()
             .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
             .collect();
@@ -846,7 +976,7 @@ mod test {
         });
         let json_context = json_value.as_object().unwrap();
 
-        let context: BTreeMap<String, Arc<serde_json::Value>> = json_context
+        let context: ExpressionContext = json_context
             .iter()
             .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
             .collect();
@@ -922,7 +1052,7 @@ mod test {
         });
 
         // Build context as expression.rs does
-        let context: BTreeMap<String, Arc<serde_json::Value>> = BTreeMap::from_iter(vec![(
+        let context: ExpressionContext = ExpressionContext::from_iter(vec![(
             "workflow".to_string(),
             Arc::new(workflow_descriptor),
         )]);
@@ -979,7 +1109,7 @@ mod test {
             "started_at": "2024-01-01T00:00:00Z"
         });
 
-        let context: BTreeMap<String, Arc<serde_json::Value>> = BTreeMap::from_iter(vec![(
+        let context: ExpressionContext = ExpressionContext::from_iter(vec![(
             "workflow".to_string(),
             Arc::new(workflow_descriptor),
         )]);
@@ -1017,7 +1147,7 @@ mod test {
             "started_at": "2024-01-01T00:00:00Z"
         });
 
-        let context: BTreeMap<String, Arc<serde_json::Value>> = BTreeMap::from_iter(vec![(
+        let context: ExpressionContext = ExpressionContext::from_iter(vec![(
             "workflow".to_string(),
             Arc::new(workflow_descriptor),
         )]);

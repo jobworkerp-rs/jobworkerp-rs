@@ -76,7 +76,9 @@ impl WorkflowCheckPointContext {
         Self {
             name: workflow.name.clone(),
             input: workflow.input.clone(),
-            context_variables: Arc::new(workflow.context_variables.lock().await.clone()),
+            context_variables: Arc::new(super::context::context_variables_to_json(
+                &*workflow.context_variables.lock().await,
+            )),
         }
     }
 }
@@ -92,7 +94,9 @@ impl TaskCheckPointContext {
         Self {
             input: task.input.clone(),
             output: task.output.clone(),
-            context_variables: Arc::new(task.context_variables.lock().await.clone()),
+            context_variables: Arc::new(super::context::context_variables_to_json(
+                &*task.context_variables.lock().await,
+            )),
             flow_directive: task.flow_directive.to_string(),
         }
     }

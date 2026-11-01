@@ -779,7 +779,12 @@ async fn collect_stream_result(
                     chunks.push(chunk);
                 }
             }
-            Some(result_output_item::Item::End(_)) => saw_end = true,
+            Some(result_output_item::Item::End(trailer)) => {
+                if let Err(error) = ::proto::stream_error::ensure_end_success(&trailer) {
+                    return stream_collection_error(callback_error.take(), error);
+                }
+                saw_end = true;
+            }
             None => {
                 return stream_collection_error(
                     callback_error.take(),

@@ -614,9 +614,12 @@ pub fn extract_text_from_llm_chat_result(bytes: &[u8]) -> Option<String> {
 /// # Arguments
 /// * `stream` - Stream of ResultOutputItem from JobResultSubscriber
 /// * `message_id` - MessageId to use for all events in this sequence
+/// * `run_id` - Run that a failed End is reported against
 ///
 /// # Returns
-/// A stream of AgUiEvent representing the LLM response
+/// A stream of AgUiEvent representing the LLM response. When the End reports a
+/// failure, TEXT_MESSAGE_END is followed by RUN_ERROR; the run is then terminal,
+/// so the caller must not emit RUN_FINISHED for it.
 ///
 /// # Example
 /// ```ignore
@@ -628,60 +631,21 @@ pub fn extract_text_from_llm_chat_result(bytes: &[u8]) -> Option<String> {
 ///
 /// if let Some(stream) = stream_opt {
 ///     let message_id = MessageId::random();
-///     let event_stream = result_output_stream_to_ag_ui_events(stream, message_id);
+///     let event_stream = result_output_stream_to_ag_ui_events(stream, message_id, "run_test");
 ///     // yield events from event_stream
 /// }
 /// ```
 pub fn result_output_stream_to_ag_ui_events(
     stream: BoxStream<'static, ResultOutputItem>,
     message_id: MessageId,
+    run_id: impl Into<String>,
 ) -> impl futures::Stream<Item = AgUiEvent> + Send + 'static {
-    // Track whether START was emitted (always true after start_stream)
-    let start_emitted = Arc::new(AtomicBool::new(false));
-    let start_emitted_for_start = start_emitted.clone();
-    let message_id_for_start = message_id.clone();
-    let message_id_for_content = message_id.clone();
-
-    // Create start event as first item and mark start as emitted
-    let start_stream = futures::stream::once(async move {
-        start_emitted_for_start.store(true, Ordering::SeqCst);
-        AgUiEvent::text_message_start(message_id_for_start, Role::Assistant)
-    });
-
-    // Process chunk stream
-    let content_stream = stream.filter_map(move |item| {
-        let message_id = message_id_for_content.clone();
-        let start_emitted = start_emitted.clone();
-
-        async move {
-            match item.item {
-                Some(result_output_item::Item::Data(bytes)) => {
-                    // Decode LlmChatResult protobuf and extract text content
-                    extract_text_from_llm_chat_result(&bytes)
-                        .map(|content| AgUiEvent::text_message_content(message_id, content))
-                }
-                Some(result_output_item::Item::End(_)) => {
-                    // Emit END if START was emitted (always true after start_stream runs)
-                    if start_emitted.load(Ordering::SeqCst) {
-                        Some(AgUiEvent::text_message_end(message_id))
-                    } else {
-                        None
-                    }
-                }
-                Some(result_output_item::Item::FinalCollected(_)) => {
-                    // FinalCollected is for workflow internal use, emit END event here
-                    if start_emitted.load(Ordering::SeqCst) {
-                        Some(AgUiEvent::text_message_end(message_id))
-                    } else {
-                        None
-                    }
-                }
-                None => None,
-            }
-        }
-    });
-
-    start_stream.chain(content_stream)
+    result_output_stream_to_ag_ui_events_internal(
+        stream,
+        message_id,
+        run_id.into(),
+        Arc::new(AtomicBool::new(false)),
+    )
 }
 
 /// Convert a ResultOutputItem stream to AG-UI TEXT_MESSAGE_* events with end guarantee.
@@ -692,12 +656,15 @@ pub fn result_output_stream_to_ag_ui_events(
 /// # Arguments
 /// * `stream` - Stream of ResultOutputItem from JobResultSubscriber
 /// * `message_id` - MessageId to use for all events in this sequence
+/// * `run_id` - Run that a failed End is reported against
 ///
 /// # Returns
-/// A stream of AgUiEvent with guaranteed START and END events
+/// A stream of AgUiEvent with guaranteed START and END events. A failed End adds
+/// RUN_ERROR after TEXT_MESSAGE_END; the caller must not emit RUN_FINISHED after it.
 pub fn result_output_stream_to_ag_ui_events_with_end_guarantee(
     stream: BoxStream<'static, ResultOutputItem>,
     message_id: MessageId,
+    run_id: impl Into<String>,
 ) -> impl futures::Stream<Item = AgUiEvent> + Send + 'static {
     let message_id_clone = message_id.clone();
     let has_ended = Arc::new(AtomicBool::new(false));
@@ -706,6 +673,7 @@ pub fn result_output_stream_to_ag_ui_events_with_end_guarantee(
     let main_stream = result_output_stream_to_ag_ui_events_internal(
         stream,
         message_id_clone,
+        run_id.into(),
         has_ended_for_stream,
     );
 
@@ -726,38 +694,44 @@ pub fn result_output_stream_to_ag_ui_events_with_end_guarantee(
 fn result_output_stream_to_ag_ui_events_internal(
     stream: BoxStream<'static, ResultOutputItem>,
     message_id: MessageId,
+    run_id: String,
     has_ended: Arc<AtomicBool>,
 ) -> impl futures::Stream<Item = AgUiEvent> + Send + 'static {
     let message_id_for_start = message_id.clone();
-    let message_id_for_content = message_id.clone();
 
     let start_stream = futures::stream::once(async move {
         AgUiEvent::text_message_start(message_id_for_start, Role::Assistant)
     });
 
-    let content_stream = stream.filter_map(move |item| {
-        let message_id = message_id_for_content.clone();
-        let has_ended = has_ended.clone();
-
-        async move {
-            match item.item {
-                Some(result_output_item::Item::Data(bytes)) => {
-                    // Decode LlmChatResult protobuf and extract text content
-                    extract_text_from_llm_chat_result(&bytes)
-                        .map(|content| AgUiEvent::text_message_content(message_id, content))
+    let content_stream = stream.flat_map(move |item| {
+        let mut events = Vec::new();
+        match item.item {
+            Some(result_output_item::Item::Data(bytes)) => {
+                // Decode LlmChatResult protobuf and extract text content
+                if let Some(content) = extract_text_from_llm_chat_result(&bytes) {
+                    events.push(AgUiEvent::text_message_content(message_id.clone(), content));
                 }
-                Some(result_output_item::Item::End(_)) => {
-                    has_ended.store(true, Ordering::SeqCst);
-                    Some(AgUiEvent::text_message_end(message_id))
-                }
-                Some(result_output_item::Item::FinalCollected(_)) => {
-                    // FinalCollected is for workflow internal use, emit END event here
-                    has_ended.store(true, Ordering::SeqCst);
-                    Some(AgUiEvent::text_message_end(message_id))
-                }
-                None => None,
             }
+            Some(result_output_item::Item::End(trailer)) => {
+                has_ended.store(true, Ordering::SeqCst);
+                events.push(AgUiEvent::text_message_end(message_id.clone()));
+                if let Some(error) = proto::stream_error::end_failure(&trailer) {
+                    events.push(AgUiEvent::run_error(
+                        run_id.clone(),
+                        error.message,
+                        Some(proto::stream_error::code_to_json_str(error.code).to_string()),
+                        Some(serde_json::json!({ "origin": error.origin })),
+                    ));
+                }
+            }
+            Some(result_output_item::Item::FinalCollected(_)) => {
+                // FinalCollected is for workflow internal use, emit END event here
+                has_ended.store(true, Ordering::SeqCst);
+                events.push(AgUiEvent::text_message_end(message_id.clone()));
+            }
+            None => {}
         }
+        futures::stream::iter(events)
     });
 
     start_stream.chain(content_stream)
@@ -834,7 +808,6 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::MessageContent;
-    use proto::jobworkerp::data::Trailer;
 
     /// Create a ResultOutputItem with LlmChatResult protobuf-encoded data (real LLM stream format)
     fn create_llm_chat_result_item(text: &str, done: bool) -> ResultOutputItem {
@@ -1023,11 +996,7 @@ mod tests {
     }
 
     fn create_end_item() -> ResultOutputItem {
-        ResultOutputItem {
-            item: Some(result_output_item::Item::End(Trailer {
-                metadata: std::collections::HashMap::new(),
-            })),
-        }
+        proto::stream_error::normal_end_item(std::collections::HashMap::new())
     }
 
     // === Tests for LlmChatResult protobuf format (real LLM stream) ===
@@ -1043,7 +1012,8 @@ mod tests {
         let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
 
         let message_id = MessageId::new("msg_llm_test");
-        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id.clone());
+        let event_stream =
+            result_output_stream_to_ag_ui_events(stream, message_id.clone(), "run_test");
         let events: Vec<_> = event_stream.collect().await;
 
         assert_eq!(events.len(), 4); // START + 2 CONTENT + END
@@ -1094,7 +1064,7 @@ mod tests {
         let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
 
         let message_id = MessageId::new("msg_llm_unicode");
-        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id);
+        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id, "run_test");
         let events: Vec<_> = event_stream.collect().await;
 
         match &events[1] {
@@ -1124,7 +1094,8 @@ mod tests {
         let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
 
         let message_id = MessageId::new("msg_test");
-        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id.clone());
+        let event_stream =
+            result_output_stream_to_ag_ui_events(stream, message_id.clone(), "run_test");
         let events: Vec<_> = event_stream.collect().await;
 
         assert_eq!(events.len(), 4); // START + 2 CONTENT + END
@@ -1176,7 +1147,7 @@ mod tests {
         let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
 
         let message_id = MessageId::new("msg_test");
-        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id);
+        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id, "run_test");
         let events: Vec<_> = event_stream.collect().await;
 
         // START + 2 CONTENT (empty filtered) + END
@@ -1194,7 +1165,7 @@ mod tests {
 
         let message_id = MessageId::new("msg_test");
         let event_stream =
-            result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id);
+            result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id, "run_test");
         let events: Vec<_> = event_stream.collect().await;
 
         // START + 2 CONTENT + guaranteed END
@@ -1217,11 +1188,77 @@ mod tests {
 
         let message_id = MessageId::new("msg_test");
         let event_stream =
-            result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id);
+            result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id, "run_test");
         let events: Vec<_> = event_stream.collect().await;
 
         // START + 1 CONTENT + END (no duplicate)
         assert_eq!(events.len(), 3);
+    }
+
+    fn failed_end_item() -> ResultOutputItem {
+        proto::stream_error::error_end_item(
+            std::collections::HashMap::new(),
+            proto::jobworkerp::data::StreamErrorCode::ProviderStreamFailed,
+            "provider stream interrupted",
+            "LLM",
+        )
+    }
+
+    fn assert_end_then_run_error(events: &[AgUiEvent]) {
+        let [.., end, run_error] = events else {
+            panic!("expected at least two events: {events:?}");
+        };
+        assert!(
+            matches!(end, AgUiEvent::TextMessageEnd { .. }),
+            "{events:?}"
+        );
+        match run_error {
+            AgUiEvent::RunError {
+                run_id,
+                message,
+                code,
+                ..
+            } => {
+                assert_eq!(run_id, "run_failed");
+                assert_eq!(code.as_deref(), Some("PROVIDER_STREAM_FAILED"));
+                assert!(message.contains("provider stream interrupted"));
+            }
+            other => panic!("expected RUN_ERROR, got {other:?}"),
+        }
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgUiEvent::TextMessageEnd { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgUiEvent::RunFinished { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_end_emits_text_end_then_run_error() {
+        let items = vec![create_data_item("Hello"), failed_end_item()];
+        let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
+        let events: Vec<_> =
+            result_output_stream_to_ag_ui_events(stream, MessageId::new("msg"), "run_failed")
+                .collect()
+                .await;
+        assert_end_then_run_error(&events);
+
+        let items = vec![create_data_item("Hello"), failed_end_item()];
+        let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
+        let events: Vec<_> = result_output_stream_to_ag_ui_events_with_end_guarantee(
+            stream,
+            MessageId::new("msg"),
+            "run_failed",
+        )
+        .collect()
+        .await;
+        assert_end_then_run_error(&events);
     }
 
     #[tokio::test]
@@ -1230,7 +1267,7 @@ mod tests {
         let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
 
         let message_id = MessageId::new("consistent_id");
-        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id);
+        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id, "run_test");
         let events: Vec<_> = event_stream.collect().await;
 
         // All events should have the same message_id
@@ -1256,7 +1293,7 @@ mod tests {
         let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
 
         let message_id = MessageId::new("msg_unicode");
-        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id);
+        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id, "run_test");
         let events: Vec<_> = event_stream.collect().await;
 
         match &events[1] {
@@ -1281,7 +1318,7 @@ mod tests {
         let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
 
         let message_id = MessageId::new("msg_end_only");
-        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id);
+        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id, "run_test");
         let events: Vec<_> = event_stream.collect().await;
 
         // Should have START and END (even without content)
@@ -1301,7 +1338,7 @@ mod tests {
         let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
 
         let message_id = MessageId::new("msg_empty");
-        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id);
+        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id, "run_test");
         let events: Vec<_> = event_stream.collect().await;
 
         // Should have START only (no END because no End item in stream)
@@ -1325,7 +1362,8 @@ mod tests {
         let stream: BoxStream<'static, ResultOutputItem> = Box::pin(futures::stream::iter(items));
 
         let message_id = MessageId::new("msg_final_collected");
-        let event_stream = result_output_stream_to_ag_ui_events(stream, message_id.clone());
+        let event_stream =
+            result_output_stream_to_ag_ui_events(stream, message_id.clone(), "run_test");
         let events: Vec<_> = event_stream.collect().await;
 
         // Should have START, CONTENT, END (from FinalCollected)
@@ -1424,7 +1462,7 @@ mod tests {
 
         let message_id = MessageId::new("msg_final_collected_guarantee");
         let event_stream =
-            result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id);
+            result_output_stream_to_ag_ui_events_with_end_guarantee(stream, message_id, "run_test");
         let events: Vec<_> = event_stream.collect().await;
 
         // Should have START, CONTENT, END (from FinalCollected, no duplicate)

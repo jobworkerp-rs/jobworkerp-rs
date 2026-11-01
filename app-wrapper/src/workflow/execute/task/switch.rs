@@ -179,7 +179,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 Arc::new(input),
-                Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
+                Arc::new(tokio::sync::Mutex::new(Default::default())),
             );
 
             let result = executor
@@ -219,7 +219,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 Arc::new(input),
-                Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
+                Arc::new(tokio::sync::Mutex::new(Default::default())),
             );
 
             let result = executor
@@ -259,7 +259,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 Arc::new(input),
-                Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
+                Arc::new(tokio::sync::Mutex::new(Default::default())),
             );
 
             let result = executor
@@ -296,7 +296,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 Arc::new(input),
-                Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
+                Arc::new(tokio::sync::Mutex::new(Default::default())),
             );
 
             let result = executor
@@ -335,7 +335,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 Arc::new(input),
-                Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
+                Arc::new(tokio::sync::Mutex::new(Default::default())),
             );
 
             let result = executor

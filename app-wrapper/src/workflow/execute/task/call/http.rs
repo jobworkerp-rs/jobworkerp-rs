@@ -6,6 +6,7 @@
 //! response back into the task output (`content` / `response`).
 
 use super::CallTaskExecutor;
+use crate::workflow::execute::expression::ExpressionContext;
 use crate::workflow::{
     definition::workflow::{self, HttpOutput},
     execute::{context::TaskContext, secret},
@@ -63,7 +64,7 @@ impl CallTaskExecutor {
         named: &std::collections::HashMap<String, workflow::AuthenticationPolicy>,
         declared_secrets: &std::collections::HashSet<String>,
         raw_input: Arc<Value>,
-        expression: &std::collections::BTreeMap<String, Arc<Value>>,
+        expression: &ExpressionContext,
     ) -> Result<workflow::AuthenticationPolicy, Box<workflow::Error>> {
         let (inline, use_ref) = match endpoint_auth {
             workflow::HttpEndpointAuthentication::Variant0(policy) => (Some(policy), None),
@@ -295,7 +296,7 @@ impl CallTaskExecutor {
         call: workflow::CallHttp,
         named_authentications: &std::collections::HashMap<String, workflow::AuthenticationPolicy>,
         declared_secrets: &std::collections::HashSet<String>,
-        expression: &std::collections::BTreeMap<String, Arc<Value>>,
+        expression: &ExpressionContext,
         timeout_sec: u32,
     ) -> Result<Value, Box<workflow::Error>> {
         let uri = Self::ensure_supported(&call)?;
@@ -347,8 +348,8 @@ mod tests {
     use super::*;
     use proto::jobworkerp::data::RunnerType;
 
-    fn empty_expression() -> std::collections::BTreeMap<String, Arc<Value>> {
-        std::collections::BTreeMap::new()
+    fn empty_expression() -> ExpressionContext {
+        ExpressionContext::new()
     }
 
     fn no_secrets() -> std::collections::HashSet<String> {

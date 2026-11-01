@@ -16,7 +16,7 @@ use crate::workflow::{
         },
     },
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use app::app::job::execute::{JobExecutorWrapper, WorkerForEnqueue};
 use command_utils::trace::Tracing;
 use futures::stream::BoxStream;
@@ -157,23 +157,11 @@ fn validate_child_stream_end(
     runner_name: &str,
     trailer: Option<&proto::jobworkerp::data::Trailer>,
 ) -> Result<()> {
-    if runner_name != "SANDBOX" {
-        return Ok(());
-    }
-
-    let trailer =
-        trailer.ok_or_else(|| anyhow::anyhow!("SANDBOX child stream ended without an End item"))?;
-    match proto::stream_error::parse_stream_error(trailer) {
-        proto::stream_error::StreamErrorOutcome::Missing => Ok(()),
-        proto::stream_error::StreamErrorOutcome::Error(error) => Err(anyhow::anyhow!(
-            "SANDBOX child stream failed ({}): {}",
-            error.code,
-            error.message
-        )),
-        proto::stream_error::StreamErrorOutcome::Malformed(error) => Err(anyhow::anyhow!(
-            "SANDBOX child stream ended with malformed stream_error metadata: {error:?}"
-        )),
-    }
+    // Every runner terminates its stream with an End, so a missing End means
+    // the stream was cut off rather than completed.
+    let trailer = trailer
+        .ok_or_else(|| anyhow::anyhow!("{runner_name} child stream ended without an End item"))?;
+    proto::stream_error::ensure_end_success(trailer).context("child stream failed")
 }
 
 /// Streaming execution must collect a runner result to forward stream items, so
@@ -1182,17 +1170,16 @@ mod tests {
 
     #[test]
     fn sandbox_stream_error_end_is_a_failure() {
-        let trailer = proto::stream_error::build_stream_error_trailer(
+        let trailer = proto::stream_error::error_trailer(
             std::collections::HashMap::new(),
-            "EXECUTION_FAILED",
+            proto::jobworkerp::data::StreamErrorCode::ExecutionFailed,
             "sandbox execution failed",
             "SANDBOX",
-        )
-        .unwrap();
+        );
 
         let error = validate_child_stream_end("SANDBOX", Some(&trailer)).unwrap_err();
 
-        assert!(error.to_string().contains("EXECUTION_FAILED"));
+        assert!(format!("{error:#}").contains("EXECUTION_FAILED"));
     }
 
     #[test]
@@ -1202,11 +1189,12 @@ mod tests {
                 proto::stream_error::STREAM_ERROR_METADATA_KEY.to_string(),
                 "not-json".to_string(),
             )]),
+            ..Default::default()
         };
 
         let error = validate_child_stream_end("SANDBOX", Some(&trailer)).unwrap_err();
 
-        assert!(error.to_string().contains("malformed"));
+        assert!(format!("{error:#}").contains("malformed"));
     }
 
     #[test]
@@ -1217,17 +1205,37 @@ mod tests {
     }
 
     #[test]
-    fn legacy_runner_without_end_keeps_its_existing_success_behavior() {
-        assert!(validate_child_stream_end("COMMAND", None).is_ok());
+    fn child_without_end_is_a_failure_for_every_runner() {
+        let error = validate_child_stream_end("COMMAND", None).unwrap_err();
+        assert!(error.to_string().contains("COMMAND"));
+    }
 
-        let trailer = proto::stream_error::build_stream_error_trailer(
+    #[test]
+    fn non_sandbox_child_end_is_inspected() {
+        let normal = proto::stream_error::normal_trailer(std::collections::HashMap::new());
+        assert!(validate_child_stream_end("COMMAND", Some(&normal)).is_ok());
+
+        let failed = proto::stream_error::error_trailer(
             std::collections::HashMap::new(),
-            "EXECUTION_FAILED",
-            "legacy runner metadata",
+            proto::jobworkerp::data::StreamErrorCode::ExecutionFailed,
+            "command failed",
             "COMMAND",
-        )
-        .unwrap();
-        assert!(validate_child_stream_end("COMMAND", Some(&trailer)).is_ok());
+        );
+        let error = validate_child_stream_end("COMMAND", Some(&failed)).unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<proto::stream_error::StreamFailedError>()
+                .is_some()
+        );
+
+        let legacy = proto::jobworkerp::data::Trailer {
+            metadata: std::collections::HashMap::from([(
+                proto::stream_error::LEGACY_PLUGIN_STREAM_ERROR_KEY.to_string(),
+                "plugin failed".to_string(),
+            )]),
+            ..Default::default()
+        };
+        assert!(validate_child_stream_end("MyPlugin", Some(&legacy)).is_err());
     }
 
     #[tokio::test]

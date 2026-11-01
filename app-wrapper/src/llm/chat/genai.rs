@@ -5,6 +5,7 @@ use super::super::generic_tracing_helper::{
 use super::conversion::{ResolvedToolResult, ToolCallName, ToolConverter};
 use crate::llm::ThinkTagHelper;
 use crate::llm::reasoning::ReasoningParams;
+use crate::llm::result_stream::{PROVIDER_STREAM_INTERRUPTED, llm_error_end};
 use crate::llm::tracing::genai_helper::GenaiTracingHelper;
 use anyhow::Result;
 use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
@@ -26,7 +27,7 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunner
 use jobworkerp_runner::jobworkerp::runner::llm::{
     LlmChatArgs, LlmChatResult, PendingToolCalls, ToolCallRequest, llm_chat_result,
 };
-use proto::jobworkerp::data::{ResultOutputItem, Trailer, result_output_item};
+use proto::jobworkerp::data::{ResultOutputItem, StreamErrorCode, result_output_item};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -118,14 +119,11 @@ fn generation_request_error(error: genai::Error, retry_safe: bool) -> JobWorkerE
     }
 }
 
-fn generation_stream_error_trailer(
-    metadata: HashMap<String, String>,
-) -> std::result::Result<Trailer, proto::stream_error::StreamErrorBuildError> {
-    proto::stream_error::build_stream_error_trailer(
+fn generation_stream_error_end(metadata: HashMap<String, String>) -> ResultOutputItem {
+    llm_error_end(
         metadata,
-        "PROVIDER_STREAM_FAILED",
-        "LLM provider stream interrupted",
-        "LLM",
+        StreamErrorCode::ProviderStreamFailed,
+        PROVIDER_STREAM_INTERRUPTED,
     )
 }
 
@@ -1150,7 +1148,7 @@ impl GenaiChatService {
                         response.first_text().unwrap_or(""),
                         response.reasoning_content.clone(),
                     );
-                    let metadata_trailer = Trailer { metadata };
+                    let metadata_trailer = proto::stream_error::normal_trailer(metadata);
                     let stream = async_stream::stream! {
                         let llm_result = LlmChatResult {
                             content: Some(llm_chat_result::MessageContent {
@@ -1207,9 +1205,7 @@ impl GenaiChatService {
         let metadata_clone = metadata.clone();
         let parent_context_clone = parent_context.clone();
 
-        let metadata_trailer = Trailer {
-            metadata: metadata.clone(),
-        };
+        let metadata_trailer = proto::stream_error::normal_trailer(metadata.clone());
 
         let stream = async_stream::stream! {
             let mut updated_args = args_clone;
@@ -1349,11 +1345,11 @@ impl GenaiChatService {
                 }
                 Err(e) => {
                     tracing::error!("handle_tool_execution_stream: Phase 3 — failed to create continuation stream: {}", e);
-                    // Do not emit a success terminal for a failed continuation;
-                    // the caller's collector recognizes the missing done=true.
-                    yield ResultOutputItem {
-                        item: Some(result_output_item::Item::End(metadata_trailer.clone())),
-                    };
+                    yield llm_error_end(
+                        metadata_trailer.metadata.clone(),
+                        StreamErrorCode::ExecutionFailed,
+                        "failed to continue the LLM chat after tool execution",
+                    );
                 }
             }
         };
@@ -1414,9 +1410,7 @@ impl GenaiChatService {
         // Clone the model name to use inside the closure
         let model_name = res.model_iden.model_name.to_string();
 
-        let metadata_trailer = Trailer {
-            metadata: metadata.clone(),
-        };
+        let metadata_trailer = proto::stream_error::normal_trailer(metadata.clone());
 
         // Use async_stream to accumulate tool calls during streaming
         let mut base_stream = res.stream;
@@ -1562,11 +1556,8 @@ impl GenaiChatService {
                     },
                     Err(_) => {
                         tracing::warn!("LLM provider stream interrupted");
-                        // Preserve the existing stream-error contract; never emit a successful End.
-                        match generation_stream_error_trailer(metadata_trailer.metadata.clone()) {
-                            Ok(trailer) => yield ResultOutputItem { item: Some(result_output_item::Item::End(trailer)) },
-                            Err(_) => tracing::warn!("LLM stream error trailer could not be constructed"),
-                        }
+                        // A successful End here would make the interrupted stream look complete.
+                        yield generation_stream_error_end(metadata_trailer.metadata.clone());
                         return;
                     }
                 }
@@ -1824,13 +1815,20 @@ mod tests {
     }
 
     #[test]
-    fn generation_stream_failure_uses_the_existing_common_trailer() {
+    fn generation_stream_failure_ends_with_a_provider_error() {
         let metadata = HashMap::from([("trace_id".into(), "request".into())]);
-        let trailer = generation_stream_error_trailer(metadata).unwrap();
+        let Some(result_output_item::Item::End(trailer)) =
+            generation_stream_error_end(metadata).item
+        else {
+            panic!("a provider failure must end the stream");
+        };
         assert_eq!(trailer.metadata["trace_id"], "request");
-        assert!(
-            matches!(proto::stream_error::parse_stream_error(&trailer), proto::stream_error::StreamErrorOutcome::Error(error) if error.origin == "LLM")
-        );
+        assert!(matches!(
+            proto::stream_error::inspect_end(&trailer),
+            proto::stream_error::StreamErrorOutcome::Failed(error)
+                if error.origin == "LLM"
+                    && error.code == StreamErrorCode::ProviderStreamFailed as i32
+        ));
     }
 
     #[test]

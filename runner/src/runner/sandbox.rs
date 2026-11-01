@@ -17,7 +17,7 @@ use microsandbox::{ExecControl, ExecEvent};
 use prost::Message;
 use proto::DEFAULT_METHOD_NAME;
 use proto::jobworkerp::data::{
-    JobData, JobId, JobResult, ResultOutputItem, StreamingOutputType, Trailer,
+    JobData, JobId, JobResult, ResultOutputItem, StreamErrorCode, StreamingOutputType,
     result_output_item::Item,
 };
 use tokio::sync::{Mutex, mpsc};
@@ -61,7 +61,6 @@ pub use config::{
 const METHOD_RUN_WITH_CLIENT: &str = "run_with_client";
 const CLIENT_FEED_CAPACITY: usize = 16;
 const EXEC_KILL_TIMEOUT: Duration = Duration::from_secs(3);
-const STREAM_ERROR_KEY: &str = proto::stream_error::STREAM_ERROR_METADATA_KEY;
 const RUNNER_NAME: &str = "SANDBOX";
 
 const SETTINGS_PROTO: &str =
@@ -630,9 +629,9 @@ impl SandboxRunner {
                             })
                         {
                             let message = format!("Sandbox command exited with code {code}");
-                            yield error_end(trailer_metadata, "EXECUTION_FAILED", &message);
+                            yield error_end(trailer_metadata, StreamErrorCode::ExecutionFailed, &message);
                         } else {
-                            yield normal_end(trailer_metadata);
+                            yield proto::stream_error::normal_end_item(trailer_metadata);
                         }
                         break;
                     }
@@ -640,7 +639,7 @@ impl SandboxRunner {
                         cancel_guard.complete();
                         yield error_end(
                             trailer_metadata,
-                            "EXECUTION_FAILED",
+                            StreamErrorCode::ExecutionFailed,
                             "Sandbox command could not be started",
                         );
                         break;
@@ -653,7 +652,7 @@ impl SandboxRunner {
                         }
                         yield error_end(
                             trailer_metadata,
-                            "EXECUTION_FAILED",
+                            StreamErrorCode::ExecutionFailed,
                             "Sandbox command ended without an exit result",
                         );
                         cancel_guard.complete();
@@ -668,7 +667,11 @@ impl SandboxRunner {
                         }
                         yield error_end(
                             trailer_metadata,
-                            if timed_out { "TIMEOUT" } else { "CANCELLED" },
+                            if timed_out {
+                                StreamErrorCode::Timeout
+                            } else {
+                                StreamErrorCode::Cancelled
+                            },
                             if timed_out {
                                 "Sandbox command was idle until its Worker timeout"
                             } else {
@@ -685,7 +688,7 @@ impl SandboxRunner {
                         }
                         yield error_end(
                             trailer_metadata,
-                            "TIMEOUT",
+                            StreamErrorCode::Timeout,
                             "Sandbox command exceeded its execution time limit",
                         );
                         break;
@@ -774,16 +777,7 @@ impl RunnerSpec for SandboxRunner {
                     Some(Item::Data(data)) => last_data = Some(data),
                     Some(Item::FinalCollected(data)) => last_data = Some(data),
                     Some(Item::End(trailer)) => {
-                        match proto::stream_error::parse_stream_error(&trailer) {
-                            proto::stream_error::StreamErrorOutcome::Missing => {}
-                            proto::stream_error::StreamErrorOutcome::Error(error) => {
-                                bail!("SANDBOX {}: {}", error.code, error.message)
-                            }
-                            proto::stream_error::StreamErrorOutcome::Malformed(error) => {
-                                bail!("SANDBOX stream ended with malformed stream_error: {error:?}")
-                            }
-                        }
-                        metadata = trailer.metadata;
+                        metadata = proto::stream_error::success_metadata(trailer)?;
                         saw_end = true;
                         break;
                     }
@@ -1226,28 +1220,12 @@ pub fn encode_exit_result(
     }
 }
 
-fn normal_end(mut metadata: HashMap<String, String>) -> ResultOutputItem {
-    metadata.remove(STREAM_ERROR_KEY);
-    ResultOutputItem {
-        item: Some(Item::End(Trailer { metadata })),
-    }
-}
-
-fn error_end(mut metadata: HashMap<String, String>, code: &str, message: &str) -> ResultOutputItem {
-    metadata.remove(STREAM_ERROR_KEY);
-    match proto::stream_error::build_stream_error_trailer(metadata, code, message, RUNNER_NAME) {
-        Ok(trailer) => ResultOutputItem {
-            item: Some(Item::End(trailer)),
-        },
-        Err(error) => {
-            tracing::error!(%error, "failed to serialize SANDBOX stream error trailer");
-            ResultOutputItem {
-                item: Some(Item::End(Trailer {
-                    metadata: HashMap::from([(STREAM_ERROR_KEY.to_string(), "{".to_string())]),
-                })),
-            }
-        }
-    }
+fn error_end(
+    metadata: HashMap<String, String>,
+    code: StreamErrorCode,
+    message: &str,
+) -> ResultOutputItem {
+    proto::stream_error::error_end_item(metadata, code, message, RUNNER_NAME)
 }
 
 async fn bounded_kill(control: &ExecControl) -> Result<()> {
@@ -1293,11 +1271,18 @@ mod tests {
     #[test]
     fn both_end_variants_sanitize_untrusted_reserved_metadata() {
         let metadata = HashMap::from([
-            (STREAM_ERROR_KEY.to_string(), "forged".to_string()),
+            (
+                proto::stream_error::STREAM_ERROR_METADATA_KEY.to_string(),
+                "forged".to_string(),
+            ),
             ("trace_id".to_string(), "request-1".to_string()),
         ]);
-        let normal = normal_end(metadata.clone());
-        let error = error_end(metadata, "EXECUTION_FAILED", "Sandbox command failed");
+        let normal = proto::stream_error::normal_end_item(metadata.clone());
+        let error = error_end(
+            metadata,
+            StreamErrorCode::ExecutionFailed,
+            "Sandbox command failed",
+        );
         let Some(Item::End(normal)) = normal.item else {
             panic!("a successful command must emit End");
         };
@@ -1308,15 +1293,20 @@ mod tests {
             normal.metadata.get("trace_id").map(String::as_str),
             Some("request-1")
         );
-        assert!(!normal.metadata.contains_key(STREAM_ERROR_KEY));
+        assert!(
+            !normal
+                .metadata
+                .contains_key(proto::stream_error::STREAM_ERROR_METADATA_KEY)
+        );
         assert_eq!(
             error.metadata.get("trace_id").map(String::as_str),
             Some("request-1")
         );
         assert!(matches!(
-            proto::stream_error::parse_stream_error(&error),
-            proto::stream_error::StreamErrorOutcome::Error(ref parsed)
-                if parsed.origin == RUNNER_NAME && parsed.code == "EXECUTION_FAILED"
+            proto::stream_error::inspect_end(&error),
+            proto::stream_error::StreamErrorOutcome::Failed(ref parsed)
+                if parsed.origin == RUNNER_NAME
+                    && parsed.code == StreamErrorCode::ExecutionFailed as i32
         ));
     }
 

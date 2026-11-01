@@ -2348,9 +2348,8 @@ where
                             // Get context variables from tokio::sync::Mutex
                             let context_vars = {
                                 let guard = wfc.context_variables.lock().await;
-                                guard
-                                    .iter()
-                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                app_wrapper::workflow::execute::context::context_variables_to_json(&guard)
+                                    .into_iter()
                                     .collect::<HashMap<String, serde_json::Value>>()
                             };
 

@@ -161,21 +161,15 @@ fn should_skip_idle_timeout(is_sandbox: bool, using: Option<&str>) -> bool {
 }
 
 fn sandbox_idle_timeout_item(window: Duration) -> ResultOutputItem {
-    let trailer = proto::stream_error::build_stream_error_trailer(
+    proto::stream_error::error_end_item(
         HashMap::new(),
-        "TIMEOUT",
+        proto::jobworkerp::data::StreamErrorCode::Timeout,
         format!(
             "Sandbox command was idle until its Worker timeout ({}ms)",
             window.as_millis()
         ),
-        "SANDBOX",
+        proto::jobworkerp::data::RunnerType::Sandbox.as_str_name(),
     )
-    .expect("fixed SANDBOX timeout error fields satisfy the stream error contract");
-    ResultOutputItem {
-        item: Some(proto::jobworkerp::data::result_output_item::Item::End(
-            trailer,
-        )),
-    }
 }
 
 /// Idle-timeout window for stream drain.
@@ -203,6 +197,7 @@ fn idle_window_from(job_data: Option<&proto::jobworkerp::data::JobData>) -> Opti
 fn maybe_idle_timeout_wrap(
     stream: BoxStream<'static, ResultOutputItem>,
     idle_window: Option<Duration>,
+    runner_name: String,
     cancel_token: Option<CancellationToken>,
     sandbox_runner: Option<RunnerHandle>,
 ) -> BoxStream<'static, ResultOutputItem> {
@@ -227,28 +222,19 @@ fn maybe_idle_timeout_wrap(
         // the stalled stream without being able to wake the plugin.
         return stream;
     };
-    // Plant a synthetic End trailer carrying `V2_STREAM_ERROR_META_KEY`
-    // so downstream consumers (notably `collect_stream` in the V2 plugin
-    // wrapper) can distinguish "plugin stalled past idle window" from a
-    // clean EOF. Without this, a `Poll::Ready(None)` after timeout would
-    // be indistinguishable from a successful end-of-stream, and the
-    // Internal-streaming path would persist whatever data accumulated
-    // so far as a Success result.
-    let mut timeout_metadata = HashMap::new();
-    timeout_metadata.insert(
-        jobworkerp_runner::runner::plugins::impls::V2_STREAM_ERROR_META_KEY.to_string(),
+    // Without a synthetic failed End, `Poll::Ready(None)` after the timeout
+    // would look like a clean EOF and the accumulated data would be
+    // persisted as a Success result. The legacy key keeps older readers
+    // (which only understood plugin errors) detecting it as well.
+    let timeout_item = proto::stream_error::error_end_item_with_legacy_key(
+        HashMap::new(),
+        proto::jobworkerp::data::StreamErrorCode::Timeout,
         format!(
             "stream idle timeout: no chunk emitted within {}ms",
             window.as_millis()
         ),
+        runner_name,
     );
-    let timeout_item = ResultOutputItem {
-        item: Some(proto::jobworkerp::data::result_output_item::Item::End(
-            proto::jobworkerp::data::Trailer {
-                metadata: timeout_metadata,
-            },
-        )),
-    };
     Box::pin(IdleTimeoutStream::with_timeout_item(
         stream,
         window,
@@ -268,6 +254,7 @@ fn maybe_wrap_stream_idle_timeout(
     stream: BoxStream<'static, ResultOutputItem>,
     skip_idle_timeout: bool,
     idle_window: Option<Duration>,
+    runner_name: String,
     cancel_token: Option<CancellationToken>,
     sandbox_runner: Option<RunnerHandle>,
 ) -> BoxStream<'static, ResultOutputItem> {
@@ -276,7 +263,13 @@ fn maybe_wrap_stream_idle_timeout(
     if skip_idle_timeout {
         stream
     } else {
-        maybe_idle_timeout_wrap(stream, idle_window, cancel_token, sandbox_runner)
+        maybe_idle_timeout_wrap(
+            stream,
+            idle_window,
+            runner_name,
+            cancel_token,
+            sandbox_runner,
+        )
     }
 }
 
@@ -407,6 +400,7 @@ pub trait JobRunner:
                         let using = job.data.as_ref().and_then(|d| d.using.clone());
                         let using_ref = using.as_deref();
                         let is_sandbox = pool::sandbox_runner_mut(&mut **r).is_some();
+                        let runner_name = r.name();
                         let skip_idle_timeout = should_skip_idle_timeout(is_sandbox, using_ref);
 
                         // Register client input before run_stream starts or creates a VM.
@@ -458,6 +452,7 @@ pub trait JobRunner:
                                 s,
                                 skip_idle_timeout,
                                 idle_window,
+                                runner_name,
                                 cancel_token_for_idle,
                                 sandbox_runner_for_idle,
                             );
@@ -540,6 +535,7 @@ pub trait JobRunner:
 
                         let using = job.data.as_ref().and_then(|d| d.using.as_deref());
                         let is_sandbox = pool::sandbox_runner_mut(&mut **runner_guard).is_some();
+                        let runner_name = runner_guard.name();
                         let skip_idle_timeout = should_skip_idle_timeout(is_sandbox, using);
                         let feed_registration = match register_client_feed_sender_guard(
                             &mut runner_guard,
@@ -579,6 +575,7 @@ pub trait JobRunner:
                                 stream,
                                 skip_idle_timeout,
                                 idle_window,
+                                runner_name,
                                 cancel_token_for_idle,
                                 sandbox_runner_for_idle,
                             );
@@ -1323,6 +1320,7 @@ pub(crate) mod tests {
             Box::pin(futures::stream::pending()),
             true,
             Some(Duration::from_millis(1)),
+            "SANDBOX".to_string(),
             None,
             Some(runner),
         );
@@ -1347,6 +1345,7 @@ pub(crate) mod tests {
             Box::pin(futures::stream::pending()),
             false,
             Some(Duration::from_millis(1)),
+            "SANDBOX".to_string(),
             None,
             Some(runner),
         );
@@ -1360,19 +1359,20 @@ pub(crate) mod tests {
             panic!("idle timeout must emit an End item");
         };
         assert!(matches!(
-            proto::stream_error::parse_stream_error(trailer),
-            proto::stream_error::StreamErrorOutcome::Error(error)
-                if error.code == "TIMEOUT" && error.origin == "SANDBOX"
+            proto::stream_error::inspect_end(trailer),
+            proto::stream_error::StreamErrorOutcome::Failed(error)
+                if error.code == proto::jobworkerp::data::StreamErrorCode::Timeout as i32
+                    && error.origin == "SANDBOX"
         ));
         assert!(
             !trailer
                 .metadata
-                .contains_key(jobworkerp_runner::runner::plugins::impls::V2_STREAM_ERROR_META_KEY)
+                .contains_key(proto::stream_error::LEGACY_PLUGIN_STREAM_ERROR_KEY)
         );
     }
 
     #[tokio::test]
-    async fn normal_runner_idle_timeout_keeps_legacy_plugin_metadata() {
+    async fn normal_runner_idle_timeout_reports_timeout_with_legacy_key() {
         use futures::StreamExt;
 
         let token = CancellationToken::new();
@@ -1380,6 +1380,7 @@ pub(crate) mod tests {
             Box::pin(futures::stream::pending()),
             false,
             Some(Duration::from_millis(1)),
+            "MyPlugin".to_string(),
             Some(token.clone()),
             None,
         );
@@ -1392,13 +1393,23 @@ pub(crate) mod tests {
         else {
             panic!("idle timeout must emit an End item");
         };
+        let error = trailer
+            .error
+            .as_ref()
+            .expect("idle timeout is a stream failure");
+        assert_eq!(
+            error.code,
+            proto::jobworkerp::data::StreamErrorCode::Timeout as i32
+        );
+        assert_eq!(error.origin, "MyPlugin");
+        // Older readers only understand the legacy key and the v1 JSON value.
         assert!(
             trailer
                 .metadata
-                .contains_key(jobworkerp_runner::runner::plugins::impls::V2_STREAM_ERROR_META_KEY)
+                .contains_key(proto::stream_error::LEGACY_PLUGIN_STREAM_ERROR_KEY)
         );
         assert!(
-            !trailer
+            trailer
                 .metadata
                 .contains_key(proto::stream_error::STREAM_ERROR_METADATA_KEY)
         );

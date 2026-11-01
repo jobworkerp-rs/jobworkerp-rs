@@ -80,3 +80,16 @@ fn map_jobworker_error(err: &JobWorkerError) -> tonic::Status {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::handle_error;
+    use jobworkerp_base::error::JobWorkerError;
+
+    #[test]
+    fn timeout_error_maps_to_deadline_exceeded() {
+        let error = anyhow::Error::from(JobWorkerError::TimeoutError("listener expired".into()));
+
+        assert_eq!(handle_error(&error).code(), tonic::Code::DeadlineExceeded);
+    }
+}

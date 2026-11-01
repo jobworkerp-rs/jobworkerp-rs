@@ -4,6 +4,7 @@ pub mod completion;
 pub mod embedding;
 pub mod generic_tracing_helper;
 pub mod reasoning;
+pub(crate) mod result_stream;
 pub(crate) mod schema_sanitize;
 pub mod token_count;
 pub mod tracing;

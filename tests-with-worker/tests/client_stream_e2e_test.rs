@@ -12,13 +12,15 @@
 
 use anyhow::Result;
 use futures::StreamExt;
+use infra::infra::job::queue::redis::{RedisJobQueueRepository, UseRedisJobQueueRepository};
 use infra_utils::infra::test::TEST_RUNTIME;
 use proto::jobworkerp::data::result_output_item;
-use proto::jobworkerp::data::{ResponseType, StreamingType, WorkerData};
+use proto::jobworkerp::data::{Priority, ResponseType, StreamingType, WorkerData};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tests_with_worker::start_test_worker;
+use tests_with_worker::{TestWorkerHandle, start_test_worker};
 use tokio::time::Duration;
+use tokio_util::task::AbortOnDropHandle;
 
 /// Encode a string as HelloArgs protobuf (field 1, string).
 fn encode_hello_args(s: &str) -> Vec<u8> {
@@ -264,6 +266,92 @@ async fn sub_test_normal_flow(
     Ok(())
 }
 
+/// Verify a streaming Direct job is not visible until its result stream is subscribed.
+async fn sub_test_stream_subscription_precedes_enqueue(
+    app_module: &Arc<app::module::AppModule>,
+    runner_id: &proto::jobworkerp::data::RunnerId,
+) -> Result<(
+    TestWorkerHandle,
+    i64,
+    i64,
+    Vec<proto::jobworkerp::data::ResultOutputItem>,
+)> {
+    let worker_id = create_feed_hello_worker(app_module, *runner_id).await?;
+    let job_id = app_module.job_app.generate_job_id()?;
+    let mut subscription_gate =
+        infra::infra::job_result::pubsub::test_hooks::ResultStreamSubscriptionGate::install(
+            job_id,
+        )?;
+    let redis_module = app_module
+        .repositories
+        .redis_module
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("The subscription-order test requires Redis"))?;
+    let queue = redis_module.redis_job_queue_repository();
+    let queue_count_before = queue.count_queue(None, Priority::Medium).await?;
+
+    let enqueue_task = {
+        let app = app_module.clone();
+        AbortOnDropHandle::new(tokio::spawn(async move {
+            app.job_app
+                .enqueue_job(
+                    Arc::new(HashMap::new()),
+                    Some(&worker_id),
+                    None,
+                    encode_hello_args("World"),
+                    None,
+                    0,
+                    0,
+                    30000,
+                    Some(job_id),
+                    StreamingType::Response,
+                    Some("feed_hello".to_string()),
+                    None,
+                )
+                .await
+        }))
+    };
+
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        subscription_gate.wait_until_blocked(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Timed out waiting for result-stream subscription gate"))??;
+    let queue_count_while_subscription_is_gated = queue.count_queue(None, Priority::Medium).await?;
+    subscription_gate.release();
+
+    // Start the worker only after the subscription gate opens; Redis buffers feed data until
+    // the worker registers the runner's client-stream receiver.
+    let worker_handle = start_test_worker(app_module.clone()).await?;
+    let feed_pub = app_module.feed_publisher.clone();
+    feed_pub
+        .publish_feed(&job_id, encode_hello_args("chunk1"), false)
+        .await?;
+    feed_pub
+        .publish_feed(&job_id, encode_hello_args("chunk2"), false)
+        .await?;
+    feed_pub.publish_feed(&job_id, Vec::new(), true).await?;
+
+    let (_job_id, _job_result, stream) =
+        tokio::time::timeout(Duration::from_secs(30), enqueue_task)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("Enqueue task did not finish after feed completion")
+            })???;
+    let stream = stream.ok_or_else(|| anyhow::anyhow!("Expected a Direct response stream"))?;
+    let items = tokio::time::timeout(Duration::from_secs(30), stream.collect::<Vec<_>>())
+        .await
+        .map_err(|_| anyhow::anyhow!("Pre-enqueue subscription stream collection timed out"))?;
+
+    Ok((
+        worker_handle,
+        queue_count_before,
+        queue_count_while_subscription_is_gated,
+        items,
+    ))
+}
+
 /// Empty feed: enqueue + immediate final → verify greeting only.
 async fn sub_test_empty_feed(
     app_module: &Arc<app::module::AppModule>,
@@ -403,10 +491,9 @@ fn test_client_stream_e2e() -> Result<()> {
 
         let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
         load_hello_plugin(&app_module).await;
-        let worker_handle = start_test_worker(app_module.clone()).await?;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
         let runner_id = find_or_create_hello_runner_id(&app_module).await?;
+        let (worker_handle, queue_before, queue_while_gated, gated_items) =
+            sub_test_stream_subscription_precedes_enqueue(&app_module, &runner_id).await?;
 
         // Run all sub-tests sequentially, sharing the same worker.
         sub_test_normal_flow(&app_module, &runner_id).await?;
@@ -414,6 +501,31 @@ fn test_client_stream_e2e() -> Result<()> {
         sub_test_require_check_error(&app_module, &runner_id).await?;
 
         worker_handle.shutdown().await;
+
+        assert_eq!(
+            queue_while_gated, queue_before,
+            "A Direct streaming job must not be visible in Redis before its stream subscription is active"
+        );
+        let gated_text = gated_items
+            .iter()
+            .filter_map(|item| match &item.item {
+                Some(result_output_item::Item::Data(data)) => Some(decode_hello_result(data)),
+                _ => None,
+            })
+            .collect::<String>();
+        assert!(gated_text.contains("Hello World! "), "Got: {gated_text}");
+        assert!(gated_text.contains("chunk1"), "Got: {gated_text}");
+        assert!(gated_text.contains("chunk2"), "Got: {gated_text}");
+        assert!(
+            gated_text.find("Hello World! ") < gated_text.find("chunk1")
+                && gated_text.find("chunk1") < gated_text.find("chunk2"),
+            "Stream data should preserve greeting/feed order. Got: {gated_text}"
+        );
+        let end_count = gated_items
+            .iter()
+            .filter(|item| matches!(&item.item, Some(result_output_item::Item::End(_))))
+            .count();
+        assert_eq!(end_count, 1, "Should have exactly one End trailer");
         Ok(())
     })
 }

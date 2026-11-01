@@ -705,6 +705,48 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         }
     }
 
+    /// Decodes result stream chunks into JSON values. A failed End is yielded
+    /// as the final `Err` so callers cannot mistake it for a complete result.
+    fn result_stream_as_json<'a>(
+        &'a self,
+        mut stream: futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
+        runner_name: &'a str,
+        using: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<serde_json::Value>> + Send + 'a>> {
+        use futures::StreamExt;
+        use proto::jobworkerp::data::result_output_item;
+
+        Box::pin(async_stream::stream! {
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        match self
+                            .decode_job_result_output(None, Some(runner_name), &data, using)
+                            .await
+                        {
+                            Ok(json) => yield Ok(json),
+                            Err(e) => {
+                                tracing::warn!("Failed to decode stream chunk: {:?}", e);
+                                // Fallback to raw string
+                                yield Ok(serde_json::Value::String(
+                                    String::from_utf8_lossy(&data).to_string(),
+                                ));
+                            }
+                        }
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        if let Err(error) = proto::stream_error::ensure_end_success(&trailer) {
+                            yield Err(error);
+                        }
+                        break;
+                    }
+                    Some(result_output_item::Item::FinalCollected(_)) => break,
+                    None => {}
+                }
+            }
+        })
+    }
+
     /// Listen to job result by job_id and return a stream of JSON values.
     ///
     /// This function:
@@ -728,7 +770,6 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         timeout: Option<u64>,
     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<serde_json::Value>> + Send + 'a>> {
         use futures::StreamExt;
-        use proto::jobworkerp::data::result_output_item;
 
         // UseJobResultApp is inherited from FunctionCallHelper -> UseJobExecutor -> UseJobResultApp
         Box::pin(async_stream::stream! {
@@ -738,34 +779,10 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 .await;
 
             match result {
-                Ok((_job_result, Some(mut stream))) => {
-                    // Stream available - yield decoded chunks
-                    while let Some(item) = stream.next().await {
-                        match item.item {
-                            Some(result_output_item::Item::Data(data)) => {
-                                match self
-                                    .decode_job_result_output(None, Some(runner_name), &data, using)
-                                    .await
-                                {
-                                    Ok(json) => yield Ok(json),
-                                    Err(e) => {
-                                        tracing::warn!("Failed to decode stream chunk: {:?}", e);
-                                        // Fallback to raw string
-                                        yield Ok(serde_json::Value::String(
-                                            String::from_utf8_lossy(&data).to_string(),
-                                        ));
-                                    }
-                                }
-                            }
-                            Some(result_output_item::Item::End(_)) |
-                            Some(result_output_item::Item::FinalCollected(_)) => {
-                                // End of stream
-                                break;
-                            }
-                            None => {
-                                // Skip empty items
-                            }
-                        }
+                Ok((_job_result, Some(stream))) => {
+                    let mut json_stream = self.result_stream_as_json(stream, runner_name, using);
+                    while let Some(item) = json_stream.next().await {
+                        yield item;
                     }
                 }
                 Ok((job_result, None)) => {

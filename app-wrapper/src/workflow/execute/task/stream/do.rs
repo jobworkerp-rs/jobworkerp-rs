@@ -521,7 +521,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             workflow_context.write().await.status = WorkflowStatus::Running;
@@ -666,7 +666,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             workflow_context.write().await.status = WorkflowStatus::Running;
@@ -776,7 +776,7 @@ mod tests {
                 let task_context = TaskContext::new(
                     None,
                     input.clone(),
-                    Arc::new(Mutex::new(serde_json::Map::new())),
+                    Arc::new(Mutex::new(Default::default())),
                 );
 
                 workflow_context.write().await.status = WorkflowStatus::Running;
@@ -856,7 +856,7 @@ mod tests {
                 let task_context = TaskContext::new(
                     None,
                     input.clone(),
-                    Arc::new(Mutex::new(serde_json::Map::new())),
+                    Arc::new(Mutex::new(Default::default())),
                 );
 
                 workflow_context.write().await.status = WorkflowStatus::Running;
@@ -1000,7 +1000,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             workflow_context.write().await.status = WorkflowStatus::Running;
@@ -1168,7 +1168,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             // Initialize position with ROOT (as WorkflowExecutor's TaskExecutor does)
@@ -1340,7 +1340,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             // Initialize position with ROOT (as WorkflowExecutor's TaskExecutor does)

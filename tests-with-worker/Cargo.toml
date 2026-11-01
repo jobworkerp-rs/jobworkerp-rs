@@ -32,5 +32,9 @@ tonic = { workspace = true }
 tonic-prost = { workspace = true }
 tonic-reflection = { workspace = true }
 
+[dev-dependencies]
+infra = { path = "../infra", features = ["stream-subscription-test-hook"] }
+tokio-util = { workspace = true }
+
 [build-dependencies]
 tonic-prost-build = { workspace = true }

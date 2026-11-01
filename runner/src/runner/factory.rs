@@ -14,7 +14,6 @@ use super::{
     python::PythonCommandRunner,
     request::RequestRunner,
     sandbox::SandboxRunner,
-    slack::SlackPostMessageRunner,
     workflow_unified::WorkflowUnifiedRunnerSpecImpl,
 };
 use anyhow::Result;
@@ -158,9 +157,6 @@ impl RunnerSpecFactory {
             Some(RunnerType::HttpRequest) => {
                 Some(Box::new(RequestRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
-            Some(RunnerType::SlackPostMessage) => {
-                Some(Box::new(SlackPostMessageRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
-            }
             Some(RunnerType::FunctionSetSelector) => {
                 Some(Box::new(FunctionSetSelectorSpecImpl::new())
                     as Box<dyn RunnerSpec + Send + Sync>)
@@ -273,6 +269,21 @@ mod test {
             .await
             .unwrap();
         assert_eq!(runner.name(), "COMMAND");
+    }
+
+    #[tokio::test]
+    async fn removed_slack_name_is_not_available_from_the_runner_spec_factory() {
+        let runner_factory = RunnerSpecFactory::new(
+            Arc::new(Plugins::new()),
+            Arc::new(McpServerFactory::default()),
+        );
+
+        assert!(
+            runner_factory
+                .create_runner_spec_by_name("SLACK_POST_MESSAGE", false)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]

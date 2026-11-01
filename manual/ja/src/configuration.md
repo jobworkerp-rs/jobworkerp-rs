@@ -66,6 +66,9 @@ MySQL は手動適用です。復旧用スキーマ追加前の既存 MySQL に�
 | | WORKFLOW_CHECKPOINT_EXPIRE_SEC | チェックポイント有効期限（秒） | None（制限なし）。dot.envでは86400を設定例として記載 |
 | | WORKFLOW_CHECKPOINT_MAX_COUNT | チェックポイント最大保持数 | None（制限なし）。dot.envでは100000を設定例として記載 |
 | | WORKFLOW_SKIP_SCHEMA_VALIDATION | スキーマバリデーションスキップ | false |
+| | WORKFLOW_JQ_CACHE_MAX_BYTES | compile 済み jq 式のキャッシュが保持する推定メモリ量の上限（バイト）。0 でキャッシュ無効 | 利用可能メモリ（cgroup の上限または物理メモリの小さい方）の 1/64 を 16〜256 MiB に収めた値。取得できない場合は 32 MiB |
+| | WORKFLOW_LIQUID_CACHE_MAX_BYTES | parse 済み Liquid テンプレートのキャッシュが保持する推定メモリ量の上限（バイト）。0 でキャッシュ無効 | 利用可能メモリの 1/512 を 4〜32 MiB に収めた値。取得できない場合は 8 MiB |
+| | WORKFLOW_EXPRESSION_CACHE_TTI_SEC | 上記キャッシュで、最後に使われてからこの秒数が経過した式を破棄する。0 で無効 | 1800 |
 | **Runner/Plugin設定** | PLUGIN_LOAD_TIMEOUT_SECS | プラグインロードタイムアウト（秒） | 10 |
 | | MCP_CONNECTION_TIMEOUT_SECS | MCP接続タイムアウト（秒） | 15 |
 

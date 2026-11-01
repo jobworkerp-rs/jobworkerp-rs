@@ -1,4 +1,5 @@
 use super::{
+    context::context_variables_from_json,
     expression::UseExpression,
     task::{NamedTimeouts, TaskExecutor},
 };
@@ -235,7 +236,7 @@ impl WorkflowExecutor {
                         let mut lock = initial_wfc.write().await;
                         lock.position = checkpoint.position.clone();
                         lock.input = checkpoint.workflow.input.clone();
-                        lock.context_variables = Arc::new(Mutex::new((*checkpoint.workflow.context_variables).clone()));
+                        lock.context_variables = Arc::new(Mutex::new(context_variables_from_json(&checkpoint.workflow.context_variables)));
                         drop(lock);
                         Some(TaskContext::new_from_cp(
                             None,
@@ -369,7 +370,7 @@ impl WorkflowExecutor {
             let mut task_context = cp_task_context.unwrap_or(TaskContext::new(
                 None,
                 input_with_defaults.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             ));
 
             let wfr = initial_wfc.read().await;
@@ -1925,6 +1926,66 @@ mod tests {
             .unwrap()
     }
 
+    fn issue_355_context(kb: usize) -> serde_json::Value {
+        let item = serde_json::json!({
+            "id": 123456,
+            "title": "review candidate title",
+            "body": "x".repeat(60),
+            "tags": ["a", "b", "c"]
+        });
+        let n = (kb * 1024 / serde_json::to_string(&item).unwrap().len()).max(1);
+        serde_json::json!({ "candidates": vec![item; n] })
+    }
+
+    // Issue #355 reproduction: per-evaluation cost must not grow with the
+    // size of context variables the expressions never reference.
+    #[test]
+    #[ignore]
+    fn issue_355_expression_perf() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+            let workflow_path = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/test-files/issue_355_expression_perf.yaml"
+            );
+            let workflow = Arc::new(load_test_workflow_from_yaml(workflow_path).await);
+            for kb in [1usize, 200] {
+                let executor = WorkflowExecutor::init(
+                    app_wrapper_module.clone(),
+                    app_module.clone(),
+                    workflow.clone(),
+                    Arc::new(serde_json::json!({})),
+                    None,
+                    Arc::new(issue_355_context(kb)),
+                    Arc::new(HashMap::new()),
+                    None,
+                )
+                .await
+                .unwrap();
+                let started = std::time::Instant::now();
+                let stream = executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+                pin_mut!(stream);
+                let mut last = None;
+                while let Some(wfc) = stream.next().await {
+                    last = Some(wfc.unwrap());
+                }
+                let elapsed = started.elapsed();
+                let wfc = last.expect("workflow must yield a context");
+                assert_eq!(wfc.status, WorkflowStatus::Completed);
+                assert_eq!(
+                    wfc.context_variables
+                        .lock()
+                        .await
+                        .get("last")
+                        .map(|v| (**v).clone()),
+                    Some(serde_json::json!(999))
+                );
+                eprintln!("issue_355: context {kb} KB -> {elapsed:?}");
+            }
+        })
+    }
+
     #[test]
     fn test_workflow_checkpoint_with_for_task() {
         // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
@@ -2424,7 +2485,7 @@ mod tests {
             let task_context = TaskContext::new(
                 None,
                 input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
+                Arc::new(Mutex::new(Default::default())),
             );
 
             let task_context = executor
