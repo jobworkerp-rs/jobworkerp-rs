@@ -16,7 +16,11 @@ use tracing;
 // TODO NOW TESTING (not valid, not used)
 #[async_trait]
 pub trait RedisRunAfterJobDispatcher: UseJobApp + UseJobQueueConfig {
-    fn execute(&'static self, lock: ShutdownLock) -> Result<()>
+    fn execute(
+        &'static self,
+        lock: ShutdownLock,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
@@ -34,7 +38,7 @@ pub trait RedisRunAfterJobDispatcher: UseJobApp + UseJobQueueConfig {
                             e
                         });
                     }
-                    _ = command_utils::util::shutdown::shutdown_signal() => {
+                    _ = shutdown.changed() => {
                         tracing::info!("break execute pop and enqueue run_after job");
                         lock.unlock();
                         break;

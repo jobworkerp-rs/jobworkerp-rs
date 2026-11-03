@@ -1,9 +1,5 @@
 //! Integration tests for TryTask error handling in workflows
 //! Tests try-catch-raise error handling with streaming execution
-//!
-//! NOTE: These tests use a multi-threaded runtime because the streaming
-//! implementation with RwLock requires multiple threads to avoid deadlock.
-//! The single-threaded TEST_RUNTIME causes deadlock in stream! macro contexts.
 
 #![allow(clippy::uninlined_format_args)]
 
@@ -21,8 +17,16 @@ use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+// raise.error.type must be a URI (schema: $defs/uriTemplate)
+const TEST_ERROR_TYPE: &str = "https://example.com/errors/test";
+const INNER_ERROR_TYPE: &str = "https://example.com/errors/inner";
+
 /// Create a workflow that raises an error inside try block and catches it
 fn create_try_catch_workflow_json() -> String {
+    create_try_catch_workflow_json_with_error_type(TEST_ERROR_TYPE)
+}
+
+fn create_try_catch_workflow_json_with_error_type(error_type: &str) -> String {
     r#"{
         "document": {
             "dsl": "1.0.0",
@@ -48,7 +52,7 @@ fn create_try_catch_workflow_json() -> String {
                             "raiseError": {
                                 "raise": {
                                     "error": {
-                                        "type": "test-error",
+                                        "type": "{{ERROR_TYPE}}",
                                         "status": 500,
                                         "detail": "Test error from raise task"
                                     }
@@ -95,7 +99,7 @@ fn create_try_catch_workflow_json() -> String {
             }
         }
     }"#
-    .to_string()
+    .replace("{{ERROR_TYPE}}", error_type)
 }
 
 /// Create a workflow that raises an error and catches it with catch.do, storing error in global context
@@ -104,7 +108,7 @@ fn create_try_with_catch_do_storing_error_workflow_json() -> String {
         "document": {
             "dsl": "1.0.0",
             "namespace": "test",
-            "name": "try-no-catch-do-workflow",
+            "name": "try-catch-do-storing-error-workflow",
             "version": "1.0.0"
         },
         "input": {
@@ -112,15 +116,15 @@ fn create_try_with_catch_do_storing_error_workflow_json() -> String {
         },
         "do": [
             {
-                "tryWithoutCatchDo": {
+                "tryWithCatchDo": {
                     "try": [
                         {
                             "raiseError": {
                                 "raise": {
                                     "error": {
-                                        "type": "test-error",
+                                        "type": "{{ERROR_TYPE}}",
                                         "status": 400,
-                                        "detail": "Error without catch.do"
+                                        "detail": "Error stored by catch.do"
                                     }
                                 }
                             }
@@ -155,7 +159,7 @@ fn create_try_with_catch_do_storing_error_workflow_json() -> String {
             }
         }
     }"#
-    .to_string()
+    .replace("{{ERROR_TYPE}}", TEST_ERROR_TYPE)
 }
 
 /// Create a workflow with nested try blocks
@@ -181,7 +185,7 @@ fn create_nested_try_workflow_json() -> String {
                                         "raiseInner": {
                                             "raise": {
                                                 "error": {
-                                                    "type": "inner-error",
+                                                    "type": "{{ERROR_TYPE}}",
                                                     "status": 500,
                                                     "detail": "Inner error"
                                                 }
@@ -243,7 +247,7 @@ fn create_nested_try_workflow_json() -> String {
             }
         }
     }"#
-    .to_string()
+    .replace("{{ERROR_TYPE}}", INNER_ERROR_TYPE)
 }
 
 /// Create test workflow unified runner
@@ -265,7 +269,26 @@ fn create_workflow_settings(workflow_json: &str) -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "requires backend with same db"]
+fn test_raise_with_non_uri_error_type_fails_to_load() -> Result<()> {
+    TEST_RUNTIME.block_on(async {
+        let mut runner = create_test_unified_runner().await?;
+        let workflow_json = create_try_catch_workflow_json_with_error_type("test-error");
+
+        let result = runner.load(create_workflow_settings(&workflow_json)).await;
+
+        let err = result.expect_err("non-URI raise.error.type must be rejected on load");
+        let message = format!("{:?}", err);
+        assert!(
+            message.contains("Failed to validate workflow schema")
+                && message.contains("/do/0/tryWithRaise"),
+            "load should fail by schema validation, got: {}",
+            message
+        );
+        Ok(())
+    })
+}
+
+#[test]
 fn test_try_catch_with_raise_error() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
@@ -339,7 +362,6 @@ fn test_try_catch_with_raise_error() -> Result<()> {
 }
 
 #[test]
-#[ignore = "requires backend with same db"]
 fn test_try_with_catch_do_storing_error() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
@@ -352,7 +374,7 @@ fn test_try_with_catch_do_storing_error() -> Result<()> {
 
         let args = WorkflowRunArgs {
             workflow_source: None,
-            input: r#"{"testInput": "test try without catch.do"}"#.to_string(),
+            input: r#"{"testInput": "test try with catch.do storing error"}"#.to_string(),
             ..Default::default()
         };
 
@@ -364,10 +386,10 @@ fn test_try_with_catch_do_storing_error() -> Result<()> {
 
         tracing::info!("Workflow result: {:?}", response);
 
-        // Workflow should complete successfully (error is caught but no catch.do)
+        // Workflow should complete successfully (error is caught and stored by catch.do)
         assert!(
             response.status == 0,
-            "Workflow should complete successfully even without catch.do, got status: {}",
+            "Workflow should complete successfully after catching the error, got status: {}",
             response.status
         );
 
@@ -381,10 +403,16 @@ fn test_try_with_catch_do_storing_error() -> Result<()> {
             "after_try_executed should be true"
         );
 
-        // Verify error is stored in context
-        assert!(
-            output_json.get("error").is_some(),
-            "error should be stored in context"
+        // Verify the raised error is propagated intact to catch.do
+        let error = output_json
+            .get("error")
+            .filter(|e| !e.is_null())
+            .expect("error should be stored in context");
+        assert_eq!(error.get("type"), Some(&serde_json::json!(TEST_ERROR_TYPE)));
+        assert_eq!(error.get("status"), Some(&serde_json::json!(400)));
+        assert_eq!(
+            error.get("detail"),
+            Some(&serde_json::json!("Error stored by catch.do"))
         );
 
         Ok(())
@@ -392,7 +420,6 @@ fn test_try_with_catch_do_storing_error() -> Result<()> {
 }
 
 #[test]
-#[ignore = "requires backend with same db"]
 fn test_nested_try_catch() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);

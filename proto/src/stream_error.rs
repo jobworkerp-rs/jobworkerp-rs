@@ -1,6 +1,8 @@
-//! Shared contract for failures that terminate a result stream.
+//! Shared contract for classified job failures: the error that terminates a
+//! result stream (`Trailer.error`) and the classification of a failed
+//! non-streaming result (`JobResultData.error`).
 //!
-//! The authoritative signal is `Trailer.error`. While older readers are still
+//! For streams, the authoritative signal is `Trailer.error`. While older readers are still
 //! deployed, error Ends also carry the v1 JSON value under
 //! [`STREAM_ERROR_METADATA_KEY`] (dual write), and readers keep accepting the
 //! JSON value and the legacy plugin key so Ends that crossed an older component
@@ -59,34 +61,92 @@ impl fmt::Display for StreamFailedError {
 
 impl Error for StreamFailedError {}
 
+/// `anyhow`-compatible error for a non-streaming execution that fails with a
+/// classified cause.
+///
+/// Unlike [`StreamFailedError`], no output has reached the consumer yet, so the
+/// worker records it like any other runtime error (same status and retry
+/// behavior) and only adds `error` to the result. `diagnostic` is the full text
+/// written to the result output; `error.message` is its bounded copy.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClassifiedJobError {
+    pub error: StreamError,
+    pub diagnostic: String,
+}
+
+impl ClassifiedJobError {
+    pub fn new(error: StreamError, diagnostic: impl Into<String>) -> Self {
+        Self {
+            error: normalize(error).0,
+            diagnostic: diagnostic.into(),
+        }
+    }
+}
+
+impl fmt::Display for ClassifiedJobError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.diagnostic)
+    }
+}
+
+impl Error for ClassifiedJobError {}
+
+/// Builds a classified failure normalized like an error End: the origin is
+/// bounded and never empty, the message fits [`MAX_STREAM_ERROR_BYTES`] once
+/// encoded, and a problem detail is cut to [`MAX_STREAM_ERROR_BYTES`].
+pub fn classified_error(
+    code: StreamErrorCode,
+    message: impl Into<String>,
+    origin: impl Into<String>,
+) -> StreamError {
+    normalize(unbounded_error(code, message, origin)).0
+}
+
+/// Classification of a job the worker cancelled, as opposed to a runner failure.
+pub fn cancelled_by_worker(message: impl Into<String>) -> StreamError {
+    classified_error(StreamErrorCode::Cancelled, message, WORKER_ORIGIN)
+}
+
+fn unbounded_error(
+    code: StreamErrorCode,
+    message: impl Into<String>,
+    origin: impl Into<String>,
+) -> StreamError {
+    StreamError {
+        code: code as i32,
+        message: message.into(),
+        origin: origin.into(),
+        problem: None,
+    }
+}
+
 /// Builds an End Trailer that reports a failure.
 ///
 /// Never fails: invalid fields are normalized (see the stream error contract)
 /// so a producer can always terminate the stream with a failure.
 pub fn error_trailer(
-    mut metadata: HashMap<String, String>,
+    metadata: HashMap<String, String>,
     code: StreamErrorCode,
     message: impl Into<String>,
     origin: impl Into<String>,
 ) -> Trailer {
+    error_trailer_from(metadata, unbounded_error(code, message, origin))
+}
+
+/// [`error_trailer`] for a prepared [`StreamError`], e.g. one carrying a problem.
+pub fn error_trailer_from(mut metadata: HashMap<String, String>, error: StreamError) -> Trailer {
     debug_assert!(
-        code != StreamErrorCode::Unspecified,
+        error.code != StreamErrorCode::Unspecified as i32,
         "producers must classify stream errors"
     );
     strip_reserved_keys(&mut metadata);
 
-    let origin = normalize_origin(origin.into());
-    let code_str = code_to_json_str(code as i32);
-    let (json, message) = encode_bounded_v1(code_str, message.into(), &origin);
+    let (error, json) = normalize(error);
     metadata.insert(STREAM_ERROR_METADATA_KEY.to_string(), json);
 
     Trailer {
         metadata,
-        error: Some(StreamError {
-            code: code as i32,
-            message,
-            origin,
-        }),
+        error: Some(error),
     }
 }
 
@@ -98,6 +158,14 @@ pub fn error_end_item(
     origin: impl Into<String>,
 ) -> ResultOutputItem {
     end_item(error_trailer(metadata, code, message, origin))
+}
+
+/// [`error_trailer_from`] wrapped in an End item.
+pub fn error_end_item_from(
+    metadata: HashMap<String, String>,
+    error: StreamError,
+) -> ResultOutputItem {
+    end_item(error_trailer_from(metadata, error))
 }
 
 /// [`error_trailer`] that also writes the deprecated legacy plugin key, for
@@ -171,6 +239,7 @@ pub fn inspect_end(trailer: &Trailer) -> StreamErrorOutcome {
                 code: StreamErrorCode::Unspecified as i32,
                 message: format!("malformed {STREAM_ERROR_METADATA_KEY} metadata: {reason:?}"),
                 origin: UNKNOWN_ORIGIN.to_string(),
+                problem: None,
             },
         };
         return StreamErrorOutcome::Failed(error);
@@ -180,6 +249,7 @@ pub fn inspect_end(trailer: &Trailer) -> StreamErrorOutcome {
             code: StreamErrorCode::ExecutionFailed as i32,
             message: message.clone(),
             origin: LEGACY_PLUGIN_ORIGIN.to_string(),
+            problem: None,
         });
     }
     StreamErrorOutcome::Success
@@ -244,10 +314,61 @@ pub fn describe(error: &StreamError) -> String {
     )
 }
 
+/// Output text of a job result that failed with `error` inside its stream.
+pub fn stream_failure_output(error: &StreamError) -> String {
+    format!("stream error: {}", failure_diagnostic(error))
+}
+
+/// [`describe`] followed by the non-empty fields of the problem details, so a
+/// stored result keeps everything known about the failure in one text.
+pub fn failure_diagnostic(error: &StreamError) -> String {
+    let description = describe(error);
+    let Some(problem) = &error.problem else {
+        return description;
+    };
+    let status = (problem.status != 0).then(|| problem.status.to_string());
+    let fields: Vec<String> = [
+        ("type", Some(problem.r#type.as_str())),
+        ("status", status.as_deref()),
+        ("title", problem.title.as_deref()),
+        ("detail", problem.detail.as_deref()),
+        ("instance", problem.instance.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(name, value)| {
+        value
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("{name}: {value}"))
+    })
+    .collect();
+    if fields.is_empty() {
+        description
+    } else {
+        format!("{description} [{}]", fields.join(", "))
+    }
+}
+
 fn strip_reserved_keys(metadata: &mut HashMap<String, String>) {
     for key in RESERVED_KEYS {
         metadata.remove(key);
     }
+}
+
+/// Bounds `error` (see [`classified_error`]) and returns it with its v1 JSON value.
+fn normalize(mut error: StreamError) -> (StreamError, String) {
+    error.origin = normalize_origin(error.origin);
+    // Escaping only grows the encoding, so no fitting prefix is longer than the
+    // bound; cutting first keeps a huge diagnostic from being encoded whole.
+    error
+        .message
+        .truncate(error.message.floor_char_boundary(MAX_STREAM_ERROR_BYTES));
+    let (json, message) =
+        encode_bounded_v1(code_to_json_str(error.code), error.message, &error.origin);
+    error.message = message;
+    if let Some(detail) = error.problem.as_mut().and_then(|p| p.detail.as_mut()) {
+        detail.truncate(detail.floor_char_boundary(MAX_STREAM_ERROR_BYTES));
+    }
+    (error, json)
 }
 
 fn normalize_origin(origin: String) -> String {
@@ -317,6 +438,7 @@ fn parse_v1(encoded: &str) -> Result<StreamError, ParseError> {
         code: code_from_json_str(code) as i32,
         message: message.to_string(),
         origin: origin.to_string(),
+        problem: None,
     })
 }
 
@@ -413,6 +535,7 @@ mod tests {
                 code: 99,
                 message: "future".to_string(),
                 origin: "FUTURE".to_string(),
+                problem: None,
             }),
             ..Default::default()
         };
@@ -623,6 +746,7 @@ mod tests {
                 code: StreamErrorCode::Cancelled as i32,
                 message: "typed".to_string(),
                 origin: "TYPED".to_string(),
+                problem: None,
             }),
         };
         assert_eq!(failed(&trailer).message, "typed");
@@ -759,5 +883,153 @@ mod tests {
             "PROVIDER_STREAM_FAILED"
         );
         assert_eq!(code_from_json_str("NOPE"), StreamErrorCode::Unspecified);
+    }
+
+    fn problem_with_detail(detail: String) -> StreamError {
+        StreamError {
+            code: StreamErrorCode::Timeout as i32,
+            message: "child failed".to_string(),
+            origin: "WORKFLOW".to_string(),
+            problem: Some(crate::jobworkerp::data::ProblemDetails {
+                r#type: "https://example.com/errors/custom".to_string(),
+                status: 418,
+                title: Some("Custom".to_string()),
+                detail: Some(detail),
+                instance: Some("/do/0/child".to_string()),
+            }),
+        }
+    }
+
+    #[test]
+    fn stream_failure_output_prefixes_the_diagnostic() {
+        let error = problem_with_detail("slow child".to_string());
+        assert_eq!(
+            stream_failure_output(&error),
+            format!("stream error: {}", failure_diagnostic(&error))
+        );
+    }
+
+    #[test]
+    fn failure_diagnostic_without_problem_is_the_description() {
+        let error = classified_error(StreamErrorCode::ExecutionFailed, "exit 3", "COMMAND");
+        assert_eq!(failure_diagnostic(&error), describe(&error));
+        assert_eq!(
+            failure_diagnostic(&error),
+            "COMMAND EXECUTION_FAILED: exit 3"
+        );
+    }
+
+    #[test]
+    fn failure_diagnostic_appends_every_problem_field() {
+        let error = problem_with_detail("slow child".to_string());
+        assert_eq!(
+            failure_diagnostic(&error),
+            "WORKFLOW TIMEOUT: child failed [type: https://example.com/errors/custom, \
+             status: 418, title: Custom, detail: slow child, instance: /do/0/child]"
+        );
+    }
+
+    #[test]
+    fn failure_diagnostic_skips_empty_problem_fields() {
+        let mut error = problem_with_detail(String::new());
+        let problem = error.problem.as_mut().unwrap();
+        problem.status = 0;
+        problem.title = None;
+        problem.instance = Some(String::new());
+        assert_eq!(
+            failure_diagnostic(&error),
+            "WORKFLOW TIMEOUT: child failed [type: https://example.com/errors/custom]"
+        );
+    }
+
+    #[test]
+    fn failure_diagnostic_omits_a_problem_without_content() {
+        let mut error = problem_with_detail(String::new());
+        error.problem = Some(crate::jobworkerp::data::ProblemDetails::default());
+        assert_eq!(failure_diagnostic(&error), describe(&error));
+    }
+
+    fn normalize_problem(error: StreamError) -> StreamError {
+        normalize(error).0
+    }
+
+    fn problem_detail(error: &StreamError) -> &str {
+        error
+            .problem
+            .as_ref()
+            .and_then(|p| p.detail.as_deref())
+            .expect("problem detail")
+    }
+
+    #[test]
+    fn classified_error_is_normalized_like_an_error_end() {
+        let error = classified_error(StreamErrorCode::Timeout, "x".repeat(10_000), "");
+        assert_eq!(error.code, StreamErrorCode::Timeout as i32);
+        assert_eq!(error.origin, UNKNOWN_ORIGIN);
+        assert!(error.message.len() < MAX_STREAM_ERROR_BYTES);
+        assert_eq!(error.problem, None);
+
+        let trailer = error_trailer(
+            HashMap::new(),
+            StreamErrorCode::Timeout,
+            "x".repeat(10_000),
+            "",
+        );
+        assert_eq!(trailer.error, Some(error));
+    }
+
+    #[test]
+    fn error_trailer_from_keeps_the_problem_and_writes_the_v1_json() {
+        let trailer = error_trailer_from(
+            HashMap::new(),
+            problem_with_detail("slow child".to_string()),
+        );
+        let error = trailer.error.as_ref().unwrap();
+        let problem = error.problem.as_ref().unwrap();
+        assert_eq!(problem.r#type, "https://example.com/errors/custom");
+        assert_eq!(problem.status, 418);
+        assert_eq!(problem_detail(error), "slow child");
+        assert_eq!(json_of(&trailer)["code"], "TIMEOUT");
+        assert_eq!(failed(&trailer), *error);
+
+        let decoded = Trailer::decode(trailer.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded, trailer);
+    }
+
+    #[test]
+    fn problem_detail_is_cut_to_the_bound_at_utf8_boundaries() {
+        let exact = "a".repeat(MAX_STREAM_ERROR_BYTES);
+        let error = normalize_problem(problem_with_detail(exact.clone()));
+        assert_eq!(problem_detail(&error), exact);
+
+        let over = "a".repeat(MAX_STREAM_ERROR_BYTES + 1);
+        let error = normalize_problem(problem_with_detail(over));
+        assert_eq!(problem_detail(&error).len(), MAX_STREAM_ERROR_BYTES);
+
+        // 3-byte characters: 4096 is not a boundary, so the cut falls before it.
+        let wide = "あ".repeat(MAX_STREAM_ERROR_BYTES / 3 + 1);
+        let error = normalize_problem(problem_with_detail(wide));
+        let detail = problem_detail(&error);
+        assert_eq!(detail.len(), MAX_STREAM_ERROR_BYTES / 3 * 3);
+        assert!(detail.chars().all(|c| c == 'あ'));
+    }
+
+    #[test]
+    fn classified_job_error_keeps_the_full_message_and_downcasts() {
+        let message = "y".repeat(10_000);
+        let err: anyhow::Error = ClassifiedJobError::new(
+            classified_error(
+                StreamErrorCode::InvalidArgument,
+                message.clone(),
+                "WORKFLOW",
+            ),
+            message.clone(),
+        )
+        .into();
+        assert_eq!(err.to_string(), message);
+        let typed = err.downcast_ref::<ClassifiedJobError>().unwrap();
+        assert_eq!(typed.error.code, StreamErrorCode::InvalidArgument as i32);
+        assert!(typed.error.message.len() < MAX_STREAM_ERROR_BYTES);
+        assert!(err.downcast_ref::<StreamFailedError>().is_none());
     }
 }

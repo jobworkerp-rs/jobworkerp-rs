@@ -223,11 +223,55 @@ raise:
     detail: '${ "requestId=" + $error.detail.requestId }'
 ```
 
+### Error Types
+
+Errors raised by the workflow engine use the Open Workflow Specification standard error types, `https://open-workflow-specification.org/spec/1.0.0/errors/<type>`:
+
+| type | status | Raised when |
+|---|---|---|
+| `configuration` | 400 | The definition or deployment cannot run as written: an unresolved timeout reference, invalid call settings, an unsupported script language or option, a missing runner required by `run.script`, `then: wait` inside `for`, a child job's runner, worker or method that does not exist |
+| `validation` | 400 | Workflow or task input fails its `input.schema`, a `run.script` argument name is not a valid identifier, or a child job's arguments do not match the runner's argument schema |
+| `expression` | 400 | A jq or Liquid expression fails to evaluate, or `raise.error` evaluates to a value of the wrong type |
+| `authorization` | 403 | A call references a secret that is not declared in `use.secrets` or whose value is not set |
+| `timeout` | 408 | A task or the workflow exceeds its `timeout` (see [Task Timeouts](#task-timeouts)), a child job exceeds a time limit inside its runner, or a `call: grpc` response has the `DEADLINE_EXCEEDED` status |
+| `communication` | 500 (or the call response's status) | A `call: http` / `call: grpc` invocation fails, a `call: http` response status is outside the accepted range, a `call: grpc` response has a non-OK status, an external `run.script` source cannot be downloaded, or a child job fails to communicate with a downstream service |
+| `runtime` | 500 | A child job started by a run task fails for a reason not covered by another type, or any other failure occurs while executing the workflow |
+
+`authentication` (401) is also a standard type but is not raised by the engine. Errors thrown by a `raise` task keep the `type` and `status` they define. `call: http` raises a `communication` error when the response status is outside 200–299, or outside 200–399 with `redirect: true` (default `false`). Redirects are followed automatically and the status of the final response is checked. The error's `status` is the response status, its `title` has the form `HTTP 404 Not Found`, and its `detail` is the response body (up to 64 KiB, with secrets referenced through `$secrets`, credentials used by `authentication`, and endpoint userinfo masked). `call: grpc` raises a `communication` error for a non-OK status; `status` is the HTTP status corresponding to the gRPC code (the grpc-gateway mapping, e.g. `NOT_FOUND`→404, `UNAVAILABLE`→503), `title` has the form `gRPC NOT_FOUND`, and `detail` is the status message (with secrets and credentials masked likewise). The same values are masked in the `title` / `detail` of the error raised when the call itself fails (e.g. a connection failure). The error `detail` returned to clients in job results and streams is truncated to 4096 bytes. Using the HTTP_REQUEST / GRPC runner directly with `run.runner` still returns the response as result data.
+
+#### Child Job Failures
+
+Run and call tasks execute their work as child jobs on a worker. A failed child job gets a type from the stage that failed and the cause:
+
+| Failure | type |
+|---|---|
+| The runner, worker or `using` method does not exist, the runner settings do not match their schema, or the worker cannot run the requested streaming mode | `configuration` |
+| The arguments do not match the runner's argument schema, or the runner rejected them when it ran | `validation` |
+| A time limit inside the runner (such as the GRPC runner's `timeout`) was exceeded, or a streaming run timed out waiting for results | `timeout` |
+| Communication with a downstream service failed, or an LLM provider stream was interrupted | `communication` |
+| A child workflow (`run.workflow`, the WORKFLOW runner) failed | The type and status of the error raised in the child workflow |
+| Anything else (a failed command, a cancelled job, a failure to enqueue the job or read its result) | `runtime` for run tasks, `communication` for call tasks |
+
+When a child workflow fails, the parent raises the child's error (a task timeout, an input validation failure, a user-defined error from `raise`, and so on) with the same type, status and title. Its `instance` is the parent task's position, and the position inside the child goes into `detail`. Errors from grandchild workflows pass through the same way.
+
+A failure whose cause was not recorded, such as a child job run by an older worker, is treated like the last row of the table.
+
+`catch.errors.with.type` is matched as a URI template against the error's `type`:
+
+- A value without `{...}` must equal the type exactly. Matching is case-sensitive.
+- A `{name}` placeholder matches any text: `https://open-workflow-specification.org/spec/1.0.0/errors/{kind}` catches every standard error.
+- `https://serverlessworkflow.io/spec/` (the domain under which version 1.0.0 of the specification was published) and `https://open-workflow-specification.org/spec/` are treated as the same.
+- A value without a scheme (e.g. `badargument`) is compared as a plain string and logs a warning, because literal error types must be absolute URIs.
+
+Earlier versions raised `http-error://...` types (e.g. `http-error://serviceunavailable`) and completed a scheme-less filter with `http-error://`. Neither applies any more, so update such filters to the standard types. Some statuses also changed (for example, run task failures are `500` instead of `503`).
+
+Earlier versions also turned every child job failure into `runtime` for run tasks and `communication` for call tasks. To keep catching all child job failures in one place, use a template such as `.../errors/{kind}` or drop the type filter.
+
 ### Task Timeouts
 
 A task's `timeout` (and the workflow-level `timeout`) is optional; a task without one has no deadline. When `WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC` is set, it applies only to run/call tasks that omit `timeout`. It never applies to do/try/for/fork and other tasks, so an outer task does not need a longer `timeout` than the tasks it contains. The workflow-level `timeout` applies only to the implicit root task and is not used as a default for inner tasks (when it expires, the whole workflow is interrupted).
 
-Child jobs still running inside a timed-out task are cancelled. The raised error is the Open Workflow Specification standard error with `type` `https://open-workflow-specification.org/spec/1.0.0/errors/timeout` and `status` `408`.
+Child jobs still running inside a timed-out task are cancelled. The raised error is the standard `timeout` error with `status` `408` (see [Error Types](#error-types)).
 
 ```yaml
 - guarded:
@@ -387,7 +431,8 @@ The jobworkerp-rs workflow DSL adopts the logic construction aspects of the offi
   - Exit-code handling differs between the process tasks. `run.shell` / `run.container` accept the `treatNonzeroAsError` and `successExitCodes` extensions and, by default, do **not** fail on a non-zero exit, so `return: code` and the `code` field of `return: all` can observe non-zero exit codes. `run.script` has no such option: a non-zero exit always fails the task before `return` is applied, so for scripts `return: code` / `return: all` only ever observe a successful exit (`0`).
 - `run.script`: streaming is not supported (the PYTHON_COMMAND runner has no streaming output), so a script task must run with `useStreaming: false` (the default). It still runs inside a streaming workflow when its own `useStreaming` is false.
 - `run.workflow`: `workflowData` / `workflowUrl` are jobworkerp extensions for specifying the nested workflow source. The official workflow process reference form is not implemented here. The parent workflow context is inherited implicitly; `workflowContext` is not a DSL field.
-- `call: grpc`: adopts the official `service` (name / host / port / authentication), `method`, and `arguments` for unary calls. It is adapted to the jobworkerp GRPC runner; `arguments` is sent as a JSON body and converted to protobuf via server reflection (`use_reflection` must be enabled). The output is shaped as `{ code, body, metadata, message? }`, where `body` is the JSON-parsed response. The GRPC runner itself supports proto descriptors, but accepting the official `proto` (externalResource) in the workflow executor is deferred, so `call: grpc` still rejects it at runtime. Service `authentication` supports only bearer; basic is rejected (the GRPC runner's single `auth_token` field cannot represent it). Server streaming is not supported.
+- `call: http`: `output: response` outputs the official HTTP Response shape `{ request: { method, uri, headers }, statusCode, headers, content }`. `request` is the request that was sent; the values of the `Authorization` / `Proxy-Authorization` / `Cookie` headers, URI userinfo (`user:password@`), and any secret referenced through `$secrets` (including percent- or form-encoded forms inside the URI) are replaced with `***`. Values passed from anywhere other than `$secrets`, such as workflow variables, are not masked, so declare credentials in `use.secrets` and reference them through `$secrets`. A value transformed from a secret by an expression (e.g. `${ $secrets.KEY | ascii_upcase }`) no longer matches the secret and is not masked either, except for credentials sent by `authentication`, which are masked as actually sent. In the response `headers`, repeated fields are joined with `, ` into one string (note that this makes `Set-Cookie` values ambiguous).
+- `call: grpc`: adopts the official `service` (name / host / port / authentication), `method`, and `arguments` for unary calls. It is adapted to the jobworkerp GRPC runner; `arguments` is sent as a JSON body and converted to protobuf via server reflection (`use_reflection` must be enabled). On success the output is shaped as `{ code, body, metadata, message? }`, where `body` is the JSON-parsed response; a non-OK status raises an error (see [Error Types](#error-types)). The GRPC runner itself supports proto descriptors, but accepting the official `proto` (externalResource) in the workflow executor is deferred, so `call: grpc` still rejects it at runtime. Service `authentication` supports only bearer; basic is rejected (the GRPC runner's single `auth_token` field cannot represent it). Server streaming is not supported.
 
 Example:
 
@@ -415,7 +460,7 @@ do:
 - **Scheduling & event-driven triggers**: The official `schedule` (cron, interval), `listen`/`emit` (CloudEvents-based event waiting/emission) are not supported. Job scheduling is handled by jobworkerp-rs's [periodic job execution feature](operations.md)
 - **External service calls (call task)**: `call: http` (endpoint `authentication` with the `bearer` and `basic` schemes) and `call: grpc` unary calls (service `authentication` limited to `bearer`) are supported. The `call: grpc` `proto` (externalResource, since reflection is used), basic authentication, and server streaming, plus AsyncAPI, OpenAPI, named function calls, the HTTP `digest` / `oauth2` / `oidc` / `certificate` authentication schemes, and HTTP `output: raw` are not supported
 - **await / return scope**: `await` is supported on every `run.*` instance (`await: false` = fire-and-forget). `return` is available on the process tasks (script / shell / container); runner / function / worker / workflow reject it. Under `useStreaming: true`, `await: false` is rejected for all instances (and `run.script` itself does not support `useStreaming: true`).
-- **Authentication & secret management**: `use.authentications` (named bearer/basic policies referenced via `authentication: { use: <name> }`), `use.secrets` (declared secret names), the official `secretBasedAuthenticationPolicy` (`bearer: { use: <name> }` / `basic: { use: <name> }`), and the `$secrets` variable are supported for `call: http` endpoint authentication. Secret values are never written in the workflow definition: declare names under `use.secrets` and supply each value through the `WORKFLOW_SECRET_<UPPER_SNAKE_NAME>` environment variable (e.g. `github-token` → `WORKFLOW_SECRET_GITHUB_TOKEN`). For a bearer secret the env value is the token string (or `{"token": "..."}` JSON); for basic it is `{"username": "...", "password": "..."}` JSON. A scheme value can be bound to a secret in three ways: (1) the official `bearer: { use: <name> }` / `basic: { use: <name> }` reference; (2) a runtime expression `bearer: { token: "${ $secrets.<name> }" }`; (3) a literal inline value (discouraged for credentials). Only names declared in `use.secrets` resolve, for both `{ use }` and `$secrets`; an undeclared reference is an error and the environment is not read (it does not silently expand to a jq `null` or an empty Liquid string). `$secrets` is injected only for `call` task evaluation and is never written back to the workflow context. `secrets` is a reserved name: a workflow input containing `{"secrets": {...}}` cannot override the `$secrets` (authentication material) seen during expression evaluation. Secret-derived `Authorization` header values are masked in debug logs. The `digest` / `oauth2` / `oidc` / `certificate` schemes are not yet supported. (Other credentials such as LLM API keys are still managed through Runner settings or environment variables.)
+- **Authentication & secret management**: `use.authentications` (named bearer/basic policies referenced via `authentication: { use: <name> }`), `use.secrets` (declared secret names), the official `secretBasedAuthenticationPolicy` (`bearer: { use: <name> }` / `basic: { use: <name> }`), and the `$secrets` variable are supported for `call: http` endpoint authentication. Secret values are never written in the workflow definition: declare names under `use.secrets` and supply each value through the `WORKFLOW_SECRET_<UPPER_SNAKE_NAME>` environment variable (e.g. `github-token` → `WORKFLOW_SECRET_GITHUB_TOKEN`). For a bearer secret the env value is the token string (or `{"token": "..."}` JSON); for basic it is `{"username": "...", "password": "..."}` JSON. A scheme value can be bound to a secret in three ways: (1) the official `bearer: { use: <name> }` / `basic: { use: <name> }` reference; (2) a runtime expression `bearer: { token: "${ $secrets.<name> }" }`; (3) a literal inline value (discouraged for credentials). Only names declared in `use.secrets` resolve, for both `{ use }` and `$secrets`; an undeclared reference is an `authorization` error and the environment is not read (it does not silently expand to a jq `null` or an empty Liquid string). `$secrets` is injected only for `call` task evaluation and is never written back to the workflow context. `secrets` is a reserved name: a workflow input containing `{"secrets": {...}}` cannot override the `$secrets` (authentication material) seen during expression evaluation. Secret-derived `Authorization` header values are masked in debug logs. The `digest` / `oauth2` / `oidc` / `certificate` schemes are not yet supported. (Other credentials such as LLM API keys are still managed through Runner settings or environment variables.)
 - **Catalogs & extensions**: `use.catalogs` (external collections of reusable components), `use.extensions` (pre/post task processing injection), and `use.functions` (external function definitions) are not supported
 - **Lifecycle events**: CloudEvents-based workflow/task state change notifications are not supported. Instead, real-time monitoring is available via gRPC streaming
 
@@ -424,6 +469,7 @@ do:
 - `useStreaming` for streaming execution (progress monitoring for long-running tasks such as LLMs)
 - `checkpoint` for checkpoint and restart functionality
 - Liquid template syntax (`$${}`) for string templating
+- URI template matching (`{name}` placeholders) in `catch.errors.with.type`
 
 ## Related Documentation
 

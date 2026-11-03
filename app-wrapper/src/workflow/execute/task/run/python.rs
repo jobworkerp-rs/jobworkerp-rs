@@ -8,17 +8,24 @@ use crate::workflow::execute::expression::ExpressionContext;
 use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
-        workflow::{self, supplement::PythonScriptSettings, supplement::ValidatedLanguage},
+        workflow::{
+            self, errors::StandardErrorType, supplement::PythonScriptSettings,
+            supplement::ValidatedLanguage,
+        },
     },
     execute::{
         context::{TaskContext, WorkflowContext},
         expression::UseExpression,
-        task::{ChildJobTracking, enqueue_child_job},
+        task::{
+            ChildJobTracking,
+            child_job::{self, ChildJobStage},
+            enqueue_child_job,
+        },
     },
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use app::app::{
-    job::execute::{JobExecutorWrapper, UseJobExecutor, WorkerForEnqueue},
+    job::execute::{JobExecutorWrapper, UseJobExecutor},
     runner::UseRunnerApp,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -66,10 +73,10 @@ impl PythonTaskExecutor {
     }
 
     /// Extract URI from ExternalResource
-    fn extract_uri_from_external_resource(resource: &workflow::ExternalResource) -> Result<String> {
+    fn extract_uri_from_external_resource(resource: &workflow::ExternalResource) -> &str {
         match &resource.endpoint {
-            workflow::Endpoint::UriTemplate(uri) => Ok(uri.0.clone()),
-            workflow::Endpoint::EndpointConfiguration { uri, .. } => Ok(uri.0.clone()),
+            workflow::Endpoint::UriTemplate(uri) => &uri.0,
+            workflow::Endpoint::EndpointConfiguration { uri, .. } => &uri.0,
         }
     }
 
@@ -82,7 +89,10 @@ impl PythonTaskExecutor {
         script_config: &workflow::ScriptConfiguration,
         task_context: &TaskContext,
         expression: &ExpressionContext,
-    ) -> Result<PythonCommandArgs> {
+    ) -> Result<PythonCommandArgs, Box<workflow::Error>> {
+        let factory = workflow::errors::ErrorFactory::new();
+        let position = task_context.position.read().await.clone();
+        let instance = || Some(position.as_error_instance());
         let mut script_code = String::new();
 
         let (arguments, environment, code_or_source) = match script_config {
@@ -106,8 +116,11 @@ impl PythonTaskExecutor {
         let evaluated_args =
             match Self::transform_map(task_context.input.clone(), arguments.clone(), expression) {
                 Ok(args) => args,
-                Err(e) => {
-                    return Err(anyhow!("Failed to evaluate runtime expressions: {:?}", e));
+                Err(mut e) => {
+                    let mut arguments_position = position.clone();
+                    arguments_position.push("arguments".to_string());
+                    e.position(&arguments_position);
+                    return Err(e);
                 }
             };
         tracing::debug!("Evaluated arguments: {:#?}", evaluated_args);
@@ -123,11 +136,22 @@ impl PythonTaskExecutor {
 
             for (key, value) in args_map {
                 // Security validation
-                validation::sanitize_python_variable(key, value)?;
+                validation::sanitize_python_variable(key, value).map_err(|e| {
+                    factory.validation(
+                        format!("Invalid script argument: {key}"),
+                        instance(),
+                        Some(e.to_string()),
+                    )
+                })?;
 
                 // Serialize and Base64 encode (prevents all injection attacks)
-                let json_str =
-                    serde_json::to_string(value).context("Failed to serialize argument value")?;
+                let json_str = serde_json::to_string(value).map_err(|e| {
+                    factory.runtime(
+                        format!("Failed to serialize script argument: {key}"),
+                        instance(),
+                        Some(e.to_string()),
+                    )
+                })?;
                 let b64_encoded = STANDARD.encode(json_str.as_bytes());
 
                 // Inject as Python variable (secure)
@@ -145,8 +169,24 @@ impl PythonTaskExecutor {
                 script_code.push_str(code);
             }
             Err(source) => {
-                let uri = Self::extract_uri_from_external_resource(source)?;
-                let external_code = validation::download_script_secure(&uri).await?;
+                let uri = Self::extract_uri_from_external_resource(source);
+                let url = validation::validate_script_url(uri).map_err(|e| {
+                    factory.configuration(
+                        "Invalid external script URL".to_string(),
+                        instance(),
+                        Some(e.to_string()),
+                    )
+                })?;
+                let external_code =
+                    validation::download_script_secure(&url)
+                        .await
+                        .map_err(|e| {
+                            factory.communication(
+                                "Failed to download external script".to_string(),
+                                instance(),
+                                Some(e.to_string()),
+                            )
+                        })?;
                 script_code.push_str(&external_code);
             }
         }
@@ -222,7 +262,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             Ok(lang) => lang,
             Err(e) => {
                 let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().bad_argument(
+                return Err(workflow::errors::ErrorFactory::new().configuration(
                     e,
                     Some(pos.as_error_instance()),
                     None,
@@ -234,7 +274,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             ValidatedLanguage::Python => { /* Supported */ }
             ValidatedLanguage::Javascript => {
                 let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().not_implemented(
+                return Err(workflow::errors::ErrorFactory::new().configuration(
                     "JavaScript script execution".to_string(),
                     Some(pos.as_error_instance()),
                     Some("JavaScript support is not yet implemented".to_string()),
@@ -260,22 +300,18 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
         let python_settings = bail_with_position!(
             task_context,
             PythonScriptSettings::from_metadata(&self.metadata),
-            bad_argument,
+            configuration,
             "Failed to parse Python settings from metadata"
         );
 
-        let args = bail_with_position!(
-            task_context,
-            self.to_python_command_args(script_config, &task_context, &expression)
-                .await,
-            bad_argument,
-            "Failed to prepare script arguments"
-        );
+        let args = self
+            .to_python_command_args(script_config, &task_context, &expression)
+            .await?;
 
         let settings = bail_with_position!(
             task_context,
             self.to_python_runner_settings(&python_settings),
-            bad_argument,
+            configuration,
             "Failed to prepare script settings"
         );
 
@@ -290,7 +326,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             Ok(Some(runner)) => runner,
             Ok(None) => {
                 let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                return Err(workflow::errors::ErrorFactory::new().configuration(
                     format!("{} runner not found", runner_name),
                     Some(pos.as_error_instance()),
                     None,
@@ -298,7 +334,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             }
             Err(e) => {
                 let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                return Err(workflow::errors::ErrorFactory::new().configuration(
                     format!("Failed to find {} runner", runner_name),
                     Some(pos.as_error_instance()),
                     Some(format!("{:?}", e)),
@@ -318,7 +354,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
                     .context("Failed to encode PythonCommandRunnerSettings")
                     .map(|_| buf)
             },
-            internal_error,
+            runtime,
             "Failed to encode runner settings to protobuf"
         );
 
@@ -332,7 +368,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
                     .context("Failed to encode PythonCommandArgs")
                     .map(|_| buf)
             },
-            internal_error,
+            runtime,
             "Failed to encode script arguments to protobuf"
         );
 
@@ -362,18 +398,14 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             broadcast_results: false,
         };
 
-        let worker = if worker_data.use_static {
-            WorkerForEnqueue::Existing(bail_with_position!(
-                task_context,
-                self.job_executor_wrapper
-                    .find_or_create_worker(worker_data)
-                    .await,
-                service_unavailable,
-                "Failed to find or create worker"
-            ))
-        } else {
-            WorkerForEnqueue::Temp(worker_data)
-        };
+        let worker = bail_with_position!(
+            task_context,
+            self.job_executor_wrapper
+                .worker_for_enqueue(worker_data)
+                .await,
+            runtime,
+            "Failed to find or create worker"
+        );
 
         // Enqueue job with protobuf binary arguments directly. Awaited scripts
         // are tracked so a task timeout or workflow cancel can reach them.
@@ -383,29 +415,37 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             ChildJobTracking::Untracked
         };
         let child_job_scope = task_context.child_job_scope.clone();
-        let (result_fut, running_job_guard) = bail_with_position!(
-            task_context,
-            enqueue_child_job(
-                &self.workflow_context,
-                &self.job_executor_wrapper,
-                child_job_scope.as_ref(),
-                self.job_executor_wrapper
-                    .enqueue_with_worker_or_temp_channel(
-                        self.metadata.clone(),
-                        worker,
-                        args_bytes, // Use protobuf binary directly, not JSON
-                        None,       // No unique key
-                        self.task_timeout.as_secs() as u32,
-                        StreamingType::None,
-                        None, // using not used for Python script execution
-                        super::no_result_override_if(!await_completion),
-                    ),
-                tracking,
-            )
-            .await,
-            service_unavailable,
-            "Failed to enqueue script execution job"
-        );
+        let enqueued = enqueue_child_job(
+            &self.workflow_context,
+            &self.job_executor_wrapper,
+            child_job_scope.as_ref(),
+            self.job_executor_wrapper
+                .enqueue_with_worker_or_temp_channel(
+                    self.metadata.clone(),
+                    worker,
+                    args_bytes, // Use protobuf binary directly, not JSON
+                    None,       // No unique key
+                    self.task_timeout.as_secs() as u32,
+                    StreamingType::None,
+                    None, // using not used for Python script execution
+                    super::no_result_override_if(!await_completion),
+                ),
+            tracking,
+        )
+        .await
+        .context(ChildJobStage::Enqueue);
+        let (result_fut, running_job_guard) = match enqueued {
+            Ok(enqueued) => enqueued,
+            Err(e) => {
+                return Err(child_job::fail(
+                    &task_context,
+                    e,
+                    StandardErrorType::Runtime,
+                    "Failed to enqueue script execution job",
+                )
+                .await);
+            }
+        };
 
         if !await_completion {
             // Fire-and-forget: continue with the current task input as output.
@@ -418,27 +458,25 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
         if let Some(guard) = running_job_guard {
             guard.mark_completed();
         }
-        let (job_result, _stream) = bail_with_position!(
-            task_context,
-            wait_result,
-            service_unavailable,
-            "Failed to wait for script execution job"
-        );
-
-        let output_bytes = bail_with_position!(
-            task_context,
-            job_result
-                .ok_or_else(|| anyhow!("Job result not found"))
-                .and_then(|res| self.job_executor_wrapper.extract_job_result_output(res)),
-            internal_error,
-            "Failed to extract job result output"
-        );
+        let output_bytes = match child_job::finished_output(&self.job_executor_wrapper, wait_result)
+        {
+            Ok(output) => output,
+            Err(e) => {
+                return Err(child_job::fail(
+                    &task_context,
+                    e,
+                    StandardErrorType::Runtime,
+                    "Failed to execute script job",
+                )
+                .await);
+            }
+        };
 
         // Decode PYTHON_COMMAND result from protobuf binary
         let result: PythonCommandResult = bail_with_position!(
             task_context,
             prost::Message::decode(output_bytes.as_slice()),
-            internal_error,
+            runtime,
             "Failed to decode script result"
         );
 
@@ -450,7 +488,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
                 result.output_stderr.as_deref().unwrap_or("")
             );
             let pos = task_context.position.read().await;
-            return Err(workflow::errors::ErrorFactory::new().internal_error(
+            return Err(workflow::errors::ErrorFactory::new().runtime(
                 "Script execution failed".to_string(),
                 Some(pos.as_error_instance()),
                 Some(error_detail),
@@ -460,7 +498,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
         let script_output = bail_with_position!(
             task_context,
             adapt_script_return_output(result, self.task.return_, task_context.input.as_ref()),
-            bad_argument,
+            runtime,
             "Failed to adapt script process output"
         );
 

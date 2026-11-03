@@ -20,20 +20,27 @@ use crate::workflow::{
         context::{ChildJobScope, TaskContext, WorkflowContext},
         expression::UseExpression,
         secret,
-        task::{NamedTimeouts, run::resolve_run_task_timeout_sec},
+        task::{
+            NamedTimeouts,
+            child_job::{self, ChildJobStage},
+            run::resolve_run_task_timeout_sec,
+        },
     },
 };
-use anyhow::{Result, anyhow};
-use app::app::{
-    job::execute::{JobExecutorWrapper, UseJobExecutor, WorkerForEnqueue},
-    runner::UseRunnerApp,
-};
+use anyhow::{Context, Result, anyhow};
+use app::app::job::execute::{JobExecutorWrapper, UseJobExecutor, WorkerForEnqueue};
 use command_utils::trace::Tracing;
 use infra::workflow::definition::expression_context::SECRETS_VARIABLE;
 use proto::jobworkerp::data::{QueueType, ResponseType, StreamingType, WorkerData};
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
+
+// Upper bound on the downstream response text copied into an error `detail`,
+// so an oversized error body cannot bloat the stored result or the client
+// stream.
+const ERROR_DETAIL_MAX_BYTES: usize = 64 * 1024;
+const TRUNCATED_MARKER: &str = "... (truncated)";
 
 pub struct CallTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
@@ -73,11 +80,43 @@ impl CallTaskExecutor {
     // recorded in the task position, so the message stays accurate for both
     // `call: http` and `call: grpc`.
     fn unsupported(field: &str, message: String) -> Box<workflow::Error> {
-        workflow::errors::ErrorFactory::new().bad_argument(
+        workflow::errors::ErrorFactory::new().configuration(
             format!("Unsupported call {field}: {message}"),
             None,
             None,
         )
+    }
+
+    /// Secrets the workflow cannot read are authorization errors, as the
+    /// specification requires; malformed secret values or unsupported schemes
+    /// are definition problems and stay configuration errors.
+    fn secret_failure(field: &str, error: anyhow::Error) -> Box<workflow::Error> {
+        if error.downcast_ref::<secret::SecretAccessError>().is_some() {
+            workflow::errors::ErrorFactory::new().authorization(
+                format!("Inaccessible secret in call {field}: {error}"),
+                None,
+                None,
+            )
+        } else {
+            Self::unsupported(field, error.to_string())
+        }
+    }
+
+    /// Downstream text (a response body or status message) for an error
+    /// `detail`. Secrets are masked before truncation so that the size limit
+    /// cannot cut a secret and leave its head exposed; the service may echo
+    /// request credentials back in its error text.
+    fn error_detail(text: &str, secret_values: &[String]) -> String {
+        let masked = secret::mask_encoded_secret_values(text, secret_values);
+        Self::truncate_error_detail(masked.as_deref().unwrap_or(text))
+    }
+
+    fn truncate_error_detail(detail: &str) -> String {
+        if detail.len() <= ERROR_DETAIL_MAX_BYTES {
+            return detail.to_string();
+        }
+        let end = detail.floor_char_boundary(ERROR_DETAIL_MAX_BYTES);
+        format!("{}{TRUNCATED_MARKER}", &detail[..end])
     }
 
     fn merge_task_metadata(
@@ -109,7 +148,9 @@ impl CallTaskExecutor {
     /// its own `$secrets` references are resolved once the `use` name is known
     /// (the name itself may have been expression-driven). Only the secrets that
     /// policy references are loaded, into a local expression copy — never the
-    /// shared context.
+    /// shared context. Their values are returned with the policy so that the
+    /// caller can mask them (an inline policy's secrets are already among the
+    /// `with` secrets).
     fn resolve_named_policy(
         inline: Option<&workflow::AuthenticationPolicy>,
         use_ref: Option<&str>,
@@ -117,9 +158,9 @@ impl CallTaskExecutor {
         declared_secrets: &std::collections::HashSet<String>,
         raw_input: Arc<Value>,
         expression: &ExpressionContext,
-    ) -> Result<workflow::AuthenticationPolicy, Box<workflow::Error>> {
+    ) -> Result<(workflow::AuthenticationPolicy, Vec<String>), Box<workflow::Error>> {
         if let Some(policy) = inline {
-            return Ok(policy.clone());
+            return Ok((policy.clone(), Vec::new()));
         }
         let use_ref = use_ref.ok_or_else(|| {
             Self::unsupported(
@@ -141,16 +182,51 @@ impl CallTaskExecutor {
         })?;
         let policy_secrets =
             secret::resolve_secrets_for(declared_secrets, &policy_value.to_string())
-                .map_err(|e| Self::unsupported("authentication", e.to_string()))?;
+                .map_err(|e| Self::secret_failure("authentication", e))?;
+        let policy_secret_values = secret::secret_values(&policy_secrets);
         let mut policy_expression = expression.clone();
         secret::merge_secrets(&mut policy_expression, policy_secrets);
         let transformed = Self::transform_value(raw_input, policy_value, &policy_expression)?;
-        serde_json::from_value(transformed).map_err(|e| {
+        let policy = serde_json::from_value(transformed).map_err(|e| {
             Self::unsupported(
                 "authentication",
                 format!("invalid authentication '{use_ref}' after expansion: {e}"),
             )
-        })
+        })?;
+        Ok((policy, policy_secret_values))
+    }
+
+    /// The communication error for a call whose runner job failed, with secrets
+    /// masked. Shared by both protocols so that no failure path skips masking.
+    fn runner_failure(
+        error: anyhow::Error,
+        title: &str,
+        position: String,
+        secret_values: &[String],
+    ) -> Box<workflow::Error> {
+        let error = child_job::to_workflow_error(
+            error,
+            workflow::errors::StandardErrorType::Communication,
+            title,
+            Some(position),
+        );
+        Self::mask_error(error, secret_values)
+    }
+
+    /// `error` with secrets masked in its title and detail. A failed child job
+    /// is reported with its full error chain, which can carry request data —
+    /// e.g. a URL with secret query values, or a server error echoing the
+    /// credentials it received.
+    fn mask_error(
+        mut error: Box<workflow::Error>,
+        secret_values: &[String],
+    ) -> Box<workflow::Error> {
+        for text in [&mut error.title, &mut error.detail].into_iter().flatten() {
+            if let Some(masked) = secret::mask_encoded_secret_values(text, secret_values) {
+                *text = masked;
+            }
+        }
+        error
     }
 
     // Enqueue a job on the given built-in runner and return its transformed raw
@@ -169,16 +245,12 @@ impl CallTaskExecutor {
         timeout_sec: u32,
         child_job_scope: Option<&Arc<ChildJobScope>>,
     ) -> Result<Value> {
-        let runner = self
-            .job_executor_wrapper
-            .runner_app()
-            .find_runner_by_name(runner_name)
-            .await?
-            .ok_or_else(|| anyhow!("Runner '{runner_name}' not found"))?;
+        let runner = child_job::find_runner(&self.job_executor_wrapper, runner_name).await?;
         let settings = self
             .job_executor_wrapper
             .setup_runner_and_settings(&runner, Some(settings))
-            .await?;
+            .await
+            .context(ChildJobStage::Settings)?;
         let (rid, rdata) = runner
             .id
             .zip(runner.data)
@@ -186,7 +258,8 @@ impl CallTaskExecutor {
         let job_args = self
             .job_executor_wrapper
             .transform_job_args(&rid, &rdata, &job_args, using)
-            .await?;
+            .await
+            .context(ChildJobStage::Prepare)?;
 
         let mut metadata = Self::merge_task_metadata(&self.metadata, &self.task.metadata);
         Self::inject_metadata_from_context(&mut metadata, &cx);
@@ -218,20 +291,18 @@ impl CallTaskExecutor {
                 ),
             super::ChildJobTracking::Tracked,
         )
-        .await?;
+        .await
+        .context(ChildJobStage::Enqueue)?;
         let wait_result = result_fut.await;
         running_job_guard
             .expect("tracked child jobs must return a running job guard")
             .mark_completed();
 
-        let (res, _stream) = wait_result?;
-        let Some(res) = res else {
-            return Err(anyhow!("Failed to enqueue job or job result not found"));
-        };
-        let output = self.job_executor_wrapper.extract_job_result_output(res)?;
+        let output = child_job::finished_output(&self.job_executor_wrapper, wait_result)?;
         self.job_executor_wrapper
             .transform_raw_output(&rid, &rdata, output.as_slice(), using)
             .await
+            .context(ChildJobStage::Decode)
     }
 }
 
@@ -272,7 +343,8 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
         // `resolve_secrets_for` scans `with` once for both the undeclared-guard
         // and the resolution; the empty-declarations case still runs the guard.
         let secrets = secret::resolve_secrets_for(&declared_secrets, &call_value.to_string())
-            .map_err(|e| Self::unsupported("authentication", e.to_string()))?;
+            .map_err(|e| Self::secret_failure("authentication", e))?;
+        let secret_values = secret::secret_values(&secrets);
         if !declared_secrets.is_empty() {
             expression.insert(SECRETS_VARIABLE, Arc::new(secrets));
         }
@@ -308,6 +380,7 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
                     call,
                     &named_authentications,
                     &declared_secrets,
+                    &secret_values,
                     &expression,
                     timeout_sec,
                 )
@@ -321,6 +394,7 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
                     call,
                     &named_authentications,
                     &declared_secrets,
+                    &secret_values,
                     &expression,
                     timeout_sec,
                 )
@@ -353,6 +427,42 @@ mod tests {
 
     fn declared(names: &[&str]) -> std::collections::HashSet<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn assert_kind(error: &workflow::Error, kind: workflow::errors::StandardErrorType) {
+        assert_eq!(error.type_.0, kind.uri(), "{error:?}");
+        assert_eq!(error.status, kind.default_status(), "{error:?}");
+    }
+
+    #[test]
+    fn undeclared_secret_reference_is_an_authorization_error() {
+        let err = secret::resolve_secrets_for(&no_secrets(), r#"{"t":"${ $secrets.MISSING }"}"#)
+            .unwrap_err();
+        let error = CallTaskExecutor::secret_failure("authentication", err);
+        assert_kind(&error, workflow::errors::StandardErrorType::Authorization);
+    }
+
+    #[test]
+    fn unset_declared_secret_is_an_authorization_error() {
+        let err =
+            secret::resolve_secret("API_TOKEN", &declared(&["API_TOKEN"]), |_| None).unwrap_err();
+        let error = CallTaskExecutor::secret_failure("authentication", err);
+        assert_kind(&error, workflow::errors::StandardErrorType::Authorization);
+    }
+
+    #[test]
+    fn malformed_secret_value_is_a_configuration_error_without_the_value() {
+        let err =
+            secret::interpret_bearer_secret("API_TOKEN", "{not-json SECRET-VALUE").unwrap_err();
+        let error = CallTaskExecutor::secret_failure("authentication", err);
+        assert_kind(&error, workflow::errors::StandardErrorType::Configuration);
+        assert!(!format!("{error:?}").contains("SECRET-VALUE"), "{error:?}");
+    }
+
+    #[test]
+    fn unsupported_call_settings_are_configuration_errors() {
+        let error = CallTaskExecutor::unsupported("endpoint", "bad".to_string());
+        assert_kind(&error, workflow::errors::StandardErrorType::Configuration);
     }
 
     #[test]
@@ -656,5 +766,65 @@ mod tests {
         let err =
             secret::resolve_declared_secrets(&declared(&["API_TOKEN"]), &serialized).unwrap_err();
         assert!(err.to_string().contains("API_TOKEN"));
+    }
+
+    #[test]
+    fn error_detail_within_limit_is_unchanged() {
+        let body = "a".repeat(ERROR_DETAIL_MAX_BYTES);
+        assert_eq!(CallTaskExecutor::truncate_error_detail(&body), body);
+    }
+
+    #[test]
+    fn error_detail_over_limit_is_truncated_with_marker() {
+        let body = "a".repeat(ERROR_DETAIL_MAX_BYTES + 1);
+        let detail = CallTaskExecutor::truncate_error_detail(&body);
+        assert_eq!(
+            detail,
+            format!("{}{}", "a".repeat(ERROR_DETAIL_MAX_BYTES), TRUNCATED_MARKER)
+        );
+    }
+
+    #[test]
+    fn error_detail_truncation_cuts_at_utf8_boundary() {
+        // A 3-byte character straddling the limit must be dropped whole.
+        let body = format!("{}あ", "a".repeat(ERROR_DETAIL_MAX_BYTES - 1));
+        let detail = CallTaskExecutor::truncate_error_detail(&body);
+        assert_eq!(
+            detail,
+            format!(
+                "{}{}",
+                "a".repeat(ERROR_DETAIL_MAX_BYTES - 1),
+                TRUNCATED_MARKER
+            )
+        );
+    }
+
+    #[test]
+    fn mask_error_masks_secrets_in_title_and_detail() {
+        let error = workflow::errors::ErrorFactory::new().communication(
+            "failed with s3cr3t".to_string(),
+            None,
+            Some("url: https://example.com/?key=s3cr3t%2Fvalue".to_string()),
+        );
+        let secrets = vec!["s3cr3t/value".to_string(), "s3cr3t".to_string()];
+
+        let masked = CallTaskExecutor::mask_error(error, &secrets);
+
+        let text = format!("{:?} {:?}", masked.title, masked.detail);
+        assert!(!text.contains("s3cr3t"), "{text}");
+        assert!(text.contains("example.com"), "{text}");
+    }
+
+    #[test]
+    fn mask_error_without_secrets_keeps_error() {
+        let error = workflow::errors::ErrorFactory::new().communication(
+            "failed".to_string(),
+            None,
+            Some("a%2Fb".to_string()),
+        );
+
+        let masked = CallTaskExecutor::mask_error(error.clone(), &[]);
+
+        assert_eq!(masked, error);
     }
 }

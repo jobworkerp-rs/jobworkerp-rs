@@ -48,6 +48,40 @@ pub trait JobResultAppHelper: UseWorkerApp + UseRdbJobResultRepository {
             || data.status != ResultStatus::Success as i32 && data.store_failure
     }
 
+    /// RDB part of [`JobResultApp::replace_job_result`].
+    async fn _replace_stored_result(
+        &self,
+        id: &JobResultId,
+        recorded: &JobResultData,
+        replacement: &JobResultData,
+    ) -> Result<()> {
+        let repository = self.rdb_job_result_repository();
+        if Self::_should_store(replacement) {
+            let mut tx = repository
+                .db_pool()
+                .begin()
+                .await
+                .map_err(JobWorkerError::DBError)?;
+            let updated = repository.update(&mut tx, id, replacement).await?;
+            tx.commit().await.map_err(JobWorkerError::DBError)?;
+            // No row when the recorded result was not stored (or was deleted
+            // since); the replacement must still be kept.
+            if !updated {
+                repository.create(id, replacement).await?;
+            }
+        } else if Self::_should_store(recorded) && repository.delete(id).await? {
+            tracing::warn!(
+                result_id = id.value,
+                job_id = ?replacement.job_id.map(|j| j.value),
+                recorded = ?recorded.status(),
+                replacement = ?replacement.status(),
+                "revoked a stored job result: its replacement is not stored by \
+                 the store_success / store_failure settings"
+            );
+        }
+        Ok(())
+    }
+
     // Batch-fill job result data with worker data (avoids N+1 overrides queries).
     // Worker deletion is already tolerated inside `_fill_worker_data_to_data_inner`
     // (returns the stored values as-is on Ok(None)), so any error reaching us
@@ -451,6 +485,18 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
         broadcast_result: bool,
     ) -> Result<bool>; // record result and create retry job if needed
     // return
+
+    /// Replaces `recorded`, a result already passed to
+    /// `create_job_result_if_necessary`, with `replacement`. The RDB row and
+    /// the listen_after cache end up as if `replacement` had been recorded
+    /// instead: written or deleted by the store_success / store_failure
+    /// settings of both results.
+    async fn replace_job_result(
+        &self,
+        id: &JobResultId,
+        recorded: &JobResultData,
+        replacement: &JobResultData,
+    ) -> Result<()>;
 
     async fn delete_job_result(&self, id: &JobResultId) -> Result<bool>;
     // fill in worker data in vector using _fill_worker_data() iteratively
@@ -982,6 +1028,143 @@ mod subscribed_listener_tests {
             assert!(result.is_err());
             assert!(ready_rx.await.is_err());
             tokio::time::timeout(Duration::from_secs(1), stream_dropped_rx).await??;
+            Ok(())
+        })
+    }
+}
+
+#[cfg(test)]
+mod replace_job_result_tests {
+    use crate::module::AppModule;
+    use crate::module::test::{create_hybrid_test_app, create_rdb_chan_test_app};
+    use anyhow::Result;
+    use infra::infra::job_result::redis::RedisJobResultRepository;
+    use infra_utils::infra::test::TEST_RUNTIME;
+    use proto::jobworkerp::data::{
+        JobId, JobResultData, JobResultId, ResponseType, ResultOutput, ResultStatus,
+        StreamErrorCode, StreamingType, WorkerId,
+    };
+
+    fn recorded(store_success: bool, store_failure: bool) -> JobResultData {
+        JobResultData {
+            job_id: Some(JobId {
+                value: rand::random::<i64>().abs(),
+            }),
+            worker_id: Some(WorkerId { value: 1 }),
+            status: ResultStatus::Success as i32,
+            output: Some(ResultOutput { items: vec![] }),
+            streaming_type: StreamingType::Response as i32,
+            response_type: ResponseType::Direct as i32,
+            store_success,
+            store_failure,
+            ..Default::default()
+        }
+    }
+
+    fn failure_of(recorded: &JobResultData) -> JobResultData {
+        let error = proto::stream_error::classified_error(
+            StreamErrorCode::ExecutionFailed,
+            "exit 3",
+            "COMMAND",
+        );
+        JobResultData {
+            status: ResultStatus::MaxRetry as i32,
+            output: Some(ResultOutput {
+                items: proto::stream_error::stream_failure_output(&error).into_bytes(),
+            }),
+            error: Some(error),
+            ..recorded.clone()
+        }
+    }
+
+    /// Records `before` as the worker does, replaces it with its failure and
+    /// returns the replacement with what the RDB holds afterwards.
+    async fn replace_with_failure(
+        app: &AppModule,
+        before: JobResultData,
+    ) -> Result<(JobResultData, Option<JobResultData>)> {
+        let id = JobResultId {
+            value: rand::random::<i64>().abs(),
+        };
+        app.job_result_app
+            .create_job_result_if_necessary(&id, &before, before.broadcast_results)
+            .await?;
+        let after = failure_of(&before);
+        app.job_result_app
+            .replace_job_result(&id, &before, &after)
+            .await?;
+        let stored = app
+            .job_result_app
+            .find_job_result_from_db(&id)
+            .await?
+            .and_then(|result| result.data);
+        Ok((after, stored))
+    }
+
+    async fn rdb_row_follows_store_settings(app: &AppModule) -> Result<()> {
+        // stored success -> updated to the failure
+        let (after, stored) = replace_with_failure(app, recorded(true, true)).await?;
+        let stored = stored.expect("the failure must stay stored");
+        assert_eq!(stored.status, ResultStatus::MaxRetry as i32);
+        assert_eq!(stored.output, after.output);
+
+        // success was not stored -> the failure is inserted
+        let (_, stored) = replace_with_failure(app, recorded(false, true)).await?;
+        assert_eq!(
+            stored.map(|data| data.status),
+            Some(ResultStatus::MaxRetry as i32)
+        );
+
+        // stored success, failures are not stored -> the success is revoked
+        let (_, stored) = replace_with_failure(app, recorded(true, false)).await?;
+        assert_eq!(stored, None);
+
+        // nothing stored before or after
+        let (_, stored) = replace_with_failure(app, recorded(false, false)).await?;
+        assert_eq!(stored, None);
+        Ok(())
+    }
+
+    #[test]
+    fn rdb_chan_replaces_the_rdb_row_by_store_settings() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = create_rdb_chan_test_app(true, false).await?;
+            rdb_row_follows_store_settings(&app).await
+        })
+    }
+
+    #[test]
+    fn hybrid_replaces_the_rdb_row_by_store_settings() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = create_hybrid_test_app().await?;
+            rdb_row_follows_store_settings(&app).await
+        })
+    }
+
+    #[test]
+    fn hybrid_replaces_the_listen_after_cache() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = create_hybrid_test_app().await?;
+            let before = JobResultData {
+                broadcast_results: true,
+                ..recorded(false, false)
+            };
+            let job_id = before.job_id.unwrap();
+            let (after, _) = replace_with_failure(&app, before).await?;
+
+            let cached = app
+                .repositories
+                .redis_module
+                .as_ref()
+                .expect("hybrid app has redis")
+                .redis_job_result_repository
+                .find_by_job_id(&job_id)
+                .await?
+                .and_then(|result| result.data)
+                .expect("ended results are cached for listen_after");
+            assert_eq!(cached.status, ResultStatus::MaxRetry as i32);
+            assert_eq!(cached.error, after.error);
+            assert_eq!(cached.output, after.output);
             Ok(())
         })
     }

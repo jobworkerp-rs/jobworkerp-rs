@@ -27,11 +27,10 @@ impl LazyValue {
             return Ok(v.clone());
         }
         let v = Arc::new((self.build)().map_err(|e| {
-            ErrorFactory::create_from_serde_json(
-                &e,
-                Some(&format!("failed to build expression variable ${name}")),
+            ErrorFactory::new().expression(
+                format!("failed to build expression variable ${name}"),
                 None,
-                None,
+                Some(e.to_string()),
             )
         })?);
         // A concurrent resolve may have won; both values are identical.

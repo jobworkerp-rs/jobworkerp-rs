@@ -204,6 +204,15 @@ impl JobResultApp for RdbJobResultAppImpl {
         }
     }
 
+    async fn replace_job_result(
+        &self,
+        id: &JobResultId,
+        recorded: &JobResultData,
+        replacement: &JobResultData,
+    ) -> Result<()> {
+        self._replace_stored_result(id, recorded, replacement).await
+    }
+
     async fn delete_job_result(&self, id: &JobResultId) -> Result<bool> {
         self.rdb_job_result_repository().delete(id).await
     }

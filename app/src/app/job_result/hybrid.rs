@@ -33,6 +33,22 @@ pub struct HybridJobResultAppImpl {
 }
 
 impl HybridJobResultAppImpl {
+    /// Caches an ended result (success or failure) by job id for listen_after.
+    async fn cache_ended_result(
+        &self,
+        id: &JobResultId,
+        data: &JobResultData,
+        broadcast_results: bool,
+    ) -> Result<bool> {
+        if data.status != ResultStatus::ErrorAndRetry as i32 && broadcast_results {
+            self.redis_job_result_repository()
+                .upsert_only_by_job_id(id, data)
+                .await
+        } else {
+            Ok(false)
+        }
+    }
+
     pub fn new(
         storage_config: Arc<StorageConfig>,
         id_generator: Arc<IdGeneratorWrapper>,
@@ -141,16 +157,22 @@ impl JobResultApp for HybridJobResultAppImpl {
         } else {
             false
         };
-        // always store cache for ended job result in success or failure
-        //     : cache for listen_after
-        if data.status != ResultStatus::ErrorAndRetry as i32 && broadcast_results {
-            self.redis_job_result_repository()
-                .upsert_only_by_job_id(id, data)
-                .await
-                .map(|r| r || in_db)
-        } else {
-            Ok(in_db)
-        }
+        self.cache_ended_result(id, data, broadcast_results)
+            .await
+            .map(|cached| cached || in_db)
+    }
+
+    async fn replace_job_result(
+        &self,
+        id: &JobResultId,
+        recorded: &JobResultData,
+        replacement: &JobResultData,
+    ) -> Result<()> {
+        self._replace_stored_result(id, recorded, replacement)
+            .await?;
+        self.cache_ended_result(id, replacement, replacement.broadcast_results)
+            .await
+            .map(|_| ())
     }
 
     async fn delete_job_result(&self, id: &JobResultId) -> Result<bool> {
@@ -506,6 +528,7 @@ pub mod tests {
         })
         .unwrap();
         let mut job_result_data = proto::jobworkerp::data::JobResultData {
+            error: None,
             job_id: None,
             worker_id: None,
             status: proto::jobworkerp::data::ResultStatus::Success as i32,
@@ -643,6 +666,7 @@ pub mod tests {
                 stdin: String::new(),
             })?;
             let mut data = JobResultData {
+                error: None,
                 job_id: Some(job_id),
                 worker_id: worker.id,
                 status: ResultStatus::Success as i32,
@@ -799,6 +823,7 @@ pub mod tests {
                 stdin: String::new(),
             })?;
             let data = JobResultData {
+                error: None,
                 job_id: Some(job_id),
                 worker_id: Some(worker_id),
                 status: ResultStatus::Success as i32,

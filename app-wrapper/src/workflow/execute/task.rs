@@ -36,6 +36,7 @@ use tokio::sync::{Mutex, RwLock};
 use trace::TaskTracing;
 
 pub mod call;
+pub(crate) mod child_job;
 pub mod fork;
 pub mod run;
 pub mod set;
@@ -165,7 +166,7 @@ pub(crate) fn resolve_timeout_duration(
             .get(name)
             .map(|t| Some(Duration::from_millis(t.after.to_millis())))
             .ok_or_else(|| {
-                workflow::errors::ErrorFactory::new().bad_argument(
+                workflow::errors::ErrorFactory::new().configuration(
                     format!("Unresolved timeout reference: {name}"),
                     None,
                     None,
@@ -304,7 +305,7 @@ impl TaskExecutor {
                         "Failed to load checkpoint"
                     );
                     // yield Err(Box::new(e));
-                    Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                    Err(workflow::errors::ErrorFactory::new().runtime(
                     format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}",
                       execution_id.value, workflow_name, pos.as_json_pointer()),
                 Some(current_position.read().await.as_error_instance()),
@@ -416,7 +417,7 @@ impl TaskExecutor {
                         );
                         let pos_str = position.read().await.as_error_instance();
                         return futures::stream::once(futures::future::ready(Err(
-                            workflow::errors::ErrorFactory::new().not_found(
+                            workflow::errors::ErrorFactory::new().runtime(
                                 format!(
                                     "No checkpoint found for task: {}, execution_id: {:?}",
                                     self.task_name, execution_id
@@ -710,9 +711,8 @@ impl TaskExecutor {
             } else if !saw_any {
                 // No event was produced at all - this shouldn't happen normally
                 // as tasks should always emit a completion event.
-                yield Err(workflow::errors::ErrorFactory::create(
-                    workflow::errors::ErrorCode::NotFound,
-                    Some("No task context returned".to_string()),
+                yield Err(workflow::errors::ErrorFactory::new().runtime(
+                    "No task context returned".to_string(),
                     Some(err_pos),
                     None,
                 ));
@@ -737,7 +737,7 @@ impl TaskExecutor {
             );
             let pos = task_context.position.clone();
             pos.write().await.push("input".to_string());
-            return Err(workflow::errors::ErrorFactory::new().bad_argument(
+            return Err(workflow::errors::ErrorFactory::new().validation(
                 m,
                 Some(pos.read().await.as_error_instance()),
                 Some(format!("{:?}", e.to_string())),
@@ -876,7 +876,7 @@ impl TaskExecutor {
                         let pos = task_context.position.clone();
                         let mut pos = pos.write().await;
                         pos.push("checkpoint".to_string());
-                        let e = workflow::errors::ErrorFactory::new().internal_error(
+                        let e = workflow::errors::ErrorFactory::new().runtime(
                             "Failed to save checkpoint".to_string(),
                             Some(pos.as_error_instance()),
                             None,
@@ -1418,7 +1418,7 @@ impl RaiseTaskExecutor {
             Self::execute_error_transform(task_context.input.clone(), value, expression);
         match evaluated {
             Ok(serde_json::Value::String(value)) => Ok(Some(value)),
-            Ok(value) => Err(workflow::errors::ErrorFactory::new().bad_argument(
+            Ok(value) => Err(workflow::errors::ErrorFactory::new().expression(
                 format!("raise.error.{field} must evaluate to a string"),
                 Some(self.error_field_position(task_context, Some(field)).await),
                 Some(format!("actual value: {value}")),
@@ -1490,7 +1490,7 @@ impl RaiseTaskExecutor {
                     serde_json::Value::Object(value) => {
                         match serde_json::from_value(serde_json::Value::Object(value)) {
                             Ok(error) => Ok(error),
-                            Err(error) => Err(workflow::errors::ErrorFactory::new().bad_argument(
+                            Err(error) => Err(workflow::errors::ErrorFactory::new().expression(
                                 "raise.error expression must evaluate to an Error object"
                                     .to_string(),
                                 Some(self.error_field_position(task_context, None).await),
@@ -1498,7 +1498,7 @@ impl RaiseTaskExecutor {
                             )),
                         }
                     }
-                    value => Err(workflow::errors::ErrorFactory::new().bad_argument(
+                    value => Err(workflow::errors::ErrorFactory::new().expression(
                         "raise.error must evaluate to a string or Error object".to_string(),
                         Some(self.error_field_position(task_context, None).await),
                         Some(format!("actual value: {value}")),
@@ -1727,6 +1727,10 @@ mod tests {
             )
             .await
             .expect_err("numeric detail must be rejected");
+            assert_eq!(
+                text_error.type_.0,
+                workflow::errors::StandardErrorType::Expression.uri()
+            );
             assert_eq!(text_error.status, 400);
             assert_eq!(
                 text_error.title.as_deref(),
@@ -1745,6 +1749,10 @@ mod tests {
             )
             .await
             .expect_err("numeric raise.error must be rejected");
+            assert_eq!(
+                value_error.type_.0,
+                workflow::errors::StandardErrorType::Expression.uri()
+            );
             assert_eq!(value_error.status, 400);
             assert_eq!(
                 value_error.title.as_deref(),
@@ -2609,6 +2617,10 @@ mod tests {
         )
         .expect_err("unresolved timeout reference must fail");
 
+        assert_eq!(
+            err.type_.0,
+            workflow::errors::StandardErrorType::Configuration.uri()
+        );
         assert_eq!(err.status, 400);
         assert!(format!("{err:?}").contains("missing-timeout"));
     }
@@ -2689,17 +2701,216 @@ mod executor_behavior_tests {
         task_from_json(value)
     }
 
-    fn try_slow_task_catching(error_type: &str) -> Task {
+    /// A try task running `try_tasks` whose catch only handles `error_type`.
+    fn try_catching(try_tasks: serde_json::Value, error_type: &str) -> Task {
         task_from_json(serde_json::json!({
-            "try": [ { "slow": {
-                "wait": { "milliseconds": 2000 },
-                "timeout": { "after": { "milliseconds": 50 } }
-            } } ],
+            "try": try_tasks,
             "catch": {
                 "errors": { "with": { "type": error_type } },
-                "do": [ { "fallback": { "set": { "timedOut": true } } } ]
+                "do": [ { "fallback": { "set": { "caught": true } } } ]
             }
         }))
+    }
+
+    fn try_slow_task_catching(error_type: &str) -> Task {
+        try_catching(
+            serde_json::json!([ { "slow": {
+                "wait": { "milliseconds": 2000 },
+                "timeout": { "after": { "milliseconds": 50 } }
+            } } ]),
+            error_type,
+        )
+    }
+
+    /// The first error the task stream yields, if any.
+    async fn first_error(task: Task) -> Option<Box<workflow::Error>> {
+        run_to_end(&executor_for(task, None).await)
+            .await
+            .into_iter()
+            .find_map(|e| e.err())
+    }
+
+    #[test]
+    fn try_catches_error_raised_with_legacy_spec_domain_by_current_domain() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let task = try_catching(
+                serde_json::json!([ { "fail": { "raise": { "error": {
+                    "type": "https://serverlessworkflow.io/spec/1.0.0/errors/runtime",
+                    "status": 500
+                } } } } ]),
+                workflow::errors::ERROR_TYPE_RUNTIME,
+            );
+            let error = first_error(task).await;
+            assert!(error.is_none(), "legacy domain must be caught: {error:?}");
+        });
+    }
+
+    fn bad_jq_set_task() -> serde_json::Value {
+        serde_json::json!([ { "broken": { "set": { "v": "${ .a | invalid( }" } } } ])
+    }
+
+    #[test]
+    fn try_catches_expression_failure_by_spec_expression_type() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let expression = workflow::errors::StandardErrorType::Expression.uri();
+            let caught = first_error(try_catching(bad_jq_set_task(), expression)).await;
+            assert!(
+                caught.is_none(),
+                "expression error must be caught: {caught:?}"
+            );
+
+            let uncaught = first_error(try_catching(
+                bad_jq_set_task(),
+                workflow::errors::ERROR_TYPE_RUNTIME,
+            ))
+            .await
+            .expect("a runtime filter must not catch an expression error");
+            assert_eq!(uncaught.type_.0, expression);
+        });
+    }
+
+    fn python_script_task(arguments: serde_json::Value) -> Task {
+        task_from_json(serde_json::json!({
+            "run": { "script": {
+                "language": "python",
+                "code": "print(1)",
+                "arguments": arguments
+            } }
+        }))
+    }
+
+    #[test]
+    fn run_script_argument_expression_failure_is_an_expression_error() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let task = python_script_task(serde_json::json!({ "x": "${ .a | invalid( }" }));
+            let err = first_error(task).await.expect("script arguments must fail");
+            assert_eq!(
+                err.type_.0,
+                workflow::errors::StandardErrorType::Expression.uri(),
+                "{err:?}"
+            );
+            assert!(
+                err.instance
+                    .as_deref()
+                    .is_some_and(|i| i.ends_with("/arguments")),
+                "{err:?}"
+            );
+        });
+    }
+
+    fn assert_run_fails_with(run: serde_json::Value, kind: workflow::errors::StandardErrorType) {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let task = task_from_json(serde_json::json!({ "run": run }));
+            let err = first_error(task).await.expect("the run task must fail");
+            assert_eq!(err.type_.0, kind.uri(), "{err:?}");
+            assert_eq!(err.status, kind.default_status(), "{err:?}");
+        });
+    }
+
+    #[test]
+    fn run_with_unknown_runner_is_a_configuration_error() {
+        assert_run_fails_with(
+            serde_json::json!({ "runner": { "name": "NO_SUCH_RUNNER_FOR_ISSUE_339", "arguments": {} } }),
+            workflow::errors::StandardErrorType::Configuration,
+        );
+    }
+
+    #[test]
+    fn run_with_unknown_worker_is_a_configuration_error() {
+        assert_run_fails_with(
+            serde_json::json!({ "worker": { "name": "NO_SUCH_WORKER_FOR_ISSUE_339", "arguments": {} } }),
+            workflow::errors::StandardErrorType::Configuration,
+        );
+    }
+
+    #[test]
+    fn run_with_arguments_violating_the_runner_schema_is_a_validation_error() {
+        assert_run_fails_with(
+            serde_json::json!({ "runner": {
+                "name": "COMMAND",
+                "arguments": { "command": "echo", "args": "not-a-list" }
+            } }),
+            workflow::errors::StandardErrorType::Validation,
+        );
+    }
+
+    #[test]
+    fn run_with_unknown_method_is_a_configuration_error() {
+        assert_run_fails_with(
+            serde_json::json!({ "runner": {
+                "name": "COMMAND",
+                "using": "no_such_method",
+                "arguments": { "command": "echo" }
+            } }),
+            workflow::errors::StandardErrorType::Configuration,
+        );
+    }
+
+    #[test]
+    fn fork_compete_with_every_branch_failing_is_a_runtime_error() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let raise = |name: &str| {
+                serde_json::json!({ name: { "raise": { "error": {
+                    "type": "https://example.invalid/errors/branch",
+                    "status": 400
+                } } } })
+            };
+            let task = task_from_json(serde_json::json!({
+                "fork": { "compete": true, "branches": [ raise("a"), raise("b") ] }
+            }));
+            let err = first_error(task).await.expect("compete must fail");
+            assert_eq!(err.type_.0, workflow::errors::ERROR_TYPE_RUNTIME, "{err:?}");
+        });
+    }
+
+    #[test]
+    fn task_input_schema_violation_is_a_validation_error() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let task = task_from_json(serde_json::json!({
+                "input": { "schema": { "format": "json", "document": {
+                    "type": "object", "required": ["name"]
+                } } },
+                "set": { "done": true }
+            }));
+            let err = first_error(task)
+                .await
+                .expect("input schema must reject {}");
+            assert_eq!(
+                err.type_.0,
+                workflow::errors::StandardErrorType::Validation.uri(),
+                "{err:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn unsupported_script_language_is_a_configuration_error() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let task = task_from_json(serde_json::json!({
+                "run": { "script": { "language": "javascript", "code": "1" } }
+            }));
+            let err = first_error(task)
+                .await
+                .expect("javascript is not supported");
+            assert_eq!(
+                err.type_.0,
+                workflow::errors::StandardErrorType::Configuration.uri(),
+                "{err:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn run_script_invalid_argument_name_is_a_validation_error() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let task = python_script_task(serde_json::json!({ "not-an-identifier": 1 }));
+            let err = first_error(task).await.expect("script arguments must fail");
+            assert_eq!(
+                err.type_.0,
+                workflow::errors::StandardErrorType::Validation.uri(),
+                "{err:?}"
+            );
+        });
     }
 
     #[test]

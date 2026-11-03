@@ -13,6 +13,7 @@ use crate::modules::AppWrapperModule;
 use crate::workflow::create_workflow::CreateWorkflowRunnerImpl;
 use crate::workflow::definition::workflow::WorkflowSchema;
 use crate::workflow::execute::checkpoint::CheckPointContext;
+use crate::workflow::execute::failure::workflow_failure;
 use crate::workflow::execute::task::ExecutionId;
 use crate::workflow::execute::workflow::WorkflowExecutor;
 use anyhow::{Result, anyhow};
@@ -24,7 +25,6 @@ use futures::stream::BoxStream;
 use futures::{StreamExt, pin_mut};
 use jobworkerp_base::APP_NAME;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus;
 use jobworkerp_runner::jobworkerp::runner::workflow_run_args::WorkflowSource as ArgsWorkflowSource;
 use jobworkerp_runner::jobworkerp::runner::workflow_runner_settings::WorkflowSource as SettingsWorkflowSource;
@@ -41,7 +41,10 @@ use jobworkerp_runner::runner::workflow_unified::{
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
-use proto::jobworkerp::data::{JobData, JobId, JobResult, ResultOutputItem, RunnerType};
+use proto::jobworkerp::data::{
+    JobData, JobId, JobResult, ResultOutputItem, RunnerType, StreamError, StreamErrorCode,
+};
+use proto::stream_error::{ClassifiedJobError, classified_error, error_end_item_from};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -370,9 +373,11 @@ impl WorkflowUnifiedRunnerImpl {
                     final_context = Some(context);
                 }
                 Some(Err(e)) => {
-                    return Err(JobWorkerError::RuntimeError(format!(
-                        "Failed to execute workflow: {e:?}"
-                    ))
+                    let diagnostic = format!("Failed to execute workflow: {e:?}");
+                    return Err(ClassifiedJobError::new(
+                        workflow_failure(&e, &diagnostic),
+                        diagnostic,
+                    )
                     .into());
                 }
                 None => break,
@@ -548,7 +553,7 @@ impl WorkflowUnifiedRunnerImpl {
         let last_output_for_then = last_output.clone();
         // Faulted/Cancelled contexts are result data; only an execution Err
         // (which makes run() fail) or a failed cancel synthesis fails the End.
-        let stream_failure: Arc<std::sync::OnceLock<String>> = Arc::default();
+        let stream_failure: Arc<std::sync::OnceLock<StreamError>> = Arc::default();
         let stream_failure_for_then = stream_failure.clone();
         let stream_failure_for_synth = stream_failure.clone();
         let executor_for_tail = executor.clone();
@@ -576,7 +581,7 @@ impl WorkflowUnifiedRunnerImpl {
                         Err(e) => {
                             tracing::error!("Error in workflow execution: {:?}", e);
                             let message = format!("Failed to execute workflow: {e}");
-                            let _ = stream_failure.set(message.clone());
+                            let _ = stream_failure.set(workflow_failure(&e, &message));
                             WorkflowResult {
                                 id: "error".to_string(),
                                 output: "".to_string(),
@@ -621,8 +626,12 @@ impl WorkflowUnifiedRunnerImpl {
                                     "Failed to synthesise Cancelled result on drain timeout: {:?}",
                                     e
                                 );
-                                let _ = stream_failure_for_synth.set(format!(
-                                    "Failed to synthesise the cancelled workflow result: {e}"
+                                let _ = stream_failure_for_synth.set(classified_error(
+                                    StreamErrorCode::ExecutionFailed,
+                                    format!(
+                                        "Failed to synthesise the cancelled workflow result: {e}"
+                                    ),
+                                    RunnerType::Workflow.as_str_name(),
                                 ));
                                 None
                             }
@@ -643,12 +652,7 @@ impl WorkflowUnifiedRunnerImpl {
                 }
                 drop(root_cx);
                 match stream_failure.get() {
-                    Some(message) => proto::stream_error::error_end_item(
-                        metadata,
-                        proto::jobworkerp::data::StreamErrorCode::ExecutionFailed,
-                        message.as_str(),
-                        RunnerType::Workflow.as_str_name(),
-                    ),
+                    Some(failure) => error_end_item_from(metadata, failure.clone()),
                     None => proto::stream_error::normal_end_item(metadata),
                 }
             }))

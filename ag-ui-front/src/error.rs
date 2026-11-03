@@ -186,7 +186,7 @@ impl AgUiError {
 /// Result type alias for AG-UI operations
 pub type Result<T> = std::result::Result<T, AgUiError>;
 
-/// Error code mappings from workflow::ErrorCode to AG-UI error codes
+/// Error code mappings from workflow error status codes to AG-UI error codes
 pub mod error_codes {
     /// Map workflow error status code to AG-UI error code
     pub fn from_http_status(status: i64) -> &'static str {

@@ -165,6 +165,14 @@ When `ResultStatus` is not `SUCCESS`, `output.items` is a UTF-8 diagnostic messa
 
 For a complete persisted failure record, configure the Worker with `store_failure=true` and retrieve the stored result through `JobResultService.FindListByJobId` using the returned Job ID.
 
+### Failure cause
+
+A failed result also carries `JobResultData.error`, a `StreamError` that classifies the cause with the same codes as a stream End (see [Streaming](streaming.md#stream-error-contract)): `TIMEOUT`, `TRANSPORT_FAILED`, `INVALID_ARGUMENT`, `CANCELLED`, or `EXECUTION_FAILED` for anything else. A failed WORKFLOW job also sets its `problem` to the workflow error.
+
+- It is set only on failure, by the worker that ran the job, and delivered with the result. The RDB does not store it, so results read back with `FindListByJobId` do not carry it.
+- In the `x-job-result-bin` trailer of a failed RPC, only its `code` and `origin` are kept, to stay within the metadata limit; the diagnostic is already in `output.items`.
+- A non-`SUCCESS` result without it is a failure of unknown cause (for example, from an older worker). Treat unknown codes the same way.
+
 ## Per-language Implementation Guide
 
 Any protobuf reflection-capable library will work. The flow is identical across languages: **fetch proto strings via `RunnerService.FindByName`, parse them locally, encode/decode through descriptors.**

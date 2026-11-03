@@ -49,6 +49,11 @@ const ROOT_TASK_NAME: &str = "ROOT";
 impl WorkflowTracing for WorkflowExecutor {}
 
 impl WorkflowExecutor {
+    /// Position used for errors raised by the workflow itself rather than a task.
+    fn root_position() -> WorkflowPosition {
+        WorkflowPosition::new(vec![serde_json::json!(ROOT_TASK_NAME)])
+    }
+
     // Initializes a new WorkflowExecutor instance. (with update checkpoint context)
     #[allow(clippy::too_many_arguments)]
     pub async fn init(
@@ -102,14 +107,9 @@ impl WorkflowExecutor {
             .await
             .map_err(|e| {
                 tracing::error!(error = ?e, "Failed to save checkpoint");
-                workflow::errors::ErrorFactory::new().service_unavailable(
+                workflow::errors::ErrorFactory::new().runtime(
                     "Failed to save checkpoint".to_string(),
-                    Some(
-                        WorkflowPosition::new(vec![
-                            serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null),
-                        ])
-                        .as_error_instance(),
-                    ),
+                    Some(Self::root_position().as_error_instance()),
                     Some(e.to_string()),
                 )
             })?;
@@ -263,15 +263,10 @@ impl WorkflowExecutor {
                         wf.output = Some(error_output);
                         drop(wf);
 
-                        yield Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                        yield Err(workflow::errors::ErrorFactory::new().runtime(
                             format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}",
                               execution_id.value, workflow_name, pos.as_json_pointer()),
-                            Some(
-                                WorkflowPosition::new(vec![
-                                    serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
-                                ])
-                                .as_error_instance(),
-                            ),
+                            Some(Self::root_position().as_error_instance()),
                             Some(e.to_string()),
                         ));
 
@@ -321,14 +316,9 @@ impl WorkflowExecutor {
                             Self::record_workflow_output(&span, &error_output, &wf.status);
                             wf.output = Some(error_output.clone());
                             drop(wf);
-                            yield Err(workflow::errors::ErrorFactory::new().bad_argument(
+                            yield Err(workflow::errors::ErrorFactory::new().validation(
                                 format!("Workflow input validation failed: {}", e),
-                                Some(
-                                    WorkflowPosition::new(vec![
-                                        serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
-                                    ])
-                                    .as_error_instance(),
-                                ),
+                                Some(Self::root_position().as_error_instance()),
                                 Some(e.to_string()),
                             ));
                             return;
@@ -380,7 +370,7 @@ impl WorkflowExecutor {
 
             let expression = match expression_result {
                 Ok(e) => e,
-                Err(e) => {
+                Err(mut e) => {
                     tracing::error!(error = ?e, "Failed to create expression");
                     let mut wf = initial_wfc.write().await;
                     wf.status = WorkflowStatus::Faulted;
@@ -388,16 +378,9 @@ impl WorkflowExecutor {
                     Self::record_workflow_output(&span, &error_output, &wf.status);
                     wf.output = Some(error_output.clone());
                     drop(wf);
-                    yield Err(workflow::errors::ErrorFactory::new().internal_error(
-                        format!("Failed to create expression: {}", e),
-                        Some(
-                            WorkflowPosition::new(vec![
-                                serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
-                            ])
-                            .as_error_instance(),
-                        ),
-                        Some(e.to_string()),
-                    ));
+                    // Keep the original error type; only attribute it to the root.
+                    e.position(&Self::root_position());
+                    yield Err(e);
                     return;
                 }
             };
@@ -413,7 +396,7 @@ impl WorkflowExecutor {
             {
                 match WorkflowExecutor::transform_input(input_with_defaults.clone(), from, &expression) {
                     Ok(v) => v,
-                    Err(e) => {
+                    Err(mut e) => {
                         tracing::error!(error = ?e, "Failed to transform input");
                         let mut wf = initial_wfc.write().await;
                         wf.status = WorkflowStatus::Faulted;
@@ -421,16 +404,9 @@ impl WorkflowExecutor {
                         Self::record_workflow_output(&span, &error_output, &wf.status);
                         wf.output = Some(error_output.clone());
                         drop(wf);
-                        yield Err(workflow::errors::ErrorFactory::new().internal_error(
-                            format!("Failed to transform input: {}", e),
-                            Some(
-                                WorkflowPosition::new(vec![
-                                    serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
-                                ])
-                                .as_error_instance(),
-                            ),
-                            Some(e.to_string()),
-                        ));
+                        // Keep the original (expression) error type; only attribute it to the root.
+                        e.position(&Self::root_position());
+                        yield Err(e);
                         return;
                     }
                 }
@@ -1239,6 +1215,90 @@ mod tests {
             assert!(final_wfc.is_some());
             let wfc = final_wfc.unwrap();
             assert_eq!(wfc.status, WorkflowStatus::Completed);
+        })
+    }
+
+    /// Runs a workflow built from `input_spec` (the document's `input` block)
+    /// around a trivial task and returns the first error it yields.
+    async fn first_workflow_error(
+        input_spec: serde_json::Value,
+        input: serde_json::Value,
+    ) -> Option<Box<workflow::Error>> {
+        let workflow = serde_json::from_value::<WorkflowSchema>(serde_json::json!({
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "input-error-test",
+                "version": "1.0.0"
+            },
+            "input": input_spec,
+            "do": [ { "noop": { "set": { "done": true } } } ]
+        }))
+        .expect("valid workflow");
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+        let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+        let executor = WorkflowExecutor::init(
+            app_wrapper_module,
+            app_module,
+            Arc::new(workflow),
+            Arc::new(input),
+            None,
+            Arc::new(serde_json::json!({})),
+            Arc::new(HashMap::new()),
+            None,
+        )
+        .await
+        .unwrap();
+        let workflow_stream =
+            executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+        pin_mut!(workflow_stream);
+        while let Some(event) = workflow_stream.next().await {
+            if let Err(e) = event {
+                return Some(e);
+            }
+        }
+        None
+    }
+
+    fn root_instance() -> String {
+        WorkflowExecutor::root_position().as_error_instance()
+    }
+
+    #[test]
+    fn workflow_input_schema_violation_is_a_validation_error() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let err = first_workflow_error(
+                serde_json::json!({ "schema": { "format": "json", "document": {
+                    "type": "object", "required": ["name"]
+                } } }),
+                serde_json::json!({}),
+            )
+            .await
+            .expect("input schema must reject {}");
+            assert_eq!(
+                err.type_.0,
+                workflow::errors::StandardErrorType::Validation.uri(),
+                "{err:?}"
+            );
+            assert_eq!(err.instance.as_deref(), Some(root_instance().as_str()));
+        })
+    }
+
+    #[test]
+    fn workflow_input_transform_failure_keeps_the_expression_type() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let err = first_workflow_error(
+                serde_json::json!({ "from": "${ .a | invalid( }" }),
+                serde_json::json!({}),
+            )
+            .await
+            .expect("input transform must fail");
+            assert_eq!(
+                err.type_.0,
+                workflow::errors::StandardErrorType::Expression.uri(),
+                "{err:?}"
+            );
+            assert_eq!(err.instance.as_deref(), Some(root_instance().as_str()));
         })
     }
 

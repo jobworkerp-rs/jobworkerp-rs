@@ -851,9 +851,8 @@ impl WorkflowStreamEvent {
             }
         }
         last_context.ok_or_else(|| {
-            workflow::errors::ErrorFactory::create(
-                workflow::errors::ErrorCode::InternalError,
-                Some("No completed event found in stream".to_string()),
+            workflow::errors::ErrorFactory::new().runtime(
+                "No completed event found in stream".to_string(),
                 None,
                 None,
             )

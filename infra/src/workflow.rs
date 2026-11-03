@@ -15,7 +15,7 @@ pub mod position;
 
 // Re-export main types for convenience
 pub use definition::transform;
-pub use definition::workflow::errors::{ErrorCode, ErrorFactory};
+pub use definition::workflow::errors::ErrorFactory;
 pub use definition::workflow::{DoTask, Document, Error, Task, WorkflowSchema};
 pub use position::WorkflowPosition;
 

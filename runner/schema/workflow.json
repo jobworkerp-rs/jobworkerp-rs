@@ -389,7 +389,7 @@
             "compete": {
               "type": "boolean",
               "title": "ForkCompete",
-              "description": "Enable competition mode where first completed task wins.",
+              "description": "Enable competition mode where the first branch to complete successfully wins.",
               "default": false
             }
           }
@@ -644,7 +644,7 @@
         "output": {
           "type": "string",
           "title": "HttpOutput",
-          "description": "HTTP output shape.",
+          "description": "HTTP output shape. `content` outputs the response content (deserialized when JSON). `response` outputs the HTTP response as `{ request: { method, uri, headers }, statusCode, headers, content }`.",
           "enum": [
             "content",
             "response"
@@ -652,8 +652,9 @@
           "default": "content"
         },
         "redirect": {
+          "type": "boolean",
           "title": "HttpRedirect",
-          "description": "Accepted for validation but not executed in Phase 1."
+          "description": "Whether redirection status codes (300-399) are accepted. When false (default), a final response status outside 200-299 raises a communication error; when true, outside 200-399. Redirects are followed automatically, so the status of the final response is checked."
         }
       }
     },
@@ -1609,7 +1610,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "description": "Filter by error type value."
+          "description": "URI template matched against the error type (case-sensitive; {name} matches any text)."
         },
         "status": {
           "type": "integer",

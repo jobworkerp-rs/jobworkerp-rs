@@ -94,6 +94,15 @@ message StreamError {
   StreamErrorCode code = 1;
   string message = 2;  // 最大 4096 UTF-8 bytes
   string origin = 3;   // 失敗を検出したコンポーネント
+  ProblemDetails problem = 4;  // コンポーネントが報告した構造化されたエラー
+}
+
+message ProblemDetails {  // RFC 9457 の形。ワークフローのエラーと同じ
+  string type = 1;
+  int32 status = 2;
+  optional string title = 3;
+  optional string detail = 4;  // 最大 4096 UTF-8 bytes
+  optional string instance = 5;
 }
 ```
 
@@ -101,6 +110,8 @@ message StreamError {
 - **判定基準は非ストリーム実行と同じ**です。非ストリームの実行が失敗（エラー）を返す条件のときだけ、End に `error` が設定されます。結果データとしての失敗は対象外で、従来どおり Data で返ります。例: HTTP の 4xx/5xx、GRPC の下流サービスの非 OK status、COMMAND の非 0 終了（`treat_nonzero_as_error=false` のとき）、MCP ツールの `is_error`、WORKFLOW の Faulted / Cancelled の結果。
 - 失敗時も、Runner がこれまで送っていた Data（エラー内容を入れた `CommandResult` や Faulted の `WorkflowResult` など）は引き続き送られます。
 - grpc-front は End を加工せずにストリームの中で配信します。gRPC のエラー status には変換しません。
+- `problem` は、WORKFLOW のジョブがワークフローのエラーで失敗したときに設定されます。そのエラーの type、status、title、detail、instance が入り、親のワークフローは同じエラーを送出します。`problem` を使わない利用者は `code` だけで判定できます。
+- 非ストリームのジョブが失敗した場合も、同じ `StreamError` が `JobResultData.error` に入ります（[gRPC Direct API](grpc-direct-api.md) を参照）。
 
 ### code
 
@@ -119,7 +130,9 @@ message StreamError {
 | 生成元 | origin |
 |---|---|
 | Runner（idle timeout など Runner 固有の処理を含む） | Runner 名（`COMMAND`、`HTTP_REQUEST`、`GRPC`、`LLM`、`WORKFLOW`、`SANDBOX`、plugin 名、MCP サーバ名） |
-| worker / app 層（ストリーム開始前に失敗したジョブの End など） | `WORKER` |
+| worker / app 層（ストリーム開始前に失敗したジョブの End、worker 自身の job timeout、実行前やリトライ中に取り消されたジョブなど） | `WORKER` |
+
+ストリーム開始前に失敗したジョブの End には、worker が記録した失敗の分類（`JobResultData.error`）があればそれがそのまま入ります。この場合の origin は、失敗を検出した Runner 名です。
 
 ### ResultStatus への対応
 

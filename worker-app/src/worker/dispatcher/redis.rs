@@ -72,25 +72,19 @@ pub trait RedisJobDispatcher:
     + UseWorkerInstanceSession
     + JobDispatcher
 {
-    fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
+    fn dispatch_jobs_until(
+        &'static self,
+        lock: ShutdownLock,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
         // create a tokio thread to subscribe update worker event and update worker map
         tokio::spawn(
-            self.subscribe_worker_changed()
+            self.subscribe_worker_changed(shutdown.clone())
                 .map_err(|e| tracing::error!("subscribe worker changed error: {:?}", e)),
         );
-        // for shutdown notification (spmc broadcast)
-        let (send, recv) = tokio::sync::watch::channel(false);
-        // send msg on shutdown signal (SIGINT/SIGTERM) for shutdown notification in parallel
-        tokio::spawn(async move {
-            command_utils::util::shutdown::shutdown_signal().await;
-            tracing::debug!("got shutdown signal....");
-            if let Err(e) = send.send(true) {
-                tracing::debug!("failed to send shutdown notification: {:?}", e);
-            }
-        });
 
         for (ch, conc) in self.worker_config().channel_concurrency_pair() {
             tracing::info!(
@@ -99,13 +93,13 @@ pub trait RedisJobDispatcher:
                 &conc
             );
             for _ in 0..conc {
-                self.pop_and_execute(ch.clone(), lock.clone(), recv.clone());
+                self.pop_and_execute(ch.clone(), lock.clone(), shutdown.clone());
             }
         }
 
         // run after job dispatcher (need when use only redis)
         if let Some(rad) = self.redis_run_after_job_dispatcher() {
-            rad.execute(lock)?;
+            rad.execute(lock, shutdown)?;
         } else {
             lock.unlock();
         }
@@ -138,6 +132,10 @@ pub trait RedisJobDispatcher:
                         // cannot handle signal when running blocking job with plugin runner (external lib etc)
                         _ = shutdown_recv.changed() => {
                             tracing::debug!("got sigint signal.... channel {}", &cn);
+                            // The cancelled BLPOP keeps waiting on the server
+                            // until its connection closes. A process that keeps
+                            // running after the worker stops must close such
+                            // connections, or they pop jobs nobody reads.
                             break 'outer;
                         },
                         val = th.blpop::<'_, Vec<String>, Vec<Vec<u8>>>(c.clone(), 0f64) => {
@@ -901,11 +899,15 @@ impl UseJobProcessingStatusRepository for RedisJobDispatcherImpl {
 
 #[async_trait]
 impl JobDispatcher for RedisJobDispatcherImpl {
-    fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
+    fn dispatch_jobs_until(
+        &'static self,
+        lock: ShutdownLock,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
-        RedisJobDispatcher::dispatch_jobs(self, lock)
+        RedisJobDispatcher::dispatch_jobs_until(self, lock, shutdown)
     }
 }
 

@@ -246,6 +246,7 @@ worker.queue_typeでは個別のジョブキュー種別を指定します：
 
 #### 結果の格納
 - worker.data.store_success、worker.data.store_failureの指定により実行成功、失敗時にrdb(job_resultテーブル) に保存
+- ストリーミングジョブの結果は stream 終了後に確定する。stream の End がエラー（`Trailer.error`）を報告した場合は失敗として保存される（成功のみ保存する設定では削除される）
 - [JobResultService](proto/protobuf/jobworkerp/service/job_result.proto)で実行後に参照できます
 
 #### 結果の取得方法

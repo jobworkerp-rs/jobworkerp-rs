@@ -156,11 +156,10 @@ pub trait UseJqAndTemplateTransformer {
                         filter,
                         context.names()
                     );
-                    workflow::errors::ErrorFactory::create(
-                        workflow::errors::ErrorCode::BadArgument,
-                        Some("failed to parse jq filter".to_string()),
+                    workflow::errors::ErrorFactory::new().expression(
+                        "failed to parse jq filter".to_string(),
                         None,
-                        Some(&e),
+                        Some(e.to_string()),
                     )
                 })
         } else {
@@ -196,11 +195,10 @@ pub trait UseJqAndTemplateTransformer {
             }
             let body = liquid_template_body(template);
             transform_inner(&input, context, body).map_err(|e| {
-                workflow::errors::ErrorFactory::create_from_liquid(
-                    &e,
-                    Some("failed to parse liquid template"),
+                workflow::errors::ErrorFactory::new().expression(
+                    "failed to parse liquid template".to_string(),
                     None,
-                    None,
+                    Some(e.to_string()),
                 )
             })
         } else {
@@ -343,6 +341,31 @@ mod test_use_jq_and_template_transformer {
             DefaultTransformer::execute_transform(Arc::new(json!({})), "${$context}", &context)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn expression_failures_raise_the_spec_expression_error() {
+        use crate::workflow::definition::workflow::errors::StandardErrorType;
+        let input = Arc::new(json!({}));
+        let failures = [
+            ("jq", "${ .a | invalid( }", ExpressionContext::new()),
+            ("liquid", "$${{% if %}}", ExpressionContext::new()),
+            (
+                "lazy variable",
+                "${$context}",
+                context_with_poisoned_lazy("context"),
+            ),
+        ];
+        for (label, expression, context) in failures {
+            let err = DefaultTransformer::execute_transform(input.clone(), expression, &context)
+                .expect_err(label);
+            assert_eq!(
+                err.type_.0,
+                StandardErrorType::Expression.uri(),
+                "{label}: {err:?}"
+            );
+            assert_eq!(err.status, 400, "{label}");
+        }
     }
 
     #[test]

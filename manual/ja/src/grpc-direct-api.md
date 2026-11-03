@@ -165,6 +165,14 @@ EOF
 
 完全な失敗記録が必要な Worker では `store_failure=true` を設定し、返された Job ID を使って `JobResultService.FindListByJobId` から保存済み結果を取得してください。
 
+### 失敗の原因
+
+失敗した結果には、原因を分類した `JobResultData.error`（`StreamError`）も入ります。code はストリームの End と同じで（[ストリーミング](streaming.md#ストリームエラー契約)を参照）、`TIMEOUT`、`TRANSPORT_FAILED`、`INVALID_ARGUMENT`、`CANCELLED`、それ以外は `EXECUTION_FAILED` です。WORKFLOW のジョブが失敗した場合は、`problem` にワークフローのエラーが入ります。
+
+- ジョブを実行した worker が失敗時にだけ設定し、結果と一緒に届きます。RDB には保存されないので、`FindListByJobId` で後から読んだ結果には入っていません。
+- 失敗した RPC の `x-job-result-bin` trailer には、metadata の上限を守るため `code` と `origin` だけが入ります。診断メッセージは `output.items` にあります。
+- `SUCCESS` 以外の結果に `error` が無い場合は、原因が不明な失敗です（古い worker の結果など）。未知の code も同じように扱ってください。
+
 ## 言語別実装ガイド
 
 protobuf reflection を扱える任意のライブラリで実装できます。以下は代表例です。**いずれの言語でも `RunnerService.FindByName` で proto 文字列を取得 → ローカルでパース → bytes へ encode、というフローは共通** です。

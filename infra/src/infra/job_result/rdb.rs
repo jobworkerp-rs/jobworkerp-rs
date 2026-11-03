@@ -612,6 +612,7 @@ mod test {
         };
         #[allow(deprecated)]
         let data = Some(JobResultData {
+            error: None,
             job_id: Some(JobId { value: 1 }),
             worker_id: Some(WorkerId { value: 2 }),
             worker_name: "".to_string(),
@@ -659,6 +660,7 @@ mod test {
         };
         #[allow(deprecated)]
         let update = JobResultData {
+            error: None,
             job_id: Some(JobId { value: 2 }),
             worker_id: Some(WorkerId { value: 3 }),
             worker_name: "".to_string(), // fixed
@@ -745,6 +747,7 @@ mod test {
             args: vec!["test".to_string()],
         };
         JobResultData {
+            error: None,
             job_id: Some(JobId { value: job_id }),
             worker_id: Some(WorkerId { value: worker_id }),
             worker_name: String::new(),
@@ -2055,6 +2058,7 @@ mod test {
             };
 
             let job_result_data = JobResultData {
+                error: None,
                 job_id: Some(JobId {
                     value: 100 + streaming_type_value as i64,
                 }),

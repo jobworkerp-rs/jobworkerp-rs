@@ -38,6 +38,7 @@ impl JobResultRow {
         JobResult {
             id: Some(JobResultId { value: self.id }),
             data: Some(JobResultData {
+                error: None,
                 job_id: Some(JobId { value: self.job_id }),
                 worker_id: Some(WorkerId {
                     value: self.worker_id,

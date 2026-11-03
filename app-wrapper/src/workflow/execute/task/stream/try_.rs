@@ -166,13 +166,11 @@ impl TryStreamTaskExecutor {
                                 break Ok(ctx);
                             }
                             None => {
-                                break Err(Box::new(workflow::Error {
-                                    type_: workflow::UriTemplate("task-execution-error".to_string()),
-                                    status: 400,
-                                    detail: Some("No task context returned from try task list execution".to_string()),
-                                    title: None,
-                                    instance: Some(try_position),
-                                }));
+                                break Err(workflow::errors::ErrorFactory::new().runtime(
+                                    "No task context returned from try task list execution".to_string(),
+                                    Some(try_position),
+                                    None,
+                                ));
                             }
                         }
                     }
@@ -361,8 +359,7 @@ impl TryStreamTaskExecutor {
         task_context: TaskContext,
         error: Box<workflow::Error>,
     ) -> Result<TaskContext, Box<workflow::Error>> {
-        let should_filter = Self::eval_error_filter(catch_config, &error);
-        if !should_filter {
+        if !catch_config.catches(&error) {
             return Err(error);
         }
 
@@ -441,72 +438,6 @@ impl TryStreamTaskExecutor {
         }
         task_context.remove_position().await;
         Ok(task_context)
-    }
-
-    fn eval_error_filter(catch_config: &TryTaskCatch, error: &workflow::Error) -> bool {
-        if let Some(errors) = &catch_config.errors {
-            if let Some(filter) = &errors.with {
-                let workflow::Error {
-                    type_,
-                    status,
-                    detail,
-                    title,
-                    instance,
-                } = &error;
-
-                let should_filter_status = filter
-                    .status
-                    .as_ref()
-                    .map(|st| st == status)
-                    .unwrap_or(true);
-                let should_filter_type = filter
-                    .type_
-                    .as_ref()
-                    .map(|tp| type_.is_match(tp))
-                    .unwrap_or(true);
-                let should_filter_details = filter
-                    .details
-                    .as_ref()
-                    .map(|ds| {
-                        detail
-                            .as_ref()
-                            .is_some_and(|detail| ds == &detail.to_string())
-                    })
-                    .unwrap_or(true);
-                let should_filter_title = filter
-                    .title
-                    .as_ref()
-                    .map(|t| title.as_ref().is_some_and(|title| t == &title.to_string()))
-                    .unwrap_or(true);
-                let should_filter_instance = filter
-                    .instance
-                    .as_ref()
-                    .map(|ins| {
-                        instance
-                            .as_ref()
-                            .is_some_and(|instance| ins == &instance.to_string())
-                    })
-                    .unwrap_or(true);
-                tracing::debug!(
-                    "Error filter: status: {}, type: {}, details: {}, title: {}, instance: {}",
-                    should_filter_status,
-                    should_filter_type,
-                    should_filter_details,
-                    should_filter_title,
-                    should_filter_instance
-                );
-
-                should_filter_status
-                    && should_filter_type
-                    && should_filter_details
-                    && should_filter_title
-                    && should_filter_instance
-            } else {
-                true
-            }
-        } else {
-            true
-        }
     }
 }
 

@@ -427,7 +427,7 @@ impl CallGrpc {
 #[doc = "    },"]
 #[doc = "    \"output\": {"]
 #[doc = "      \"title\": \"HttpOutput\","]
-#[doc = "      \"description\": \"HTTP output shape.\","]
+#[doc = "      \"description\": \"HTTP output shape. `content` outputs the response content (deserialized when JSON). `response` outputs the HTTP response as `{ request: { method, uri, headers }, statusCode, headers, content }`.\","]
 #[doc = "      \"default\": \"content\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"enum\": ["]
@@ -443,7 +443,8 @@ impl CallGrpc {
 #[doc = "    },"]
 #[doc = "    \"redirect\": {"]
 #[doc = "      \"title\": \"HttpRedirect\","]
-#[doc = "      \"description\": \"Accepted for validation but not executed in Phase 1.\""]
+#[doc = "      \"description\": \"Whether redirection status codes (300-399) are accepted. When false (default), a final response status outside 200-299 raises a communication error; when true, outside 200-399. Redirects are followed automatically, so the status of the final response is checked.\","]
+#[doc = "      \"type\": \"boolean\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"unevaluatedProperties\": false"]
@@ -462,15 +463,15 @@ pub struct CallHttp {
     pub headers: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
     #[doc = "HTTP method to execute."]
     pub method: ::std::string::String,
-    #[doc = "HTTP output shape."]
+    #[doc = "HTTP output shape. `content` outputs the response content (deserialized when JSON). `response` outputs the HTTP response as `{ request: { method, uri, headers }, statusCode, headers, content }`."]
     #[serde(default = "defaults::call_http_output")]
     pub output: HttpOutput,
     #[doc = "Query parameter map. Values are converted to strings by the executor."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub query: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Accepted for validation but not executed in Phase 1."]
+    #[doc = "Whether redirection status codes (300-399) are accepted. When false (default), a final response status outside 200-299 raises a communication error; when true, outside 200-399. Redirects are followed automatically, so the status of the final response is checked."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub redirect: ::std::option::Option<::serde_json::Value>,
+    pub redirect: ::std::option::Option<bool>,
 }
 impl ::std::convert::From<&CallHttp> for CallHttp {
     fn from(value: &CallHttp) -> Self {
@@ -1589,7 +1590,7 @@ impl Error {
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"type\": {"]
-#[doc = "      \"description\": \"Filter by error type value.\","]
+#[doc = "      \"description\": \"URI template matched against the error type (case-sensitive; {name} matches any text).\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  }"]
@@ -1610,7 +1611,7 @@ pub struct ErrorFilter {
     #[doc = "Filter by error title."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub title: ::std::option::Option<::std::string::String>,
-    #[doc = "Filter by error type value."]
+    #[doc = "URI template matched against the error type (case-sensitive; {name} matches any text)."]
     #[serde(
         rename = "type",
         default,
@@ -2274,7 +2275,7 @@ impl ForTaskConfiguration {
 #[doc = "        },"]
 #[doc = "        \"compete\": {"]
 #[doc = "          \"title\": \"ForkCompete\","]
-#[doc = "          \"description\": \"Enable competition mode where first completed task wins.\","]
+#[doc = "          \"description\": \"Enable competition mode where the first branch to complete successfully wins.\","]
 #[doc = "          \"default\": false,"]
 #[doc = "          \"type\": \"boolean\""]
 #[doc = "        }"]
@@ -2386,7 +2387,7 @@ impl ForkTask {
 #[doc = "    },"]
 #[doc = "    \"compete\": {"]
 #[doc = "      \"title\": \"ForkCompete\","]
-#[doc = "      \"description\": \"Enable competition mode where first completed task wins.\","]
+#[doc = "      \"description\": \"Enable competition mode where the first branch to complete successfully wins.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    }"]
@@ -2398,7 +2399,7 @@ impl ForkTask {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct ForkTaskConfiguration {
     pub branches: TaskList,
-    #[doc = "Enable competition mode where first completed task wins."]
+    #[doc = "Enable competition mode where the first branch to complete successfully wins."]
     #[serde(default)]
     pub compete: bool,
 }
@@ -2666,14 +2667,14 @@ impl ::std::convert::From<AuthenticationPolicy> for HttpEndpointAuthentication {
         Self::Variant0(value)
     }
 }
-#[doc = "HTTP output shape."]
+#[doc = "HTTP output shape. `content` outputs the response content (deserialized when JSON). `response` outputs the HTTP response as `{ request: { method, uri, headers }, statusCode, headers, content }`."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"HttpOutput\","]
-#[doc = "  \"description\": \"HTTP output shape.\","]
+#[doc = "  \"description\": \"HTTP output shape. `content` outputs the response content (deserialized when JSON). `response` outputs the HTTP response as `{ request: { method, uri, headers }, statusCode, headers, content }`.\","]
 #[doc = "  \"default\": \"content\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"enum\": ["]
@@ -7223,10 +7224,7 @@ pub mod builder {
             ::serde_json::Map<::std::string::String, ::serde_json::Value>,
             ::std::string::String,
         >,
-        redirect: ::std::result::Result<
-            ::std::option::Option<::serde_json::Value>,
-            ::std::string::String,
-        >,
+        redirect: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
     }
     impl ::std::default::Default for CallHttp {
         fn default() -> Self {
@@ -7308,7 +7306,7 @@ pub mod builder {
         }
         pub fn redirect<T>(mut self, value: T) -> Self
         where
-            T: ::std::convert::TryInto<::std::option::Option<::serde_json::Value>>,
+            T: ::std::convert::TryInto<::std::option::Option<bool>>,
             T::Error: ::std::fmt::Display,
         {
             self.redirect = value

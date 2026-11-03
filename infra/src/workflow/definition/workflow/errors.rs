@@ -1,7 +1,6 @@
 use super::*;
 use crate::workflow::position::WorkflowPosition;
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
 
 /// Macro to reduce repetitive error handling with workflow position context
 ///
@@ -19,7 +18,7 @@ use std::collections::HashMap;
 /// let result = bail_with_position!(
 ///     task_context,
 ///     some_operation(),
-///     bad_argument,
+///     runtime,
 ///     "Operation failed"
 /// );
 /// ```
@@ -29,7 +28,7 @@ use std::collections::HashMap;
 /// let result = bail_with_position!(
 ///     task_context,
 ///     some_operation(),
-///     bad_argument,
+///     runtime,
 ///     "Operation failed",
 ///     "Additional detail information"
 /// );
@@ -39,7 +38,7 @@ use std::collections::HashMap;
 ///
 /// - `$task_context`: A reference to the task context containing position information
 /// - `$result`: The Result to unwrap or convert to workflow error
-/// - `$error_type`: The error factory method name (e.g., bad_argument, internal_error)
+/// - `$error_type`: The error factory method name (e.g., runtime, configuration)
 /// - `$message`: The error message to include in the error
 /// - `$detail` (optional): Additional detail message (defaults to Display representation of error)
 #[macro_export]
@@ -125,16 +124,9 @@ impl std::fmt::Display for super::Error {
     }
 }
 impl UriTemplate {
-    pub fn is_match(&self, in_str: &str) -> bool {
-        let binding = if !in_str.contains("://") {
-            format!("http-error://{}", in_str.to_ascii_lowercase())
-        } else {
-            in_str.to_ascii_lowercase()
-        };
-        let in_str = binding.as_str();
-
-        // XXX t not contains scheme, assume http-error
-
+    /// Whether the concrete `uri` matches this template; each `{var}` matches
+    /// any text. Comparison is case-sensitive.
+    pub fn is_match(&self, uri: &str) -> bool {
         let template_str = &self.0;
         let template_parts: Vec<&str> = template_str.split('{').collect();
         let mut pattern = String::new();
@@ -154,400 +146,249 @@ impl UriTemplate {
         }
 
         match regex::Regex::new(&format!("^{pattern}$")) {
-            Ok(re) => re.is_match(in_str),
+            Ok(re) => re.is_match(uri),
             Err(_) => false,
         }
     }
 }
 
-/// Open Workflow Specification 1.0 standard error type for runtime failures.
-pub const ERROR_TYPE_RUNTIME: &str =
-    "https://open-workflow-specification.org/spec/1.0.0/errors/runtime";
-/// Open Workflow Specification 1.0 standard error type for timeouts.
-pub const ERROR_TYPE_TIMEOUT: &str =
-    "https://open-workflow-specification.org/spec/1.0.0/errors/timeout";
+/// Base of the standard error types. Version 1.0.0 of the specification was
+/// published under the former Serverless Workflow domain, so both spellings
+/// identify the same error type.
+macro_rules! spec_uri_base {
+    () => {
+        "https://open-workflow-specification.org/spec/"
+    };
+}
+const SPEC_URI_BASE: &str = spec_uri_base!();
+const LEGACY_SPEC_URI_BASE: &str = "https://serverlessworkflow.io/spec/";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ErrorCode {
-    BadArgument,
-    Unauthorized,
-    PaymentRequired,
-    PermissionDenied,
-    NotFound,
-    MethodNotAllowed,
-    RequestTimeout,
-    Conflict,
-    Gone,
-    PreconditionFailed,
-    UnsupportedMediaType,
-    InternalError,
-    ServiceUnavailable,
-    GatewayTimeout,
-    TooManyRequests,
-    UnavailableForLegalReasons,
-    NotImplemented,
-    BadGateway,
-    NotAcceptable,
-    UnprocessableEntity,
-    Locked,
+fn canonical_spec_uri(uri: &str) -> std::borrow::Cow<'_, str> {
+    match uri.strip_prefix(LEGACY_SPEC_URI_BASE) {
+        Some(rest) => std::borrow::Cow::Owned(format!("{SPEC_URI_BASE}{rest}")),
+        None => std::borrow::Cow::Borrowed(uri),
+    }
 }
 
-static ERROR_CODE_MAP: Lazy<HashMap<ErrorCode, u16>> = Lazy::new(|| {
-    let mut map = HashMap::new();
-    map.insert(ErrorCode::BadArgument, 400);
-    map.insert(ErrorCode::Unauthorized, 401);
-    map.insert(ErrorCode::PaymentRequired, 402);
-    map.insert(ErrorCode::PermissionDenied, 403);
-    map.insert(ErrorCode::NotFound, 404);
-    map.insert(ErrorCode::MethodNotAllowed, 405);
-    map.insert(ErrorCode::RequestTimeout, 408);
-    map.insert(ErrorCode::Conflict, 409);
-    map.insert(ErrorCode::Gone, 410);
-    map.insert(ErrorCode::PreconditionFailed, 412);
-    map.insert(ErrorCode::UnsupportedMediaType, 415);
-    map.insert(ErrorCode::InternalError, 500);
-    map.insert(ErrorCode::ServiceUnavailable, 503);
-    map.insert(ErrorCode::GatewayTimeout, 504);
-    map.insert(ErrorCode::TooManyRequests, 429);
-    map.insert(ErrorCode::UnavailableForLegalReasons, 451);
-    map.insert(ErrorCode::NotImplemented, 501);
-    map.insert(ErrorCode::BadGateway, 502);
-    map.insert(ErrorCode::NotAcceptable, 406);
-    map.insert(ErrorCode::UnprocessableEntity, 422);
-    map.insert(ErrorCode::Locked, 423);
-    map
-});
+/// Whether `value` has the shape the workflow schema requires of a literal
+/// error type (`$defs/uriTemplate`): a scheme followed by `://`.
+fn is_absolute_uri(value: &str) -> bool {
+    static PATTERN: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"^[A-Za-z][A-Za-z0-9+\-.]*://").expect("valid absolute URI pattern")
+    });
+    PATTERN.is_match(value)
+}
+
+impl ErrorFilter {
+    /// Whether `error` satisfies every field set on this filter; unset fields
+    /// match anything.
+    pub fn matches(&self, error: &Error) -> bool {
+        // The type check builds a regex, so it runs last.
+        let matched = self.status.is_none_or(|st| st == error.status)
+            && Self::field_matches(self.details.as_deref(), &error.detail)
+            && Self::field_matches(self.title.as_deref(), &error.title)
+            && Self::field_matches(self.instance.as_deref(), &error.instance)
+            && self
+                .type_
+                .as_deref()
+                .is_none_or(|filter_type| Self::type_matches(filter_type, &error.type_.0));
+        tracing::debug!(matched, filter = ?self, "Evaluated catch error filter");
+        matched
+    }
+
+    /// The filter type is the template; the error type is the concrete value.
+    fn type_matches(filter_type: &str, error_type: &str) -> bool {
+        if !is_absolute_uri(filter_type) {
+            // Literal error types must be absolute URIs, so a scheme-less filter
+            // usually is a leftover from an older, non-URI error type format.
+            tracing::warn!(
+                filter_type,
+                "catch.errors.with.type is not an absolute URI; it is matched as a literal string"
+            );
+        }
+        UriTemplate(canonical_spec_uri(filter_type).into_owned())
+            .is_match(&canonical_spec_uri(error_type))
+    }
+
+    fn field_matches(expected: Option<&str>, actual: &Option<String>) -> bool {
+        expected.is_none_or(|expected| actual.as_deref() == Some(expected))
+    }
+}
+
+macro_rules! spec_error_type {
+    ($kind:literal) => {
+        concat!(spec_uri_base!(), "1.0.0/errors/", $kind)
+    };
+}
+
+/// The standard error categories defined by the Open Workflow Specification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StandardErrorType {
+    Configuration,
+    Validation,
+    Expression,
+    Authentication,
+    Authorization,
+    Timeout,
+    Communication,
+    Runtime,
+}
+
+impl StandardErrorType {
+    pub const fn uri(self) -> &'static str {
+        match self {
+            Self::Configuration => spec_error_type!("configuration"),
+            Self::Validation => spec_error_type!("validation"),
+            Self::Expression => spec_error_type!("expression"),
+            Self::Authentication => spec_error_type!("authentication"),
+            Self::Authorization => spec_error_type!("authorization"),
+            Self::Timeout => spec_error_type!("timeout"),
+            Self::Communication => spec_error_type!("communication"),
+            Self::Runtime => spec_error_type!("runtime"),
+        }
+    }
+
+    const ALL: [Self; 8] = [
+        Self::Configuration,
+        Self::Validation,
+        Self::Expression,
+        Self::Authentication,
+        Self::Authorization,
+        Self::Timeout,
+        Self::Communication,
+        Self::Runtime,
+    ];
+
+    /// The category whose URI `uri` is, accepting the legacy spec domain.
+    pub fn from_uri(uri: &str) -> Option<Self> {
+        let uri = canonical_spec_uri(uri);
+        Self::ALL.into_iter().find(|kind| kind.uri() == uri)
+    }
+
+    /// The status the specification assigns to this category.
+    pub const fn default_status(self) -> i64 {
+        match self {
+            Self::Configuration | Self::Validation | Self::Expression => 400,
+            Self::Authentication => 401,
+            Self::Authorization => 403,
+            Self::Timeout => 408,
+            Self::Communication | Self::Runtime => 500,
+        }
+    }
+}
+
+pub const ERROR_TYPE_RUNTIME: &str = StandardErrorType::Runtime.uri();
+pub const ERROR_TYPE_TIMEOUT: &str = StandardErrorType::Timeout.uri();
 
 #[derive(Debug, Clone, Default)]
 pub struct ErrorFactory {}
+
 impl ErrorFactory {
     pub fn new() -> Self {
         Self {}
     }
-    pub fn create(
-        status: ErrorCode,
-        message: Option<String>,
-        position: Option<String>,
-        err: Option<&anyhow::Error>,
-    ) -> Box<super::Error> {
-        let status_code = ERROR_CODE_MAP.get(&status).copied().unwrap_or(500);
-        Box::new(Error {
-            title: message,
-            instance: position,
-            status: status_code as i64,
-            detail: err.map(|e| e.to_string()),
-            type_: super::UriTemplate(format!(
-                "http-error://{}",
-                status.to_string().to_lowercase().replace('_', "-")
-            )),
-        })
-    }
-    pub fn create_from_serde_json(
-        err: &serde_json::error::Error,
-        message: Option<&str>,
-        code: Option<ErrorCode>,
-        position: Option<&WorkflowPosition>,
-    ) -> Box<super::Error> {
-        let status_code = code
-            .and_then(|c| ERROR_CODE_MAP.get(&c).copied())
-            .unwrap_or(400);
-        Box::new(Error {
-            title: message.map(|s| s.to_owned()),
-            instance: position.map(|p| p.as_error_instance()),
-            status: status_code as i64,
-            detail: Some(err.to_string()),
-            type_: super::UriTemplate(format!(
-                "http-error://{}",
-                code.unwrap_or(ErrorCode::BadArgument)
-                    .to_string()
-                    .to_lowercase()
-                    .replace('_', "-")
-            )),
-        })
-    }
-    pub fn create_from_liquid(
-        err: &liquid::Error,
-        message: Option<&str>,
-        status: Option<ErrorCode>,
-        position: Option<&WorkflowPosition>,
-    ) -> Box<super::Error> {
-        let status_code = status
-            .and_then(|c| ERROR_CODE_MAP.get(&c).copied())
-            .unwrap_or(400);
-        Box::new(Error {
-            title: message.map(|s| s.to_owned()),
-            instance: position.map(|p| p.as_error_instance()),
-            status: status_code as i64,
-            detail: Some(err.to_string()),
-            type_: super::UriTemplate(format!(
-                "http-error://{}",
-                status
-                    .unwrap_or(ErrorCode::BadArgument)
-                    .to_string()
-                    .to_lowercase()
-                    .replace('_', "-")
-            )),
-        })
-    }
 
-    // エラーコードを使用する共通ヘルパーメソッド
-    fn create_error_with_code(
+    /// Builds a standard error with the category's URI and default status.
+    pub fn standard(
         &self,
-        code: ErrorCode,
+        kind: StandardErrorType,
         message: String,
         position: Option<String>,
         detail: Option<String>,
-    ) -> Box<super::Error> {
-        let status_code = ERROR_CODE_MAP.get(&code).copied().unwrap_or(500);
+    ) -> Box<Error> {
+        self.standard_with_status(kind, kind.default_status(), message, position, detail)
+    }
+
+    /// Builds a standard error that carries the status reported by the origin
+    /// (e.g. a downstream HTTP response) instead of the category default.
+    pub fn standard_with_status(
+        &self,
+        kind: StandardErrorType,
+        status: i64,
+        message: String,
+        position: Option<String>,
+        detail: Option<String>,
+    ) -> Box<Error> {
         Box::new(Error {
+            type_: UriTemplate(kind.uri().to_string()),
+            status,
             title: Some(message),
-            instance: position,
             detail,
-            status: status_code as i64,
-            type_: super::UriTemplate(format!(
-                "http-error://{}",
-                code.to_string().to_lowercase().replace('_', "-")
-            )),
+            instance: position,
         })
     }
 
-    // エラーメソッドをErrorCodeを使って簡潔に実装
-    pub fn bad_argument(
+    // No `authentication` constructor: the engine raises no authentication
+    // failures yet; use `standard(StandardErrorType::Authentication, ..)`.
+
+    /// Invalid or unsupported workflow definition or deployment setup.
+    pub fn configuration(
         &self,
         message: String,
         position: Option<String>,
         detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::BadArgument, message, position, detail)
+    ) -> Box<Error> {
+        self.standard(StandardErrorType::Configuration, message, position, detail)
     }
 
-    pub fn unauthorized(
+    /// Input or output data failed schema validation.
+    pub fn validation(
         &self,
         message: String,
         position: Option<String>,
         detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::Unauthorized, message, position, detail)
+    ) -> Box<Error> {
+        self.standard(StandardErrorType::Validation, message, position, detail)
     }
 
-    pub fn payment_required(
+    /// A runtime expression failed to evaluate.
+    pub fn expression(
         &self,
         message: String,
         position: Option<String>,
         detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::PaymentRequired, message, position, detail)
+    ) -> Box<Error> {
+        self.standard(StandardErrorType::Expression, message, position, detail)
     }
 
-    pub fn permission_denied(
+    /// Access to a secret that is not declared or not available.
+    pub fn authorization(
         &self,
         message: String,
         position: Option<String>,
         detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::PermissionDenied, message, position, detail)
+    ) -> Box<Error> {
+        self.standard(StandardErrorType::Authorization, message, position, detail)
     }
 
-    pub fn not_found(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::NotFound, message, position, detail)
-    }
-
-    pub fn method_not_allowed(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::MethodNotAllowed, message, position, detail)
-    }
-
-    pub fn not_acceptable(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::NotAcceptable, message, position, detail)
-    }
-
-    pub fn request_timeout(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::RequestTimeout, message, position, detail)
-    }
-
-    /// Task/workflow timeout as mandated by the Open Workflow Specification
-    /// (`errors/timeout`, status 408). Distinct from `request_timeout`, which
-    /// models an HTTP 408 from a remote service.
+    /// A task or workflow exceeded its time limit.
     pub fn timeout(
         &self,
         message: String,
         position: Option<String>,
         detail: Option<String>,
-    ) -> Box<super::Error> {
-        Box::new(super::Error {
-            type_: super::UriTemplate(ERROR_TYPE_TIMEOUT.to_string()),
-            status: 408,
-            title: Some(message),
-            detail,
-            instance: position,
-        })
+    ) -> Box<Error> {
+        self.standard(StandardErrorType::Timeout, message, position, detail)
     }
 
-    pub fn conflict(
+    /// A call to an external service failed.
+    pub fn communication(
         &self,
         message: String,
         position: Option<String>,
         detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::Conflict, message, position, detail)
+    ) -> Box<Error> {
+        self.standard(StandardErrorType::Communication, message, position, detail)
     }
 
-    pub fn gone(
+    /// Any other failure while executing the workflow.
+    pub fn runtime(
         &self,
         message: String,
         position: Option<String>,
         detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::Gone, message, position, detail)
-    }
-
-    pub fn precondition_failed(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::PreconditionFailed, message, position, detail)
-    }
-
-    pub fn unsupported_media_type(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::UnsupportedMediaType, message, position, detail)
-    }
-
-    pub fn internal_error(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::InternalError, message, position, detail)
-    }
-
-    pub fn not_implemented(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::NotImplemented, message, position, detail)
-    }
-
-    pub fn too_many_requests(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::TooManyRequests, message, position, detail)
-    }
-
-    pub fn unavailable_for_legal_reasons(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(
-            ErrorCode::UnavailableForLegalReasons,
-            message,
-            position,
-            detail,
-        )
-    }
-
-    pub fn bad_gateway(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::BadGateway, message, position, detail)
-    }
-
-    pub fn service_unavailable(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::ServiceUnavailable, message, position, detail)
-    }
-
-    pub fn gateway_timeout(
-        &self,
-        message: String,
-        position: Option<String>,
-        detail: Option<String>,
-    ) -> Box<super::Error> {
-        self.create_error_with_code(ErrorCode::GatewayTimeout, message, position, detail)
-    }
-
-    pub fn custom(
-        &self,
-        title: Option<String>,
-        detail: Option<String>,
-        instance: Option<String>,
-        status: i64,
-    ) -> Box<super::Error> {
-        Box::new(Error {
-            title,
-            detail,
-            instance,
-            status,
-            type_: super::UriTemplate("http-error://custom".to_string()),
-        })
-    }
-}
-
-impl std::fmt::Display for ErrorCode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ErrorCode::BadArgument => write!(f, "BadArgument"),
-            ErrorCode::Unauthorized => write!(f, "Unauthorized"),
-            ErrorCode::PaymentRequired => write!(f, "PaymentRequired"),
-            ErrorCode::PermissionDenied => write!(f, "PermissionDenied"),
-            ErrorCode::NotFound => write!(f, "NotFound"),
-            ErrorCode::MethodNotAllowed => write!(f, "MethodNotAllowed"),
-            ErrorCode::RequestTimeout => write!(f, "RequestTimeout"),
-            ErrorCode::Conflict => write!(f, "Conflict"),
-            ErrorCode::Gone => write!(f, "Gone"),
-            ErrorCode::PreconditionFailed => write!(f, "PreconditionFailed"),
-            ErrorCode::UnsupportedMediaType => write!(f, "UnsupportedMediaType"),
-            ErrorCode::InternalError => write!(f, "InternalError"),
-            ErrorCode::ServiceUnavailable => write!(f, "ServiceUnavailable"),
-            ErrorCode::GatewayTimeout => write!(f, "GatewayTimeout"),
-            ErrorCode::TooManyRequests => write!(f, "TooManyRequests"),
-            ErrorCode::UnavailableForLegalReasons => write!(f, "UnavailableForLegalReasons"),
-            ErrorCode::NotImplemented => write!(f, "NotImplemented"),
-            ErrorCode::BadGateway => write!(f, "BadGateway"),
-            ErrorCode::NotAcceptable => write!(f, "NotAcceptable"),
-            ErrorCode::UnprocessableEntity => write!(f, "UnprocessableEntity"),
-            ErrorCode::Locked => write!(f, "Locked"),
-        }
+    ) -> Box<Error> {
+        self.standard(StandardErrorType::Runtime, message, position, detail)
     }
 }
 
@@ -564,11 +405,246 @@ mod spec_error_type_tests {
         assert_eq!(err.instance.as_deref(), Some("/do/0"));
     }
 
+    const ALL_STANDARD_TYPES: [(StandardErrorType, &str, i64); 8] = [
+        (StandardErrorType::Configuration, "configuration", 400),
+        (StandardErrorType::Validation, "validation", 400),
+        (StandardErrorType::Expression, "expression", 400),
+        (StandardErrorType::Authentication, "authentication", 401),
+        (StandardErrorType::Authorization, "authorization", 403),
+        (StandardErrorType::Timeout, "timeout", 408),
+        (StandardErrorType::Communication, "communication", 500),
+        (StandardErrorType::Runtime, "runtime", 500),
+    ];
+
     #[test]
-    fn spec_timeout_type_matches_only_spec_filter() {
-        let err_type = super::super::UriTemplate(ERROR_TYPE_TIMEOUT.to_string());
-        assert!(err_type.is_match(ERROR_TYPE_TIMEOUT));
-        assert!(!err_type.is_match("http-error://requesttimeout"));
-        assert!(!err_type.is_match("requesttimeout"));
+    fn from_uri_recognizes_every_standard_type_in_both_spec_domains() {
+        // The lookup table and this test table must list the same categories.
+        assert_eq!(
+            StandardErrorType::ALL,
+            ALL_STANDARD_TYPES.map(|(kind, _, _)| kind)
+        );
+        for (kind, name, _) in ALL_STANDARD_TYPES {
+            assert_eq!(
+                StandardErrorType::from_uri(kind.uri()),
+                Some(kind),
+                "{name}"
+            );
+            let legacy = format!("https://serverlessworkflow.io/spec/1.0.0/errors/{name}");
+            assert_eq!(StandardErrorType::from_uri(&legacy), Some(kind), "{legacy}");
+        }
+    }
+
+    #[test]
+    fn from_uri_rejects_other_types() {
+        for other in [
+            "https://example.com/errors/custom",
+            "https://open-workflow-specification.org/spec/1.0.0/errors/Timeout",
+            "https://open-workflow-specification.org/spec/1.0.0/errors/timeout/extra",
+            "timeout",
+            "",
+        ] {
+            assert_eq!(StandardErrorType::from_uri(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn standard_with_status_keeps_type_and_overrides_only_status() {
+        let err = ErrorFactory::new().standard_with_status(
+            StandardErrorType::Communication,
+            404,
+            "HTTP 404 Not Found".to_string(),
+            Some("/do/0/fetch".to_string()),
+            Some("missing".to_string()),
+        );
+        assert_eq!(err.type_.0, StandardErrorType::Communication.uri());
+        assert_eq!(err.status, 404);
+        assert_eq!(err.title.as_deref(), Some("HTTP 404 Not Found"));
+        assert_eq!(err.instance.as_deref(), Some("/do/0/fetch"));
+        assert_eq!(err.detail.as_deref(), Some("missing"));
+    }
+
+    #[test]
+    fn standard_error_carries_spec_type_default_status_and_fields() {
+        for (kind, name, status) in ALL_STANDARD_TYPES {
+            let err = ErrorFactory::new().standard(
+                kind,
+                "title".to_string(),
+                Some("/do/0".to_string()),
+                Some("detail".to_string()),
+            );
+            assert_eq!(
+                err.type_.0,
+                format!("https://open-workflow-specification.org/spec/1.0.0/errors/{name}")
+            );
+            assert_eq!(err.status, status, "{name}");
+            assert_eq!(err.title.as_deref(), Some("title"));
+            assert_eq!(err.instance.as_deref(), Some("/do/0"));
+            assert_eq!(err.detail.as_deref(), Some("detail"));
+        }
+    }
+
+    #[test]
+    fn named_constructors_build_the_matching_standard_error() {
+        type Constructor = fn(&ErrorFactory, String, Option<String>, Option<String>) -> Box<Error>;
+        let constructors: [(Constructor, StandardErrorType); 7] = [
+            (
+                ErrorFactory::configuration,
+                StandardErrorType::Configuration,
+            ),
+            (ErrorFactory::validation, StandardErrorType::Validation),
+            (ErrorFactory::expression, StandardErrorType::Expression),
+            (
+                ErrorFactory::authorization,
+                StandardErrorType::Authorization,
+            ),
+            (ErrorFactory::timeout, StandardErrorType::Timeout),
+            (
+                ErrorFactory::communication,
+                StandardErrorType::Communication,
+            ),
+            (ErrorFactory::runtime, StandardErrorType::Runtime),
+        ];
+        let factory = ErrorFactory::new();
+        for (constructor, kind) in constructors {
+            let built = constructor(&factory, "m".to_string(), Some("/p".to_string()), None);
+            let expected = factory.standard(kind, "m".to_string(), Some("/p".to_string()), None);
+            assert_eq!(built, expected, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn standard_errors_match_spec_filters_but_not_legacy_ones() {
+        let timeout = ErrorFactory::new().timeout("t".to_string(), None, None);
+        assert!(type_filter(ERROR_TYPE_TIMEOUT).matches(&timeout));
+        let runtime = error_of_type(ERROR_TYPE_RUNTIME);
+        for (legacy, err) in [
+            ("http-error://requesttimeout", &*timeout),
+            ("requesttimeout", &*timeout),
+            ("http-error://internalerror", &runtime),
+            ("internalerror", &runtime),
+        ] {
+            assert!(!type_filter(legacy).matches(err), "{legacy} must not match");
+        }
+    }
+
+    fn type_filter(type_: &str) -> ErrorFilter {
+        ErrorFilter {
+            type_: Some(type_.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn error_of_type(type_: &str) -> Error {
+        Error {
+            type_: UriTemplate(type_.to_string()),
+            status: 500,
+            title: Some("title".to_string()),
+            detail: Some("detail".to_string()),
+            instance: Some("/do/0".to_string()),
+        }
+    }
+
+    const STANDARD_KINDS: [&str; 8] = [
+        "configuration",
+        "validation",
+        "expression",
+        "authentication",
+        "authorization",
+        "timeout",
+        "communication",
+        "runtime",
+    ];
+
+    #[test]
+    fn type_filter_matches_identical_type_case_sensitively() {
+        let err = error_of_type("https://example.invalid/Errors/Upstream");
+        assert!(type_filter("https://example.invalid/Errors/Upstream").matches(&err));
+        assert!(!type_filter("https://example.invalid/errors/upstream").matches(&err));
+    }
+
+    #[test]
+    fn type_filter_template_matches_every_standard_error() {
+        let filter =
+            type_filter("https://open-workflow-specification.org/spec/1.0.0/errors/{kind}");
+        for kind in STANDARD_KINDS {
+            let err = error_of_type(&format!(
+                "https://open-workflow-specification.org/spec/1.0.0/errors/{kind}"
+            ));
+            assert!(filter.matches(&err), "{kind} must match the template");
+        }
+        assert!(!filter.matches(&error_of_type("https://example.invalid/errors/runtime")));
+    }
+
+    #[test]
+    fn type_filter_is_the_template_not_the_error_type() {
+        // A `{...}` in the error type must not act as a wildcard.
+        let err = error_of_type("https://example.invalid/errors/{kind}");
+        assert!(!type_filter("https://example.invalid/errors/runtime").matches(&err));
+    }
+
+    #[test]
+    fn scheme_less_filter_still_matches_literally() {
+        // Raise errors built from expressions can carry any string type.
+        assert!(type_filter("task-error").matches(&error_of_type("task-error")));
+    }
+
+    #[test]
+    fn custom_scheme_filter_matches_the_same_custom_type() {
+        let err = error_of_type("http-error://foo");
+        assert!(type_filter("http-error://foo").matches(&err));
+    }
+
+    #[test]
+    fn legacy_spec_domain_is_equivalent_in_both_directions() {
+        let legacy = "https://serverlessworkflow.io/spec/1.0.0/errors/runtime";
+        assert!(type_filter(legacy).matches(&error_of_type(ERROR_TYPE_RUNTIME)));
+        assert!(type_filter(ERROR_TYPE_RUNTIME).matches(&error_of_type(legacy)));
+        assert!(
+            !type_filter("https://serverlessworkflow.io/spec/2.0.0/errors/runtime")
+                .matches(&error_of_type(ERROR_TYPE_RUNTIME))
+        );
+    }
+
+    #[test]
+    fn absolute_uri_detection_follows_the_spec_pattern() {
+        for valid in ["https://example.invalid/x", "http-error://foo", "urn+x://y"] {
+            assert!(is_absolute_uri(valid), "{valid} has a scheme");
+        }
+        for invalid in ["badargument", "", "://x", "1abc://x", "urn:x"] {
+            assert!(!is_absolute_uri(invalid), "{invalid} has no scheme");
+        }
+    }
+
+    #[test]
+    fn non_type_fields_are_combined_with_and() {
+        let err = error_of_type(ERROR_TYPE_RUNTIME);
+        let filter = ErrorFilter {
+            type_: Some(ERROR_TYPE_RUNTIME.to_string()),
+            status: Some(500),
+            title: Some("title".to_string()),
+            details: Some("detail".to_string()),
+            instance: Some("/do/0".to_string()),
+        };
+        assert!(filter.matches(&err));
+        for mismatch in [
+            ErrorFilter {
+                status: Some(400),
+                ..filter.clone()
+            },
+            ErrorFilter {
+                title: Some("other".to_string()),
+                ..filter.clone()
+            },
+            ErrorFilter {
+                details: Some("other".to_string()),
+                ..filter.clone()
+            },
+            ErrorFilter {
+                instance: Some("/do/1".to_string()),
+                ..filter.clone()
+            },
+        ] {
+            assert!(!mismatch.matches(&err), "{mismatch:?} must not match");
+        }
     }
 }

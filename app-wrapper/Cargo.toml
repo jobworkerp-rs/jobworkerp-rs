@@ -59,6 +59,7 @@ ollama-rs = { version = "0.3", default-features = false, features = [
 ] }
 once_cell = { workspace = true }
 opentelemetry = { workspace = true }
+percent-encoding = "2.3"
 prost = { workspace = true }
 redis = { workspace = true }
 rand = { workspace = true }

@@ -14,6 +14,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+/// Output of a job whose cancellation was requested before it started.
+pub const CANCELLED_BEFORE_EXECUTION: &str = "Job was cancelled before execution";
+
 /// Shared cancellation monitoring implementation (Manager required version)
 /// Unifies logic that was duplicated across 3 runners
 #[derive(Clone, Debug)]
@@ -59,10 +62,13 @@ impl CancelMonitoringHelper {
                 Ok(Some(JobResult {
                     id: None,
                     data: Some(JobResultData {
+                        error: Some(proto::stream_error::cancelled_by_worker(
+                            CANCELLED_BEFORE_EXECUTION,
+                        )),
                         job_id: Some(job_id),
                         status: ResultStatus::Cancelled as i32,
                         output: Some(ResultOutput {
-                            items: b"Job was cancelled before execution".to_vec(),
+                            items: CANCELLED_BEFORE_EXECUTION.as_bytes().to_vec(),
                         }),
                         start_time: datetime::now_millis(),
                         end_time: datetime::now_millis(),
@@ -117,4 +123,52 @@ impl CancelMonitoringHelper {
 /// For DI integration with AppModule (Option support)
 pub trait UseCancelMonitoringHelper {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use proto::jobworkerp::data::StreamErrorCode;
+
+    #[derive(Debug)]
+    struct AlreadyCancelledManager;
+
+    #[async_trait]
+    impl RunnerCancellationManager for AlreadyCancelledManager {
+        async fn setup_monitoring(
+            &mut self,
+            _job_id: &JobId,
+            _job_data: &JobData,
+        ) -> Result<CancellationSetupResult> {
+            Ok(CancellationSetupResult::AlreadyCancelled)
+        }
+
+        async fn cleanup_monitoring(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn get_token(&self) -> CancellationToken {
+            CancellationToken::new()
+        }
+
+        fn is_cancelled(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn already_cancelled_job_result_is_classified_as_cancelled() {
+        let mut helper = CancelMonitoringHelper::new(Box::new(AlreadyCancelledManager));
+        let result = helper
+            .setup_monitoring_impl(JobId { value: 1 }, &JobData::default())
+            .await
+            .unwrap()
+            .expect("cancelled result");
+        let data = result.data.unwrap();
+        assert_eq!(data.status, ResultStatus::Cancelled as i32);
+        let error = data.error.expect("classification");
+        assert_eq!(error.code, StreamErrorCode::Cancelled as i32);
+        assert_eq!(error.origin, proto::stream_error::WORKER_ORIGIN);
+    }
 }

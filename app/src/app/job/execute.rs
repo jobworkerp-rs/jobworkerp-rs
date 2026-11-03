@@ -16,8 +16,8 @@ use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use memory_utils::cache::moka::MokaCacheImpl;
 use proto::jobworkerp::data::{
     JobExecutionOverrides, JobId, JobResult, Priority, QueueType, ResponseType, ResultOutputItem,
-    ResultStatus, RetryPolicy, RetryType, RunnerData, RunnerId, StreamingType, Worker, WorkerData,
-    WorkerId,
+    ResultStatus, RetryPolicy, RetryType, RunnerData, RunnerId, StreamError, StreamingType, Worker,
+    WorkerData, WorkerId,
 };
 use proto::{DEFAULT_METHOD_NAME, ProtobufHelper};
 use std::collections::HashMap;
@@ -96,14 +96,6 @@ impl UseRunnerSpecFactory for JobExecutorWrapper {
 impl ProtobufHelper for JobExecutorWrapper {}
 impl UseJobExecutor for JobExecutorWrapper {}
 
-pub struct NamedWorkerChannelJob {
-    pub job_id: JobId,
-    pub result_fut: ChannelJobResultFuture,
-    pub runner_id: RunnerId,
-    pub runner_data: RunnerData,
-    pub using: Option<String>,
-}
-
 pub enum WorkerForEnqueue {
     Existing(Worker),
     Temp(WorkerData),
@@ -150,6 +142,23 @@ pub trait UseJobExecutor:
                 format!("runner:{}", name),
                 self.runner_app().find_runner_by_name(name)
             )
+        }
+    }
+    /// The worker to enqueue to: the persisted definition for `use_static`
+    /// workers (so their runner instance is pooled), a temporary one otherwise.
+    fn worker_for_enqueue(
+        &self,
+        worker_data: WorkerData,
+    ) -> impl std::future::Future<Output = Result<WorkerForEnqueue>> + Send
+    where
+        Self: Send + Sync,
+    {
+        async move {
+            Ok(if worker_data.use_static {
+                WorkerForEnqueue::Existing(self.find_or_create_worker(worker_data).await?)
+            } else {
+                WorkerForEnqueue::Temp(worker_data)
+            })
         }
     }
     fn find_or_create_worker(
@@ -461,11 +470,7 @@ pub trait UseJobExecutor:
                 let job_args = self
                     .transform_job_args(&rid, &rdata, &job_args, using.as_deref())
                     .await?;
-                let worker = if worker_data.use_static {
-                    WorkerForEnqueue::Existing(self.find_or_create_worker(worker_data).await?)
-                } else {
-                    WorkerForEnqueue::Temp(worker_data)
-                };
+                let worker = self.worker_for_enqueue(worker_data).await?;
                 self.enqueue_with_worker_or_temp(
                     metadata,
                     worker,
@@ -507,11 +512,7 @@ pub trait UseJobExecutor:
                     .transform_job_args(&rid, &rdata, &job_args, using.as_deref())
                     .await?;
 
-                let worker = if worker_data.use_static {
-                    WorkerForEnqueue::Existing(self.find_or_create_worker(worker_data).await?)
-                } else {
-                    WorkerForEnqueue::Temp(worker_data)
-                };
+                let worker = self.worker_for_enqueue(worker_data).await?;
                 let (_jid, res, _stream) = self
                     .enqueue_with_worker_or_temp(
                         metadata,
@@ -611,8 +612,9 @@ pub trait UseJobExecutor:
 
     /// Look up a worker by name, resolve its runner, and transform the JSON
     /// `job_args` into the protobuf binary the runner expects. Shared front
-    /// stage of the `enqueue_with_worker_name_*` family so the worker/runner
-    /// resolution lives in one place.
+    /// stage of the `enqueue_with_worker_name_*` family, and of callers that
+    /// enqueue separately so they can tell resolution failures from enqueue
+    /// failures.
     fn resolve_worker_and_transform_args(
         &self,
         worker_name: &str,
@@ -657,45 +659,6 @@ pub trait UseJobExecutor:
                 .transform_job_args(&rid, &rdata, job_args, using)
                 .await?;
             Ok((wid, worker_data, rid, rdata, args))
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn enqueue_with_worker_name_channel(
-        &self,
-        metadata: Arc<HashMap<String, String>>, // metadata for job
-        worker_name: &str,                      // worker name to look up
-        job_args: &serde_json::Value,           // enqueue job args
-        uniq_key: Option<String>, // unique key for job (if not exists, use default values)
-        job_timeout_sec: u32,     // job timeout in seconds
-        streaming_type: StreamingType, // streaming type for job
-        using: Option<String>,    // using parameter for MCP/Plugin runners
-        // Per-job overrides (e.g. response_type) for the named (often static) worker.
-        overrides: Option<JobExecutionOverrides>,
-    ) -> impl std::future::Future<Output = Result<NamedWorkerChannelJob>> + Send {
-        async move {
-            let (wid, worker_data, rid, rdata, job_args) = self
-                .resolve_worker_and_transform_args(worker_name, job_args, using.as_deref())
-                .await?;
-            let (job_id, result_fut) = self
-                .enqueue_with_worker_or_temp_channel(
-                    metadata,
-                    WorkerForEnqueue::existing(wid, worker_data),
-                    job_args,
-                    uniq_key,
-                    job_timeout_sec,
-                    streaming_type,
-                    using.clone(), // Pass using parameter for MCP/Plugin workers
-                    overrides,
-                )
-                .await?;
-            Ok(NamedWorkerChannelJob {
-                job_id,
-                result_fut,
-                runner_id: rid,
-                runner_data: rdata,
-                using,
-            })
         }
     }
 
@@ -770,6 +733,18 @@ pub trait UseJobExecutor:
             // Fallback: parse the descriptor directly from method_proto_map when cache lacks it
             if args_descriptor.is_none() {
                 let method_name = using.unwrap_or(DEFAULT_METHOD_NAME);
+                // A method the runner does not define is a caller mistake, unlike
+                // a broken method_proto_map, so report it as NotFound.
+                if let Some(map) = &rdata.method_proto_map
+                    && !map.schemas.contains_key(method_name)
+                {
+                    return Err(JobWorkerError::NotFound(format!(
+                        "method '{method_name}' not found in runner '{}' (available methods: {:?})",
+                        rdata.name,
+                        map.schemas.keys().collect::<Vec<_>>()
+                    ))
+                    .into());
+                }
                 args_descriptor = Self::parse_job_args_schema_descriptor(rdata, method_name)?;
             }
 
@@ -782,7 +757,9 @@ pub trait UseJobExecutor:
                 Ok(
                     ProtobufDescriptor::json_value_to_message(desc, &job_args, true, true)
                         .map_err(|e| {
-                            anyhow::anyhow!("Failed to parse job_args schema: {:#?}", e)
+                            JobWorkerError::InvalidParameter(format!(
+                                "Failed to parse job_args schema: {e:#?}"
+                            ))
                         })?,
                 )
             } else {
@@ -811,12 +788,14 @@ pub trait UseJobExecutor:
                     .items
                     .to_owned())
             } else {
-                Err(anyhow!(
-                    "job failed: {:?}",
-                    jdata
+                Err(JobFailedError {
+                    status: jdata.status(),
+                    output: jdata
                         .output
-                        .and_then(|o| String::from_utf8_lossy(&o.items).into_owned().into())
-                ))
+                        .map(|o| String::from_utf8_lossy(&o.items).into_owned()),
+                    classification: jdata.error,
+                }
+                .into())
             }
         } else {
             Err(anyhow::anyhow!("job result not found"))
@@ -928,11 +907,12 @@ fn worker_data_with_expected_definition(
 /// Placeholder substituted for redacted sensitive values in logs.
 const REDACTED: &str = "***REDACTED***";
 
-/// Header names whose values carry credentials and must never be logged.
+/// Header names whose values carry credentials and must never be logged or
+/// echoed into task output.
 /// Matched case-insensitively against the `key` of `{key, value}` pairs (the
 /// shape the HTTP_REQUEST runner uses for headers/queries). This is a generic
 /// HTTP-credential rule, not tied to any single runner type.
-const SENSITIVE_HEADER_KEYS: &[&str] = &[
+pub const SENSITIVE_HEADER_KEYS: &[&str] = &[
     "authorization",
     "proxy-authorization",
     "cookie",
@@ -954,6 +934,27 @@ const SENSITIVE_FLAT_KEYS: &[&str] = &[
     "api_key",
     "apikey",
 ];
+
+/// A job that finished without a successful result, downcastable from the
+/// error returned by [`UseJobExecutor::extract_job_result_output`] so callers
+/// can tell why it failed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobFailedError {
+    pub status: ResultStatus,
+    /// Diagnostic output of the failed job.
+    pub output: Option<String>,
+    /// Cause recorded by the worker; absent for results from older workers or
+    /// read back from the RDB.
+    pub classification: Option<StreamError>,
+}
+
+impl std::fmt::Display for JobFailedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "job failed: {:?}", self.output)
+    }
+}
+
+impl std::error::Error for JobFailedError {}
 
 /// Return a copy of `args` with credential-bearing values masked, for safe
 /// logging. Two shapes are redacted: `{key, value}` pairs whose `key` is a
@@ -1013,14 +1014,16 @@ mod tests {
     use super::*;
     use crate::module::test::create_rdb_chan_test_app;
     use infra_utils::infra::test::TEST_RUNTIME;
-    use proto::jobworkerp::data::{JobProcessingStatus, QueueType, ResponseType};
+    use proto::jobworkerp::data::{
+        JobProcessingStatus, JobResultData, QueueType, ResponseType, ResultOutput,
+    };
     use std::time::Duration;
 
     const COMMAND_RUNNER_ID: i64 = 1;
     const HTTP_REQUEST_RUNNER_ID: i64 = 2;
 
     #[test]
-    fn test_enqueue_with_worker_name_channel_returns_job_id_before_result() -> Result<()> {
+    fn test_named_worker_channel_enqueue_returns_job_id_before_result() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let app_module = Arc::new(create_rdb_chan_test_app(false, false).await?);
             let worker_name = "named-worker-channel-test-command";
@@ -1046,15 +1049,22 @@ mod tests {
                 .await?;
 
             let wrapper = JobExecutorWrapper::new(app_module.clone());
-            let child = tokio::time::timeout(
-                Duration::from_secs(1),
-                wrapper.enqueue_with_worker_name_channel(
-                    Arc::new(HashMap::new()),
+            let (worker_id, worker_data, _, _, job_args) = wrapper
+                .resolve_worker_and_transform_args(
                     worker_name,
                     &serde_json::json!({
                         "command": "sleep",
                         "args": ["30"]
                     }),
+                    None,
+                )
+                .await?;
+            let (job_id, _result_fut) = tokio::time::timeout(
+                Duration::from_secs(1),
+                wrapper.enqueue_with_worker_or_temp_channel(
+                    Arc::new(HashMap::new()),
+                    WorkerForEnqueue::existing(worker_id, worker_data),
+                    job_args,
                     None,
                     30,
                     StreamingType::None,
@@ -1066,15 +1076,15 @@ mod tests {
             .expect("channel enqueue must return before the Direct result is ready")?;
 
             assert!(
-                child.job_id.value > 0,
+                job_id.value > 0,
                 "channel enqueue should expose the child job id immediately"
             );
             assert_eq!(
-                app_module.job_app.find_job_status(&child.job_id).await?,
+                app_module.job_app.find_job_status(&job_id).await?,
                 Some(JobProcessingStatus::Pending)
             );
 
-            app_module.job_app.delete_job(&child.job_id).await?;
+            app_module.job_app.delete_job(&job_id).await?;
             Ok(())
         })
     }
@@ -1473,6 +1483,110 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    async fn command_runner(app_module: &AppModule) -> Result<(RunnerId, RunnerData)> {
+        let runner = app_module
+            .runner_app
+            .find_runner(&RunnerId {
+                value: COMMAND_RUNNER_ID,
+            })
+            .await?
+            .expect("COMMAND runner is registered");
+        Ok((runner.id.unwrap(), runner.data.unwrap()))
+    }
+
+    #[test]
+    fn transform_job_args_reports_a_schema_mismatch_as_invalid_parameter() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_rdb_chan_test_app(false, false).await?);
+            let (rid, rdata) = command_runner(&app_module).await?;
+            let wrapper = JobExecutorWrapper::new(app_module);
+            let err = wrapper
+                .transform_job_args(
+                    &rid,
+                    &rdata,
+                    &serde_json::json!({"args": "not-a-list"}),
+                    None,
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    err.downcast_ref::<JobWorkerError>(),
+                    Some(JobWorkerError::InvalidParameter(_))
+                ),
+                "{err:?}"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn transform_job_args_reports_an_unknown_method_as_not_found() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_rdb_chan_test_app(false, false).await?);
+            let (rid, rdata) = command_runner(&app_module).await?;
+            let wrapper = JobExecutorWrapper::new(app_module);
+            let err = wrapper
+                .transform_job_args(
+                    &rid,
+                    &rdata,
+                    &serde_json::json!({"command": "echo"}),
+                    Some("no_such_method"),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    err.downcast_ref::<JobWorkerError>(),
+                    Some(JobWorkerError::NotFound(_))
+                ),
+                "{err:?}"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn extract_job_result_output_returns_a_typed_failure() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_rdb_chan_test_app(false, false).await?);
+            let wrapper = JobExecutorWrapper::new(app_module);
+            let classification = proto::stream_error::classified_error(
+                proto::jobworkerp::data::StreamErrorCode::Timeout,
+                "timeout error",
+                "COMMAND",
+            );
+            let failed = JobResult {
+                id: None,
+                data: Some(JobResultData {
+                    status: ResultStatus::MaxRetry as i32,
+                    output: Some(ResultOutput {
+                        items: b"timeout error".to_vec(),
+                    }),
+                    error: Some(classification.clone()),
+                    ..Default::default()
+                }),
+                metadata: HashMap::new(),
+            };
+            let err = wrapper.extract_job_result_output(failed).unwrap_err();
+            // The message callers already log or return is unchanged.
+            assert_eq!(err.to_string(), "job failed: Some(\"timeout error\")");
+            let failure = err.downcast_ref::<JobFailedError>().expect("typed failure");
+            assert_eq!(failure.status, ResultStatus::MaxRetry);
+            assert_eq!(failure.classification, Some(classification));
+
+            // A result without data is not a job failure report.
+            let missing = JobResult {
+                id: None,
+                data: None,
+                metadata: HashMap::new(),
+            };
+            let err = wrapper.extract_job_result_output(missing).unwrap_err();
+            assert!(err.downcast_ref::<JobFailedError>().is_none());
+            Ok(())
+        })
     }
 
     #[test]

@@ -264,6 +264,7 @@ async fn redis_test() -> Result<()> {
     };
     #[allow(deprecated)]
     let job_result = &JobResultData {
+        error: None,
         job_id: Some(JobId { value: 1 }),
         worker_id: Some(WorkerId { value: 2 }),
         worker_name: "hoge2".to_string(),

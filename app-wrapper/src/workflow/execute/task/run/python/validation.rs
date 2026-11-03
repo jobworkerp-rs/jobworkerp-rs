@@ -232,19 +232,23 @@ pub fn validate_string_content(s: &str) -> Result<()> {
     Ok(())
 }
 
-/// Download script from external URL with comprehensive security validation
-pub async fn download_script_secure(uri: &str) -> Result<String> {
-    // 1. URL schema validation
+/// Parse an external script URL, rejecting malformed or non-HTTPS URLs.
+/// Only a URL accepted here can be passed to [`download_script_secure`].
+pub fn validate_script_url(uri: &str) -> Result<reqwest::Url> {
     let url = reqwest::Url::parse(uri).context("Invalid URL format")?;
-
     if url.scheme() != "https" {
         return Err(anyhow!(
             "Only HTTPS URLs are allowed for external scripts (got: {})",
             url.scheme()
         ));
     }
+    Ok(url)
+}
 
-    // 2. Download with size limit and timeout
+/// Download script from a validated external URL with size, timeout and
+/// encoding checks.
+pub async fn download_script_secure(url: &reqwest::Url) -> Result<String> {
+    // Download with size limit and timeout
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(false) // Explicitly enable TLS verification
         .timeout(DOWNLOAD_TIMEOUT)
@@ -252,16 +256,16 @@ pub async fn download_script_secure(uri: &str) -> Result<String> {
         .context("Failed to build HTTP client")?;
 
     let response = client
-        .get(uri)
+        .get(url.clone())
         .send()
         .await
-        .context(format!("Failed to download script from: {}", uri))?;
+        .context(format!("Failed to download script from: {url}"))?;
 
     if !response.status().is_success() {
         return Err(anyhow!(
             "Failed to download script: HTTP {} from {}",
             response.status(),
-            uri
+            url
         ));
     }
 
@@ -297,7 +301,7 @@ pub async fn download_script_secure(uri: &str) -> Result<String> {
 
     tracing::info!(
         "Downloaded external script from {} ({} bytes)",
-        uri,
+        url,
         content.len()
     );
 
@@ -589,17 +593,16 @@ Never use os.system() or subprocess without proper validation.
         assert!(sanitize_python_variable("config", &value).is_ok());
     }
 
-    // ========== Tests for download_script_secure ==========
+    // ========== Tests for validate_script_url / download_script_secure ==========
 
-    #[tokio::test]
-    async fn test_download_script_secure_invalid_url() {
-        let result = download_script_secure("not-a-valid-url").await;
-        assert!(result.is_err());
+    #[test]
+    fn test_validate_script_url_invalid_url() {
+        assert!(validate_script_url("not-a-valid-url").is_err());
     }
 
-    #[tokio::test]
-    async fn test_download_script_secure_non_https() {
-        let result = download_script_secure("http://example.com/script.py").await;
+    #[test]
+    fn test_validate_script_url_non_https() {
+        let result = validate_script_url("http://example.com/script.py");
         assert!(result.is_err());
         assert!(
             result
@@ -612,8 +615,9 @@ Never use os.system() or subprocess without proper validation.
     #[tokio::test]
     async fn test_download_script_secure_https_valid_scheme() {
         // This will fail to connect but should pass the HTTPS check
-        let result =
-            download_script_secure("https://nonexistent-domain-12345.example/script.py").await;
+        let url = validate_script_url("https://nonexistent-domain-12345.example/script.py")
+            .expect("https URL is accepted");
+        let result = download_script_secure(&url).await;
         // Should fail at download stage, not at scheme validation
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();

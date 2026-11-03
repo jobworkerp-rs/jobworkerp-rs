@@ -679,6 +679,7 @@ mod rdb_chan_cancellation_tests {
 
             let job_result_id = proto::jobworkerp::data::JobResultId { value: 97001 };
             let job_result_data = proto::jobworkerp::data::JobResultData {
+                error: None,
                 job_id: Some(job_id),
                 status: proto::jobworkerp::data::ResultStatus::Success as i32,
                 output: Some(proto::jobworkerp::data::ResultOutput {

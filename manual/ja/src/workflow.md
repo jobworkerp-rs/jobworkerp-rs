@@ -225,11 +225,55 @@ raise:
     detail: '${ "requestId=" + $error.detail.requestId }'
 ```
 
+### エラーの種類
+
+ワークフローエンジンが送出するエラーは、Open Workflow Specification の標準エラータイプ `https://open-workflow-specification.org/spec/1.0.0/errors/<type>` を使います。
+
+| type | status | 送出される場面 |
+|---|---|---|
+| `configuration` | 400 | 定義や配備がそのままでは実行できない場合（解決できない timeout 参照、call の設定の不備、未対応の script 言語やオプション、`run.script` に必要な runner がない、`for` の中の `then: wait`、子ジョブの runner・worker・メソッドが存在しないなど） |
+| `validation` | 400 | ワークフローやタスクの入力が `input.schema` の検証に失敗した場合、`run.script` の引数名が識別子として不正な場合、または子ジョブの引数が runner の引数スキーマに合わない場合 |
+| `expression` | 400 | jq / Liquid の式の評価に失敗した場合、または `raise.error` の評価結果の型が違う場合 |
+| `authorization` | 403 | call が、`use.secrets` に宣言されていない secret、または値が設定されていない secret を参照した場合 |
+| `timeout` | 408 | タスクまたはワークフローが `timeout` を超えた場合（[タスクのタイムアウト](#タスクのタイムアウト)を参照）、子ジョブが runner 内部の時間制限を超えた場合、または `call: grpc` の応答が `DEADLINE_EXCEEDED` の場合 |
+| `communication` | 500（call の応答 status による場合はその値） | `call: http` / `call: grpc` の呼び出しに失敗した場合、`call: http` の応答 status が受け付ける範囲外の場合、`call: grpc` の応答が非 OK status の場合、`run.script` の外部ソースを取得できない場合、または子ジョブが下流サービスとの通信に失敗した場合 |
+| `runtime` | 500 | run タスクが起動した子ジョブが、ほかの種類に当たらない理由で失敗した場合、その他ワークフローの実行中に失敗した場合 |
+
+`authentication`（401）も標準エラータイプですが、エンジンは送出しません。`raise` タスクで投げたエラーは、定義した `type` と `status` のままです。`call: http` は、`redirect` が false（デフォルト）なら 200–299、true なら 200–399 の範囲外の status の応答で `communication` エラーになります。リダイレクトは自動で追従し、最後の応答の status で判定します。エラーの `status` は応答の status、`title` は `HTTP 404 Not Found` の形式、`detail` は応答本文（64 KiB まで。`$secrets` で参照した secret の値、`authentication` で使った認証情報、endpoint のユーザー情報はマスクされます）です。`call: grpc` は非 OK status の応答で `communication` エラーになり、`status` は gRPC の code に対応する HTTP status（grpc-gateway と同じ対応。例: `NOT_FOUND`→404、`UNAVAILABLE`→503）、`title` は `gRPC NOT_FOUND` の形式、`detail` は status message（同様に secret と認証情報はマスクされます）です。接続失敗など、call の実行自体が失敗したときのエラーの `title` / `detail` でも同じ値がマスクされます。ジョブの結果やストリームでクライアントに返るエラーの `detail` は 4096 バイトまでに切り詰められます。HTTP_REQUEST / GRPC runner を `run.runner` で直接使う場合は、従来どおり応答を結果データとして返します。
+
+#### 子ジョブの失敗
+
+run タスクと call タスクは、処理を子ジョブとして worker で実行します。子ジョブの失敗は、失敗した段階と原因から次の type になります。
+
+| 失敗 | type |
+|---|---|
+| runner・worker・`using` のメソッドが存在しない、runner settings がスキーマに合わない、ストリーミングの可否が worker の定義と合わない | `configuration` |
+| 引数が runner の引数スキーマに合わない、runner が実行時に引数を拒否した | `validation` |
+| runner 内部の時間制限（GRPC runner の `timeout` など）を超えた、ストリーミングの run で結果を待つ間に時間切れになった | `timeout` |
+| 下流サービスとの通信に失敗した、LLM プロバイダのストリームが中断した | `communication` |
+| 子ワークフロー（`run.workflow`、WORKFLOW runner）が失敗した | 子ワークフローで発生したエラーの type と status |
+| それ以外（コマンドの失敗、ジョブの取り消し、投入や結果の取得の失敗など） | run タスクは `runtime`、call タスクは `communication` |
+
+子ワークフローが失敗したときは、子で発生したエラー（タスクの timeout、入力の検証の失敗、`raise` したユーザー定義のエラーなど）の type、status、title をそのまま親のエラーにします。`instance` は親のタスクの位置になり、子の中の位置は `detail` に入ります。孫ワークフローのエラーも同じように伝わります。
+
+古い worker が実行した子ジョブなど、原因が記録されていない失敗は、表の最後の行と同じ扱いになります。
+
+`catch.errors.with.type` は、URI テンプレートとしてエラーの `type` と照合します。
+
+- `{...}` を含まない値は、type と完全に一致する必要があります。大文字と小文字は区別します。
+- `{name}` は任意の文字列に一致します。`https://open-workflow-specification.org/spec/1.0.0/errors/{kind}` と書くと、すべての標準エラーを捕捉できます。
+- `https://serverlessworkflow.io/spec/`（仕様の 1.0.0 版が公開されたドメイン）と `https://open-workflow-specification.org/spec/` は同じものとして照合します。
+- スキームのない値（例: `badargument`）は単なる文字列として照合し、warn ログを出します。リテラルのエラー type は絶対 URI でなければならないためです。
+
+以前の版は `http-error://...` 形式の type（例: `http-error://serviceunavailable`）を送出し、スキームのないフィルタに `http-error://` を補っていました。どちらも廃止したので、このようなフィルタは標準エラータイプに書き換えてください。一部の status も変わっています（例: run タスクの失敗は `503` ではなく `500`）。
+
+また以前の版では、子ジョブの失敗は原因にかかわらず run タスクで `runtime`、call タスクで `communication` でした。子ジョブの失敗をまとめて捕捉するには、`.../errors/{kind}` のようなテンプレートを使うか、type のフィルタを外してください。
+
 ### タスクのタイムアウト
 
 タスクの `timeout`（およびワークフロー全体の `timeout`）は任意指定です。指定しないタスクにタイムアウトはありません。ただし `WORKFLOW_TASK_DEFAULT_TIMEOUT_SEC` を設定した場合は、`timeout` 未指定の run/call タスクだけにその値が適用されます。do/try/for/fork などのタスクには適用されないため、外側のタスクの `timeout` を内側より長く調整する必要はありません。ワークフロー文書直下の `timeout` は暗黙のルートタスクにだけ適用され、内側のタスクの既定値にはなりません（期限に達するとワークフロー全体が中断されます）。
 
-タイムアウトしたタスクの内側で実行中の子ジョブは取り消されます。発生するエラーは Open Workflow Specification の標準エラーで、`type` が `https://open-workflow-specification.org/spec/1.0.0/errors/timeout`、`status` が `408` です。
+タイムアウトしたタスクの内側で実行中の子ジョブは取り消されます。発生するエラーは、`status` が `408` の標準エラー `timeout` です（[エラーの種類](#エラーの種類)を参照）。
 
 ```yaml
 - guarded:
@@ -389,7 +433,8 @@ jobworkerp-rsのワークフローDSLは、公式仕様のロジック構築部�
   - 終了コードの扱いは process タスク間で異なります。`run.shell` / `run.container` は `treatNonzeroAsError` / `successExitCodes` 拡張を受け付け、デフォルトでは非ゼロ終了をタスク失敗にしません。そのため `return: code` や `return: all` の `code` フィールドで非ゼロの終了コードを取得できます。`run.script` にはこの手段がなく、非ゼロ終了は `return` 適用前に必ずタスク失敗となるため、script の `return: code` / `return: all` で観測できる `code` は成功時（`0`）のみです。
 - `run.script`: streaming は未対応です（PYTHON_COMMAND runner にストリーミング出力がないため）。script タスクは `useStreaming: false`（デフォルト）で実行する必要があります。タスク自身の `useStreaming` が false であれば、streaming 実行中のワークフロー内でも実行できます。
 - `run.workflow`: `workflowData` / `workflowUrl` はネストしたワークフローの source を指定する jobworkerp 拡張です。公式の workflow process 参照形式はここでは未実装です。親 workflow context は暗黙的に引き継がれ、`workflowContext` は DSL field として定義しません。
-- `call: grpc`: 公式の `service`（name / host / port / authentication）、`method`、`arguments` を採用した unary 呼び出しです。jobworkerp の GRPC runner へアダプター変換され、`arguments` は JSON ボディとしてサーバーリフレクション経由で protobuf に変換されます（`use_reflection` 有効が前提）。出力は `{ code, body, metadata, message? }` に整形され、`body` はレスポンスを JSON パースした構造です。GRPC runner 自体は proto descriptor 指定に対応していますが、workflow executor の公式 `proto`（externalResource）受け入れ解除は後続作業のため、現時点の `call: grpc` では実行時に拒否されます。service の `authentication` は bearer のみ対応で、basic は拒否されます（GRPC runner の単一 `auth_token` フィールドでは表現できないため）。server streaming は未対応です。
+- `call: http`: `output: response` は公式仕様の HTTP Response の形 `{ request: { method, uri, headers }, statusCode, headers, content }` を出力します。`request` は実際に送ったリクエストで、`Authorization` / `Proxy-Authorization` / `Cookie` ヘッダーの値、URI のユーザー情報（`user:password@`）、`$secrets` で参照した secret の値（URI 内でパーセントエンコード・フォームエンコードされたものを含む）は `***` に置き換えられます。ワークフロー変数など `$secrets` 以外から渡した値はマスクされないため、認証情報は `use.secrets` で宣言して `$secrets` から参照してください。また、secret を式で加工した値（例: `${ $secrets.KEY | ascii_upcase }`）は元の secret と一致しないためマスクされません。ただし `authentication` で送る認証情報は、加工後の実際に送る値でマスクされます。応答の `headers` は同名のヘッダーを `, ` で連結した文字列になります（`Set-Cookie` は連結すると値の区切りが曖昧になる点に注意してください）。
+- `call: grpc`: 公式の `service`（name / host / port / authentication）、`method`、`arguments` を採用した unary 呼び出しです。jobworkerp の GRPC runner へアダプター変換され、`arguments` は JSON ボディとしてサーバーリフレクション経由で protobuf に変換されます（`use_reflection` 有効が前提）。成功時の出力は `{ code, body, metadata, message? }` に整形され、`body` はレスポンスを JSON パースした構造です。非 OK status はエラーになります（[エラーの種類](#エラーの種類)を参照）。GRPC runner 自体は proto descriptor 指定に対応していますが、workflow executor の公式 `proto`（externalResource）受け入れ解除は後続作業のため、現時点の `call: grpc` では実行時に拒否されます。service の `authentication` は bearer のみ対応で、basic は拒否されます（GRPC runner の単一 `auth_token` フィールドでは表現できないため）。server streaming は未対応です。
 
 例：
 
@@ -417,7 +462,7 @@ do:
 - **スケジュール・イベント駆動**: 公式仕様の`schedule`（cron, interval）、`listen`/`emit`（CloudEventsベースのイベント待機・発行）は未対応。ジョブのスケジューリングはjobworkerp-rsの[定期実行ジョブ機能](operations.md)で実現します
 - **外部サービス呼び出し（call task）**: `call: http`（endpoint の `authentication` は `bearer` / `basic` scheme に対応）と `call: grpc` の unary 呼び出し（service の `authentication` は `bearer` のみ）に対応しています。`call: grpc` の `proto`（externalResource、リフレクションを使うため）・basic 認証・server streaming、AsyncAPI、OpenAPI、named function call、HTTP の `digest` / `oauth2` / `oidc` / `certificate` scheme、HTTP `output: raw` は未対応です
 - **await / return の適用範囲**: `await` はすべての `run.*` インスタンスで利用できます（`await: false` = fire-and-forget）。`return` は process タスク（script / shell / container）で利用でき、runner / function / worker / workflow は拒否します。`useStreaming: true` の場合、すべてのインスタンスで `await: false` は拒否されます（`run.script` は `useStreaming: true` 自体が未対応）
-- **認証・シークレット管理**: `call: http` の endpoint 認証向けに `use.authentications`（`authentication: { use: <name> }` で参照する bearer/basic の名前付きポリシー）、`use.secrets`（secret 名の宣言）、公式の `secretBasedAuthenticationPolicy`（`bearer: { use: <name> }` / `basic: { use: <name> }`）、`$secrets` 変数に対応しています。secret 値は workflow 定義に平文で書きません。名前を `use.secrets` で宣言し、各値は環境変数 `WORKFLOW_SECRET_<大文字スネーク名>` で供給します（例 `github-token` → `WORKFLOW_SECRET_GITHUB_TOKEN`）。bearer の env 値は token 文字列（または `{"token": "..."}` JSON）、basic は `{"username": "...", "password": "..."}` JSON です。scheme 値への secret バインドは3通り: (1) 公式の `bearer: { use: <name> }` / `basic: { use: <name> }` 参照、(2) ランタイム式 `bearer: { token: "${ $secrets.<name> }" }`、(3) リテラルのインライン値（認証情報では非推奨）。`{ use }` と `$secrets` のどちらも宣言済みの名前のみ解決し、未宣言の参照はエラーで環境変数を読みません（jq の `null`・Liquid の空文字へ静かに展開されることはありません）。`$secrets` は `call` タスクの評価時にのみ注入され、workflow context へは書き戻されません。`secrets` は予約名であり、ワークフロー入力に `{"secrets": {...}}` が含まれていても式評価時の `$secrets`（認証情報）を上書きできません。secret 由来の `Authorization` ヘッダー値は debug ログでマスクされます。`digest` / `oauth2` / `oidc` / `certificate` scheme は未対応です。（LLM の API キーなどその他の認証情報は引き続き Runner 設定や環境変数で管理します。）
+- **認証・シークレット管理**: `call: http` の endpoint 認証向けに `use.authentications`（`authentication: { use: <name> }` で参照する bearer/basic の名前付きポリシー）、`use.secrets`（secret 名の宣言）、公式の `secretBasedAuthenticationPolicy`（`bearer: { use: <name> }` / `basic: { use: <name> }`）、`$secrets` 変数に対応しています。secret 値は workflow 定義に平文で書きません。名前を `use.secrets` で宣言し、各値は環境変数 `WORKFLOW_SECRET_<大文字スネーク名>` で供給します（例 `github-token` → `WORKFLOW_SECRET_GITHUB_TOKEN`）。bearer の env 値は token 文字列（または `{"token": "..."}` JSON）、basic は `{"username": "...", "password": "..."}` JSON です。scheme 値への secret バインドは3通り: (1) 公式の `bearer: { use: <name> }` / `basic: { use: <name> }` 参照、(2) ランタイム式 `bearer: { token: "${ $secrets.<name> }" }`、(3) リテラルのインライン値（認証情報では非推奨）。`{ use }` と `$secrets` のどちらも宣言済みの名前のみ解決し、未宣言の参照は `authorization` エラーで環境変数を読みません（jq の `null`・Liquid の空文字へ静かに展開されることはありません）。`$secrets` は `call` タスクの評価時にのみ注入され、workflow context へは書き戻されません。`secrets` は予約名であり、ワークフロー入力に `{"secrets": {...}}` が含まれていても式評価時の `$secrets`（認証情報）を上書きできません。secret 由来の `Authorization` ヘッダー値は debug ログでマスクされます。`digest` / `oauth2` / `oidc` / `certificate` scheme は未対応です。（LLM の API キーなどその他の認証情報は引き続き Runner 設定や環境変数で管理します。）
 - **カタログ・拡張**: `use.catalogs`（再利用可能コンポーネントの外部コレクション）、`use.extensions`（タスク前後の処理注入）、`use.functions`（外部関数定義）は未対応
 - **ライフサイクルイベント**: CloudEventsによるワークフロー/タスクの状態変更通知は未対応。代わりにgRPCストリーミングでリアルタイム監視が可能です
 
@@ -426,6 +471,7 @@ do:
 - `useStreaming`によるストリーミング実行（LLM等の長時間タスクの進捗監視）
 - `checkpoint`によるチェックポイント・リスタート機能
 - Liquidテンプレート構文（`$${}`）による文字列テンプレート
+- `catch.errors.with.type` の URI テンプレート照合（`{name}` のプレースホルダー）
 
 ## 関連ドキュメント
 

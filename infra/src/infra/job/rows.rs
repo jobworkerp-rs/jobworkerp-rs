@@ -249,6 +249,7 @@ mod tests {
         })
         .unwrap();
         let job_result_data = JobResultData {
+            error: None,
             worker_id: Some(WorkerId { value: 2 }),
             worker_name: "hoge2".to_string(),
             job_id: Some(JobId { value: 3 }),

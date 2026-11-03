@@ -441,6 +441,39 @@ do:
         output: raw
 "#;
 
+    const CALL_HTTP_REDIRECT_TRUE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-redirect, version: "1.0.0" }
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint: https://example.com/items
+        redirect: true
+"#;
+
+    const CALL_HTTP_REDIRECT_FALSE: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-redirect, version: "1.0.0" }
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint: https://example.com/items
+        redirect: false
+"#;
+
+    const CALL_HTTP_REDIRECT_NOT_BOOLEAN: &str = r#"
+document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-http-redirect, version: "1.0.0" }
+do:
+  - fetch:
+      call: http
+      with:
+        method: GET
+        endpoint: https://example.com/items
+        redirect: "yes"
+"#;
+
     const CALL_GRPC_MINIMAL: &str = r#"
 document: { dsl: "1.0.0-jobworkerp", namespace: t, name: call-grpc, version: "1.0.0" }
 do:
@@ -977,6 +1010,17 @@ do:
     #[test]
     fn call_http_raw_output_is_rejected_in_phase_1() {
         assert!(run_validate(CALL_HTTP_RAW_OUTPUT_UNSUPPORTED).is_err());
+    }
+
+    #[test]
+    fn call_http_redirect_boolean_passes() {
+        run_validate(CALL_HTTP_REDIRECT_TRUE).unwrap();
+        run_validate(CALL_HTTP_REDIRECT_FALSE).unwrap();
+    }
+
+    #[test]
+    fn call_http_redirect_non_boolean_fails() {
+        assert!(run_validate(CALL_HTTP_REDIRECT_NOT_BOOLEAN).is_err());
     }
 
     #[test]

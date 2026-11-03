@@ -7,7 +7,8 @@ package jobworkerp.data;
 message Empty {}
 
 // # Stream Error Code
-// Classification of a failure that terminated a result stream.
+// Classification of a failed job execution: a failure that terminated a result
+// stream, or the cause of a failed non-streaming result (JobResultData.error).
 enum StreamErrorCode {
   // Unknown or unclassified failure. Readers must still treat it as a failure.
   STREAM_ERROR_CODE_UNSPECIFIED = 0;
@@ -27,7 +28,8 @@ enum StreamErrorCode {
 }
 
 // # Stream Error
-// Failure that terminated a result stream.
+// Classified failure of a job execution. Carried by a stream End (Trailer.error)
+// and by a failed non-streaming result (JobResultData.error).
 message StreamError {
   StreamErrorCode code = 1;
   // Human-readable diagnostic. At most 4096 UTF-8 bytes.
@@ -35,6 +37,25 @@ message StreamError {
   // Component that detected the failure: the runner name (e.g. "COMMAND", a plugin name)
   // or "WORKER" for failures detected outside a runner. Never empty, at most 256 UTF-8 bytes.
   string origin = 3;
+  // Structured error reported by the failed component, when it has one (e.g. the
+  // workflow error of a faulted WORKFLOW job). Readers that do not understand it
+  // can rely on `code` alone.
+  ProblemDetails problem = 4;
+}
+
+// # Problem Details
+// Error object in the RFC 9457 (Problem Details) shape used by Open Workflow errors.
+message ProblemDetails {
+  // URI reference identifying the error type.
+  string type = 1;
+  // Status code that best describes the error. 0 when the producer gave none.
+  int32 status = 2;
+  // Short, human-readable summary of the error type.
+  optional string title = 3;
+  // Human-readable explanation of this occurrence. At most 4096 UTF-8 bytes.
+  optional string detail = 4;
+  // Reference to the component that raised the error (e.g. a workflow task position).
+  optional string instance = 5;
 }
 
 // # Trailer

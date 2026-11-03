@@ -251,6 +251,7 @@ worker.queue_type
 ### Result Storage (worker.store_success, worker.store_failure)
 
 - Execution results are saved to RDB (job_result table) on success/failure based on worker.store_success and worker.store_failure settings
+- For streaming jobs, the stored result is settled after the stream ends: if the stream's End reports an error (`Trailer.error`), the result is stored as a failure (or removed when only successes are stored)
 - Results can be referenced after execution using [JobResultService](proto/protobuf/jobworkerp/service/job_result.proto)
 
 ### Result Retrieval Methods (worker.response_type)

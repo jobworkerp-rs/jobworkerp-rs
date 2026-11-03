@@ -28,6 +28,7 @@ do:
 
 output:
   as:
+    request: ${.request}
     statusCode: ${.statusCode}
     headers: ${.headers}
-    body: ${.body}
+    content: ${.content}

@@ -582,3 +582,14 @@ impl Default for TryTask {
         }
     }
 }
+
+impl TryTaskCatch {
+    /// Whether this catch handles `error`. A catch without `errors.with`
+    /// handles every error.
+    pub fn catches(&self, error: &Error) -> bool {
+        self.errors
+            .as_ref()
+            .and_then(|errors| errors.with.as_ref())
+            .is_none_or(|filter| filter.matches(error))
+    }
+}

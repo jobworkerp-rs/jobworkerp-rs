@@ -32,12 +32,18 @@ message JobResultData {
 
   // # Result Status
   // Execution status of the job (success, failure, etc.)
+  // For a streaming job, the result delivered when the stream starts reports
+  // SUCCESS; a failure inside the stream is reported by the End's
+  // `Trailer.error`. The result read back later reflects that End: a failed End
+  // gives the status mapped from `Trailer.error.code`, and whether the result is
+  // stored follows store_success / store_failure for that status.
   jobworkerp.data.ResultStatus status = 6;
 
   // # Result Output
   // Job execution output data (non-streaming). On success, items contains the
   // runner method's result protobuf. On failure, items contains a UTF-8
-  // diagnostic message instead.
+  // diagnostic message instead. A streaming job's stored result settled as a
+  // failure carries the diagnostic of its End's `Trailer.error`.
   jobworkerp.data.ResultOutput output = 7;
 
   // # Retry Count
@@ -106,6 +112,14 @@ message JobResultData {
   // Retry policy resolved from worker defaults and per-job overrides
   // Used for retry decisions and periodic job re-enqueue
   optional jobworkerp.data.RetryPolicy resolved_retry_policy = 23;
+
+  // # Error
+  // Classification of the failure, using the same contract as a stream End's
+  // `Trailer.error`. Unset on success. Set by the worker that executed the job and
+  // delivered with the result. The RDB has no column for it, so results read back
+  // from the RDB never carry it. A failed result without it is a failure of
+  // unknown cause.
+  jobworkerp.data.StreamError error = 24;
 }
 
 // # Job Result ID

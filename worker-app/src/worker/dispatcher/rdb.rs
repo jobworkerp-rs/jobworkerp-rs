@@ -155,7 +155,11 @@ pub trait RdbJobDispatcher:
         }
     }
 
-    fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
+    fn dispatch_jobs_until(
+        &'static self,
+        lock: ShutdownLock,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
@@ -179,7 +183,7 @@ pub trait RdbJobDispatcher:
                             e
                         });
                     }
-                    _ = command_utils::util::shutdown::shutdown_signal() => {
+                    _ = shutdown.changed() => {
                         tracing::debug!("break execute pop and enqueue run_after job");
                         lock.unlock();
                         break;
@@ -588,11 +592,15 @@ impl RdbJobDispatcher for RdbJobDispatcherImpl {}
 
 #[async_trait]
 impl JobDispatcher for RdbJobDispatcherImpl {
-    fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
+    fn dispatch_jobs_until(
+        &'static self,
+        lock: ShutdownLock,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
-        RdbJobDispatcher::dispatch_jobs(self, lock)
+        RdbJobDispatcher::dispatch_jobs_until(self, lock, shutdown)
     }
 }
 

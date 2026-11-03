@@ -6,19 +6,20 @@ use crate::workflow::execute::expression::ExpressionContext;
 use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
-        workflow::{self, RunJobRunner, RunJobWorker},
+        workflow::{self, RunJobRunner, RunJobWorker, errors::StandardErrorType},
     },
     execute::{
         context::{ChildJobScope, TaskContext, WorkflowContext},
         expression::UseExpression,
-        task::{NamedTimeouts, resolve_timeout_duration},
+        task::{
+            NamedTimeouts,
+            child_job::{self, ChildJobStage},
+            resolve_timeout_duration,
+        },
     },
 };
-use anyhow::Result;
-use app::app::{
-    job::execute::{JobExecutorWrapper, UseJobExecutor, WorkerForEnqueue},
-    runner::UseRunnerApp,
-};
+use anyhow::{Context, Result};
+use app::app::job::execute::{JobExecutorWrapper, UseJobExecutor, WorkerForEnqueue};
 use command_utils::trace::Tracing;
 use proto::jobworkerp::data::{
     JobExecutionOverrides, QueueType, ResponseType, StreamingType, WorkerData,
@@ -172,19 +173,12 @@ impl RunTaskExecutor {
         output_when_not_awaiting: Arc<serde_json::Value>,
         child_job_scope: Option<&Arc<ChildJobScope>>,
     ) -> Result<serde_json::Value> {
-        let runner = self
-            .job_executor_wrapper
-            .runner_app()
-            .find_runner_by_name(runner_name)
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to find runner by name '{}': {:#?}", runner_name, e)
-            })?
-            .ok_or(anyhow::anyhow!("Runner '{}' not found", runner_name))?;
+        let runner = child_job::find_runner(&self.job_executor_wrapper, runner_name).await?;
         let settings = self
             .job_executor_wrapper
             .setup_runner_and_settings(&runner, settings)
-            .await?;
+            .await
+            .context(ChildJobStage::Settings)?;
         let mut worker_data = Self::function_options_to_worker_data(options, worker_name)
             .unwrap_or(WorkerData {
                 name: worker_name.to_string().clone(),
@@ -223,40 +217,21 @@ impl RunTaskExecutor {
         let job_args = self
             .job_executor_wrapper
             .transform_job_args(&rid, &rdata, &job_args, using.as_deref())
-            .await?;
-        let worker = if worker_data.use_static {
-            WorkerForEnqueue::Existing(
-                self.job_executor_wrapper
-                    .find_or_create_worker(worker_data)
-                    .await?,
-            )
+            .await
+            .context(ChildJobStage::Prepare)?;
+        let worker = self
+            .job_executor_wrapper
+            .worker_for_enqueue(worker_data)
+            .await
+            .context(ChildJobStage::Enqueue)?;
+
+        // Fire-and-forget jobs are not tracked: the workflow does not wait for
+        // them, so it must not cancel them either.
+        let tracking = if await_completion {
+            super::ChildJobTracking::Tracked
         } else {
-            WorkerForEnqueue::Temp(worker_data)
+            super::ChildJobTracking::Untracked
         };
-
-        if !await_completion {
-            let (result_fut, _guard) = super::enqueue_child_job(
-                &self.workflow_context,
-                &self.job_executor_wrapper,
-                child_job_scope,
-                self.job_executor_wrapper
-                    .enqueue_with_worker_or_temp_channel(
-                        Arc::new(metadata),
-                        worker,
-                        job_args,
-                        None, // XXX no uniq_key,
-                        timeout_sec,
-                        StreamingType::None,
-                        using.clone(),
-                        overrides,
-                    ),
-                super::ChildJobTracking::Untracked,
-            )
-            .await?;
-            drop(result_fut);
-            return Ok(output_when_not_awaiting.as_ref().clone());
-        }
-
         let (result_fut, running_job_guard) = super::enqueue_child_job(
             &self.workflow_context,
             &self.job_executor_wrapper,
@@ -272,24 +247,24 @@ impl RunTaskExecutor {
                     using.clone(),
                     overrides,
                 ),
-            super::ChildJobTracking::Tracked,
+            tracking,
         )
-        .await?;
+        .await
+        .context(ChildJobStage::Enqueue)?;
+        if !await_completion {
+            drop(result_fut);
+            return Ok(output_when_not_awaiting.as_ref().clone());
+        }
         let wait_result = result_fut.await;
         running_job_guard
             .expect("tracked child jobs must return a running job guard")
             .mark_completed();
 
-        let (res, _stream) = wait_result?;
-        let Some(res) = res else {
-            return Err(anyhow::anyhow!(
-                "Failed to enqueue job or job result not found"
-            ));
-        };
-        let output = self.job_executor_wrapper.extract_job_result_output(res)?;
+        let output = child_job::finished_output(&self.job_executor_wrapper, wait_result)?;
         self.job_executor_wrapper
             .transform_raw_output(&rid, &rdata, &output, using.as_deref())
             .await
+            .context(ChildJobStage::Decode)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -304,6 +279,26 @@ impl RunTaskExecutor {
         output_when_not_awaiting: Arc<serde_json::Value>,
         child_job_scope: Option<&Arc<ChildJobScope>>,
     ) -> Result<serde_json::Value> {
+        // Resolving the worker and converting the arguments is a separate stage
+        // from enqueueing, so their failures can be told apart.
+        let (worker_id, worker_data, runner_id, runner_data, job_args) = self
+            .job_executor_wrapper
+            .resolve_worker_and_transform_args(worker_name, job_args, using.as_deref())
+            .await
+            .context(ChildJobStage::Prepare)?;
+        let enqueue = |overrides| {
+            self.job_executor_wrapper
+                .enqueue_with_worker_or_temp_channel(
+                    metadata,
+                    WorkerForEnqueue::existing(worker_id, worker_data),
+                    job_args,
+                    None,
+                    timeout_sec,
+                    StreamingType::None,
+                    using.clone(),
+                    overrides,
+                )
+        };
         // await:false applies NoResult as a per-job override. The worker is
         // referenced by name (an existing, possibly static, definition whose
         // persisted response_type we must not depend on), so the override is the
@@ -313,76 +308,43 @@ impl RunTaskExecutor {
         // task input. We don't register it for cancellation because we are
         // intentionally not tracking its completion.
         if !await_completion {
-            let (child, _guard) = super::enqueue_child_job(
+            let (result_fut, _guard) = super::enqueue_child_job(
                 &self.workflow_context,
                 &self.job_executor_wrapper,
                 child_job_scope,
-                async {
-                    let child = self
-                        .job_executor_wrapper
-                        .enqueue_with_worker_name_channel(
-                            metadata,
-                            worker_name,
-                            job_args,
-                            None,
-                            timeout_sec,
-                            StreamingType::None,
-                            using,
-                            no_result_override_if(true),
-                        )
-                        .await?;
-                    Ok((child.job_id, child))
-                },
+                enqueue(no_result_override_if(true)),
                 super::ChildJobTracking::Untracked,
             )
-            .await?;
-            drop(child.result_fut);
+            .await
+            .context(ChildJobStage::Enqueue)?;
+            drop(result_fut);
             return Ok(output_when_not_awaiting.as_ref().clone());
         }
 
-        let (child, running_job_guard) = super::enqueue_child_job(
+        let (result_fut, running_job_guard) = super::enqueue_child_job(
             &self.workflow_context,
             &self.job_executor_wrapper,
             child_job_scope,
-            async {
-                let child = self
-                    .job_executor_wrapper
-                    .enqueue_with_worker_name_channel(
-                        metadata,
-                        worker_name,
-                        job_args,
-                        None,
-                        timeout_sec,
-                        StreamingType::None,
-                        using,
-                        None,
-                    )
-                    .await?;
-                Ok((child.job_id, child))
-            },
+            enqueue(None),
             super::ChildJobTracking::Tracked,
         )
-        .await?;
-        let wait_result = child.result_fut.await;
+        .await
+        .context(ChildJobStage::Enqueue)?;
+        let wait_result = result_fut.await;
         running_job_guard
             .expect("tracked child jobs must return a running job guard")
             .mark_completed();
 
-        let (res, _stream) = wait_result?;
-        let Some(res) = res else {
-            return Err(anyhow::anyhow!(
-                "Failed to enqueue job or job result not found"
-            ));
-        };
-        let output = self.job_executor_wrapper.extract_job_result_output(res)?;
+        let output = child_job::finished_output(&self.job_executor_wrapper, wait_result)?;
         self.job_executor_wrapper
             .transform_raw_output(
-                &child.runner_id,
-                &child.runner_data,
+                &runner_id,
+                &runner_data,
                 output.as_slice(),
-                child.using.as_deref(),
+                using.as_deref(),
             )
             .await
+            .context(ChildJobStage::Decode)
     }
 }
 impl TaskExecutorTrait<'_> for RunTaskExecutor {
@@ -502,16 +464,13 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     .await
                 {
                     Ok(output) => Ok(output),
-                    Err(e) => {
-                        let pos = task_context.position.clone();
-                        let pos = pos.read().await.as_error_instance();
-                        tracing::error!(error = ?e, position = %pos, "Failed to execute by jobworkerp (function)");
-                        Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                            "Failed to execute by jobworkerp".to_string(),
-                            Some(pos),
-                            Some(e.to_string()),
-                        ))
-                    }
+                    Err(e) => Err(child_job::fail(
+                        &task_context,
+                        e,
+                        StandardErrorType::Runtime,
+                        "Failed to execute by jobworkerp",
+                    )
+                    .await),
                 }?;
                 task_context.set_raw_output(output);
 
@@ -624,16 +583,13 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     .await
                 {
                     Ok(output) => Ok(output),
-                    Err(e) => {
-                        let pos = task_context.position.clone();
-                        let pos = pos.read().await.as_error_instance();
-                        tracing::error!(error = ?e, position = %pos, "Failed to execute by jobworkerp (runner)");
-                        Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                            "Failed to execute by jobworkerp".to_string(),
-                            Some(pos),
-                            Some(e.to_string()),
-                        ))
-                    }
+                    Err(e) => Err(child_job::fail(
+                        &task_context,
+                        e,
+                        StandardErrorType::Runtime,
+                        "Failed to execute by jobworkerp",
+                    )
+                    .await),
                 }?;
                 task_context.set_raw_output(output);
 
@@ -723,16 +679,13 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     .await
                 {
                     Ok(output) => Ok(output),
-                    Err(e) => {
-                        let pos = task_context.position.clone();
-                        let pos = pos.read().await.as_error_instance();
-                        tracing::error!(error = ?e, position = %pos, "Failed to execute by jobworkerp (worker function)");
-                        Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                            "Failed to execute by jobworkerp".to_string(),
-                            Some(pos),
-                            Some(e.to_string()),
-                        ))
-                    }
+                    Err(e) => Err(child_job::fail(
+                        &task_context,
+                        e,
+                        StandardErrorType::Runtime,
+                        "Failed to execute by jobworkerp",
+                    )
+                    .await),
                 }?;
                 task_context.set_raw_output(output);
 
@@ -844,16 +797,13 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     .await
                 {
                     Ok(output) => Ok(output),
-                    Err(e) => {
-                        let pos = task_context.position.clone();
-                        let pos = pos.read().await.as_error_instance();
-                        tracing::error!(error = ?e, position = %pos, "Failed to execute by jobworkerp (runner function)");
-                        Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                            "Failed to execute by jobworkerp".to_string(),
-                            Some(pos),
-                            Some(e.to_string()),
-                        ))
-                    }
+                    Err(e) => Err(child_job::fail(
+                        &task_context,
+                        e,
+                        StandardErrorType::Runtime,
+                        "Failed to execute by jobworkerp",
+                    )
+                    .await),
                 }?;
                 task_context.set_raw_output(output);
 
@@ -911,10 +861,11 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     .await
                     .map_err(|e| {
                         tracing::error!(error = ?e, position = %pos_for_err, "Failed to execute run alias by jobworkerp");
-                        workflow::errors::ErrorFactory::new().service_unavailable(
-                            "Failed to execute run alias by jobworkerp".to_string(),
+                        child_job::to_workflow_error(
+                            e,
+                            StandardErrorType::Runtime,
+                            "Failed to execute run alias by jobworkerp",
                             Some(pos_for_err.clone()),
-                            Some(e.to_string()),
                         )
                     })?;
                 let output = if await_completion && needs_process_adaptation {
@@ -924,7 +875,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         task_context.input.as_ref(),
                     )
                     .map_err(|e| {
-                        workflow::errors::ErrorFactory::new().bad_argument(
+                        workflow::errors::ErrorFactory::new().runtime(
                             "Failed to adapt run alias process output".to_string(),
                             Some(pos_for_err),
                             Some(e.to_string()),
@@ -943,7 +894,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
               //     let pos = task_context.position.clone();
               //     let mut pos = pos.write().await;
               //     pos.push("run".to_string());
-              //     Err(workflow::errors::ErrorFactory::new().not_implemented(
+              //     Err(workflow::errors::ErrorFactory::new().configuration(
               //         "RunTaskConfiguration".to_string(),
               //         Some(pos.as_error_instance()),
               //         Some(format!("Not implemented now: {:#?}", run)),

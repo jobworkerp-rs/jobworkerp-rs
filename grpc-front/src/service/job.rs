@@ -1198,6 +1198,16 @@ impl JobGrpcImpl {
                     items: Self::truncate_grpc_error_message(message),
                 }
             }),
+            // Keep only the classification: the diagnostic is already in `output`,
+            // and repeating it (or the problem) would exceed the header budget.
+            error: result_data
+                .error
+                .as_ref()
+                .map(|error| proto::jobworkerp::data::StreamError {
+                    code: error.code,
+                    origin: error.origin.clone(),
+                    ..Default::default()
+                }),
             ..Default::default()
         }
     }
@@ -1400,6 +1410,48 @@ mod tests {
         let decoded = JobResult::decode(metadata.to_bytes().unwrap()).unwrap();
 
         assert_eq!(decoded.data.unwrap().output.unwrap().items, output);
+    }
+
+    #[test]
+    fn test_create_job_error_status_keeps_only_the_failure_classification() {
+        use prost::Message;
+        use proto::jobworkerp::data::{
+            JobId, JobResult, JobResultData, ProblemDetails, ResultOutput, ResultStatus,
+            StreamError, StreamErrorCode,
+        };
+
+        let output = "x".repeat(JobGrpcImpl::MAX_GRPC_ERROR_OUTPUT_BYTES);
+        let result_data = JobResultData {
+            status: ResultStatus::MaxRetry as i32,
+            output: Some(ResultOutput {
+                items: output.as_bytes().to_vec(),
+            }),
+            error: Some(StreamError {
+                code: StreamErrorCode::Timeout as i32,
+                message: "y".repeat(4096),
+                origin: "WORKFLOW".to_string(),
+                problem: Some(ProblemDetails {
+                    r#type: "https://example.com/errors/slow".to_string(),
+                    status: 408,
+                    detail: Some("z".repeat(4096)),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        };
+
+        let status = JobGrpcImpl::create_job_error_status(&JobId { value: 42 }, &result_data);
+        let metadata = status
+            .metadata()
+            .get_bin(crate::service::JOB_RESULT_HEADER_NAME)
+            .expect("job result metadata");
+        let decoded = JobResult::decode(metadata.to_bytes().unwrap()).unwrap();
+
+        let error = decoded.data.unwrap().error.expect("classification");
+        assert_eq!(error.code, StreamErrorCode::Timeout as i32);
+        assert_eq!(error.origin, "WORKFLOW");
+        assert!(error.message.is_empty());
+        assert_eq!(error.problem, None);
     }
 
     #[test]

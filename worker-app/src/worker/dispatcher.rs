@@ -1,3 +1,4 @@
+use jobworkerp_runner::runner::cancellation_helper::CANCELLED_BEFORE_EXECUTION;
 use std::sync::Arc;
 
 use self::{
@@ -30,8 +31,16 @@ use proto::jobworkerp::data::{
 
 pub mod chan;
 pub mod rdb;
+
 pub mod redis;
 pub mod redis_run_after;
+
+/// A shutdown notification that turns true on SIGINT/SIGTERM.
+pub fn shutdown_on_signal() -> tokio::sync::watch::Receiver<bool> {
+    let (send, recv) = tokio::sync::watch::channel(false);
+    command_utils::util::shutdown::spawn_shutdown_handler(send);
+    recv
+}
 
 pub enum DispatchEligibility {
     Execute,
@@ -177,7 +186,21 @@ pub trait JobDispatcher:
         Ok(result)
     }
 
+    /// Starts dispatching jobs until SIGINT/SIGTERM.
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
+    where
+        Self: Send + Sync + 'static,
+    {
+        self.dispatch_jobs_until(lock, shutdown_on_signal())
+    }
+
+    /// Starts dispatching jobs until `shutdown` turns true (or its sender is
+    /// dropped), so an embedding process can stop the worker without a signal.
+    fn dispatch_jobs_until(
+        &'static self,
+        lock: ShutdownLock,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()>
     where
         Self: Send + Sync + 'static;
 
@@ -321,10 +344,13 @@ pub trait JobDispatcher:
         let resolved = app::app::job::resolve_job_params(worker_data, job_data.overrides.as_ref());
         #[allow(deprecated)]
         let job_result_data = JobResultData {
+            error: Some(proto::stream_error::cancelled_by_worker(
+                CANCELLED_BEFORE_EXECUTION,
+            )),
             job_id: Some(*job_id),
             status: ResultStatus::Cancelled as i32,
             output: Some(ResultOutput {
-                items: b"Job was cancelled before execution".to_vec(),
+                items: CANCELLED_BEFORE_EXECUTION.as_bytes().to_vec(),
             }),
             start_time: datetime::now_millis(),
             end_time: datetime::now_millis(),
@@ -516,12 +542,20 @@ impl UseRdbJobProcessingStatusIndexRepository for HybridJobDispatcherImpl {
 
 #[async_trait]
 impl JobDispatcher for HybridJobDispatcherImpl {
-    fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
+    fn dispatch_jobs_until(
+        &'static self,
+        lock: ShutdownLock,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
-        RdbJobDispatcher::dispatch_jobs(&self.rdb_job_dispatcher, lock.clone())?;
-        RedisJobDispatcher::dispatch_jobs(&self.redis_job_dispatcher, lock)
+        RdbJobDispatcher::dispatch_jobs_until(
+            &self.rdb_job_dispatcher,
+            lock.clone(),
+            shutdown.clone(),
+        )?;
+        RedisJobDispatcher::dispatch_jobs_until(&self.redis_job_dispatcher, lock, shutdown)
     }
 }
 impl UseJobProcessingStatusRepository for RdbChanJobDispatcherImpl {
@@ -555,12 +589,20 @@ impl UseRdbJobProcessingStatusIndexRepository for RdbChanJobDispatcherImpl {
 
 #[async_trait]
 impl JobDispatcher for RdbChanJobDispatcherImpl {
-    fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
+    fn dispatch_jobs_until(
+        &'static self,
+        lock: ShutdownLock,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
-        RdbJobDispatcher::dispatch_jobs(&self.rdb_job_dispatcher, lock.clone())?;
-        ChanJobDispatcher::dispatch_jobs(&self.chan_job_dispatcher, lock)
+        RdbJobDispatcher::dispatch_jobs_until(
+            &self.rdb_job_dispatcher,
+            lock.clone(),
+            shutdown.clone(),
+        )?;
+        ChanJobDispatcher::dispatch_jobs_until(&self.chan_job_dispatcher, lock, shutdown)
     }
 }
 
@@ -622,7 +664,11 @@ mod tests {
 
     #[async_trait]
     impl JobDispatcher for TestDispatcher {
-        fn dispatch_jobs(&'static self, _lock: ShutdownLock) -> Result<()> {
+        fn dispatch_jobs_until(
+            &'static self,
+            _lock: ShutdownLock,
+            _shutdown: tokio::sync::watch::Receiver<bool>,
+        ) -> Result<()> {
             Ok(())
         }
     }

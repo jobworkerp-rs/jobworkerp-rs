@@ -5,6 +5,7 @@ use app::app::UseStorageConfig;
 use app::app::UseWorkerConfig;
 use app::app::WorkerConfig;
 use app::app::job::JobApp;
+use app::app::job::OneshotCompletionGuard;
 use app::app::job::StreamCompletionReceiver;
 use app::app::job::UseJobApp;
 use app::app::job_result::JobResultApp;
@@ -30,6 +31,8 @@ use proto::jobworkerp::data::{JobResult, ResultOutput, ResultStatus, StreamingTy
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing;
+
+mod stream_outcome;
 
 #[derive(DebugStub, Clone)]
 pub struct ResultProcessorImpl {
@@ -120,6 +123,14 @@ impl ResultProcessorImpl {
                 ));
             }
 
+            // A streaming job's result was decided when its stream started; the
+            // End decides whether it really succeeded, so watch for it.
+            let (st_data, end_probe) = if stream_outcome::can_be_settled(&data) {
+                st_data.map(stream_outcome::observe_end).unzip()
+            } else {
+                (st_data, None)
+            };
+
             // Retry/complete first: complete_job publishes result via pubsub.
             // IMPORTANT: This must happen BEFORE create_job_result_if_necessary.
             // For streaming jobs (StreamingType != None), JobResultData.output is None
@@ -139,7 +150,13 @@ impl ResultProcessorImpl {
                 .await
             {
                 Ok(_r) => {
-                    let completion_rx = complete_or_retry_result?;
+                    let completion_rx =
+                        match (end_probe, complete_or_retry_result?) {
+                            (Some(probe), Some(published)) => Some(
+                                self.settle_result_after_stream(id, data.clone(), probe, published),
+                            ),
+                            (_, completion_rx) => completion_rx,
+                        };
                     Ok((
                         JobResult {
                             id: Some(id),
@@ -165,6 +182,50 @@ impl ResultProcessorImpl {
             );
             Err(JobWorkerError::NotFound("job result without id or data".to_string()).into())
         }
+    }
+
+    /// Settles the stored result of a streaming job once its stream has been
+    /// published to the end, and signals completion only afterwards so the
+    /// worker holds the job (and graceful shutdown waits) until the stored
+    /// result is final.
+    fn settle_result_after_stream(
+        &self,
+        id: JobResultId,
+        recorded: JobResultData,
+        probe: stream_outcome::StreamEndProbe,
+        published: tokio::sync::oneshot::Receiver<()>,
+    ) -> tokio::sync::oneshot::Receiver<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let job_result_app = self.job_result_app().clone();
+        tokio::spawn(async move {
+            let _guard = OneshotCompletionGuard::new(tx);
+            // A dropped sender also means the publish task has ended.
+            let _ = published.await;
+            let Some(outcome) = probe.outcome() else {
+                tracing::warn!(
+                    result_id = id.value,
+                    job_id = ?recorded.job_id.map(|j| j.value),
+                    "result stream ended without an End reaching its publisher; \
+                     keeping the recorded result"
+                );
+                return;
+            };
+            let proto::stream_error::StreamErrorOutcome::Failed(error) = outcome else {
+                return;
+            };
+            let settled = stream_outcome::settled_result(&recorded, &error);
+            if let Err(e) = job_result_app
+                .replace_job_result(&id, &recorded, &settled)
+                .await
+            {
+                tracing::error!(
+                    result_id = id.value,
+                    job_id = ?recorded.job_id.map(|j| j.value),
+                    "failed to store the result settled by the stream End: {e:?}"
+                );
+            }
+        });
+        rx
     }
 
     async fn process_complete_or_retry_condition(
@@ -340,10 +401,13 @@ impl ResultProcessorImpl {
     }
 
     fn mark_retry_cancelled(data: &mut JobResultData) {
+        const MESSAGE: &str = "Job was cancelled while retrying";
         data.status = ResultStatus::Cancelled as i32;
         data.output = Some(ResultOutput {
-            items: b"Job was cancelled while retrying".to_vec(),
+            items: MESSAGE.as_bytes().to_vec(),
         });
+        // Replace the failed attempt's classification: the outcome is the cancel.
+        data.error = Some(proto::stream_error::cancelled_by_worker(MESSAGE));
         data.max_retry = 0;
     }
 }
@@ -399,6 +463,27 @@ mod retry_transition_tests {
     use proto::jobworkerp::data::JobProcessingStatus;
 
     #[test]
+    fn retry_cancellation_replaces_the_failed_attempt_classification() {
+        use proto::jobworkerp::data::StreamErrorCode;
+        let mut data = JobResultData {
+            status: ResultStatus::ErrorAndRetry as i32,
+            error: Some(proto::stream_error::classified_error(
+                StreamErrorCode::Timeout,
+                "timeout error",
+                "COMMAND",
+            )),
+            max_retry: 3,
+            ..Default::default()
+        };
+        ResultProcessorImpl::mark_retry_cancelled(&mut data);
+        assert_eq!(data.status, ResultStatus::Cancelled as i32);
+        let error = data.error.expect("classification");
+        assert_eq!(error.code, StreamErrorCode::Cancelled as i32);
+        assert_eq!(error.origin, proto::stream_error::WORKER_ORIGIN);
+        assert_eq!(data.max_retry, 0);
+    }
+
+    #[test]
     fn stale_result_cannot_transition_a_newer_attempt_to_pending() {
         let current = JobProcessingStatusRecord {
             status: JobProcessingStatus::Running,
@@ -439,5 +524,186 @@ mod retry_transition_tests {
             retry_attempt_ownership_decision(current, &result),
             Some(RetryTransitionDecision::IgnoreStale)
         );
+    }
+}
+
+#[cfg(test)]
+mod stream_settlement_tests {
+    use super::*;
+    use app::module::test::{create_hybrid_test_app, create_rdb_chan_test_app};
+    use futures::StreamExt;
+    use infra_utils::infra::test::TEST_RUNTIME;
+    use proto::jobworkerp::data::{JobId, ResponseType, StreamErrorCode, WorkerId};
+    use std::time::Duration;
+
+    fn worker() -> WorkerData {
+        WorkerData {
+            name: "stream_settlement_test".to_string(),
+            response_type: ResponseType::Direct as i32,
+            store_success: true,
+            store_failure: true,
+            use_static: true,
+            ..Default::default()
+        }
+    }
+
+    fn stream_started(streaming_type: StreamingType) -> JobResult {
+        JobResult {
+            id: Some(JobResultId {
+                value: rand::random::<i64>().abs(),
+            }),
+            data: Some(JobResultData {
+                job_id: Some(JobId {
+                    value: rand::random::<i64>().abs(),
+                }),
+                worker_id: Some(WorkerId { value: 1 }),
+                status: ResultStatus::Success as i32,
+                output: Some(ResultOutput { items: vec![] }),
+                streaming_type: streaming_type as i32,
+                response_type: ResponseType::Direct as i32,
+                store_success: true,
+                store_failure: true,
+                ..Default::default()
+            }),
+            metadata: HashMap::new(),
+        }
+    }
+
+    fn failing_stream() -> BoxStream<'static, ResultOutputItem> {
+        futures::stream::iter(vec![
+            ResultOutputItem {
+                item: Some(proto::jobworkerp::data::result_output_item::Item::Data(
+                    b"partial".to_vec(),
+                )),
+            },
+            proto::stream_error::error_end_item(
+                HashMap::new(),
+                StreamErrorCode::ExecutionFailed,
+                "boom",
+                "COMMAND",
+            ),
+        ])
+        .boxed()
+    }
+
+    fn successful_stream() -> BoxStream<'static, ResultOutputItem> {
+        futures::stream::iter(vec![proto::stream_error::normal_end_item(HashMap::new())]).boxed()
+    }
+
+    /// Processes a result whose stream already started and returns the stored
+    /// result once the worker would release the job (completion received).
+    async fn process_and_wait(
+        app: Arc<AppModule>,
+        result: JobResult,
+        stream: BoxStream<'static, ResultOutputItem>,
+    ) -> Result<Option<JobResultData>> {
+        let id = result.id.unwrap();
+        let processor = ResultProcessorImpl::new(app.config_module.clone(), app.clone());
+        let (_, completion_rx) = processor
+            .process_result(result, Some(stream), worker())
+            .await?;
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            completion_rx.expect("a streamed result has a completion"),
+        )
+        .await??;
+        Ok(app
+            .job_result_app
+            .find_job_result_from_db(&id)
+            .await?
+            .and_then(|stored| stored.data))
+    }
+
+    type StreamFixture = fn() -> BoxStream<'static, ResultOutputItem>;
+
+    fn status_of(stored: &Option<JobResultData>) -> Option<ResultStatus> {
+        stored.as_ref().map(|data| data.status())
+    }
+
+    #[test]
+    fn stored_result_follows_the_stream_end() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = Arc::new(create_hybrid_test_app().await?);
+            let cases: [(StreamingType, StreamFixture, ResultStatus); 3] = [
+                (
+                    StreamingType::Response,
+                    failing_stream,
+                    ResultStatus::MaxRetry,
+                ),
+                (
+                    StreamingType::Response,
+                    successful_stream,
+                    ResultStatus::Success,
+                ),
+                (
+                    StreamingType::Internal,
+                    failing_stream,
+                    ResultStatus::MaxRetry,
+                ),
+            ];
+            for (streaming_type, stream, expected) in cases {
+                let stored =
+                    process_and_wait(app.clone(), stream_started(streaming_type), stream()).await?;
+                assert_eq!(status_of(&stored), Some(expected), "{streaming_type:?}");
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn failed_stream_stores_its_diagnostic_without_retry() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = Arc::new(create_hybrid_test_app().await?);
+            let result = stream_started(StreamingType::Response);
+            let job_id = result.data.as_ref().unwrap().job_id.unwrap();
+            let stored = process_and_wait(app.clone(), result, failing_stream())
+                .await?
+                .expect("the failure is stored");
+
+            let output = String::from_utf8(stored.output.unwrap().items)?;
+            assert_eq!(output, "stream error: COMMAND EXECUTION_FAILED: boom");
+            assert!(
+                app.job_app.find_job(&job_id).await?.is_none(),
+                "a failed stream must not be retried"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn rdb_chan_settles_a_stream_that_reached_its_subscriber() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = Arc::new(create_rdb_chan_test_app(true, false).await?);
+            let result = stream_started(StreamingType::Response);
+            let job_id = result.data.as_ref().unwrap().job_id.unwrap();
+            let subscribed = app
+                .job_result_app
+                .subscribe_stream_by_job_id(&job_id, Some(10_000))
+                .await?
+                .expect("stream subscription");
+            let consumer = tokio::spawn(subscribed.collect::<Vec<_>>());
+
+            let stored = process_and_wait(app, result, failing_stream()).await?;
+            assert_eq!(status_of(&stored), Some(ResultStatus::MaxRetry));
+            consumer.abort();
+            Ok(())
+        })
+    }
+
+    // Standalone mode drops a stream nobody subscribed to without reading it, so
+    // its End is never seen and the recorded result stays as it was.
+    #[test]
+    fn rdb_chan_keeps_the_result_of_a_stream_without_subscriber() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = Arc::new(create_rdb_chan_test_app(true, false).await?);
+            let stored = process_and_wait(
+                app,
+                stream_started(StreamingType::Response),
+                failing_stream(),
+            )
+            .await?;
+            assert_eq!(status_of(&stored), Some(ResultStatus::Success));
+            Ok(())
+        })
     }
 }

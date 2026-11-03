@@ -238,13 +238,11 @@ impl TryTaskExecutor {
         }
         match last_context {
             Some(context) => Ok(context),
-            None => Err(Box::new(workflow::Error {
-                type_: workflow::UriTemplate("task-execution-error".to_string()),
-                status: 400,
-                detail: Some("No task context returned from task list execution".to_string()),
-                title: None,
-                instance: Some(try_position),
-            })),
+            None => Err(workflow::errors::ErrorFactory::new().runtime(
+                "No task context returned from task list execution".to_string(),
+                Some(try_position),
+                None,
+            )),
         }
     }
 
@@ -314,8 +312,7 @@ impl TryTaskExecutor {
         task_context: TaskContext,
         error: Box<workflow::Error>,
     ) -> Result<TaskContext, Box<workflow::Error>> {
-        let should_filter = Self::eval_error_filter(catch_config, &error);
-        if !should_filter {
+        if !catch_config.catches(&error) {
             return Err(error); // no recover
         }
 
@@ -393,75 +390,6 @@ impl TryTaskExecutor {
         task_context.remove_position().await;
         // will eval retry condition
         Ok(task_context)
-    }
-
-    // true if error should be filtered (catch block should be executed)
-    fn eval_error_filter(catch_config: &TryTaskCatch, error: &workflow::Error) -> bool {
-        if let Some(errors) = &catch_config.errors {
-            if let Some(filter) = &errors.with {
-                let workflow::Error {
-                    type_,
-                    status,
-                    detail,
-                    title,
-                    instance,
-                } = &error;
-
-                let should_filter_status = filter
-                    .status
-                    .as_ref()
-                    .map(|st| st == status)
-                    .unwrap_or(true);
-                let should_filter_type = filter
-                    .type_
-                    .as_ref()
-                    .map(|tp| type_.is_match(tp))
-                    .unwrap_or(true);
-                let should_filter_details = filter
-                    .details
-                    .as_ref()
-                    .map(|ds| {
-                        detail
-                            .as_ref()
-                            .is_some_and(|detail| ds == &detail.to_string())
-                    })
-                    .unwrap_or(true);
-                let should_filter_title = filter
-                    .title
-                    .as_ref()
-                    .map(|t| title.as_ref().is_some_and(|title| t == &title.to_string()))
-                    .unwrap_or(true);
-                let should_filter_instance = filter
-                    .instance
-                    .as_ref()
-                    .map(|ins| {
-                        instance
-                            .as_ref()
-                            .is_some_and(|instance| ins == &instance.to_string())
-                    })
-                    .unwrap_or(true);
-                tracing::debug!(
-                    "Error filter: status: {}, type: {}, details: {}, title: {}, instance: {}",
-                    should_filter_status,
-                    should_filter_type,
-                    should_filter_details,
-                    should_filter_title,
-                    should_filter_instance
-                );
-
-                should_filter_status
-                    && should_filter_type
-                    && should_filter_details
-                    && should_filter_title
-                    && should_filter_instance
-            } else {
-                // no error filter, so all errors are caught
-                true
-            }
-        } else {
-            // no error filter, so all errors are caught
-            true
-        }
     }
 }
 
@@ -555,7 +483,7 @@ mod tests {
         title: Option<&str>,
     ) -> Box<Error> {
         Box::new(Error {
-            type_: UriTemplate(format!("http-error://{}", error_type.to_lowercase())),
+            type_: UriTemplate(error_type.to_string()),
             status: status.parse().unwrap_or(500),
             detail: detail.map(|d| d.to_string()),
             title: title.map(|t| t.to_string()),
@@ -664,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_error_filter() {
+    fn test_catch_matches_error_filter() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let try_task = workflow::TryTask {
                 try_: TaskList::default(),
@@ -672,7 +600,7 @@ mod tests {
                     errors: Some(workflow::CatchErrors {
                         with: Some(ErrorFilter {
                             status: Some(404),
-                            type_: Some("NotFound".to_string()),
+                            type_: Some("https://example.invalid/errors/not-found".to_string()),
                             details: None,
                             title: None,
                             instance: None,
@@ -690,27 +618,38 @@ mod tests {
             let (executor, _, _) = setup_test(Some(try_task)).await;
 
             // Matching error
-            let matching_error = create_test_error("404", "notfound", None, None);
+            let matching_error = create_test_error(
+                "404",
+                "https://example.invalid/errors/not-found",
+                None,
+                None,
+            );
 
             let catch_config = executor.task.catch.clone();
             assert!(
-                TryTaskExecutor::eval_error_filter(&catch_config, &matching_error),
+                catch_config.catches(&matching_error),
                 "Should return true when error matches filter conditions"
             );
 
             // Non-matching error (different status)
-            let non_matching_error1 = create_test_error("500", "notfound", None, None);
+            let non_matching_error1 = create_test_error(
+                "500",
+                "https://example.invalid/errors/not-found",
+                None,
+                None,
+            );
 
             assert!(
-                !TryTaskExecutor::eval_error_filter(&catch_config, &non_matching_error1),
+                !catch_config.catches(&non_matching_error1),
                 "Should return false when error doesn't match filter conditions"
             );
 
             // Non-matching error (different type)
-            let non_matching_error2 = create_test_error("404", "servererror", None, None);
+            let non_matching_error2 =
+                create_test_error("404", "https://example.invalid/errors/server", None, None);
 
             assert!(
-                !TryTaskExecutor::eval_error_filter(&catch_config, &non_matching_error2),
+                !catch_config.catches(&non_matching_error2),
                 "Should return false when error doesn't match filter conditions"
             );
         })
@@ -736,7 +675,7 @@ mod tests {
 
             let error = create_test_error(
                 "500",
-                "testerror",
+                "https://example.invalid/errors/test",
                 Some("Test error detail"),
                 Some("Test Error Title"),
             );

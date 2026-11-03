@@ -216,6 +216,7 @@ impl WorkerInstanceRecoveryCoordinator {
                     crate::app::job::resolve_job_params(&worker_data, job_data.overrides.as_ref());
                 let now = command_utils::util::datetime::now_millis();
                 let result_data = JobResultData {
+                    error: None,
                     job_id: Some(job_id),
                     status: ResultStatus::ErrorAndRetry as i32,
                     output: Some(ResultOutput {

@@ -196,17 +196,17 @@ impl ForTaskStreamExecutor {
         }
     }
 
-    // `then: wait` is structurally unsupported inside a ForTask. The parallel
-    // path detects it both mid-stream (when an Ok event surfaces with the
-    // workflow already flipped to Waiting) and at stream end. Both reset the
-    // workflow status back to Running and emit the same DSL error; only the
-    // error-position source differs, so factor the rest out.
-    async fn fault_unsupported_wait_in_parallel(
+    // `then: wait` is structurally unsupported inside a ForTask. Both the
+    // parallel and sequential paths detect it mid-stream (when an Ok event
+    // surfaces with the workflow already flipped to Waiting) and at stream end.
+    // Every case resets the workflow status back to Running and emits the same
+    // DSL error; only the error-position source differs, so factor the rest out.
+    async fn fault_unsupported_wait(
         workflow_context: &Arc<RwLock<WorkflowContext>>,
         pos_instance: Option<String>,
     ) -> Box<workflow::Error> {
         workflow_context.write().await.status = WorkflowStatus::Running;
-        workflow::errors::ErrorFactory::new().bad_argument(
+        workflow::errors::ErrorFactory::new().configuration(
             "Wait directive inside ForTask is not currently supported. \
              Move the 'then: wait' to a task outside of the for loop."
                 .to_string(),
@@ -513,7 +513,7 @@ impl ForTaskStreamExecutor {
                                                 Some(ctx) => Some(ctx.position.read().await.as_error_instance()),
                                                 None => None,
                                             };
-                                            let error = Self::fault_unsupported_wait_in_parallel(
+                                            let error = Self::fault_unsupported_wait(
                                                 &workflow_context,
                                                 pos_instance,
                                             )
@@ -613,7 +613,7 @@ impl ForTaskStreamExecutor {
                                             "Wait directive inside ForTask is not supported (parallel, detected after stream end): task={}",
                                             task_name_formatted
                                         );
-                                        let error = Self::fault_unsupported_wait_in_parallel(
+                                        let error = Self::fault_unsupported_wait(
                                             &workflow_context,
                                             Some(item_position.read().await.as_error_instance()),
                                         )
@@ -822,20 +822,16 @@ impl ForTaskStreamExecutor {
                                             "Wait directive inside ForTask is not supported: task={}",
                                             task_name
                                         );
-                                        // Reset status to Running to allow error propagation
-                                        self.workflow_context.write().await.status = WorkflowStatus::Running;
                                         let pos_instance = if let Some(ctx) = event.context() {
                                             Some(ctx.position.read().await.as_error_instance())
                                         } else {
                                             None
                                         };
-                                        let error = workflow::errors::ErrorFactory::new().bad_argument(
-                                            "Wait directive inside ForTask is not currently supported. \
-                                             Move the 'then: wait' to a task outside of the for loop.".to_string(),
+                                        yield Err(Self::fault_unsupported_wait(
+                                            &self.workflow_context,
                                             pos_instance,
-                                            None,
-                                        );
-                                        yield Err(error);
+                                        )
+                                        .await);
                                         return;
                                     }
                                     yield Ok(event);
@@ -888,15 +884,11 @@ impl ForTaskStreamExecutor {
                                 "Wait directive inside ForTask is not supported (detected after stream end): task={}",
                                 task_name
                             );
-                            // Reset status to Running to allow error propagation
-                            self.workflow_context.write().await.status = WorkflowStatus::Running;
-                            let error = workflow::errors::ErrorFactory::new().bad_argument(
-                                "Wait directive inside ForTask is not currently supported. \
-                                 Move the 'then: wait' to a task outside of the for loop.".to_string(),
+                            yield Err(Self::fault_unsupported_wait(
+                                &self.workflow_context,
                                 Some(item_position.read().await.as_error_instance()),
-                                None,
-                            );
-                            yield Err(error);
+                            )
+                            .await);
                             return;
                         }
                     }
@@ -3303,11 +3295,8 @@ mod tests {
             ctx.position.write().await.push("for".to_string());
 
             // No `instance` recorded: forces the fallback path.
-            let err_no_instance = workflow::errors::ErrorFactory::new().bad_argument(
-                "transient".to_string(),
-                None,
-                None,
-            );
+            let err_no_instance =
+                workflow::errors::ErrorFactory::new().runtime("transient".to_string(), None, None);
             assert!(err_no_instance.instance.is_none());
 
             let item = serde_json::json!("alpha");

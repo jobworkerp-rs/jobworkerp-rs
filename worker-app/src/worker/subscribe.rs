@@ -13,22 +13,14 @@ pub trait UseSubscribeWorker:
     UseWorkerApp + UseRunnerPoolMap + UseJobqueueAndCodec + UseRedisClient
 {
     // subscribe worker changed event using redis and invalidate cache
-    async fn subscribe_worker_changed(&self) -> Result<bool> {
+    async fn subscribe_worker_changed(
+        &self,
+        mut recv: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<bool> {
         let mut sub = self
             .subscribe(Self::WORKER_PUBSUB_CHANNEL_NAME)
             .await
             .inspect_err(|e| tracing::error!("redis_err:{:?}", e))?;
-
-        // for shutdown notification (spmc broadcast)
-        let (send, mut recv) = tokio::sync::watch::channel(false);
-        // send msg on shutdown signal (SIGINT/SIGTERM) for shutdown notification in parallel
-        tokio::spawn(async move {
-            command_utils::util::shutdown::shutdown_signal().await;
-            tracing::debug!("got shutdown signal....");
-            if let Err(e) = send.send(true) {
-                tracing::debug!("failed to send shutdown notification: {:?}", e);
-            }
-        });
 
         'outer: loop {
             let mut message = sub.on_message();
@@ -143,7 +135,9 @@ mod test {
 
             // begin subscribe
             let handle = tokio::spawn(async move {
-                r.subscribe_worker_changed().await.unwrap();
+                r.subscribe_worker_changed(crate::worker::dispatcher::shutdown_on_signal())
+                    .await
+                    .unwrap();
             });
             sleep(Duration::from_millis(100)).await;
 

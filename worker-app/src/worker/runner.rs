@@ -31,9 +31,10 @@ use proto::jobworkerp::data::JobResult;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::{
-    Job, JobResultData, ResultOutput, ResultStatus, RunnerData, StreamingType, WorkerData, WorkerId,
+    Job, JobResultData, ResultOutput, ResultStatus, RunnerData, StreamError, StreamErrorCode,
+    StreamingType, WorkerData, WorkerId,
 };
-use result::ResultOutputEnum;
+use result::{DetectedByWorker, ResultOutputEnum};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::{panic::AssertUnwindSafe, time::Duration};
@@ -345,6 +346,7 @@ pub trait JobRunner:
                     start,
                     end,
                     Some(metadata),
+                    None,
                 )
             }
             Err(e) => self.handle_error_option(worker_data, job, Some(e)),
@@ -632,11 +634,16 @@ pub trait JobRunner:
             job,
             worker_data,
             ResultStatus::FatalError,
-            ResultOutputEnum::Normal(Err(anyhow!(error_message)), HashMap::default())
+            ResultOutputEnum::Normal(Err(anyhow!(error_message.clone())), HashMap::default())
                 .result_output(),
             end,
             end,
             Some(metadata), // XXX unwrap or default
+            Some(proto::stream_error::classified_error(
+                StreamErrorCode::ExecutionFailed,
+                error_message,
+                proto::stream_error::WORKER_ORIGIN,
+            )),
         )
     }
 
@@ -781,7 +788,8 @@ pub trait JobRunner:
                     &name,
                     end - start,
                 );
-                let (status, mes) = self.job_result_status(&resolved.retry_policy, data, res);
+                let (status, mes, error) =
+                    self.job_result_status(&name, &resolved.retry_policy, data, res);
 
                 // For streaming jobs, DO NOT cleanup cancellation monitoring immediately
                 // The process continues running and needs to receive cancellation signals
@@ -801,6 +809,7 @@ pub trait JobRunner:
                         start,
                         end,
                         mes.metadata().cloned(),
+                        error,
                     ),
                     mes.stream(),
                     outcome,
@@ -822,7 +831,8 @@ pub trait JobRunner:
                     &name,
                     end - start,
                 );
-                let (status, mes) = self.job_result_status(&resolved.retry_policy, data, res);
+                let (status, mes, error) =
+                    self.job_result_status(&name, &resolved.retry_policy, data, res);
 
                 // For internal streaming jobs, keep cancellation monitoring active
                 // The stream continues and needs to receive cancellation signals
@@ -841,6 +851,7 @@ pub trait JobRunner:
                         start,
                         end,
                         mes.metadata().cloned(),
+                        error,
                     ),
                     mes.stream(),
                     outcome,
@@ -857,7 +868,8 @@ pub trait JobRunner:
                 let end = datetime::now_millis();
                 tracing::debug!("end runner: {}, duration:{}(ms)", &name, end - start);
 
-                let (status, mes) = self.job_result_status(&resolved.retry_policy, data, res);
+                let (status, mes, error) =
+                    self.job_result_status(&name, &resolved.retry_policy, data, res);
 
                 // Cleanup cancellation monitoring
                 self.cleanup_cancellation_monitoring_if_supported(job_id, runner_impl)
@@ -873,6 +885,7 @@ pub trait JobRunner:
                         start,
                         end,
                         mes.metadata().cloned(),
+                        error,
                     ),
                     None,
                     outcome,
@@ -905,7 +918,7 @@ pub trait JobRunner:
                 _ = tokio::time::sleep(Duration::from_millis(data.timeout)) => {
                     runner_impl.as_cancel_monitoring().request_cancellation().await.unwrap();
                     tracing::warn!("timeout: {}ms, the job will be dropped: {job:?}", data.timeout);
-                    Err(JobWorkerError::TimeoutError(format!("timeout: {}ms", data.timeout)).into())
+                    Err(anyhow::Error::from(JobWorkerError::TimeoutError(format!("timeout: {}ms", data.timeout))).context(DetectedByWorker))
                 }
             }
         } else {
@@ -953,7 +966,7 @@ pub trait JobRunner:
                 _ = tokio::time::sleep(Duration::from_millis(data.timeout)) => {
                     runner_impl.as_cancel_monitoring().request_cancellation().await.unwrap();
                     tracing::warn!("timeout: {}ms, the job will be dropped: {job:?}", data.timeout);
-                    Err(JobWorkerError::TimeoutError(format!("timeout: {}ms", data.timeout)).into())
+                    Err(anyhow::Error::from(JobWorkerError::TimeoutError(format!("timeout: {}ms", data.timeout))).context(DetectedByWorker))
                 }
             }
         } else {
@@ -980,6 +993,7 @@ pub trait JobRunner:
         start_msec: i64,
         end_msec: i64,
         metadata: Option<HashMap<String, String>>,
+        error: Option<StreamError>,
     ) -> JobResult {
         let dat = job.data.unwrap_or_default(); // XXX unwrap or default
         let resolved = app::app::job::resolve_job_params(worker, dat.overrides.as_ref());
@@ -994,6 +1008,7 @@ pub trait JobRunner:
             start_msec,
             end_msec,
             metadata,
+            error,
         )
     }
 
@@ -1010,6 +1025,7 @@ pub trait JobRunner:
         start_msec: i64,
         end_msec: i64,
         metadata: Option<HashMap<String, String>>,
+        error: Option<StreamError>,
     ) -> JobResult {
         let dat = job.data.unwrap_or_default(); // XXX unwrap or default
         Self::build_job_result(
@@ -1023,6 +1039,7 @@ pub trait JobRunner:
             start_msec,
             end_msec,
             metadata,
+            error,
         )
     }
 
@@ -1038,9 +1055,11 @@ pub trait JobRunner:
         start_msec: i64,
         end_msec: i64,
         metadata: Option<HashMap<String, String>>,
+        error: Option<StreamError>,
     ) -> JobResult {
         #[allow(deprecated)]
         let data = JobResultData {
+            error,
             job_id,
             worker_id: dat.worker_id,
             worker_name: worker.name.clone(),

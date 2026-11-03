@@ -34,7 +34,7 @@ impl NormalizedRun {
 /// bad-argument detail string.
 #[derive(Debug)]
 pub(crate) enum AliasError {
-    BadArgument { message: String, detail: String },
+    Configuration { message: String, detail: String },
     Transform(Box<workflow::Error>),
 }
 
@@ -46,14 +46,14 @@ pub(crate) fn interpret_run_alias<E: UseExpressionTransformer>(
     raw_input: Arc<Value>,
     expression: &ExpressionContext,
 ) -> Result<NormalizedRun, AliasError> {
-    let alias_value = serde_json::to_value(run).map_err(|e| AliasError::BadArgument {
+    let alias_value = serde_json::to_value(run).map_err(|e| AliasError::Configuration {
         message: "Failed to serialize run alias".to_string(),
         detail: e.to_string(),
     })?;
     let alias_map = match alias_value {
         Value::Object(map) => map,
         other => {
-            return Err(AliasError::BadArgument {
+            return Err(AliasError::Configuration {
                 message: "Run alias must serialize to an object".to_string(),
                 detail: format!("Invalid run alias: {other:#?}"),
             });
@@ -63,7 +63,7 @@ pub(crate) fn interpret_run_alias<E: UseExpressionTransformer>(
     let mut transformed =
         E::transform_map(raw_input, alias_map, expression).map_err(AliasError::Transform)?;
     restore_workflow_data(&mut transformed, preserved_workflow_data);
-    normalize_alias_value(transformed).map_err(|e| AliasError::BadArgument {
+    normalize_alias_value(transformed).map_err(|e| AliasError::Configuration {
         message: "Failed to normalize run alias".to_string(),
         detail: e.to_string(),
     })
@@ -133,9 +133,9 @@ pub(crate) async fn resolve_run_alias<E: UseExpressionTransformer>(
             e.position(&*task_context.position.read().await);
             return Err(e);
         }
-        Err(AliasError::BadArgument { message, detail }) => {
+        Err(AliasError::Configuration { message, detail }) => {
             let pos = task_context.position.read().await.as_error_instance();
-            return Err(factory().bad_argument(message, Some(pos), Some(detail)));
+            return Err(factory().configuration(message, Some(pos), Some(detail)));
         }
     };
     // Only workflow aliases inherit the parent context, so avoid cloning the
@@ -149,7 +149,7 @@ pub(crate) async fn resolve_run_alias<E: UseExpressionTransformer>(
     };
     if let Err(e) = inherit_result {
         let pos = task_context.position.read().await.as_error_instance();
-        return Err(factory().bad_argument(
+        return Err(factory().runtime(
             "Failed to inherit workflow context".to_string(),
             Some(pos),
             Some(e.to_string()),

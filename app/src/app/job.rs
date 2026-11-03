@@ -873,25 +873,29 @@ pub(crate) fn spawn_end_marker_if_needed<P: JobResultPublisher + Clone + Send + 
     if data.streaming_type != StreamingType::None as i32
         && data.status != ResultStatus::Success as i32
     {
+        use proto::jobworkerp::data::StreamErrorCode;
         // The job ended before a runner stream existed; the End must still
-        // tell subscribers that the execution failed.
-        let (code, message) = if data.status == ResultStatus::Cancelled as i32 {
-            (
-                proto::jobworkerp::data::StreamErrorCode::Cancelled,
-                "job was cancelled before its result stream started",
-            )
-        } else {
-            (
-                proto::jobworkerp::data::StreamErrorCode::ExecutionFailed,
-                "job failed before its result stream started",
-            )
-        };
-        let end_item = proto::stream_error::error_end_item(
-            Default::default(),
-            code,
-            message,
-            proto::stream_error::WORKER_ORIGIN,
-        );
+        // tell subscribers that the execution failed. Stream readers only see
+        // this End, so it carries the worker's classification when there is
+        // one. UNSPECIFIED is not a classification (and producers may not emit it).
+        let failure = data
+            .error
+            .clone()
+            .filter(|recorded| recorded.code != StreamErrorCode::Unspecified as i32)
+            .unwrap_or_else(|| {
+                if data.status == ResultStatus::Cancelled as i32 {
+                    proto::stream_error::cancelled_by_worker(
+                        "job was cancelled before its result stream started",
+                    )
+                } else {
+                    proto::stream_error::classified_error(
+                        StreamErrorCode::ExecutionFailed,
+                        "job failed before its result stream started",
+                        proto::stream_error::WORKER_ORIGIN,
+                    )
+                }
+            });
+        let end_item = proto::stream_error::error_end_item_from(Default::default(), failure);
         let end_stream = futures::stream::once(async move { end_item }).boxed();
         let pubsub_repo = pubsub_repo.clone();
         let job_id_for_stream = *jid;
@@ -1607,10 +1611,18 @@ mod end_marker_tests {
     }
 
     async fn published_end(status: ResultStatus) -> Option<Trailer> {
+        published_end_with(status, None).await
+    }
+
+    async fn published_end_with(
+        status: ResultStatus,
+        error: Option<proto::jobworkerp::data::StreamError>,
+    ) -> Option<Trailer> {
         let publisher = RecordingPublisher::default();
         let data = JobResultData {
             status: status as i32,
             streaming_type: StreamingType::Response as i32,
+            error,
             ..Default::default()
         };
         if let Some(rx) = spawn_end_marker_if_needed(&data, &JobId { value: 1 }, &publisher) {
@@ -1645,5 +1657,40 @@ mod end_marker_tests {
             assert_eq!(error.code, code as i32, "{status:?}");
             assert_eq!(error.origin, proto::stream_error::WORKER_ORIGIN);
         }
+    }
+
+    #[tokio::test]
+    async fn end_marker_carries_the_recorded_failure_classification() {
+        use proto::jobworkerp::data::{ProblemDetails, StreamErrorCode};
+
+        let mut recorded =
+            proto::stream_error::classified_error(StreamErrorCode::Timeout, "deadline", "GRPC");
+        recorded.problem = Some(ProblemDetails {
+            r#type: "https://example.com/errors/slow".to_string(),
+            status: 408,
+            ..Default::default()
+        });
+        let trailer = published_end_with(ResultStatus::MaxRetry, Some(recorded.clone()))
+            .await
+            .expect("End marker");
+        assert_eq!(trailer.error, Some(recorded));
+    }
+
+    #[tokio::test]
+    async fn end_marker_ignores_an_unspecified_recorded_classification() {
+        use proto::jobworkerp::data::StreamErrorCode;
+
+        let unclassified = proto::jobworkerp::data::StreamError {
+            code: StreamErrorCode::Unspecified as i32,
+            message: "unknown".to_string(),
+            origin: "GRPC".to_string(),
+            problem: None,
+        };
+        let trailer = published_end_with(ResultStatus::OtherError, Some(unclassified))
+            .await
+            .expect("End marker");
+        let error = trailer.error.expect("failure");
+        assert_eq!(error.code, StreamErrorCode::ExecutionFailed as i32);
+        assert_eq!(error.origin, proto::stream_error::WORKER_ORIGIN);
     }
 }

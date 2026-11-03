@@ -53,24 +53,22 @@ pub trait ChanJobDispatcher:
 {
     fn chan_worker_pubsub_repository(&self) -> &ChanWorkerPubSubRepositoryImpl;
 
-    fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
+    fn dispatch_jobs_until(
+        &'static self,
+        lock: ShutdownLock,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
         // subscribe worker change events for runner pool release in standalone mode
+        let subscription_shutdown = shutdown.clone();
         tokio::spawn(async move {
-            if let Err(e) = self.subscribe_worker_changed_chan().await {
+            if let Err(e) = self
+                .subscribe_worker_changed_chan(subscription_shutdown)
+                .await
+            {
                 tracing::error!("subscribe worker changed (chan) error: {:?}", e);
-            }
-        });
-        // for shutdown notification (spmc broadcast)
-        let (send, recv) = tokio::sync::watch::channel(false);
-        // send msg on shutdown signal (SIGINT/SIGTERM) for shutdown notification in parallel
-        tokio::spawn(async move {
-            command_utils::util::shutdown::shutdown_signal().await;
-            tracing::debug!("got shutdown signal....");
-            if let Err(e) = send.send(true) {
-                tracing::debug!("failed to send shutdown notification: {:?}", e);
             }
         });
 
@@ -81,7 +79,7 @@ pub trait ChanJobDispatcher:
                 &conc
             );
             for _ in 0..conc {
-                self.pop_and_execute(ch.clone(), lock.clone(), recv.clone());
+                self.pop_and_execute(ch.clone(), lock.clone(), shutdown.clone());
             }
         }
         lock.unlock();
@@ -91,20 +89,15 @@ pub trait ChanJobDispatcher:
 
     /// Subscribe to worker change events via BroadcastChan and release runner pools accordingly.
     /// Mirrors the Redis-based `subscribe_worker_changed()` in `UseSubscribeWorker`.
-    async fn subscribe_worker_changed_chan(&'static self) -> Result<bool>
+    async fn subscribe_worker_changed_chan(
+        &'static self,
+        mut shutdown_recv: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<bool>
     where
         Self: Send + Sync + 'static,
     {
         let mut receiver = self.chan_worker_pubsub_repository().subscribe().await;
 
-        let (shutdown_send, mut shutdown_recv) = tokio::sync::watch::channel(false);
-        tokio::spawn(async move {
-            command_utils::util::shutdown::shutdown_signal().await;
-            tracing::debug!("got shutdown signal (worker pubsub chan)");
-            if let Err(e) = shutdown_send.send(true) {
-                tracing::debug!("failed to send shutdown notification: {:?}", e);
-            }
-        });
 
         loop {
             tokio::select! {
@@ -656,11 +649,15 @@ impl infra::infra::job::status::rdb::UseRdbJobProcessingStatusIndexRepository
 
 #[async_trait]
 impl JobDispatcher for ChanJobDispatcherImpl {
-    fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
+    fn dispatch_jobs_until(
+        &'static self,
+        lock: ShutdownLock,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
-        ChanJobDispatcher::dispatch_jobs(self, lock)
+        ChanJobDispatcher::dispatch_jobs_until(self, lock, shutdown)
     }
 }
 

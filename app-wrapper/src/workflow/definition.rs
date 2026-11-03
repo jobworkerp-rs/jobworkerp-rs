@@ -11,6 +11,6 @@ pub use infra::workflow::{
     WORKER_PARAMS_METADATA_LABEL, WorkflowLoader, WorkflowPosition,
 };
 
-pub use infra::workflow::definition::workflow::errors::{ErrorCode, ErrorFactory};
+pub use infra::workflow::definition::workflow::errors::ErrorFactory;
 
 pub use infra::workflow::definition::transform;

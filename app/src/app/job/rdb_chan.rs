@@ -2225,6 +2225,7 @@ mod tests {
             let result = JobResult {
                 id: Some(rid),
                 data: Some(JobResultData {
+                    error: None,
                     job_id: Some(reserved_jid),
                     worker_id: Some(worker_id),
                     worker_name: wd.name.clone(),
@@ -2353,6 +2354,7 @@ mod tests {
             let result = JobResult {
                 id: Some(JobResultId { value: 15555 }),
                 data: Some(JobResultData {
+                    error: None,
                     job_id: Some(job_id),
                     worker_id: Some(worker_id),
                     worker_name: wd.name.clone(),
@@ -2482,6 +2484,7 @@ mod tests {
                     value: app.id_generator().generate_id().unwrap(),
                 }),
                 data: Some(JobResultData {
+                    error: None,
                     job_id: Some(job_id),
                     worker_id: Some(worker_id),
                     worker_name: wd.name.clone(),
@@ -2784,6 +2787,7 @@ mod tests {
 
             // Simulate: publish result first, then End marker via spawn_end_marker_if_needed
             let result_data = JobResultData {
+                error: None,
                 job_id: Some(job_id),
                 worker_id: Some(WorkerId { value: 1 }),
                 worker_name: "test".to_string(),
@@ -2858,6 +2862,7 @@ mod tests {
 
             // Publish error result + End marker (simulating what complete_job does)
             let result_data = JobResultData {
+                error: None,
                 job_id: Some(job_id),
                 worker_id: Some(WorkerId { value: 1 }),
                 worker_name: "test".to_string(),
@@ -2928,6 +2933,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
 
             let result_data = JobResultData {
+                error: None,
                 job_id: Some(job_id),
                 worker_id: Some(WorkerId { value: 1 }),
                 worker_name: "test".to_string(),

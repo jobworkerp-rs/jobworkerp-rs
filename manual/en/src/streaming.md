@@ -94,6 +94,15 @@ message StreamError {
   StreamErrorCode code = 1;
   string message = 2;  // at most 4096 UTF-8 bytes
   string origin = 3;   // component that detected the failure
+  ProblemDetails problem = 4;  // structured error, when the component reports one
+}
+
+message ProblemDetails {  // RFC 9457 shape, as used by workflow errors
+  string type = 1;
+  int32 status = 2;
+  optional string title = 3;
+  optional string detail = 4;  // at most 4096 UTF-8 bytes
+  optional string instance = 5;
 }
 ```
 
@@ -101,6 +110,8 @@ message StreamError {
 - **The criterion matches non-streaming execution.** `error` is set only when non-streaming execution of the same request would return an error. Failures that are result data are not covered and still arrive as Data: HTTP 4xx/5xx, a non-OK status from a downstream gRPC service, a non-zero COMMAND exit with `treat_nonzero_as_error=false`, an MCP tool `is_error`, and Faulted / Cancelled WORKFLOW results.
 - On failure, runners still send the Data they sent before (for example a `CommandResult` carrying the error, or a Faulted `WorkflowResult`).
 - grpc-front delivers the End in-band without changes. It is never converted into a gRPC error status.
+- `problem` is set by a WORKFLOW job that failed with a workflow error: it carries that error's type, status, title, detail and instance, and a parent workflow raises the same error. Readers that do not use it can rely on `code`.
+- A failed non-streaming job carries the same `StreamError` in `JobResultData.error` (see [gRPC Direct API](grpc-direct-api.md)).
 
 ### code
 
@@ -119,7 +130,9 @@ message StreamError {
 | Producer | origin |
 |---|---|
 | Runner (including runner-specific handling such as idle timeout) | Runner name (`COMMAND`, `HTTP_REQUEST`, `GRPC`, `LLM`, `WORKFLOW`, `SANDBOX`, plugin name, MCP server name) |
-| Worker / app layer (e.g. the End of a job that failed before its stream started) | `WORKER` |
+| Worker / app layer (e.g. the End of a job that failed before its stream started, the worker's own job timeout, a job cancelled before or while retrying) | `WORKER` |
+
+The End of a job that failed before its stream started carries the failure classification the worker recorded (`JobResultData.error`) when there is one, so its origin is then the runner that detected the failure.
 
 ### Mapping to ResultStatus
 
