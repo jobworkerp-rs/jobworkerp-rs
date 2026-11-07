@@ -20,6 +20,22 @@ use redis::AsyncCommands;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// Marks a Redis queue write error returned after the command may have reached Redis.
+#[derive(Debug, thiserror::Error)]
+#[error("Redis queue write outcome is unknown")]
+pub struct RedisEnqueueOutcomeUnknown;
+
+/// Classify a failed RPUSH/LPUSH. An error reply (e.g. WRONGTYPE, OOM, READONLY)
+/// means Redis refused the single command without applying it, so the job is known
+/// not to be queued. Any other failure may have happened after the write landed.
+fn redis_enqueue_error(error: redis::RedisError) -> anyhow::Error {
+    match redis::ServerError::try_from(error) {
+        Ok(rejected) => JobWorkerError::RedisError(rejected.into()).into(),
+        Err(error) => anyhow::Error::new(JobWorkerError::RedisError(error))
+            .context(RedisEnqueueOutcomeUnknown),
+    }
+}
+
 #[async_trait]
 pub trait RedisJobQueueRepository:
     UseRedisPool
@@ -85,17 +101,12 @@ where
         let queue_name = Self::queue_channel_name(cn, job.data.as_ref().map(|d| &d.priority));
         let payload = Self::serialize_message(&internal)?;
         let mut connection = self.redis_pool().get().await?;
-        if at_head {
-            connection
-                .lpush(queue_name, payload)
-                .await
-                .map_err(|e| JobWorkerError::RedisError(e).into())
+        let result = if at_head {
+            connection.lpush(queue_name, payload).await
         } else {
-            connection
-                .rpush(queue_name, payload)
-                .await
-                .map_err(|e| JobWorkerError::RedisError(e).into())
-        }
+            connection.rpush(queue_name, payload).await
+        };
+        result.map_err(redis_enqueue_error)
     }
 
     // send job result from worker to front directly
@@ -640,6 +651,90 @@ mod test {
         }
     }
     impl RedisJobQueueRepository for RedisJobQueueRepositoryImpl {}
+
+    #[test]
+    fn unknown_enqueue_error_retains_its_redis_source() {
+        let source_message = "injected connection reset after write";
+        let redis_error = redis::RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            source_message,
+        ));
+
+        let error = redis_enqueue_error(redis_error);
+
+        assert!(error.downcast_ref::<RedisEnqueueOutcomeUnknown>().is_some());
+        let redis_error = error
+            .downcast_ref::<JobWorkerError>()
+            .expect("the original Redis error wrapper must remain in the error chain");
+        assert!(matches!(
+            redis_error,
+            JobWorkerError::RedisError(error)
+                if error.to_string().contains(source_message)
+        ));
+    }
+
+    #[tokio::test]
+    async fn redis_pool_acquisition_error_has_no_unknown_enqueue_marker() -> Result<()> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let url = format!("redis://{}", listener.local_addr()?);
+        drop(listener);
+
+        let redis_pool = setup_wait_test_pool(url.clone(), false).await?;
+        let job_queue_config = Arc::new(JobQueueConfig::default());
+        let redis_client = redis::Client::open(url)?;
+        let job_result_pubsub_repository =
+            RedisJobResultPubSubRepositoryImpl::new(redis_client, job_queue_config.clone());
+        let repo = RedisJobQueueRepositoryImpl {
+            job_queue_config,
+            redis_pool,
+            redis_blocking_pool: redis_pool,
+            job_result_pubsub_repository,
+        };
+
+        let error = repo.enqueue_job(None, &Job::default()).await.unwrap_err();
+
+        assert!(error.downcast_ref::<RedisEnqueueOutcomeUnknown>().is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn redis_rejected_queue_write_has_no_unknown_enqueue_marker() -> Result<()> {
+        let redis_pool = setup_test_redis_pool().await;
+        let redis_client = setup_test_redis_client()?;
+        let job_queue_config = Arc::new(JobQueueConfig::default());
+        let repo = RedisJobQueueRepositoryImpl {
+            job_queue_config: job_queue_config.clone(),
+            redis_pool,
+            redis_blocking_pool: setup_test_redis_blocking_pool().await,
+            job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl::new(
+                redis_client,
+                job_queue_config,
+            ),
+        };
+        let channel = format!("wrongtype-queue-{}", datetime::now_millis());
+        let queue_key = RedisJobQueueRepositoryImpl::queue_channel_name(channel.clone(), None);
+        let mut conn = redis_pool.get().await?;
+        conn.set::<_, _, ()>(&queue_key, "not a job queue").await?;
+
+        let enqueued = repo.enqueue_job(Some(&channel), &Job::default()).await;
+        let requeued = repo
+            .requeue_job_with_load_only(Some(&channel), &Job::default(), false)
+            .await;
+        conn.del::<_, i64>(&queue_key).await?;
+
+        for error in [enqueued.unwrap_err(), requeued.unwrap_err()] {
+            assert!(
+                error.downcast_ref::<RedisEnqueueOutcomeUnknown>().is_none(),
+                "an error reply means Redis did not apply the write: {error:?}"
+            );
+            assert!(matches!(
+                error.downcast_ref::<JobWorkerError>(),
+                Some(JobWorkerError::RedisError(redis_error))
+                    if redis_error.code() == Some("WRONGTYPE")
+            ));
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn send_job_test() -> Result<()> {

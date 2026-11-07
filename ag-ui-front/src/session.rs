@@ -7,8 +7,8 @@ pub mod store;
 
 // Re-export main types
 pub use manager::{
-    HitlWaitingInfo, InMemorySessionManager, PendingToolCallInfo, Session, SessionManager,
-    SessionState,
+    HitlWaitingInfo, InMemorySessionManager, InterruptInfo, PendingToolCallInfo, ResumeBatchEntry,
+    ResumeBatchError, ResumeBatchResult, Session, SessionManager, SessionState,
 };
 pub use redis_manager::RedisSessionManager;
 pub use redis_store::RedisEventStore;

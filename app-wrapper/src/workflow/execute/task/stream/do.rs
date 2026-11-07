@@ -297,7 +297,29 @@ impl DoTaskStreamExecutor {
 
                         // Determine if this is a valid wait scenario
                         // NOTE: At this point, result.position is "/do" (both index and task_name removed)
-                        let is_valid_wait = if next_pair.is_some() {
+                        let current_task_position = {
+                            let mut position = result.position.read().await.clone();
+                            position.push_idx(pos);
+                            position.push(name.to_string());
+                            position
+                        };
+                        let (is_waiting, resume_position) = {
+                            let workflow_context = self.workflow_context.read().await;
+                            (
+                                workflow_context.status == WorkflowStatus::Waiting,
+                                workflow_context.resume_position.clone(),
+                            )
+                        };
+                        let wait_already_handled = is_waiting
+                            && resume_position.as_ref().is_some_and(|resume_position| {
+                                resume_position
+                                    .relative_path(current_task_position.full())
+                                    .is_some_and(|relative_path| !relative_path.is_empty())
+                            });
+                        let is_valid_wait = if wait_already_handled {
+                            // A nested task already saved a resume point below this parent task.
+                            false
+                        } else if next_pair.is_some() {
                             // Next task exists - valid wait
                             true
                         } else {
@@ -325,23 +347,20 @@ impl DoTaskStreamExecutor {
 
                         // Save checkpoint if repository is available and wait is valid
                         if is_valid_wait {
-                            if let (Some(repo), Some(exec_id)) = (&self.checkpoint_repository, &self.execution_id) {
-                                // Calculate checkpoint position for resume
-                                let checkpoint_position = if let Some((next_name, (next_idx, _))) = next_pair.as_ref() {
-                                    // Next task exists: build position for next task
-                                    let mut pos = result.position.read().await.clone();
-                                    pos.push_idx(*next_idx);       // Add next task's index
-                                    pos.push(next_name.to_string());   // Add next task's name
-                                    pos
-                                } else {
-                                    // Nested do: save parent task's position for resume
-                                    let current_pos = result.position.read().await;
-                                    let mut parent_pos = current_pos.clone();
-                                    drop(current_pos);
-                                    parent_pos.pop(); // Remove "do" to get parent task position
-                                    parent_pos
-                                };
+                            // Execution resumes at the next task, or at the parent task when the
+                            // wait was the last task of a nested do (pop removes "do").
+                            let mut checkpoint_position = result.position.read().await.clone();
+                            match next_pair.as_ref() {
+                                Some((next_name, (next_idx, _))) => {
+                                    checkpoint_position.push_idx(*next_idx);
+                                    checkpoint_position.push(next_name.to_string());
+                                }
+                                None => {
+                                    checkpoint_position.pop();
+                                }
+                            }
 
+                            if let (Some(repo), Some(exec_id)) = (&self.checkpoint_repository, &self.execution_id) {
                                 let wf_ctx = self.workflow_context.read().await;
                                 let checkpoint = crate::workflow::execute::checkpoint::CheckPointContext::new_with_position(
                                     &wf_ctx,
@@ -363,10 +382,12 @@ impl DoTaskStreamExecutor {
                                 drop(wf_ctx);
                             }
 
-                            // Set status to Waiting
-                            self.workflow_context.write().await.status = WorkflowStatus::Waiting;
+                            // Expose the same resume point in context and the persisted checkpoint.
+                            let mut workflow_context = self.workflow_context.write().await;
+                            workflow_context.resume_position = Some(checkpoint_position);
+                            workflow_context.status = WorkflowStatus::Waiting;
                         }
-                        // If not valid wait, status was already set to Completed above
+                        // If not valid wait, status was already set to Completed or Waiting above.
 
                         None  // Exit loop
                     }

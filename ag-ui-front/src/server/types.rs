@@ -98,6 +98,11 @@ impl IntoResponse for AppError {
                 "SESSION_EXPIRED",
                 format!("Session expired: {}", id),
             ),
+            AgUiError::WorkflowDefinitionNotFound { name } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "WORKFLOW_WORKER_UNAVAILABLE",
+                format!("Configured workflow worker is unavailable: {}", name),
+            ),
             AgUiError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, "INVALID_INPUT", msg.clone()),
             AgUiError::WorkflowInitFailed(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

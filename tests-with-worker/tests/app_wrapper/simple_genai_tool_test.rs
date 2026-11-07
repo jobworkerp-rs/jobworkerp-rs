@@ -10,6 +10,7 @@ use app::app::function::function_set::FunctionSetApp;
 use app_wrapper::llm::chat::genai::GenaiChatService;
 use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::chat_message::Body as ChatMessageBody;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, LlmOptions};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     ChatRole, FunctionOptions, MessageContent,
@@ -81,13 +82,13 @@ fn create_chat_args_with_tools(message: &str) -> LlmChatArgs {
     LlmChatArgs {
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(
                     jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content::Text(
                         message.to_string(),
                     ),
                 ),
-            }),
+            })),
         }],
         options: Some(LlmOptions {
             temperature: Some(0.0),
@@ -207,13 +208,13 @@ fn test_chat_without_tools() -> Result<()> {
     let args = LlmChatArgs {
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(
                     jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content::Text(
                         "Hello, how are you today?".to_string(),
                     ),
                 ),
-            }),
+            })),
         }],
         options: Some(LlmOptions {
             temperature: Some(0.1),

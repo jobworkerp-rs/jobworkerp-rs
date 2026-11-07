@@ -66,6 +66,10 @@ indexmap = { version = "2", features = ["serde"] }
 [dev-dependencies]
 tokio-test = "0.4"
 app = { path = "../app", features = ["test-utils"] }
+jsonschema = { workspace = true }
+tower = { workspace = true }
+tests-with-worker = { path = "../tests-with-worker" }
+worker-app = { path = "../worker-app" }
 
 [features]
 default = []

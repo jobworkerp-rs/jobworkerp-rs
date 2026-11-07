@@ -12,6 +12,7 @@ use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::chat::ollama::OllamaChatService;
 use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::chat_message::Body as ChatMessageBody;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ArgsContent;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::{
     ToolExecutionRequest, ToolExecutionRequests,
@@ -77,9 +78,9 @@ fn create_manual_mode_args(message: &str) -> LlmChatArgs {
     LlmChatArgs {
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(ArgsContent::Text(message.to_string())),
-            }),
+            })),
         }],
         options: Some(LlmOptions {
             temperature: Some(0.0),
@@ -224,7 +225,7 @@ fn test_manual_mode_execute_with_client_arguments() -> Result<()> {
         // Add assistant's tool call response
         messages.push(ChatMessage {
             role: ChatRole::Assistant as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(ArgsContent::ToolCalls(message_content::ToolCalls {
                     calls: vec![message_content::ToolCall {
                         call_id: first_call.call_id.clone(),
@@ -232,17 +233,17 @@ fn test_manual_mode_execute_with_client_arguments() -> Result<()> {
                         fn_arguments: first_call.fn_arguments.clone(),
                     }],
                 })),
-            }),
+            })),
         });
 
         // Add tool execution request
         messages.push(ChatMessage {
             role: ChatRole::Tool as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(ArgsContent::ToolExecutionRequests(ToolExecutionRequests {
                     requests: vec![exec_request],
                 })),
-            }),
+            })),
         });
 
         let exec_args = LlmChatArgs { messages, ..args };
@@ -330,7 +331,7 @@ fn test_manual_mode_echo_with_custom_message() -> Result<()> {
         let mut messages = args.messages.clone();
         messages.push(ChatMessage {
             role: ChatRole::Assistant as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(ArgsContent::ToolCalls(message_content::ToolCalls {
                     calls: vec![message_content::ToolCall {
                         call_id: first_call.call_id.clone(),
@@ -338,15 +339,15 @@ fn test_manual_mode_echo_with_custom_message() -> Result<()> {
                         fn_arguments: first_call.fn_arguments.clone(),
                     }],
                 })),
-            }),
+            })),
         });
         messages.push(ChatMessage {
             role: ChatRole::Tool as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(ArgsContent::ToolExecutionRequests(ToolExecutionRequests {
                     requests: vec![exec_request],
                 })),
-            }),
+            })),
         });
 
         let exec_args = LlmChatArgs { messages, ..args };
@@ -392,11 +393,11 @@ fn test_auto_vs_manual_mode_comparison() -> Result<()> {
         let auto_args = LlmChatArgs {
             messages: vec![ChatMessage {
                 role: ChatRole::User as i32,
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(ArgsContent::Text(
                         "Run the 'date' command to show current time.".to_string(),
                     )),
-                }),
+                })),
             }],
             options: Some(LlmOptions {
                 temperature: Some(0.0),
@@ -490,13 +491,14 @@ fn test_manual_mode_invalid_function_name() -> Result<()> {
         messages: vec![
             ChatMessage {
                 role: ChatRole::User as i32,
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(ArgsContent::Text("Run a command".to_string())),
-                }),
-            },
+                })),
+
+        },
             ChatMessage {
                 role: ChatRole::Assistant as i32,
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(ArgsContent::ToolCalls(message_content::ToolCalls {
                         calls: vec![message_content::ToolCall {
                             call_id: "test-call-123".to_string(),
@@ -504,11 +506,12 @@ fn test_manual_mode_invalid_function_name() -> Result<()> {
                             fn_arguments: "{}".to_string(),
                         }],
                     })),
-                }),
-            },
+                })),
+
+        },
             ChatMessage {
                 role: ChatRole::Tool as i32,
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(ArgsContent::ToolExecutionRequests(ToolExecutionRequests {
                         requests: vec![ToolExecutionRequest {
                             call_id: "test-call-123".to_string(),
@@ -516,8 +519,9 @@ fn test_manual_mode_invalid_function_name() -> Result<()> {
                             fn_arguments: "{}".to_string(),
                         }],
                     })),
-                }),
-            },
+                })),
+
+        },
         ],
         options: Some(LlmOptions {
             temperature: Some(0.0),

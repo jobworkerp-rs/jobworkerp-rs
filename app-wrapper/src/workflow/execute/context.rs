@@ -54,8 +54,14 @@ pub struct WorkflowContext {
     pub started_at: DateTime<FixedOffset>,
     pub output: Option<Arc<serde_json::Value>>,
     pub position: WorkflowPosition,
+    /// Checkpoint to resume from: tasks before it are skipped during recovery.
     #[serde(skip)]
     pub checkpoint_position: Option<WorkflowPosition>,
+    /// Where a waiting workflow resumes, i.e. the key its checkpoint is saved
+    /// under. Kept apart from `checkpoint_position` so recovery never mistakes
+    /// this run's own pause point for a position to skip to.
+    #[serde(skip)]
+    pub resume_position: Option<WorkflowPosition>,
     #[serde(skip)]
     pub context_variables: Arc<Mutex<ContextVariables>>,
     /// Root of the child job scope tree. Every in-flight child job enqueued by
@@ -203,6 +209,7 @@ impl WorkflowContext {
             output: None,
             position: WorkflowPosition::new(vec![]),
             checkpoint_position,
+            resume_position: None,
             context_variables: Arc::new(Mutex::new(
                 context
                     .as_object()
@@ -226,6 +233,15 @@ impl WorkflowContext {
             ),
         }
     }
+    /// Position to report to callers: a waiting workflow reports where it will resume,
+    /// which is also the key its checkpoint is saved under.
+    pub fn reported_position(&self) -> &WorkflowPosition {
+        match (&self.status, &self.resume_position) {
+            (WorkflowStatus::Waiting, Some(resume)) => resume,
+            _ => &self.position,
+        }
+    }
+
     // for test
     pub fn new_empty() -> Self {
         let uuid = Uuid::now_v7();
@@ -243,6 +259,7 @@ impl WorkflowContext {
             output: None,
             position: WorkflowPosition::new(vec![]),
             checkpoint_position: None,
+            resume_position: None,
             context_variables: Arc::new(Mutex::new(ContextVariables::new())),
             child_job_scope: ChildJobScope::new_root(),
             authentications: Arc::new(std::collections::HashMap::new()),
@@ -1167,6 +1184,25 @@ mod tests {
         ] {
             assert!(Arc::ptr_eq(copy.child_job_scope.as_ref().unwrap(), &scope));
         }
+    }
+
+    #[test]
+    fn reported_position_is_the_resume_point_only_while_waiting() {
+        let current = WorkflowPosition::parse("/ROOT/do/1/wait_task").unwrap();
+        let resume = WorkflowPosition::parse("/ROOT/do/2/resume_task").unwrap();
+        let mut context = WorkflowContext::new_empty();
+        context.position = current.clone();
+        context.resume_position = Some(resume.clone());
+
+        context.status = WorkflowStatus::Waiting;
+        assert_eq!(context.reported_position(), &resume);
+
+        context.status = WorkflowStatus::Running;
+        assert_eq!(context.reported_position(), &current);
+
+        context.status = WorkflowStatus::Waiting;
+        context.resume_position = None;
+        assert_eq!(context.reported_position(), &current);
     }
 
     #[tokio::test]

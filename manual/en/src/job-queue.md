@@ -14,6 +14,14 @@ worker.queue_type
 - WITH_BACKUP: Immediate execution jobs are stored in both channel and RDB (can restore jobs from RDB during failures)
 - DB_ONLY: Immediate execution jobs are also stored only in RDB (may result in slower execution)
 
+### When enqueueing an immediate job fails (Scalable)
+
+When the Redis enqueue returns an error, what happens depends on whether the job was queued.
+
+- If the write failed before reaching Redis, or Redis refused it with an error reply (WRONGTYPE, OOM, READONLY, ...), the job was not queued. Its PENDING status is removed and the request can be retried.
+- If it is unknown whether the job was queued, for example because the reply was lost after the write, the job may stay in the queue and run. Its PENDING status is kept. Retrying the same request automatically may run the job twice.
+- If only the record that lists the job as running fails after it was queued, the enqueue is treated as successful and a warning is logged.
+
 ## Result Storage (worker.store_success, worker.store_failure)
 
 - Execution results are saved to RDB (job_result table) on success/failure based on worker.store_success and worker.store_failure settings

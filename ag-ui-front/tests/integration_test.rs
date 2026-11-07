@@ -13,7 +13,6 @@ use ag_ui_front::events::{
 use ag_ui_front::pubsub::merge_workflow_and_llm_streams;
 use ag_ui_front::types::ids::MessageId;
 use ag_ui_front::types::message::Role;
-use ag_ui_front::types::state::{TaskState, WorkflowState, WorkflowStatus};
 use ag_ui_front::{EventStore, InMemoryEventStore, InMemorySessionManager, SessionManager};
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -127,17 +126,10 @@ async fn test_merged_workflow_and_llm_streams() {
 #[tokio::test]
 async fn test_state_delta_workflow() {
     // Initial state
-    let state1 = WorkflowState::new("test_workflow")
-        .with_status(WorkflowStatus::Running)
-        .with_current_task(TaskState::new("step_1"));
+    let state1 = serde_json::json!({"public":{"status":"running","task":"step_1"}});
 
     // Updated state with progress
-    let mut vars = HashMap::new();
-    vars.insert("progress".to_string(), serde_json::json!(50));
-    let state2 = WorkflowState::new("test_workflow")
-        .with_status(WorkflowStatus::Running)
-        .with_current_task(TaskState::new("step_2"))
-        .with_context_variables(vars.clone());
+    let state2 = serde_json::json!({"public":{"status":"running","task":"step_2"},"progress":50});
 
     // Calculate diff
     let diff = calculate_state_diff(&state1, &state2);
@@ -145,7 +137,7 @@ async fn test_state_delta_workflow() {
 
     // Verify diff contains expected changes
     let diff_str = serde_json::to_string(&diff).unwrap();
-    assert!(diff_str.contains("step_2") || diff_str.contains("current_step"));
+    assert!(diff_str.contains("step_2"));
 
     // Create delta event
     let event = create_state_delta_event(&state1, &state2);
@@ -159,28 +151,28 @@ async fn test_state_tracker_lifecycle() {
     let mut tracker = StateTracker::new();
 
     // First update should return StateSnapshot
-    let state1 = WorkflowState::new("tracker_test").with_status(WorkflowStatus::Pending);
+    let state1 = serde_json::json!({"public":"pending"});
     let event1 = tracker.update(state1);
     assert!(matches!(event1, Some(AgUiEvent::StateSnapshot { .. })));
 
     // Second update with change should return StateDelta
-    let state2 = WorkflowState::new("tracker_test").with_status(WorkflowStatus::Running);
+    let state2 = serde_json::json!({"public":"running"});
     let event2 = tracker.update(state2);
     assert!(matches!(event2, Some(AgUiEvent::StateDelta { .. })));
 
     // Third update with same state should return None
-    let state3 = WorkflowState::new("tracker_test").with_status(WorkflowStatus::Running);
+    let state3 = serde_json::json!({"public":"running"});
     let event3 = tracker.update(state3);
     assert!(event3.is_none());
 
     // Final update with completion should return StateDelta
-    let state4 = WorkflowState::new("tracker_test").with_status(WorkflowStatus::Completed);
+    let state4 = serde_json::json!({"public":"completed"});
     let event4 = tracker.update(state4);
     assert!(matches!(event4, Some(AgUiEvent::StateDelta { .. })));
 
     // Verify current state
     let current = tracker.current_state().unwrap();
-    assert_eq!(current.status, WorkflowStatus::Completed);
+    assert_eq!(current["public"], "completed");
 }
 
 /// Test: Session and Event Store integration
@@ -206,8 +198,8 @@ async fn test_session_and_event_store_integration() {
         AgUiEvent::text_message_start(MessageId::new("msg_1"), Role::Assistant),
         AgUiEvent::text_message_content(MessageId::new("msg_1"), "Hello"),
         AgUiEvent::text_message_end(MessageId::new("msg_1")),
-        AgUiEvent::step_finished("step_1", None),
-        AgUiEvent::run_finished(run_id.to_string(), None),
+        AgUiEvent::step_finished("step_1", "step_1", None),
+        AgUiEvent::run_finished(run_id.to_string(), "thread", None),
     ];
 
     for (i, event) in events.iter().enumerate() {
@@ -361,26 +353,26 @@ async fn test_state_tracker_configuration() {
     // Test with snapshots disabled
     let mut tracker = StateTracker::new().with_snapshots(false);
 
-    let state1 = WorkflowState::new("config_test").with_status(WorkflowStatus::Running);
+    let state1 = serde_json::json!({"status":"running"});
     let event1 = tracker.update(state1);
     // First update should return None when snapshots disabled
     assert!(event1.is_none());
 
     // Second update should still produce delta
-    let state2 = WorkflowState::new("config_test").with_status(WorkflowStatus::Completed);
+    let state2 = serde_json::json!({"status":"completed"});
     let event2 = tracker.update(state2);
     assert!(matches!(event2, Some(AgUiEvent::StateDelta { .. })));
 
     // Test with deltas disabled
     let mut tracker2 = StateTracker::new().with_deltas(false);
 
-    let state3 = WorkflowState::new("config_test2").with_status(WorkflowStatus::Running);
+    let state3 = serde_json::json!({"status":"running"});
     let event3 = tracker2.update(state3);
     // First update should still produce snapshot
     assert!(matches!(event3, Some(AgUiEvent::StateSnapshot { .. })));
 
     // Second update should return None when deltas disabled
-    let state4 = WorkflowState::new("config_test2").with_status(WorkflowStatus::Completed);
+    let state4 = serde_json::json!({"status":"completed"});
     let event4 = tracker2.update(state4);
     assert!(event4.is_none());
 }
@@ -391,9 +383,7 @@ async fn test_state_tracker_forced_snapshot() {
     let mut tracker = StateTracker::new();
 
     // Setup initial state
-    let state = WorkflowState::new("reconnect_test")
-        .with_status(WorkflowStatus::Running)
-        .with_current_task(TaskState::new("step_5"));
+    let state = serde_json::json!({"public":{"workflow":"reconnect_test","status":"running","task":"step_5"}});
     let _ = tracker.update(state);
 
     // Simulate reconnection - client requests current state
@@ -402,11 +392,9 @@ async fn test_state_tracker_forced_snapshot() {
 
     match snapshot.unwrap() {
         AgUiEvent::StateSnapshot { snapshot, .. } => {
-            assert_eq!(snapshot.workflow_name, "reconnect_test");
-            assert_eq!(snapshot.status, WorkflowStatus::Running);
             assert_eq!(
-                snapshot.current_task.as_ref().map(|t| t.name.as_str()),
-                Some("step_5")
+                snapshot,
+                serde_json::json!({"public":{"workflow":"reconnect_test","status":"running","task":"step_5"}})
             );
         }
         _ => panic!("Expected StateSnapshot"),
@@ -541,7 +529,7 @@ async fn test_hitl_tool_call_event_sequence() {
         AgUiEvent::run_started(run_id, "hitl_thread"),
         // 2. Task that leads to wait starts
         AgUiEvent::step_started("prepare_step", "Prepare for approval"),
-        AgUiEvent::step_finished("prepare_step", None),
+        AgUiEvent::step_finished("prepare_step", "prepare_step", None),
         // 3. TOOL_CALL events for HITL
         AgUiEvent::tool_call_start(format!("wait_{}", run_id), "HUMAN_INPUT".to_string(), None),
         AgUiEvent::tool_call_args(
@@ -629,8 +617,8 @@ async fn test_hitl_resume_event_sequence() {
         ),
         // Workflow continues after resume
         AgUiEvent::step_started("after_approval", "Process approval"),
-        AgUiEvent::step_finished("after_approval", None),
-        AgUiEvent::run_finished(run_id.to_string(), None),
+        AgUiEvent::step_finished("after_approval", "after_approval", None),
+        AgUiEvent::run_finished(run_id.to_string(), "thread", None),
     ];
 
     for (i, event) in resume_events.iter().enumerate() {
@@ -775,7 +763,7 @@ async fn test_multiple_hitl_waits_in_workflow() {
         .store_event(
             run_id.as_str(),
             5,
-            AgUiEvent::run_finished(run_id.to_string(), None),
+            AgUiEvent::run_finished(run_id.to_string(), "thread", None),
         )
         .await;
 
@@ -809,7 +797,7 @@ async fn test_hitl_event_replay_on_reconnect() {
     let events = [
         AgUiEvent::run_started(run_id, "thread"),
         AgUiEvent::step_started("step_1", "First step"),
-        AgUiEvent::step_finished("step_1", None),
+        AgUiEvent::step_finished("step_1", "step_1", None),
         AgUiEvent::tool_call_start(tool_call_id.clone(), "HUMAN_INPUT".to_string(), None),
         AgUiEvent::tool_call_args(
             tool_call_id.clone(),
@@ -961,7 +949,7 @@ async fn test_workflow_stream_event_task_to_step_conversion() {
             metadata,
             ..
         } => {
-            assert_eq!(step_name, Some("fetch_data".to_string()));
+            assert_eq!(step_name, "fetch_data");
             let meta = metadata.unwrap();
             assert_eq!(meta["taskType"], "runTask");
             assert_eq!(meta["runnerType"], "HTTP_REQUEST");
@@ -1105,7 +1093,6 @@ async fn test_workflow_stream_event_streaming_job_conversion() {
 async fn test_full_workflow_stream_event_sequence() {
     use ag_ui_front::events::WorkflowEventAdapter;
     use ag_ui_front::types::ids::{RunId, ThreadId};
-    use ag_ui_front::types::state::{TaskState, WorkflowState, WorkflowStatus};
 
     let mut adapter = WorkflowEventAdapter::new(
         RunId::new("run_full_sequence"),
@@ -1157,9 +1144,7 @@ async fn test_full_workflow_stream_event_sequence() {
     event_store.store_event(run_id, 7, step2_end.unwrap()).await;
 
     // 8. State snapshot
-    let state = WorkflowState::new("test-workflow")
-        .with_status(WorkflowStatus::Running)
-        .with_current_task(TaskState::new("api_call"));
+    let state = serde_json::json!({"public":{"status":"running","task":"api_call"}});
     let snapshot = adapter.state_snapshot(state);
     event_store.store_event(run_id, 8, snapshot).await;
 
@@ -1214,7 +1199,7 @@ async fn test_workflow_stream_event_multiple_task_types() {
                 metadata,
                 ..
             } => {
-                assert_eq!(step_name, Some(task_name.to_string()));
+                assert_eq!(step_name, task_name);
                 if let Some(meta) = metadata {
                     assert_eq!(meta["taskType"], task_type);
                 }
@@ -1241,10 +1226,10 @@ async fn test_event_sequence_invariants_run_finished_once() {
         AgUiEvent::text_message_start(MessageId::new("msg_1"), Role::Assistant),
         AgUiEvent::text_message_content(MessageId::new("msg_1"), "Hello"),
         AgUiEvent::text_message_end(MessageId::new("msg_1")),
-        AgUiEvent::step_finished("step_1", None),
+        AgUiEvent::step_finished("step_1", "step_1", None),
         AgUiEvent::step_started("step_2", "Second step"),
-        AgUiEvent::step_finished("step_2", None),
-        AgUiEvent::run_finished(run_id.to_string(), None),
+        AgUiEvent::step_finished("step_2", "step_2", None),
+        AgUiEvent::run_finished(run_id.to_string(), "thread", None),
     ];
 
     for (i, event) in events.iter().enumerate() {
@@ -1305,7 +1290,7 @@ async fn test_event_sequence_invariants_run_error_exclusive() {
     let events = [
         AgUiEvent::run_started(run_id, "thread"),
         AgUiEvent::step_started("step_1", "Failing step"),
-        AgUiEvent::step_finished("step_1", None),
+        AgUiEvent::step_finished("step_1", "step_1", None),
         AgUiEvent::RunError {
             run_id: run_id.to_string(),
             message: "workflow failed".to_string(),
@@ -1372,17 +1357,17 @@ async fn test_event_sequence_step_matching() {
 
     let all_events = event_store.get_all_events(run_id).await;
 
-    // Collect step IDs from StepStarted and StepFinished
+    // Each step finish must carry the name used by its start event.
     let mut started_ids = std::collections::HashSet::new();
     let mut finished_ids = std::collections::HashSet::new();
 
     for (_, event) in &all_events {
         match event {
-            AgUiEvent::StepStarted { step_id, .. } => {
-                started_ids.insert(step_id.clone());
+            AgUiEvent::StepStarted { step_name, .. } => {
+                started_ids.insert(step_name.clone());
             }
-            AgUiEvent::StepFinished { step_id, .. } => {
-                finished_ids.insert(step_id.clone());
+            AgUiEvent::StepFinished { step_name, .. } => {
+                finished_ids.insert(step_name.clone());
             }
             _ => {}
         }
@@ -1392,7 +1377,7 @@ async fn test_event_sequence_step_matching() {
     for fid in &finished_ids {
         assert!(
             started_ids.contains(fid),
-            "StepFinished with id {} has no matching StepStarted",
+            "StepFinished with name {} has no matching StepStarted",
             fid
         );
     }

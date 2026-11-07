@@ -399,7 +399,7 @@ impl TaskExecutor {
             // If we skip the task, we still need to create a TaskContext with the input
             let mut task_context = if reached {
                 match self.load_checkpoint(&execution_id, &position).await {
-                    Ok(Some(cp)) => {
+                    Ok(Some(mut cp)) => {
                         tracing::debug!(
                             "Loaded checkpoint for task: {}, execution_id: {:?}",
                             self.task_name,
@@ -407,6 +407,9 @@ impl TaskExecutor {
                         );
                         // remove checkpoint position workflow_context (continue execution)
                         self.workflow_context.write().await.checkpoint_position = None;
+                        // Checkpoints do not persist the live position. Restore it so a later
+                        // wait computes its resume position from the full task path.
+                        cp.position = position.clone();
                         cp
                     }
                     Ok(None) => {

@@ -4,6 +4,7 @@ use app::module::{AppModule, test::create_hybrid_test_app};
 use app_wrapper::llm::chat::{genai::GenaiChatService, ollama::OllamaChatService};
 use futures::StreamExt;
 use infra_utils::infra::test::TEST_RUNTIME;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::chat_message::Body as ChatMessageBody;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::{
     Content as ArgsContent, ToolExecutionRequest, ToolExecutionRequests, ToolResult, ToolResults,
 };
@@ -349,16 +350,16 @@ fn system_args(request_prompts: &[&str]) -> LlmChatArgs {
         .iter()
         .map(|prompt| ChatMessage {
             role: ChatRole::System as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(ArgsContent::Text((*prompt).to_string())),
-            }),
+            })),
         })
         .collect();
     messages.push(ChatMessage {
         role: ChatRole::User as i32,
-        content: Some(MessageContent {
+        body: Some(ChatMessageBody::Content(MessageContent {
             content: Some(ArgsContent::Text("Say complete".to_string())),
-        }),
+        })),
     });
     LlmChatArgs {
         messages,
@@ -469,7 +470,7 @@ fn client_tool_execution_request_args() -> LlmChatArgs {
     let mut args = client_args();
     args.messages.push(ChatMessage {
         role: ChatRole::Assistant as i32,
-        content: Some(MessageContent {
+        body: Some(ChatMessageBody::Content(MessageContent {
             content: Some(ArgsContent::ToolCalls(message_content::ToolCalls {
                 calls: vec![message_content::ToolCall {
                     call_id: "client-call-1".to_string(),
@@ -477,11 +478,11 @@ fn client_tool_execution_request_args() -> LlmChatArgs {
                     fn_arguments: r#"{"query":"hello"}"#.to_string(),
                 }],
             })),
-        }),
+        })),
     });
     args.messages.push(ChatMessage {
         role: ChatRole::Tool as i32,
-        content: Some(MessageContent {
+        body: Some(ChatMessageBody::Content(MessageContent {
             content: Some(ArgsContent::ToolExecutionRequests(ToolExecutionRequests {
                 requests: vec![ToolExecutionRequest {
                     call_id: "client-call-1".to_string(),
@@ -489,7 +490,7 @@ fn client_tool_execution_request_args() -> LlmChatArgs {
                     fn_arguments: r#"{"query":"hello"}"#.to_string(),
                 }],
             })),
-        }),
+        })),
     });
     args
 }
@@ -502,7 +503,7 @@ fn continuation_args(
 ) -> LlmChatArgs {
     args.messages.push(ChatMessage {
         role: ChatRole::Assistant as i32,
-        content: Some(MessageContent {
+        body: Some(ChatMessageBody::Content(MessageContent {
             content: Some(ArgsContent::ToolCalls(message_content::ToolCalls {
                 calls: vec![message_content::ToolCall {
                     call_id: call_id.to_string(),
@@ -510,11 +511,11 @@ fn continuation_args(
                     fn_arguments: fn_arguments.to_string(),
                 }],
             })),
-        }),
+        })),
     });
     args.messages.push(ChatMessage {
         role: ChatRole::Tool as i32,
-        content: Some(MessageContent {
+        body: Some(ChatMessageBody::Content(MessageContent {
             content: Some(ArgsContent::ToolResults(ToolResults {
                 results: vec![ToolResult {
                     call_id: call_id.to_string(),
@@ -523,7 +524,7 @@ fn continuation_args(
                     is_error: false,
                 }],
             })),
-        }),
+        })),
     });
     args
 }

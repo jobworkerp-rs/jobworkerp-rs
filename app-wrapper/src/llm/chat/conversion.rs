@@ -497,6 +497,75 @@ impl ToolConverter {
             || fo.auto_select_function_set.unwrap_or(false)
     }
 
+    /// Request-entry checks every chat provider runs before dispatch, so malformed
+    /// payloads fail as direct errors instead of confusing provider-side rejections.
+    pub fn validate_chat_args(args: &LlmChatArgs) -> anyhow::Result<()> {
+        Self::validate_all_tool_results(args)?;
+        Self::validate_message_parts(args)?;
+        Self::validate_client_tools_exclusive(args)?;
+        Self::validate_client_tool_execution_requests(args)
+    }
+
+    /// Lenient decoding of provider-bound tool-call arguments: a malformed string
+    /// becomes an empty object instead of failing the whole conversation.
+    pub fn parse_tool_call_arguments(raw: &str) -> serde_json::Value {
+        serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({}))
+    }
+
+    pub(super) fn extract_tool_execution_requests(
+        args: &LlmChatArgs,
+    ) -> Option<Vec<ToolExecutionRequest>> {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            chat_message::Body, message_content::Content as ProtoContent,
+        };
+
+        let requests: Vec<ToolExecutionRequest> = args
+            .messages
+            .iter()
+            .filter(|message| message.role() == ChatRole::Tool)
+            .filter_map(|message| match message.body.as_ref() {
+                Some(Body::Content(content)) => Some(content),
+                _ => None,
+            })
+            .filter_map(|content| match &content.content {
+                Some(ProtoContent::ToolExecutionRequests(requests)) => {
+                    Some(requests.requests.clone())
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+
+        if requests.is_empty() {
+            None
+        } else {
+            Some(requests)
+        }
+    }
+
+    /// Parts hold only text and tool calls, the shapes every provider conversion supports.
+    pub fn validate_message_parts(args: &LlmChatArgs) -> anyhow::Result<()> {
+        use anyhow::bail;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            chat_message::Body, message_content::Content as ProtoContent,
+        };
+
+        for message in &args.messages {
+            let Some(Body::Parts(parts)) = message.body.as_ref() else {
+                continue;
+            };
+            if parts.items.iter().any(|part| {
+                !matches!(
+                    part.content,
+                    Some(ProtoContent::Text(_) | ProtoContent::ToolCalls(_))
+                )
+            }) {
+                bail!("chat message parts only support text and tool calls");
+            }
+        }
+        Ok(())
+    }
+
     /// Reject requests that combine client-owned tool definitions with any
     /// server-owned tool-selection option, before either tool execution or
     /// provider dispatch can observe the request.
@@ -521,20 +590,20 @@ impl ToolConverter {
     /// never enter the legacy server-side ToolExecutionRequests executor.
     pub fn validate_client_tool_execution_requests(args: &LlmChatArgs) -> anyhow::Result<()> {
         use anyhow::bail;
-        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            chat_message::Body, message_content::Content as ProtoContent,
+        };
 
         if !Self::has_client_tools_json(args) {
             return Ok(());
         }
         let has_execution_requests = args.messages.iter().any(|message| {
             message.role() == ChatRole::Tool
-                && message
-                    .content
-                    .as_ref()
-                    .and_then(|content| content.content.as_ref())
-                    .is_some_and(|content| {
-                        matches!(content, ProtoContent::ToolExecutionRequests(_))
-                    })
+                && match message.body.as_ref() {
+                    Some(Body::Content(content)) => content.content.as_ref(),
+                    _ => None,
+                }
+                .is_some_and(|content| matches!(content, ProtoContent::ToolExecutionRequests(_)))
         });
         if has_execution_requests {
             bail!(
@@ -672,30 +741,31 @@ impl ToolConverter {
         result: &str,
     ) {
         use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage as ProtoChatMessage;
-        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::MessageContent;
-        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            MessageContent, chat_message::Body, message_content::Content as ProtoContent,
+        };
 
         for i in 0..messages.len() {
             if messages[i].role() != ChatRole::Tool {
                 continue;
             }
-            if let Some(ref mut content) = messages[i].content
+            if let Some(Body::Content(content)) = messages[i].body.as_mut()
                 && let Some(ProtoContent::ToolExecutionRequests(reqs)) = &mut content.content
                 && reqs.requests.iter().any(|r| r.call_id == call_id)
             {
                 reqs.requests.retain(|r| r.call_id != call_id);
                 if reqs.requests.is_empty() {
-                    messages[i].content = Some(MessageContent {
+                    messages[i].body = Some(Body::Content(MessageContent {
                         content: Some(ProtoContent::Text(result.to_string())),
-                    });
+                    }));
                 } else {
                     messages.insert(
                         i + 1,
                         ProtoChatMessage {
                             role: ChatRole::Tool.into(),
-                            content: Some(MessageContent {
+                            body: Some(Body::Content(MessageContent {
                                 content: Some(ProtoContent::Text(result.to_string())),
-                            }),
+                            })),
                         },
                     );
                 }
@@ -733,7 +803,9 @@ impl ToolConverter {
         results: &jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolResults,
     ) -> anyhow::Result<Vec<ResolvedToolResult>> {
         use anyhow::bail;
-        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            chat_message::Body, message_content::Content as ProtoContent,
+        };
 
         if results.results.is_empty() {
             bail!("ToolResults.results must not be empty");
@@ -743,22 +815,26 @@ impl ToolConverter {
         // TOOL messages (sibling tool_results split across messages) are
         // transparent. The next message back MUST be ASSISTANT with
         // ToolCalls content; otherwise the conversation is malformed.
-        let last_tool_calls = prefix
-            .iter()
-            .rev()
-            .find(|m| m.role() != ChatRole::Tool)
-            .and_then(|m| m.content.as_ref())
-            .and_then(|c| c.content.as_ref())
-            .and_then(|c| match c {
-                ProtoContent::ToolCalls(tc) => Some(tc),
+        let last_assistant = prefix.iter().rev().find(|m| m.role() != ChatRole::Tool);
+        let last_tool_calls: Vec<_> = last_assistant
+            .into_iter()
+            .flat_map(|message| match message.body.as_ref() {
+                Some(Body::Content(content)) => std::slice::from_ref(content).iter(),
+                Some(Body::Parts(parts)) => parts.items.iter(),
+                None => [].iter(),
+            })
+            .filter_map(|content| match &content.content {
+                Some(ProtoContent::ToolCalls(calls)) => Some(&calls.calls),
                 _ => None,
-            });
+            })
+            .flatten()
+            .collect();
 
-        let Some(last_tool_calls) = last_tool_calls else {
+        if last_tool_calls.is_empty() {
             bail!(
                 "tool_results must follow an ASSISTANT message with ToolCalls, but the preceding non-TOOL message is missing or has different content"
             );
-        };
+        }
 
         let mut resolved = Vec::with_capacity(results.results.len());
         for tr in &results.results {
@@ -766,11 +842,7 @@ impl ToolConverter {
                 bail!("ToolResult.call_id must not be empty");
             }
 
-            let Some(matched) = last_tool_calls
-                .calls
-                .iter()
-                .find(|c| c.call_id == tr.call_id)
-            else {
+            let Some(matched) = last_tool_calls.iter().find(|c| c.call_id == tr.call_id) else {
                 bail!(
                     "tool_result call_id not found in immediately-preceding ASSISTANT ToolCalls: {}",
                     tr.call_id
@@ -808,10 +880,12 @@ impl ToolConverter {
     /// API-level error.
     pub fn validate_all_tool_results(args: &LlmChatArgs) -> anyhow::Result<()> {
         use anyhow::bail;
-        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            chat_message::Body, message_content::Content as ProtoContent,
+        };
 
         for (idx, msg) in args.messages.iter().enumerate() {
-            let Some(content) = msg.content.as_ref() else {
+            let Some(Body::Content(content)) = msg.body.as_ref() else {
                 continue;
             };
             let Some(ProtoContent::ToolResults(tr)) = content.content.as_ref() else {
@@ -984,8 +1058,176 @@ impl ToolConverter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+        MessageParts, chat_message::Body as ChatMessageBody,
+    };
     use proto::jobworkerp::function::data::FunctionSpecs;
     use serde_json::{Value, json};
+
+    fn content_of(
+        message: &jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatMessage,
+    ) -> &jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::MessageContent {
+        match message.body.as_ref().expect("message body should be set") {
+            ChatMessageBody::Content(content) => content,
+            other => panic!("expected content body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_tool_execution_requests_preserves_order_and_filters_other_messages() {
+        use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage, ChatRole, MessageContent,
+            message_content::{Content, ToolExecutionRequest, ToolExecutionRequests},
+        };
+
+        let request = |call_id: &str| ToolExecutionRequest {
+            call_id: call_id.to_string(),
+            fn_name: "lookup".to_string(),
+            fn_arguments: "{}".to_string(),
+        };
+        let requests_content = |requests| MessageContent {
+            content: Some(Content::ToolExecutionRequests(ToolExecutionRequests {
+                requests,
+            })),
+        };
+        let args = LlmChatArgs {
+            messages: vec![
+                ChatMessage {
+                    role: ChatRole::Assistant.into(),
+                    body: Some(ChatMessageBody::Content(requests_content(vec![request(
+                        "assistant",
+                    )]))),
+                },
+                ChatMessage {
+                    role: ChatRole::Tool.into(),
+                    body: Some(ChatMessageBody::Parts(MessageParts {
+                        items: vec![requests_content(vec![request("parts")])],
+                    })),
+                },
+                ChatMessage {
+                    role: ChatRole::Tool.into(),
+                    body: Some(ChatMessageBody::Content(requests_content(vec![
+                        request("first"),
+                        request("second"),
+                    ]))),
+                },
+                ChatMessage {
+                    role: ChatRole::Tool.into(),
+                    body: Some(ChatMessageBody::Content(requests_content(vec![request(
+                        "third",
+                    )]))),
+                },
+                ChatMessage {
+                    role: ChatRole::Tool.into(),
+                    body: Some(ChatMessageBody::Content(MessageContent {
+                        content: Some(Content::Text("text".to_string())),
+                    })),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let requests = ToolConverter::extract_tool_execution_requests(&args).unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.call_id.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+
+        let empty = LlmChatArgs {
+            messages: vec![ChatMessage {
+                role: ChatRole::Tool.into(),
+                body: Some(ChatMessageBody::Content(requests_content(vec![]))),
+            }],
+            ..Default::default()
+        };
+        assert!(ToolConverter::extract_tool_execution_requests(&empty).is_none());
+    }
+
+    #[test]
+    fn validate_chat_args_runs_every_request_entry_check() {
+        use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage, FunctionOptions, MessageContent, chat_message::Body,
+            message_content::Content,
+        };
+
+        let text = |value: &str| MessageContent {
+            content: Some(Content::Text(value.to_string())),
+        };
+        assert!(ToolConverter::validate_chat_args(&LlmChatArgs::default()).is_ok());
+
+        let valid_message_bodies = LlmChatArgs {
+            messages: vec![
+                ChatMessage {
+                    body: Some(Body::Content(text("hello"))),
+                    ..Default::default()
+                },
+                ChatMessage {
+                    body: Some(Body::Parts(MessageParts {
+                        items: vec![text("again")],
+                    })),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(ToolConverter::validate_chat_args(&valid_message_bodies).is_ok());
+
+        let client_and_server_tools = LlmChatArgs {
+            function_options: Some(FunctionOptions {
+                client_tools_json: Some("[]".to_string()),
+                function_set_name: Some("server-set".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let error = ToolConverter::validate_chat_args(&client_and_server_tools).unwrap_err();
+        assert!(error.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn tool_call_arguments_fall_back_to_an_empty_object() {
+        assert_eq!(
+            ToolConverter::parse_tool_call_arguments(r#"{"x":1}"#),
+            serde_json::json!({"x": 1})
+        );
+        assert_eq!(
+            ToolConverter::parse_tool_call_arguments("not json"),
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_content_parts_before_provider_conversion() {
+        use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage, MessageContent,
+            chat_message::Body,
+            message_content::{Content, Image},
+        };
+
+        let args = LlmChatArgs {
+            messages: vec![ChatMessage {
+                body: Some(Body::Parts(MessageParts {
+                    items: vec![MessageContent {
+                        content: Some(Content::Image(Image::default())),
+                    }],
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let error = ToolConverter::validate_message_parts(&args).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only support text and tool calls")
+        );
+    }
 
     fn make_single_schema_spec() -> FunctionSpecs {
         let mut method_schemas = std::collections::HashMap::new();
@@ -2675,13 +2917,14 @@ mod tests {
 
         let mut messages = vec![ProtoChatMessage {
             role: ChatRole::Tool.into(),
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(ProtoContent::ToolExecutionRequests(
                     jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequests {
                         requests: vec![req.clone()],
                     },
                 )),
-            }),
+            })),
+
         }];
 
         assert!(ToolConverter::skip_selector_tool_execution(
@@ -2689,11 +2932,9 @@ mod tests {
             &mut messages
         ));
         // Message should have been replaced with text
-        if let Some(ref content) = messages[0].content {
-            match &content.content {
-                Some(ProtoContent::Text(t)) => assert_eq!(t, "Tool selection completed"),
-                other => panic!("Expected Text content, got {:?}", other),
-            }
+        match &content_of(&messages[0]).content {
+            Some(ProtoContent::Text(t)) => assert_eq!(t, "Tool selection completed"),
+            other => panic!("Expected Text content, got {:?}", other),
         }
     }
 
@@ -2731,13 +2972,14 @@ mod tests {
 
         let mut messages = vec![ProtoChatMessage {
             role: ChatRole::Tool.into(),
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(ProtoContent::ToolExecutionRequests(
                     jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequests {
                         requests: vec![req1, req2],
                     },
                 )),
-            }),
+            })),
+
         }];
 
         // Replace only call-1
@@ -2747,22 +2989,18 @@ mod tests {
         assert_eq!(messages.len(), 2);
 
         // First message should still have call-2
-        if let Some(ref content) = messages[0].content {
-            match &content.content {
-                Some(ProtoContent::ToolExecutionRequests(reqs)) => {
-                    assert_eq!(reqs.requests.len(), 1);
-                    assert_eq!(reqs.requests[0].call_id, "call-2");
-                }
-                other => panic!("Expected ToolExecutionRequests, got {:?}", other),
+        match &content_of(&messages[0]).content {
+            Some(ProtoContent::ToolExecutionRequests(reqs)) => {
+                assert_eq!(reqs.requests.len(), 1);
+                assert_eq!(reqs.requests[0].call_id, "call-2");
             }
+            other => panic!("Expected ToolExecutionRequests, got {:?}", other),
         }
 
         // Second message should be the text result
-        if let Some(ref content) = messages[1].content {
-            match &content.content {
-                Some(ProtoContent::Text(t)) => assert_eq!(t, "result-1"),
-                other => panic!("Expected Text content, got {:?}", other),
-            }
+        match &content_of(&messages[1]).content {
+            Some(ProtoContent::Text(t)) => assert_eq!(t, "result-1"),
+            other => panic!("Expected Text content, got {:?}", other),
         }
 
         // Now replace call-2 — should collapse to Text
@@ -2770,11 +3008,9 @@ mod tests {
 
         // First message should now be Text
         assert_eq!(messages.len(), 2);
-        if let Some(ref content) = messages[0].content {
-            match &content.content {
-                Some(ProtoContent::Text(t)) => assert_eq!(t, "result-2"),
-                other => panic!("Expected Text content, got {:?}", other),
-            }
+        match &content_of(&messages[0]).content {
+            Some(ProtoContent::Text(t)) => assert_eq!(t, "result-2"),
+            other => panic!("Expected Text content, got {:?}", other),
         }
     }
 
@@ -2814,7 +3050,7 @@ mod tests {
         };
         ProtoChatMessage {
             role: ChatRole::Assistant.into(),
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(ProtoContent::ToolCalls(ToolCalls {
                     calls: calls
                         .into_iter()
@@ -2825,7 +3061,7 @@ mod tests {
                         })
                         .collect(),
                 })),
-            }),
+            })),
         }
     }
 
@@ -2838,7 +3074,7 @@ mod tests {
         };
         ProtoChatMessage {
             role: ChatRole::Tool.into(),
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(ProtoContent::ToolResults(ToolResults {
                     results: results
                         .into_iter()
@@ -2850,7 +3086,7 @@ mod tests {
                         })
                         .collect(),
                 })),
-            }),
+            })),
         }
     }
 
@@ -2861,7 +3097,7 @@ mod tests {
     ) -> jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolResults
     {
         use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
-        match msg.content.as_ref().unwrap().content.as_ref().unwrap() {
+        match content_of(msg).content.as_ref().unwrap() {
             ProtoContent::ToolResults(r) => r.clone(),
             other => panic!("expected ToolResults, got {other:?}"),
         }
@@ -2969,9 +3205,9 @@ mod tests {
             assistant_with_tool_calls(vec![("c1", "tool_a")]),
             ProtoChatMessage {
                 role: ChatRole::User.into(),
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(ProtoContent::Text("interruption".to_string())),
-                }),
+                })),
             },
             tool_msg_with_results(vec![("c1", "tool_a", "ok", false)]),
         ];
@@ -2986,6 +3222,38 @@ mod tests {
     }
 
     #[test]
+    fn resolves_tool_result_after_assistant_parts() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatMessage as ProtoChatMessage, MessageContent,
+            message_content::{Content, ToolCall, ToolCalls},
+        };
+        let assistant = ProtoChatMessage {
+            role: ChatRole::Assistant.into(),
+            body: Some(ChatMessageBody::Parts(MessageParts {
+                items: vec![
+                    MessageContent {
+                        content: Some(Content::Text("working".into())),
+                    },
+                    MessageContent {
+                        content: Some(Content::ToolCalls(ToolCalls {
+                            calls: vec![ToolCall {
+                                call_id: "call-parts".into(),
+                                fn_name: "lookup".into(),
+                                fn_arguments: "{}".into(),
+                            }],
+                        })),
+                    },
+                ],
+            })),
+        };
+        let results = tool_msg_with_results(vec![("call-parts", "", "done", false)]);
+        let result_content = extract_tool_results(&results);
+        let resolved = ToolConverter::resolve_tool_results(&[assistant], &result_content).unwrap();
+        assert_eq!(resolved[0].fn_name, "lookup");
+        assert_eq!(resolved[0].content, "done");
+    }
+
+    #[test]
     fn test_resolve_tool_results_assistant_without_tool_calls_bails() {
         // Direct predecessor is ASSISTANT, but with Text content — still
         // invalid because there is no tool_calls block to answer.
@@ -2997,9 +3265,9 @@ mod tests {
             assistant_with_tool_calls(vec![("c1", "tool_a")]),
             ProtoChatMessage {
                 role: ChatRole::Assistant.into(),
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(ProtoContent::Text("plain reply".to_string())),
-                }),
+                })),
             },
             tool_msg_with_results(vec![("c1", "tool_a", "ok", false)]),
         ];
@@ -3057,9 +3325,9 @@ mod tests {
         let messages = vec![
             ProtoChatMessage {
                 role: ChatRole::User.into(),
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(ProtoContent::Text("hello".to_string())),
-                }),
+                })),
             },
             assistant_with_tool_calls(vec![("c1", "tool_a")]),
             tool_msg_with_results(vec![("c1", "tool_a", "ok", false)]),
@@ -3119,7 +3387,7 @@ mod tests {
 
         let bad = ProtoChatMessage {
             role: ChatRole::User.into(),
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(ProtoContent::ToolResults(ToolResults {
                     results: vec![ToolResult {
                         call_id: "c1".to_string(),
@@ -3128,7 +3396,7 @@ mod tests {
                         is_error: false,
                     }],
                 })),
-            }),
+            })),
         };
         let args = LlmChatArgs {
             messages: vec![assistant_with_tool_calls(vec![("c1", "tool_a")]), bad],

@@ -165,6 +165,17 @@ EOF
 
 完全な失敗記録が必要な Worker では `store_failure=true` を設定し、返された Job ID を使って `JobResultService.FindListByJobId` から保存済み結果を取得してください。
 
+### enqueue 結果不明
+
+キュー基盤への通信に失敗し、enqueue が受理されたかサーバーが確認できない場合、ジョブはすでに投入済みの可能性があります。RPC は `UNKNOWN` を返し、enqueue を確認できなかったことをエラー本文で伝えます。trailer metadata には `x-job-id-bin` が含まれ、そのバイナリ値は `JobId` protobuf message です。現時点で、この結果不明分類と Job ID 付き応答の対象となるのは、成否不明の Redis キュー書き込みだけです。MySQL、SQLite、メモリキューなど、他のキュー基盤の失敗がこの分類になる保証はありません。
+
+この応答を受けたクライアントは次の順で確認してください。
+
+1. enqueue RPC を自動再送しないでください。
+2. trailer の `x-job-id-bin` を `JobId` protobuf として decode し、Job ID を取得してください。
+3. その ID で `JobProcessingStatusService.Find` を呼び、状態を確認してください。結果も `JobResultService.FindListByJobId` で確認してください。
+4. 結果が見つからなくても、ジョブが投入されなかったとは断定できません。状態と結果を再確認してから次の操作を判断してください。
+
 ### 失敗の原因
 
 失敗した結果には、原因を分類した `JobResultData.error`（`StreamError`）も入ります。code はストリームの End と同じで（[ストリーミング](streaming.md#ストリームエラー契約)を参照）、`TIMEOUT`、`TRANSPORT_FAILED`、`INVALID_ARGUMENT`、`CANCELLED`、それ以外は `EXECUTION_FAILED` です。WORKFLOW のジョブが失敗した場合は、`problem` にワークフローのエラーが入ります。

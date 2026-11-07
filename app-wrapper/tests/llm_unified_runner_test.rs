@@ -8,6 +8,7 @@ use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::unified::LLMUnifiedRunnerImpl;
 use futures::StreamExt;
 use infra_utils::infra::test::TEST_RUNTIME;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::chat_message::Body as ChatMessageBody;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     ChatMessage, ChatRole, LlmOptions as ChatLlmOptions, MessageContent, message_content,
 };
@@ -112,11 +113,11 @@ fn test_unified_runner_chat_method() -> Result<()> {
         let args = LlmChatArgs {
             messages: vec![ChatMessage {
                 role: ChatRole::User.into(),
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(message_content::Content::Text(
                         "What is the capital of Japan? Answer in one word.".to_string(),
                     )),
-                }),
+                })),
             }],
             options: Some(ChatLlmOptions {
                 max_tokens: Some(256),
@@ -223,11 +224,11 @@ fn test_unified_runner_chat_stream() -> Result<()> {
         let args = LlmChatArgs {
             messages: vec![ChatMessage {
                 role: ChatRole::User.into(),
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(message_content::Content::Text(
                         "List 3 colors, one per line.".to_string(),
                     )),
-                }),
+                })),
             }],
             options: Some(ChatLlmOptions {
                 max_tokens: Some(128),
@@ -369,11 +370,11 @@ fn test_unified_runner_chat_with_json_schema() -> Result<()> {
             json_schema: Some(schema.to_string()),
             messages: vec![ChatMessage {
                 role: ChatRole::User.into(),
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(message_content::Content::Text(
                         "What is 2+2? Respond with your answer and confidence level.".to_string(),
                     )),
-                }),
+                })),
             }],
             options: Some(ChatLlmOptions {
                 max_tokens: Some(512),

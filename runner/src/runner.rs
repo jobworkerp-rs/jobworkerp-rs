@@ -67,6 +67,7 @@ pub mod grpc;
 pub mod k8s_job;
 pub mod llm;
 pub mod llm_chat;
+pub(crate) mod llm_chat_serde;
 pub mod llm_embedding;
 pub mod llm_token_count;
 pub mod llm_unified;

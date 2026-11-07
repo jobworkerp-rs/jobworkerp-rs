@@ -33,6 +33,8 @@ message WorkflowResult {
   // # Position
   // Position of the workflow execution with json pointer format
   // This is an optional field that can be used to track the order of execution
+  // While the status is WAITING, this is the resume position: the position the
+  // checkpoint is saved under, usable as from_checkpoint.position.
   string position = 3;
 
   // # Status

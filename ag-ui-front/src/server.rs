@@ -6,6 +6,9 @@ pub mod http;
 pub mod http_async;
 pub mod types;
 
+#[cfg(test)]
+mod test_support;
+
 pub use auth::{TokenStore, extract_bearer_token};
 pub use embedded::boot_embedded_server;
 pub use http::{AppState, boot_ag_ui_server};

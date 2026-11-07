@@ -14,6 +14,7 @@ use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::chat::ollama::OllamaChatService;
 use futures::StreamExt;
 use infra_utils::infra::test::TEST_RUNTIME;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::chat_message::Body as ChatMessageBody;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ArgsContent;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequests;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, LlmOptions};
@@ -81,13 +82,14 @@ fn create_manual_mode_args(message: &str) -> LlmChatArgs {
     LlmChatArgs {
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(
                     jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content::Text(
                         message.to_string(),
                     ),
                 ),
-            }),
+            })),
+
         }],
         options: Some(LlmOptions {
             temperature: Some(0.0),
@@ -188,7 +190,7 @@ fn test_streaming_manual_mode_returns_pending_tool_calls() -> Result<()> {
     // Add assistant message with tool calls
     messages.push(ChatMessage {
         role: ChatRole::Assistant as i32,
-        content: Some(MessageContent {
+        body: Some(ChatMessageBody::Content(MessageContent {
             content: Some(ArgsContent::ToolCalls(
                 jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolCalls {
                     calls: pending_calls
@@ -203,8 +205,9 @@ fn test_streaming_manual_mode_returns_pending_tool_calls() -> Result<()> {
                         .collect(),
                 },
             )),
-        }),
-    });
+        })),
+
+        });
 
     // Add tool execution requests
     let tool_exec_requests: Vec<jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequest> =
@@ -221,12 +224,13 @@ fn test_streaming_manual_mode_returns_pending_tool_calls() -> Result<()> {
 
     messages.push(ChatMessage {
         role: ChatRole::Tool as i32,
-        content: Some(MessageContent {
+        body: Some(ChatMessageBody::Content(MessageContent {
             content: Some(ArgsContent::ToolExecutionRequests(ToolExecutionRequests {
                 requests: tool_exec_requests,
             })),
-        }),
-    });
+        })),
+
+        });
 
     let continuation_args = LlmChatArgs {
         messages,
@@ -333,9 +337,9 @@ fn test_streaming_without_tools() -> Result<()> {
         let args = LlmChatArgs {
             messages: vec![ChatMessage {
                 role: ChatRole::User as i32,
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(ArgsContent::Text("Hello, how are you today?".to_string())),
-                }),
+                })),
             }],
             options: Some(LlmOptions {
                 temperature: Some(0.1),

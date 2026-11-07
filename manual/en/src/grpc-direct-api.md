@@ -165,6 +165,17 @@ When `ResultStatus` is not `SUCCESS`, `output.items` is a UTF-8 diagnostic messa
 
 For a complete persisted failure record, configure the Worker with `store_failure=true` and retrieve the stored result through `JobResultService.FindListByJobId` using the returned Job ID.
 
+### Enqueue outcome unknown
+
+If communication with a queue backend fails while enqueueing and the server cannot confirm whether the command was accepted, the job may already be queued. The RPC returns `UNKNOWN` with an error message explaining that enqueueing could not be confirmed. Its error trailer metadata contains `x-job-id-bin`, whose binary value is a protobuf `JobId` message. Currently, this unknown-outcome classification and Job ID response applies only to uncertain Redis queue writes; failures from MySQL, SQLite, in-memory queues, and other backends are not guaranteed to receive this classification.
+
+When you receive this response:
+
+1. Do not automatically retry the enqueue RPC.
+2. Decode `x-job-id-bin` from the trailers as a protobuf `JobId` to obtain the Job ID.
+3. Call `JobProcessingStatusService.Find` with that ID to inspect its status. Also check its result with `JobResultService.FindListByJobId`.
+4. A missing result does not prove that the job was never enqueued. Recheck its status and result before deciding what to do next.
+
 ### Failure cause
 
 A failed result also carries `JobResultData.error`, a `StreamError` that classifies the cause with the same codes as a stream End (see [Streaming](streaming.md#stream-error-contract)): `TIMEOUT`, `TRANSPORT_FAILED`, `INVALID_ARGUMENT`, `CANCELLED`, or `EXECUTION_FAILED` for anything else. A failed WORKFLOW job also sets its `problem` to the workflow error.

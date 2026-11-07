@@ -6,7 +6,7 @@
 //! AG-UI Interrupts (Draft) support:
 //! - RUN_FINISHED with outcome and interrupt fields for HITL workflows
 
-use crate::types::{message::Role, state::WorkflowState};
+use crate::types::message::Role;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -15,12 +15,70 @@ use serde::{Deserialize, Serialize};
 
 /// Run outcome for RUN_FINISHED event (AG-UI Interrupts Draft)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RunOutcome {
     /// Run completed successfully
     Success,
     /// Run paused waiting for user input (HITL)
-    Interrupt,
+    Interrupt {
+        #[serde(
+            serialize_with = "serialize_non_empty_interrupts",
+            deserialize_with = "deserialize_non_empty_interrupts"
+        )]
+        interrupts: Vec<AgUiInterrupt>,
+    },
+    #[serde(rename = "cancelled")]
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgUiInterrupt {
+    pub id: String,
+    pub reason: String,
+}
+
+fn serialize_non_empty_interrupts<S>(
+    interrupts: &[AgUiInterrupt],
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if interrupts.is_empty() {
+        return Err(serde::ser::Error::custom(
+            "interrupt outcome requires at least one interrupt",
+        ));
+    }
+    interrupts.serialize(serializer)
+}
+
+fn deserialize_non_empty_interrupts<'de, D>(deserializer: D) -> Result<Vec<AgUiInterrupt>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let interrupts = Vec::<AgUiInterrupt>::deserialize(deserializer)?;
+    if interrupts.is_empty() {
+        return Err(serde::de::Error::custom(
+            "interrupt outcome requires at least one interrupt",
+        ));
+    }
+    Ok(interrupts)
+}
+
+fn serialize_non_null_value_option<S>(
+    value: &Option<serde_json::Value>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if matches!(value, Some(serde_json::Value::Null)) {
+        return Err(serde::ser::Error::custom(
+            "null is not valid for this AG-UI field",
+        ));
+    }
+    value.serialize(serializer)
 }
 
 /// Interrupt information for HITL workflows (AG-UI Interrupts Draft)
@@ -62,10 +120,9 @@ pub struct PendingToolCall {
 /// AG-UI event types.
 /// Based on AG-UI protocol specification.
 ///
-/// Note: Large variant size difference is expected - StateSnapshot contains full workflow state
-/// while other events are lightweight. This is intentional for the AG-UI protocol.
+/// State snapshots contain only the explicitly projected public JSON state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", deny_unknown_fields)]
 #[allow(clippy::large_enum_variant)]
 pub enum AgUiEvent {
     // === Lifecycle Events ===
@@ -76,10 +133,18 @@ pub enum AgUiEvent {
         run_id: String,
         #[serde(rename = "threadId")]
         thread_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        metadata: Option<serde_json::Value>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        metadata: Option<serde_json::Map<String, serde_json::Value>>,
     },
 
     /// Run finished (success or interrupt)
@@ -88,55 +153,93 @@ pub enum AgUiEvent {
     RunFinished {
         #[serde(rename = "runId")]
         run_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "threadId")]
+        thread_id: String,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            serialize_with = "serialize_non_null_value_option",
+            skip_serializing_if = "Option::is_none"
+        )]
         result: Option<serde_json::Value>,
         /// Run outcome: "success" or "interrupt" (AG-UI Interrupts Draft)
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
         outcome: Option<RunOutcome>,
         /// Interrupt information when outcome is "interrupt" (AG-UI Interrupts Draft)
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(skip)]
         interrupt: Option<InterruptInfo>,
     },
 
     /// Run error
     #[serde(rename = "RUN_ERROR")]
     RunError {
-        #[serde(rename = "runId")]
+        #[serde(skip)]
         run_id: String,
         message: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
         code: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
+        #[serde(skip)]
         details: Option<serde_json::Value>,
     },
 
     /// Step (task) started
     #[serde(rename = "STEP_STARTED")]
     StepStarted {
-        #[serde(rename = "stepId")]
+        #[serde(skip)]
         step_id: String,
-        #[serde(rename = "stepName", skip_serializing_if = "Option::is_none")]
-        step_name: Option<String>,
-        #[serde(rename = "parentStepId", skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "stepName")]
+        step_name: String,
+        #[serde(skip)]
         parent_step_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        metadata: Option<serde_json::Value>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        metadata: Option<serde_json::Map<String, serde_json::Value>>,
     },
 
     /// Step (task) finished
     #[serde(rename = "STEP_FINISHED")]
     StepFinished {
-        #[serde(rename = "stepId")]
+        #[serde(skip)]
         step_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "stepName")]
+        step_name: String,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
+        #[serde(skip)]
         result: Option<serde_json::Value>,
     },
 
@@ -147,8 +250,12 @@ pub enum AgUiEvent {
         #[serde(rename = "messageId")]
         message_id: String,
         role: Role,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
     },
 
     /// Text message content chunk
@@ -157,8 +264,12 @@ pub enum AgUiEvent {
         #[serde(rename = "messageId")]
         message_id: String,
         delta: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
     },
 
     /// Text message end
@@ -166,8 +277,12 @@ pub enum AgUiEvent {
     TextMessageEnd {
         #[serde(rename = "messageId")]
         message_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
     },
 
     // === Tool Call Events ===
@@ -178,10 +293,19 @@ pub enum AgUiEvent {
         tool_call_id: String,
         #[serde(rename = "toolCallName")]
         tool_call_name: String,
-        #[serde(rename = "parentMessageId", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            rename = "parentMessageId",
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
         parent_message_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
     },
 
     /// Tool call arguments chunk
@@ -190,8 +314,12 @@ pub enum AgUiEvent {
         #[serde(rename = "toolCallId")]
         tool_call_id: String,
         delta: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
     },
 
     /// Tool call end
@@ -199,35 +327,55 @@ pub enum AgUiEvent {
     ToolCallEnd {
         #[serde(rename = "toolCallId")]
         tool_call_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
     },
 
     /// Tool call result
     #[serde(rename = "TOOL_CALL_RESULT")]
     ToolCallResult {
+        #[serde(rename = "messageId")]
+        message_id: String,
         #[serde(rename = "toolCallId")]
         tool_call_id: String,
+        content: String,
+        #[serde(skip)]
         result: serde_json::Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
     },
 
     // === State Events ===
     /// State snapshot
     #[serde(rename = "STATE_SNAPSHOT")]
     StateSnapshot {
-        snapshot: WorkflowState,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
+        snapshot: serde_json::Value,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
     },
 
     /// State delta (JSON Patch)
     #[serde(rename = "STATE_DELTA")]
     StateDelta {
         delta: Vec<serde_json::Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
     },
 
     // === Special Events ===
@@ -235,17 +383,25 @@ pub enum AgUiEvent {
     #[serde(rename = "RAW")]
     Raw {
         event: serde_json::Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
     },
 
     /// Custom event for extensions
     #[serde(rename = "CUSTOM")]
     Custom {
         name: String,
-        data: serde_json::Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        timestamp: Option<f64>,
+        value: serde_json::Value,
+        #[serde(
+            default,
+            deserialize_with = "crate::types::deserialize_non_null_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        timestamp: Option<i64>,
     },
 }
 
@@ -272,9 +428,9 @@ impl AgUiEvent {
         }
     }
 
-    /// Get current timestamp in milliseconds as f64 (AG-UI SDK compliant)
-    pub fn now_timestamp() -> f64 {
-        chrono::Utc::now().timestamp_millis() as f64
+    /// Get current timestamp in milliseconds as a safe JSON integer.
+    pub fn now_timestamp() -> i64 {
+        chrono::Utc::now().timestamp_millis()
     }
 
     // === Builder Methods ===
@@ -290,9 +446,14 @@ impl AgUiEvent {
     }
 
     /// Create a RUN_FINISHED event with success outcome
-    pub fn run_finished(run_id: impl Into<String>, result: Option<serde_json::Value>) -> Self {
+    pub fn run_finished(
+        run_id: impl Into<String>,
+        thread_id: impl Into<String>,
+        result: Option<serde_json::Value>,
+    ) -> Self {
         AgUiEvent::RunFinished {
             run_id: run_id.into(),
+            thread_id: thread_id.into(),
             timestamp: Some(Self::now_timestamp()),
             result,
             outcome: Some(RunOutcome::Success),
@@ -303,22 +464,48 @@ impl AgUiEvent {
     /// Create a RUN_FINISHED event with success outcome (explicit)
     pub fn run_finished_success(
         run_id: impl Into<String>,
+        thread_id: impl Into<String>,
         result: Option<serde_json::Value>,
     ) -> Self {
-        Self::run_finished(run_id, result)
+        Self::run_finished(run_id, thread_id, result)
     }
 
     /// Create a RUN_FINISHED event with interrupt outcome (HITL)
     pub fn run_finished_with_interrupt(
         run_id: impl Into<String>,
+        thread_id: impl Into<String>,
         interrupt: InterruptInfo,
+    ) -> Self {
+        let mut event = Self::run_finished_with_interrupts(
+            run_id,
+            thread_id,
+            vec![AgUiInterrupt {
+                id: interrupt.id.clone(),
+                reason: interrupt.reason.clone(),
+            }],
+        );
+        if let AgUiEvent::RunFinished {
+            interrupt: legacy, ..
+        } = &mut event
+        {
+            *legacy = Some(interrupt);
+        }
+        event
+    }
+
+    /// Create a RUN_FINISHED event with standard interrupt outcomes.
+    pub fn run_finished_with_interrupts(
+        run_id: impl Into<String>,
+        thread_id: impl Into<String>,
+        interrupts: Vec<AgUiInterrupt>,
     ) -> Self {
         AgUiEvent::RunFinished {
             run_id: run_id.into(),
+            thread_id: thread_id.into(),
             timestamp: Some(Self::now_timestamp()),
             result: None,
-            outcome: Some(RunOutcome::Interrupt),
-            interrupt: Some(interrupt),
+            outcome: Some(RunOutcome::Interrupt { interrupts }),
+            interrupt: None,
         }
     }
 
@@ -338,11 +525,29 @@ impl AgUiEvent {
         }
     }
 
+    /// Create the RUN_ERROR that ends a run its client cancelled
+    pub fn run_cancelled(run_id: impl Into<String>) -> Self {
+        Self::run_error(
+            run_id,
+            "Run cancelled by user",
+            Some(crate::error::AgUiError::Cancelled.error_code().to_string()),
+            None,
+        )
+    }
+
+    /// Whether this event ends its run
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            AgUiEvent::RunFinished { .. } | AgUiEvent::RunError { .. }
+        )
+    }
+
     /// Create a STEP_STARTED event
     pub fn step_started(step_id: impl Into<String>, step_name: impl Into<String>) -> Self {
         AgUiEvent::StepStarted {
             step_id: step_id.into(),
-            step_name: Some(step_name.into()),
+            step_name: step_name.into(),
             parent_step_id: None,
             timestamp: Some(Self::now_timestamp()),
             metadata: None,
@@ -350,9 +555,14 @@ impl AgUiEvent {
     }
 
     /// Create a STEP_FINISHED event
-    pub fn step_finished(step_id: impl Into<String>, result: Option<serde_json::Value>) -> Self {
+    pub fn step_finished(
+        step_id: impl Into<String>,
+        step_name: impl Into<String>,
+        result: Option<serde_json::Value>,
+    ) -> Self {
         AgUiEvent::StepFinished {
             step_id: step_id.into(),
+            step_name: step_name.into(),
             timestamp: Some(Self::now_timestamp()),
             result,
         }
@@ -418,14 +628,16 @@ impl AgUiEvent {
     /// Create a TOOL_CALL_RESULT event
     pub fn tool_call_result(tool_call_id: impl Into<String>, result: serde_json::Value) -> Self {
         AgUiEvent::ToolCallResult {
+            message_id: crate::types::MessageId::random().to_string(),
             tool_call_id: tool_call_id.into(),
+            content: result.to_string(),
             result,
             timestamp: Some(Self::now_timestamp()),
         }
     }
 
     /// Create a STATE_SNAPSHOT event
-    pub fn state_snapshot(snapshot: WorkflowState) -> Self {
+    pub fn state_snapshot(snapshot: serde_json::Value) -> Self {
         AgUiEvent::StateSnapshot {
             snapshot,
             timestamp: Some(Self::now_timestamp()),
@@ -452,7 +664,7 @@ impl AgUiEvent {
     pub fn custom(name: impl Into<String>, data: serde_json::Value) -> Self {
         AgUiEvent::Custom {
             name: name.into(),
-            data,
+            value: data,
             timestamp: Some(Self::now_timestamp()),
         }
     }
@@ -462,12 +674,16 @@ impl AgUiEvent {
 mod tests {
     use super::*;
 
+    fn official_schema() -> serde_json::Value {
+        serde_json::from_str(include_str!("../../tests/fixtures/ag-ui-1.0-schema.json")).unwrap()
+    }
+
     #[test]
     fn test_run_started_serialization() {
         let event = AgUiEvent::RunStarted {
             run_id: "run_123".to_string(),
             thread_id: "thread_456".to_string(),
-            timestamp: Some(1234567890123.0),
+            timestamp: Some(1234567890123),
             metadata: None,
         };
 
@@ -475,7 +691,7 @@ mod tests {
         assert_eq!(json["type"], "RUN_STARTED");
         assert_eq!(json["runId"], "run_123");
         assert_eq!(json["threadId"], "thread_456");
-        assert_eq!(json["timestamp"], 1234567890123.0);
+        assert_eq!(json["timestamp"], 1234567890123_i64);
     }
 
     #[test]
@@ -484,7 +700,7 @@ mod tests {
             run_id: "run_123".to_string(),
             message: "Task failed".to_string(),
             code: Some("TASK_FAILED".to_string()),
-            timestamp: Some(1234567890123.0),
+            timestamp: Some(1234567890123),
             details: Some(serde_json::json!({ "taskName": "http_request" })),
         };
 
@@ -538,15 +754,17 @@ mod tests {
 
     #[test]
     fn test_state_snapshot() {
-        let state = WorkflowState::new("my_workflow");
         let event = AgUiEvent::StateSnapshot {
-            snapshot: state,
-            timestamp: Some(1234567890123.0),
+            snapshot: serde_json::json!({"public":"my_workflow"}),
+            timestamp: Some(1234567890123),
         };
 
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "STATE_SNAPSHOT");
-        assert_eq!(json["snapshot"]["workflowName"], "my_workflow");
+        assert_eq!(
+            json["snapshot"],
+            serde_json::json!({"public":"my_workflow"})
+        );
     }
 
     #[test]
@@ -587,7 +805,7 @@ mod tests {
     fn test_custom_event() {
         let event = AgUiEvent::Custom {
             name: "my_custom_event".to_string(),
-            data: serde_json::json!({ "key": "value" }),
+            value: serde_json::json!({ "key": "value" }),
             timestamp: None,
         };
 
@@ -618,16 +836,22 @@ mod tests {
 
     #[test]
     fn test_builder_run_finished() {
-        let event = AgUiEvent::run_finished("run_1", Some(serde_json::json!({"result": "ok"})));
+        let event = AgUiEvent::run_finished(
+            "run_1",
+            "thread_1",
+            Some(serde_json::json!({"result": "ok"})),
+        );
         match event {
             AgUiEvent::RunFinished {
                 run_id,
                 result,
                 timestamp,
                 outcome,
+                thread_id,
                 interrupt,
             } => {
                 assert_eq!(run_id, "run_1");
+                assert_eq!(thread_id, "thread_1");
                 assert!(result.is_some());
                 assert!(timestamp.is_some());
                 assert_eq!(outcome, Some(RunOutcome::Success));
@@ -635,6 +859,125 @@ mod tests {
             }
             _ => panic!("Expected RunFinished"),
         }
+    }
+
+    #[test]
+    fn lifecycle_events_serialize_standard_wire_fields() {
+        let finished = serde_json::to_value(AgUiEvent::run_finished("r", "t", None)).unwrap();
+        assert_eq!(finished["threadId"], "t");
+        assert_eq!(finished["outcome"]["type"], "success");
+        assert!(finished.get("interrupt").is_none());
+        let error = serde_json::to_value(AgUiEvent::run_error("r", "failed", None, None)).unwrap();
+        assert_eq!(error["message"], "failed");
+        assert!(error.get("runId").is_none());
+        let step =
+            serde_json::to_value(AgUiEvent::step_finished("internal", "named", None)).unwrap();
+        assert_eq!(step["stepName"], "named");
+        assert!(step.get("stepId").is_none());
+    }
+
+    #[test]
+    fn emitted_lifecycle_and_tool_events_validate_against_pinned_ag_ui_schema() {
+        let schema = official_schema();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let events = [
+            AgUiEvent::run_started("run", "thread"),
+            AgUiEvent::run_finished("run", "thread", Some(serde_json::json!({"ok":true}))),
+            AgUiEvent::run_error(
+                "run",
+                "failed",
+                Some("ERR".into()),
+                Some(serde_json::json!({"private":"details"})),
+            ),
+            AgUiEvent::step_started("step", "step"),
+            AgUiEvent::StepStarted {
+                step_id: "internal".into(),
+                step_name: "named".into(),
+                parent_step_id: Some("parent".into()),
+                timestamp: None,
+                metadata: None,
+            },
+            AgUiEvent::step_finished("step", "step", Some(serde_json::json!({"result":true}))),
+            AgUiEvent::text_message_start("message", Role::Assistant),
+            AgUiEvent::text_message_content("message", "hello"),
+            AgUiEvent::text_message_end("message"),
+            AgUiEvent::tool_call_start("call", "lookup", None),
+            AgUiEvent::tool_call_args("call", "{}"),
+            AgUiEvent::tool_call_end("call"),
+            AgUiEvent::tool_call_result("call", serde_json::json!({"ok":true})),
+            AgUiEvent::StateSnapshot {
+                snapshot: serde_json::json!(["public"]),
+                timestamp: None,
+            },
+            AgUiEvent::state_delta(vec![
+                serde_json::json!({"op":"replace","path":"","value":{}}),
+            ]),
+            AgUiEvent::Raw {
+                event: serde_json::json!({"provider":"raw"}),
+                timestamp: Some(1),
+            },
+            AgUiEvent::Custom {
+                name: "notice".into(),
+                value: serde_json::json!({"text":"hello"}),
+                timestamp: None,
+            },
+            AgUiEvent::run_finished_with_interrupt(
+                "run",
+                "thread",
+                InterruptInfo {
+                    id: "interrupt".into(),
+                    reason: "approval".into(),
+                    payload: InterruptPayload {
+                        pending_tool_calls: vec![],
+                        checkpoint_position: "task".into(),
+                        workflow_name: "workflow".into(),
+                    },
+                },
+            ),
+        ];
+        for event in events {
+            let value = serde_json::to_value(event).unwrap();
+            assert!(validator.is_valid(&value), "invalid event: {value}");
+        }
+    }
+
+    #[test]
+    fn interrupt_outcome_requires_at_least_one_interrupt() {
+        assert!(
+            serde_json::from_str::<RunOutcome>(r#"{"type":"interrupt","interrupts":[]}"#).is_err()
+        );
+        let event = AgUiEvent::run_finished_with_interrupts("r", "t", vec![]);
+        assert!(serde_json::to_value(event).is_err());
+    }
+
+    #[test]
+    fn optional_event_fields_reject_null() {
+        assert!(
+            serde_json::from_str::<AgUiEvent>(
+                r#"{"type":"RUN_STARTED","runId":"r","threadId":"t","timestamp":null}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<AgUiEvent>(
+                r#"{"type":"RUN_STARTED","runId":"r","threadId":"t","metadata":null}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<AgUiEvent>(
+                r#"{"type":"RUN_FINISHED","runId":"r","threadId":"t","result":null}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::to_value(AgUiEvent::run_finished(
+                "r",
+                "t",
+                Some(serde_json::Value::Null)
+            ))
+            .is_err()
+        );
     }
 
     #[test]
@@ -653,7 +996,8 @@ mod tests {
             },
         };
 
-        let event = AgUiEvent::run_finished_with_interrupt("run_1", interrupt_info.clone());
+        let event =
+            AgUiEvent::run_finished_with_interrupt("run_1", "thread_1", interrupt_info.clone());
         match &event {
             AgUiEvent::RunFinished {
                 run_id,
@@ -661,11 +1005,13 @@ mod tests {
                 timestamp,
                 outcome,
                 interrupt,
+                thread_id,
             } => {
                 assert_eq!(run_id, "run_1");
+                assert_eq!(thread_id, "thread_1");
                 assert!(result.is_none());
                 assert!(timestamp.is_some());
-                assert_eq!(outcome, &Some(RunOutcome::Interrupt));
+                assert!(matches!(outcome, Some(RunOutcome::Interrupt { .. })));
                 assert!(interrupt.is_some());
                 let int = interrupt.as_ref().unwrap();
                 assert_eq!(int.id, "int_123");
@@ -678,13 +1024,13 @@ mod tests {
         // Test JSON serialization
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "RUN_FINISHED");
-        assert_eq!(json["outcome"], "interrupt");
-        assert_eq!(json["interrupt"]["id"], "int_123");
-        assert_eq!(json["interrupt"]["reason"], "tool_approval_required");
+        assert_eq!(json["outcome"]["type"], "interrupt");
+        assert_eq!(json["outcome"]["interrupts"][0]["id"], "int_123");
         assert_eq!(
-            json["interrupt"]["payload"]["pendingToolCalls"][0]["fnName"],
-            "COMMAND___run"
+            json["outcome"]["interrupts"][0]["reason"],
+            "tool_approval_required"
         );
+        assert_eq!(json["threadId"], "thread_1");
     }
 
     #[test]
@@ -715,7 +1061,8 @@ mod tests {
         let started = AgUiEvent::step_started("step_1", "initialize");
         assert_eq!(started.event_type(), "STEP_STARTED");
 
-        let finished = AgUiEvent::step_finished("step_1", Some(serde_json::json!({"done": true})));
+        let finished =
+            AgUiEvent::step_finished("step_1", "step_1", Some(serde_json::json!({"done": true})));
         assert_eq!(finished.event_type(), "STEP_FINISHED");
     }
 
@@ -757,7 +1104,7 @@ mod tests {
 
     #[test]
     fn test_builder_state_snapshot() {
-        let state = WorkflowState::new("my_workflow");
+        let state = serde_json::json!({"public":"my_workflow"});
         let event = AgUiEvent::state_snapshot(state);
         assert_eq!(event.event_type(), "STATE_SNAPSHOT");
     }

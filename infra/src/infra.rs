@@ -6,6 +6,8 @@ pub mod job_result;
 pub mod module;
 pub mod resource;
 pub mod runner;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_redis_proxy;
 pub mod worker;
 pub mod worker_instance;
 

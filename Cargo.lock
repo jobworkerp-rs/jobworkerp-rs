@@ -30,6 +30,7 @@ dependencies = [
  "jobworkerp-base",
  "jobworkerp-runner",
  "json-patch",
+ "jsonschema",
  "opentelemetry",
  "pin-project-lite",
  "prost",
@@ -38,14 +39,17 @@ dependencies = [
  "redis",
  "serde",
  "serde_json",
+ "tests-with-worker",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
  "tokio-test",
  "tokio-util",
+ "tower",
  "tower-http 0.6.11",
  "tracing",
  "uuid",
+ "worker-app",
 ]
 
 [[package]]
@@ -246,6 +250,7 @@ dependencies = [
  "prost-reflect",
  "proto",
  "rand 0.10.3",
+ "redis",
  "regex",
  "serde",
  "serde_json",

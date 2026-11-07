@@ -72,7 +72,9 @@ pub fn extract_tool_calls_from_llm_result(bytes: &[u8]) -> Option<ExtractedToolC
 }
 
 /// Extract tool calls from a protobuf LlmChatResult.
-fn extract_tool_calls_from_protobuf_result(result: &LlmChatResult) -> Option<ExtractedToolCalls> {
+pub(crate) fn extract_tool_calls_from_protobuf_result(
+    result: &LlmChatResult,
+) -> Option<ExtractedToolCalls> {
     // Check for pending_tool_calls first (HITL mode)
     if let Some(pending) = &result.pending_tool_calls
         && !pending.calls.is_empty()
@@ -554,6 +556,30 @@ pub fn extract_tool_execution_started(bytes: &[u8]) -> Option<ExtractedToolStart
     None
 }
 
+/// Extract non-empty text content from a decoded LlmChatResult.
+pub(crate) fn extract_text_from_protobuf_result(result: &LlmChatResult) -> Option<String> {
+    match result.content.as_ref().and_then(|c| c.content.as_ref()) {
+        Some(message_content::Content::Text(text)) => {
+            tracing::debug!("Extracted text content: {}", text);
+            (!text.is_empty()).then(|| text.clone())
+        }
+        Some(message_content::Content::ToolCalls(_)) => {
+            // Tool calls are not rendered as text content in AG-UI
+            tracing::debug!("Tool calls are not rendered as text content in AG-UI");
+            None
+        }
+        Some(message_content::Content::Image(_)) => {
+            // Images are not rendered as text content
+            tracing::debug!("Images are not rendered as text content");
+            None
+        }
+        None => {
+            tracing::info!("No content in LlmChatResult");
+            None
+        }
+    }
+}
+
 /// Extract text content from LlmChatResult protobuf bytes.
 ///
 /// LLM_CHAT runner streams serialized LlmChatResult protobuf messages.
@@ -563,33 +589,7 @@ pub fn extract_tool_execution_started(bytes: &[u8]) -> Option<ExtractedToolStart
 /// Falls back to UTF-8 string interpretation if protobuf decoding fails.
 pub fn extract_text_from_llm_chat_result(bytes: &[u8]) -> Option<String> {
     match LlmChatResult::decode(bytes) {
-        Ok(result) => {
-            if let Some(content) = result.content {
-                match content.content {
-                    Some(message_content::Content::Text(text)) => {
-                        tracing::debug!("Extracted text content: {}", text);
-                        if text.is_empty() { None } else { Some(text) }
-                    }
-                    Some(message_content::Content::ToolCalls(_)) => {
-                        // Tool calls are not rendered as text content in AG-UI
-                        tracing::debug!("Tool calls are not rendered as text content in AG-UI");
-                        None
-                    }
-                    Some(message_content::Content::Image(_)) => {
-                        // Images are not rendered as text content
-                        tracing::debug!("Images are not rendered as text content");
-                        None
-                    }
-                    None => {
-                        tracing::info!("No content in LlmChatResult");
-                        None
-                    }
-                }
-            } else {
-                tracing::info!("No content in LlmChatResult");
-                None
-            }
-        }
+        Ok(result) => extract_text_from_protobuf_result(&result),
         Err(e) => {
             tracing::warn!("Failed to decode LlmChatResult from stream data: {}", e);
             // Fallback: try interpreting as raw UTF-8 text for non-LLM streams

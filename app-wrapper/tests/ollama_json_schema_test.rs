@@ -10,6 +10,7 @@ use app_wrapper::llm::chat::ollama::OllamaChatService;
 use app_wrapper::llm::completion::ollama::OllamaService;
 use futures::StreamExt;
 use infra_utils::infra::test::TEST_RUNTIME;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::chat_message::Body as ChatMessageBody;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, MessageContent};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     ChatRole, LlmOptions as ChatLlmOptions, message_content,
@@ -83,11 +84,12 @@ fn test_chat_with_json_schema() -> Result<()> {
         json_schema: Some(schema.to_string()),
         messages: vec![ChatMessage {
             role: ChatRole::User.into(),
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(message_content::Content::Text(
                     "What is 2+2? Respond with your answer and confidence level.".to_string(),
                 )),
-            }),
+            })),
+
         }],
         options: Some(ChatLlmOptions {
             max_tokens: Some(512),
@@ -191,9 +193,9 @@ fn test_invalid_json_schema_handling() -> Result<()> {
             json_schema: Some(invalid_schema.to_string()),
             messages: vec![ChatMessage {
                 role: ChatRole::User.into(),
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(message_content::Content::Text("Test message".to_string())),
-                }),
+                })),
             }],
             ..Default::default()
         };
@@ -294,11 +296,12 @@ fn test_workflow_minimal_schema_with_llm_chat() -> Result<()> {
         json_schema: Some(schema.clone()),
         messages: vec![ChatMessage {
             role: ChatRole::User.into(),
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(message_content::Content::Text(
                     "Generate a simple workflow that runs a command task named 'hello' that executes 'echo Hello World'. Make it a valid workflow with proper document metadata.".to_string(),
                 )),
-            }),
+            })),
+
         }],
         options: Some(ChatLlmOptions {
             max_tokens: Some(20480),
@@ -381,11 +384,12 @@ fn test_complex_nested_workflow_with_llm_chat() -> Result<()> {
         json_schema: Some(schema),
         messages: vec![ChatMessage {
             role: ChatRole::User.into(),
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(message_content::Content::Text(
                     "Generate a complex workflow that demonstrates nested tasks with a maximum nesting level of 7. Follow the exact schema structure. Include these specific task types: 1) A 'fork' task with 'branches' property containing task lists, 2) A 'for' task with 'for' and 'do' properties, 3) A 'try' task with 'try' and 'catch' properties, 4) A 'switch' task with 'switch' property containing case conditions. Each task must be a JSON object with a single key-value pair where the key is the task name and the value contains the task definition (like 'fork', 'for', 'try', 'switch', or 'run' properties). Keep nesting depth under 7 levels. Make it a complete valid workflow with proper document metadata.".to_string(),
                 )),
-            }),
+            })),
+
         }],
         options: Some(ChatLlmOptions {
             max_tokens: Some(40960),

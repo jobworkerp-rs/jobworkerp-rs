@@ -1,5 +1,6 @@
 //! Session management for AG-UI connections.
 
+use crate::types::ResumeStatus;
 use crate::types::ids::{RunId, ThreadId};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -23,6 +24,16 @@ pub enum SessionState {
     Error,
 }
 
+impl SessionState {
+    /// Whether the session's run has ended.
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            SessionState::Completed | SessionState::Cancelled | SessionState::Error
+        )
+    }
+}
+
 impl std::fmt::Display for SessionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -36,7 +47,7 @@ impl std::fmt::Display for SessionState {
 }
 
 /// Information about a pending tool call for HITL
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PendingToolCallInfo {
     /// Tool call ID
     pub call_id: String,
@@ -47,7 +58,7 @@ pub struct PendingToolCallInfo {
 }
 
 /// Information about HITL waiting state
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HitlWaitingInfo {
     /// Unique interrupt ID for AG-UI Interrupts protocol
     pub interrupt_id: String,
@@ -65,6 +76,67 @@ pub struct HitlWaitingInfo {
     /// Registered worker name if the workflow was started via a registered worker.
     /// None for inline workflows.
     pub registered_worker_name: Option<String>,
+    /// Internal workflow execution identifier; distinct from a resumed AG-UI run ID.
+    pub execution_id: Option<String>,
+    /// Additional interrupt entries that share this workflow checkpoint.
+    pub interrupts: Vec<InterruptInfo>,
+}
+
+/// One pending standard AG-UI interrupt associated with a workflow checkpoint.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct InterruptInfo {
+    pub interrupt_id: String,
+    pub call_id: String,
+    pub status: Option<ResumeStatus>,
+    pub payload: Option<serde_json::Value>,
+}
+
+/// A validated resume item supplied by the client.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ResumeBatchEntry {
+    pub interrupt_id: String,
+    pub status: ResumeStatus,
+    pub payload: Option<serde_json::Value>,
+}
+
+/// Result of atomically recording a batch of interrupt resolutions.
+#[derive(Debug, Clone)]
+pub enum ResumeBatchResult {
+    Partial {
+        remaining: Vec<InterruptInfo>,
+    },
+    Complete {
+        /// Waiting state consumed from the session, with every interrupt resolved.
+        resolved_info: Box<HitlWaitingInfo>,
+        /// Waiting state before this batch, used to reopen the interrupts if the
+        /// continuation cannot be accepted.
+        pending_info: Box<HitlWaitingInfo>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeBatchError {
+    NotFound,
+    WrongThread,
+    WrongProfile,
+    NotPaused,
+    Empty,
+    DuplicateId,
+    UnknownId,
+    AlreadyResolved,
+}
+
+/// Whether `interrupt_id` still awaits resolution. Legacy single-interrupt sessions
+/// carry no `interrupts` list and are matched by their top-level ID.
+pub(crate) fn has_pending_interrupt(
+    legacy_interrupt_id: &str,
+    interrupts: &[InterruptInfo],
+    interrupt_id: &str,
+) -> bool {
+    (interrupts.is_empty() && legacy_interrupt_id == interrupt_id)
+        || interrupts
+            .iter()
+            .any(|entry| entry.interrupt_id == interrupt_id && entry.status.is_none())
 }
 
 impl HitlWaitingInfo {
@@ -82,14 +154,40 @@ impl HitlWaitingInfo {
         workflow_context: Option<serde_json::Value>,
         registered_worker_name: Option<String>,
     ) -> Self {
+        let interrupt_id = Self::new_interrupt_id();
+        let interrupts = if pending_tool_calls.is_empty() {
+            vec![InterruptInfo {
+                interrupt_id: interrupt_id.clone(),
+                call_id: tool_call_id.clone(),
+                status: None,
+                payload: None,
+            }]
+        } else {
+            pending_tool_calls
+                .iter()
+                .enumerate()
+                .map(|(index, call)| InterruptInfo {
+                    interrupt_id: if index == 0 {
+                        interrupt_id.clone()
+                    } else {
+                        Self::new_interrupt_id()
+                    },
+                    call_id: call.call_id.clone(),
+                    status: None,
+                    payload: None,
+                })
+                .collect()
+        };
         Self {
-            interrupt_id: Self::new_interrupt_id(),
+            interrupt_id,
             tool_call_id,
             checkpoint_position,
             workflow_name,
             pending_tool_calls,
             workflow_context,
             registered_worker_name,
+            execution_id: None,
+            interrupts,
         }
     }
 
@@ -120,6 +218,8 @@ pub struct Session {
     pub run_id: RunId,
     /// Associated thread ID
     pub thread_id: ThreadId,
+    /// Registered AG-UI endpoint profile that owns this checkpoint.
+    pub profile_path: Option<String>,
     /// Session creation time
     pub created_at: DateTime<Utc>,
     /// Last event ID sent to this session
@@ -146,6 +246,7 @@ impl Session {
             session_id: uuid::Uuid::new_v4().to_string(),
             run_id,
             thread_id,
+            profile_path: None,
             created_at: Utc::now(),
             last_event_id: 0,
             state: SessionState::Active,
@@ -154,6 +255,97 @@ impl Session {
             emitted_tool_call_end_ids: HashSet::new(),
         }
     }
+}
+
+pub(crate) fn apply_resume_batch_to_session(
+    session: &mut Session,
+    thread_id: &ThreadId,
+    profile_path: &str,
+    entries: &[ResumeBatchEntry],
+) -> Result<ResumeBatchResult, ResumeBatchError> {
+    if entries.is_empty() {
+        return Err(ResumeBatchError::Empty);
+    }
+    if &session.thread_id != thread_id {
+        return Err(ResumeBatchError::WrongThread);
+    }
+    if session.profile_path.as_deref() != Some(profile_path) {
+        return Err(ResumeBatchError::WrongProfile);
+    }
+    if session.state != SessionState::Paused {
+        return Err(ResumeBatchError::NotPaused);
+    }
+    let info = session
+        .hitl_waiting_info
+        .as_mut()
+        .ok_or(ResumeBatchError::NotPaused)?;
+    let mut requested = HashSet::new();
+    for entry in entries {
+        if !requested.insert(entry.interrupt_id.as_str()) {
+            return Err(ResumeBatchError::DuplicateId);
+        }
+        if !info
+            .interrupts
+            .iter()
+            .any(|pending| pending.interrupt_id == entry.interrupt_id)
+        {
+            return Err(ResumeBatchError::UnknownId);
+        }
+    }
+    if entries.iter().any(|entry| {
+        info.interrupts
+            .iter()
+            .any(|pending| pending.interrupt_id == entry.interrupt_id && pending.status.is_some())
+    }) {
+        return Err(ResumeBatchError::AlreadyResolved);
+    }
+    let completes = info.interrupts.iter().all(|pending| {
+        pending.status.is_some() || requested.contains(pending.interrupt_id.as_str())
+    });
+    let pending_info = completes.then(|| Box::new(info.clone()));
+    for entry in entries {
+        let pending = info
+            .interrupts
+            .iter_mut()
+            .find(|pending| pending.interrupt_id == entry.interrupt_id)
+            .expect("all requested interrupt IDs were validated");
+        pending.status = Some(entry.status);
+        pending.payload = entry.payload.clone();
+    }
+    let Some(pending_info) = pending_info else {
+        let remaining = info
+            .interrupts
+            .iter()
+            .filter(|entry| entry.status.is_none())
+            .cloned()
+            .collect();
+        return Ok(ResumeBatchResult::Partial { remaining });
+    };
+    let resolved_info = session
+        .hitl_waiting_info
+        .take()
+        .expect("waiting info was validated above");
+    session.state = SessionState::Active;
+    Ok(ResumeBatchResult::Complete {
+        resolved_info: Box::new(resolved_info),
+        pending_info,
+    })
+}
+
+/// Reopen a checkpoint consumed by `apply_resume_batch_to_session`.
+///
+/// Only a session still in the consumed shape (active, no waiting info) is restored,
+/// so a session that was re-paused or otherwise moved on is never overwritten.
+pub(crate) fn restore_resume_batch_to_session(
+    session: &mut Session,
+    pending_info: &HitlWaitingInfo,
+) -> bool {
+    if session.state != SessionState::Active || session.hitl_waiting_info.is_some() {
+        return false;
+    }
+    session.hitl_waiting_info = Some(pending_info.clone());
+    session.state = SessionState::Paused;
+    true
 }
 
 /// Session manager trait for abstracting storage backends
@@ -170,6 +362,22 @@ pub trait SessionManager: Send + Sync {
 
     /// Get a session by interrupt ID (for AG-UI Interrupts resume flow)
     async fn get_session_by_interrupt_id(&self, interrupt_id: &str) -> Option<Session>;
+
+    /// Associate a paused session with its registered endpoint profile.
+    async fn set_profile_path(&self, session_id: &str, profile_path: &str) -> bool;
+
+    /// Validate and atomically record resume entries for the same checkpoint.
+    async fn apply_resume_batch(
+        &self,
+        session_id: &str,
+        thread_id: &ThreadId,
+        profile_path: &str,
+        entries: &[ResumeBatchEntry],
+    ) -> Result<ResumeBatchResult, ResumeBatchError>;
+
+    /// Reopen the interrupts consumed by a completed resume batch whose
+    /// continuation could not be started. Returns false if nothing was restored.
+    async fn restore_resume_batch(&self, session_id: &str, pending_info: HitlWaitingInfo) -> bool;
 
     /// Update the last event ID for a session
     async fn update_last_event_id(&self, session_id: &str, event_id: u64) -> bool;
@@ -398,13 +606,48 @@ impl SessionManager for InMemorySessionManager {
         let sessions = self.inner.sessions.read().await;
         for session in sessions.values() {
             if let Some(hitl_info) = &session.hitl_waiting_info
-                && hitl_info.interrupt_id == interrupt_id
+                && has_pending_interrupt(
+                    &hitl_info.interrupt_id,
+                    &hitl_info.interrupts,
+                    interrupt_id,
+                )
                 && !self.inner.is_expired(session)
             {
                 return Some(session.clone());
             }
         }
         None
+    }
+
+    async fn set_profile_path(&self, session_id: &str, profile_path: &str) -> bool {
+        let mut sessions = self.inner.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.profile_path = Some(profile_path.to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn apply_resume_batch(
+        &self,
+        session_id: &str,
+        thread_id: &ThreadId,
+        profile_path: &str,
+        entries: &[ResumeBatchEntry],
+    ) -> Result<ResumeBatchResult, ResumeBatchError> {
+        let mut sessions = self.inner.sessions.write().await;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or(ResumeBatchError::NotFound)?;
+        apply_resume_batch_to_session(session, thread_id, profile_path, entries)
+    }
+
+    async fn restore_resume_batch(&self, session_id: &str, pending_info: HitlWaitingInfo) -> bool {
+        let mut sessions = self.inner.sessions.write().await;
+        sessions
+            .get_mut(session_id)
+            .is_some_and(|session| restore_resume_batch_to_session(session, &pending_info))
     }
 
     async fn update_last_event_id(&self, session_id: &str, event_id: u64) -> bool {
@@ -557,6 +800,373 @@ impl SessionManager for InMemorySessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn resume_batch_is_atomic_and_keeps_partial_interrupts_pending() {
+        let manager = InMemorySessionManager::new(3600);
+        let session = manager
+            .create_session(RunId::new("batch_run"), ThreadId::new("batch_thread"))
+            .await;
+        manager
+            .set_profile_path(&session.session_id, "/agent/guarded/run")
+            .await;
+        let mut info = HitlWaitingInfo::new_simple(
+            "call-a".into(),
+            "/tasks/approval".into(),
+            "guarded".into(),
+            vec![],
+        );
+        let first = info.interrupts[0].interrupt_id.clone();
+        info.interrupts.push(InterruptInfo {
+            interrupt_id: "interrupt-b".into(),
+            call_id: "call-b".into(),
+            status: None,
+            payload: None,
+        });
+        manager
+            .set_paused_with_hitl_info(&session.session_id, info)
+            .await;
+        assert_eq!(
+            manager
+                .get_session_by_interrupt_id("interrupt-b")
+                .await
+                .unwrap()
+                .session_id,
+            session.session_id
+        );
+
+        let invalid = [
+            ResumeBatchEntry {
+                interrupt_id: first.clone(),
+                status: ResumeStatus::Resolved,
+                payload: None,
+            },
+            ResumeBatchEntry {
+                interrupt_id: "unknown".into(),
+                status: ResumeStatus::Resolved,
+                payload: None,
+            },
+        ];
+        assert!(matches!(
+            manager
+                .apply_resume_batch(
+                    &session.session_id,
+                    &ThreadId::new("batch_thread"),
+                    "/agent/guarded/run",
+                    &invalid
+                )
+                .await,
+            Err(ResumeBatchError::UnknownId)
+        ));
+        assert!(
+            manager
+                .get_session(&session.session_id)
+                .await
+                .unwrap()
+                .hitl_waiting_info
+                .unwrap()
+                .interrupts
+                .iter()
+                .all(|i| i.status.is_none())
+        );
+
+        let one = [ResumeBatchEntry {
+            interrupt_id: first.clone(),
+            status: ResumeStatus::Resolved,
+            payload: None,
+        }];
+        assert!(matches!(
+            manager
+                .apply_resume_batch(
+                    &session.session_id,
+                    &ThreadId::new("other_thread"),
+                    "/agent/guarded/run",
+                    &one
+                )
+                .await,
+            Err(ResumeBatchError::WrongThread)
+        ));
+        assert!(matches!(
+            manager
+                .apply_resume_batch(
+                    &session.session_id,
+                    &ThreadId::new("batch_thread"),
+                    "/agent/stream/run",
+                    &one
+                )
+                .await,
+            Err(ResumeBatchError::WrongProfile)
+        ));
+        let partial = [ResumeBatchEntry {
+            interrupt_id: first.clone(),
+            status: ResumeStatus::Resolved,
+            payload: None,
+        }];
+        let remaining = manager
+            .apply_resume_batch(
+                &session.session_id,
+                &ThreadId::new("batch_thread"),
+                "/agent/guarded/run",
+                &partial,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(remaining, ResumeBatchResult::Partial { remaining } if remaining.len() == 1 && remaining[0].interrupt_id == "interrupt-b")
+        );
+        let complete = [ResumeBatchEntry {
+            interrupt_id: "interrupt-b".into(),
+            status: ResumeStatus::Cancelled,
+            payload: Some(serde_json::json!({"reason":"user"})),
+        }];
+        assert!(
+            matches!(manager.apply_resume_batch(&session.session_id, &ThreadId::new("batch_thread"), "/agent/guarded/run", &complete).await.unwrap(), ResumeBatchResult::Complete { resolved_info, .. } if resolved_info.interrupts.len() == 2)
+        );
+        let completed = manager.get_session(&session.session_id).await.unwrap();
+        assert_eq!(completed.state, SessionState::Active);
+        assert!(completed.hitl_waiting_info.is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_partial_batches_keep_one_canonical_checkpoint_owner() {
+        let manager = InMemorySessionManager::new(3600);
+        let session = manager
+            .create_session(
+                RunId::new("concurrent_batch_run"),
+                ThreadId::new("batch_thread"),
+            )
+            .await;
+        manager
+            .set_profile_path(&session.session_id, "/agent/guarded/run")
+            .await;
+        let mut info = HitlWaitingInfo::new_simple(
+            "call-a".into(),
+            "/tasks/approval".into(),
+            "guarded".into(),
+            vec![],
+        );
+        info.interrupts.push(InterruptInfo {
+            interrupt_id: "interrupt-b".into(),
+            call_id: "call-b".into(),
+            status: None,
+            payload: None,
+        });
+        info.interrupts.push(InterruptInfo {
+            interrupt_id: "interrupt-c".into(),
+            call_id: "call-c".into(),
+            status: None,
+            payload: None,
+        });
+        let first = info.interrupts[0].interrupt_id.clone();
+        manager
+            .set_paused_with_hitl_info(&session.session_id, info)
+            .await;
+
+        let first_batch = [ResumeBatchEntry {
+            interrupt_id: first,
+            status: ResumeStatus::Resolved,
+            payload: Some(serde_json::json!({"source":"first"})),
+        }];
+        let second_batch = [ResumeBatchEntry {
+            interrupt_id: "interrupt-b".into(),
+            status: ResumeStatus::Cancelled,
+            payload: Some(serde_json::json!({"source":"second"})),
+        }];
+        let thread_id = ThreadId::new("batch_thread");
+        let (first_result, second_result) = tokio::join!(
+            manager.apply_resume_batch(
+                &session.session_id,
+                &thread_id,
+                "/agent/guarded/run",
+                &first_batch,
+            ),
+            manager.apply_resume_batch(
+                &session.session_id,
+                &thread_id,
+                "/agent/guarded/run",
+                &second_batch,
+            ),
+        );
+        assert!(matches!(
+            first_result,
+            Ok(ResumeBatchResult::Partial { .. })
+        ));
+        assert!(matches!(
+            second_result,
+            Ok(ResumeBatchResult::Partial { .. })
+        ));
+        assert_eq!(
+            manager
+                .get_session_by_interrupt_id("interrupt-c")
+                .await
+                .unwrap()
+                .session_id,
+            session.session_id
+        );
+
+        let final_batch = [ResumeBatchEntry {
+            interrupt_id: "interrupt-c".into(),
+            status: ResumeStatus::Resolved,
+            payload: Some(serde_json::json!({"source":"third"})),
+        }];
+        let ResumeBatchResult::Complete { resolved_info, .. } = manager
+            .apply_resume_batch(
+                &session.session_id,
+                &ThreadId::new("batch_thread"),
+                "/agent/guarded/run",
+                &final_batch,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("the final response must consume the canonical checkpoint");
+        };
+        assert_eq!(resolved_info.interrupts.len(), 3);
+        assert!(
+            resolved_info
+                .interrupts
+                .iter()
+                .all(|entry| entry.status.is_some())
+        );
+        assert!(
+            manager
+                .get_session(&session.session_id)
+                .await
+                .unwrap()
+                .hitl_waiting_info
+                .is_none()
+        );
+        assert!(
+            manager
+                .get_session_by_interrupt_id("interrupt-c")
+                .await
+                .is_none()
+        );
+    }
+
+    async fn paused_two_interrupt_session(manager: &InMemorySessionManager) -> (Session, String) {
+        let session = manager
+            .create_session(RunId::new("restore_run"), ThreadId::new("restore_thread"))
+            .await;
+        manager
+            .set_profile_path(&session.session_id, "/agent/guarded/run")
+            .await;
+        let mut info = HitlWaitingInfo::new_simple(
+            "call-a".into(),
+            "/tasks/approval".into(),
+            "guarded".into(),
+            vec![],
+        );
+        info.interrupts.push(InterruptInfo {
+            interrupt_id: "interrupt-b".into(),
+            call_id: "call-b".into(),
+            status: None,
+            payload: None,
+        });
+        let first = info.interrupts[0].interrupt_id.clone();
+        manager
+            .set_paused_with_hitl_info(&session.session_id, info)
+            .await;
+        (session, first)
+    }
+
+    #[tokio::test]
+    async fn restoring_a_consumed_batch_makes_the_last_interrupt_resumable_again() {
+        let manager = InMemorySessionManager::new(3600);
+        let (session, first) = paused_two_interrupt_session(&manager).await;
+        let thread_id = ThreadId::new("restore_thread");
+        let partial = [ResumeBatchEntry {
+            interrupt_id: first.clone(),
+            status: ResumeStatus::Resolved,
+            payload: Some(serde_json::json!({"answer":"first"})),
+        }];
+        manager
+            .apply_resume_batch(
+                &session.session_id,
+                &thread_id,
+                "/agent/guarded/run",
+                &partial,
+            )
+            .await
+            .unwrap();
+        let last = [ResumeBatchEntry {
+            interrupt_id: "interrupt-b".into(),
+            status: ResumeStatus::Resolved,
+            payload: Some(serde_json::json!({"answer":"last"})),
+        }];
+        let ResumeBatchResult::Complete { pending_info, .. } = manager
+            .apply_resume_batch(&session.session_id, &thread_id, "/agent/guarded/run", &last)
+            .await
+            .unwrap()
+        else {
+            panic!("the last answer must consume the checkpoint");
+        };
+        assert!(
+            manager
+                .get_session_by_interrupt_id("interrupt-b")
+                .await
+                .is_none()
+        );
+
+        assert!(
+            manager
+                .restore_resume_batch(&session.session_id, *pending_info)
+                .await
+        );
+
+        let restored = manager.get_session(&session.session_id).await.unwrap();
+        assert_eq!(restored.state, SessionState::Paused);
+        let interrupts = &restored.hitl_waiting_info.as_ref().unwrap().interrupts;
+        assert!(interrupts.iter().any(|entry| entry.interrupt_id == first
+            && entry.status == Some(ResumeStatus::Resolved)
+            && entry.payload == Some(serde_json::json!({"answer":"first"}))));
+        assert!(
+            interrupts
+                .iter()
+                .any(|entry| entry.interrupt_id == "interrupt-b" && entry.status.is_none())
+        );
+        assert_eq!(
+            manager
+                .get_session_by_interrupt_id("interrupt-b")
+                .await
+                .unwrap()
+                .session_id,
+            session.session_id
+        );
+        assert!(matches!(
+            manager
+                .apply_resume_batch(&session.session_id, &thread_id, "/agent/guarded/run", &last)
+                .await,
+            Ok(ResumeBatchResult::Complete { resolved_info, .. }) if resolved_info.interrupts.len() == 2
+        ));
+    }
+
+    #[tokio::test]
+    async fn restore_resume_batch_does_not_overwrite_a_session_that_was_not_consumed() {
+        let manager = InMemorySessionManager::new(3600);
+        let (session, _) = paused_two_interrupt_session(&manager).await;
+        let current = manager
+            .get_session(&session.session_id)
+            .await
+            .unwrap()
+            .hitl_waiting_info
+            .unwrap();
+        let mut stale = current.clone();
+        stale.interrupts.truncate(1);
+
+        assert!(
+            !manager
+                .restore_resume_batch(&session.session_id, stale)
+                .await
+        );
+        assert!(
+            !manager
+                .restore_resume_batch("missing-session", current.clone())
+                .await
+        );
+        let unchanged = manager.get_session(&session.session_id).await.unwrap();
+        assert_eq!(unchanged.hitl_waiting_info, Some(current));
+    }
 
     #[tokio::test]
     async fn test_create_session() {

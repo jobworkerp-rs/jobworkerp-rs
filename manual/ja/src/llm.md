@@ -109,6 +109,32 @@ chatメソッドでは、FunctionSetを指定することでLLMにツールを�
 
 FunctionSetの定義・管理、およびAutoSelection（LLMによるFunctionSetの自動選択でコンテキスト使用量を削減）の詳細は、[Function / FunctionSet](function.md)を参照してください。
 
+### テキストとツール呼び出しを含むメッセージ
+
+会話履歴の `ChatMessage` では、アシスタントの応答テキストとツール呼び出しを順序どおり1つのメッセージに保持するために `parts` を使えます。既存の `content` 形式はそのまま利用できます。公開JSONでは `content` または `parts` をメッセージ直下に指定し、`body` では包みません。`parts` は `items` 配列を持つオブジェクトです。
+
+```json
+{
+  "messages": [{
+    "role": "ASSISTANT",
+    "parts": {
+      "items": [
+        {"text": "調べてみます。"},
+        {"toolCalls": {"calls": [{
+          "callId": "call-1",
+          "fnName": "lookup",
+          "fnArguments": "{}"
+        }]}}
+      ]
+    }
+  }]
+}
+```
+
+- `content` と `parts` は排他的です。JSONで両方に非null値を指定すると拒否され、`null` は未指定として扱われます。
+- `parts.items` に入れられるのはテキストとツール呼び出しだけです。
+- 後続のTOOLメッセージの結果では、`callId` を直前のASSISTANTメッセージ内のツール呼び出しに対応させてください。
+
 ## 埋め込みの利用方法
 
 `embedding`メソッドは埋め込みベクトルを生成します。ジョブ実行時に`using`を`"embedding"`に設定します。ランナー設定（プロバイダー／モデル）は`completion`/`chat`と共通です。埋め込み対応モデルを指定してください。

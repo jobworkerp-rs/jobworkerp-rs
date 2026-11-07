@@ -11,6 +11,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".",
             "#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]",
         )
+        .message_attribute(
+            ".jobworkerp.runner.llm.LLMChatArgs.ChatMessage",
+            "#[serde(try_from = \"crate::runner::llm_chat_serde::ChatMessageSerde\", into = \"crate::runner::llm_chat_serde::ChatMessageSerde\")] #[schemars(with = \"crate::runner::llm_chat_serde::ChatMessageSchema\")]",
+        )
+        .field_attribute(
+            ".jobworkerp.runner.llm.LLMChatArgs.MessageParts.items",
+            "#[serde(default)]",
+        )
         // .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .compile_protos(
             &[

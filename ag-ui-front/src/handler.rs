@@ -5,23 +5,25 @@
 use crate::config::AgUiServerConfig;
 use crate::error::{AgUiError, Result};
 use crate::events::{
-    AgUiEvent, EventEncoder, ExtractedToolResult, ExtractedToolStarted, InterruptInfo,
-    InterruptPayload, PendingToolCall, SharedWorkflowEventAdapter,
-    extract_text_from_completed_output, extract_text_from_llm_chat_result,
-    extract_tool_calls_from_llm_result, extract_tool_execution_results,
-    extract_tool_execution_started, shared_adapter, tool_calls_to_ag_ui_events,
+    AgUiEvent, EventEncoder, ExtractedToolResult, ExtractedToolStarted,
+    InterruptInfo as AgUiInterruptInfo, InterruptPayload, PendingToolCall,
+    SharedWorkflowEventAdapter, extract_text_from_completed_output,
+    extract_text_from_llm_chat_result, extract_tool_calls_from_llm_result,
+    extract_tool_execution_results, extract_tool_execution_started, shared_adapter,
+    tool_calls_to_ag_ui_events,
 };
 use crate::session::{
-    EventStore, HitlWaitingInfo, PendingToolCallInfo, Session, SessionManager, SessionState,
+    EventStore, HitlWaitingInfo, PendingToolCallInfo, ResumeBatchEntry, ResumeBatchResult, Session,
+    SessionManager, SessionState,
 };
 use crate::types::ids::{MessageId, StepId};
-use crate::types::input::ResumePayload;
-use crate::types::{RunAgentInput, RunId, ThreadId, WorkflowState, WorkflowStatus};
+use crate::types::{RunAgentInput, RunId, ThreadId};
 use app::module::AppModule;
 use app_wrapper::modules::AppWrapperModule;
 use app_wrapper::workflow::definition::workflow::WorkflowSchema;
 use app_wrapper::workflow::execute::checkpoint::CheckPointContext;
 use app_wrapper::workflow::execute::context::WorkflowStreamEvent;
+use app_wrapper::workflow::execute::task::ExecutionId;
 use app_wrapper::workflow::execute::workflow::WorkflowExecutor;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
@@ -55,6 +57,78 @@ const NESTED_EVENT_CHANNEL_SIZE: usize = 64;
 /// Registry of active workflow executors for cancellation support.
 type ExecutorRegistry = Arc<RwLock<HashMap<String, Arc<WorkflowExecutor>>>>;
 
+/// Unregisters a run's executor however its event stream ends, including early error
+/// returns and the stream being dropped when the client disconnects.
+struct ExecutorRegistration {
+    registry: ExecutorRegistry,
+    run_id: String,
+}
+
+impl ExecutorRegistration {
+    /// Unregister ahead of the stream's end, e.g. before announcing a pause.
+    async fn release(&self) {
+        self.registry.write().await.remove(&self.run_id);
+    }
+}
+
+impl Drop for ExecutorRegistration {
+    fn drop(&mut self) {
+        let run_id = std::mem::take(&mut self.run_id);
+        if let Ok(mut registry) = self.registry.try_write() {
+            registry.remove(&run_id);
+            return;
+        }
+        let registry = self.registry.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    registry.write().await.remove(&run_id);
+                });
+            }
+            Err(_) => tracing::warn!(run_id = %run_id, "Executor left registered: no runtime"),
+        }
+    }
+}
+
+pub(crate) struct PreparedCheckpointResume {
+    pub(crate) execution_id: ExecutionId,
+    pub(crate) checkpoint: CheckPointContext,
+    pub(crate) schema: Arc<WorkflowSchema>,
+    pub(crate) workflow_context: serde_json::Value,
+}
+
+/// The session a DELETE still has to cancel, or None when the run is already settled.
+/// A registered direct run is cancelled here through its own producer; a run in a terminal
+/// state already has its terminal event, and another one would follow it.
+pub(crate) async fn session_to_cancel<SM: SessionManager>(
+    direct_runs: &crate::direct::DirectRuns,
+    job_app: &dyn app::app::job::JobApp,
+    session_manager: &SM,
+    run_id: &str,
+) -> Result<Option<Session>> {
+    if direct_runs.cancel(job_app, run_id).await? {
+        return Ok(None);
+    }
+    // Read after the direct-run check: a direct run settles its state before it
+    // deregisters, so a run that is no longer registered shows its final state here.
+    let session = session_manager
+        .get_session_by_run_id(&RunId::new(run_id))
+        .await
+        .ok_or_else(|| AgUiError::SessionNotFound(run_id.to_string()))?;
+    Ok((!session.state.is_terminal()).then_some(session))
+}
+
+pub(crate) async fn finish_request_session<SM: SessionManager>(
+    manager: &SM,
+    request_session_id: &str,
+    canonical_session_id: &str,
+    state: SessionState,
+) {
+    if request_session_id != canonical_session_id {
+        manager.set_session_state(request_session_id, state).await;
+    }
+}
+
 /// Handler for AG-UI HTTP requests.
 ///
 /// Manages workflow execution, session tracking, and event streaming.
@@ -71,6 +145,7 @@ where
     encoder: Arc<EventEncoder>,
     /// Registry of active workflow executors for cancellation support.
     executor_registry: ExecutorRegistry,
+    direct_runs: crate::direct::DirectRuns,
 }
 
 impl<SM, ES> AgUiHandler<SM, ES>
@@ -94,6 +169,7 @@ where
             config,
             encoder: Arc::new(EventEncoder::new()),
             executor_registry: Arc::new(RwLock::new(HashMap::new())),
+            direct_runs: Default::default(),
         }
     }
 
@@ -125,46 +201,54 @@ where
         Session,
         Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
     )> {
+        self.run_workflow_for_worker(input, None, None).await
+    }
+
+    pub async fn run_workflow_for_worker(
+        &self,
+        input: RunAgentInput,
+        worker_name: Option<&str>,
+        profile_path: Option<&str>,
+    ) -> Result<(
+        Session,
+        Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
+    )> {
         // Check if this is a resume request (AG-UI Interrupts protocol)
-        if let Some(resume) = input.resume.as_ref() {
-            return self
-                .handle_resume_request(
-                    input.clone(),
-                    resume.interrupt_id.clone(),
-                    resume.payload.clone(),
-                )
-                .await;
+        if input.is_resume() {
+            if let Some(profile_path) = profile_path {
+                return self.handle_resume_batch(input, profile_path).await;
+            }
+            return Err(AgUiError::InvalidInput(
+                "Resume requires the registered endpoint profile".to_string(),
+            ));
         }
 
         // Use provided run_id or generate a new one
-        let run_id = input
-            .run_id
-            .as_ref()
-            .map(|id| RunId::new(id.clone()))
-            .unwrap_or_else(RunId::random);
-        let thread_id = input
-            .thread_id
-            .clone()
-            .map(ThreadId::new)
-            .unwrap_or_else(ThreadId::random);
+        let run_id = RunId::new(input.run_id.clone());
+        let thread_id = ThreadId::new(input.thread_id.clone());
+
+        // Resolve the server-owned worker before creating session state.
+        let (workflow, workflow_context, registered_worker_name) =
+            self.parse_workflow_from_input(&input, worker_name).await?;
+        let workflow_name = workflow.document.name.to_string();
 
         // Create session
         let session = self
             .session_manager
             .create_session(run_id.clone(), thread_id.clone())
             .await;
-
-        // Parse workflow from context (including optional workflow_context)
-        let (workflow, workflow_context, registered_worker_name) =
-            self.parse_workflow_from_input(&input).await?;
-
-        // Extract workflow name for HITL checkpoint tracking
-        let workflow_name = workflow.document.name.to_string();
+        if let Some(profile_path) = profile_path {
+            self.session_manager
+                .set_profile_path(&session.session_id, profile_path)
+                .await;
+        }
 
         // Capture HITL context before passing workflow_context to init
         let hitl_ctx = HitlStreamContext {
             workflow_context: workflow_context.clone(),
             registered_worker_name: registered_worker_name.clone(),
+            execution_id: Some(run_id.to_string()),
+            canonical_session_id: Some(session.session_id.clone()),
         };
 
         // Create adapter for event conversion
@@ -175,29 +259,230 @@ where
             .init_workflow_executor(workflow, input, &run_id, adapter.clone(), workflow_context)
             .await?;
 
-        // Register executor for cancellation support
         let executor = Arc::new(executor);
-        {
-            let mut registry = self.executor_registry.write().await;
-            registry.insert(run_id.to_string(), executor.clone());
-        }
-
-        // Create event stream with cleanup on completion
-        let executor_registry = self.executor_registry.clone();
-        let run_id_for_cleanup = run_id.to_string();
+        let registration = self
+            .register_executor(run_id.as_str(), executor.clone())
+            .await;
         let stream = self.create_event_stream(
             executor,
             adapter,
             run_id.to_string(),
             session.session_id.clone(),
-            executor_registry,
-            run_id_for_cleanup,
+            registration,
             workflow_name,
             true, // emit_run_started: true for new workflow runs
             hitl_ctx,
         );
 
         Ok((session, Box::pin(stream)))
+    }
+
+    async fn prepare_checkpoint_resume(
+        &self,
+        checkpoint_session: &Session,
+        hitl_info: &HitlWaitingInfo,
+    ) -> Result<PreparedCheckpointResume> {
+        let (execution_id, checkpoint) =
+            load_resume_checkpoint(&self.app_wrapper_module, checkpoint_session, hitl_info).await?;
+
+        let worker_name = resume_worker_name(hitl_info);
+        let worker = self
+            .app_module
+            .worker_app
+            .find_by_name(worker_name)
+            .await
+            .map_err(|error| {
+                AgUiError::Internal(anyhow::anyhow!(
+                    "Failed to find workflow worker '{}': {}",
+                    worker_name,
+                    error
+                ))
+            })?
+            .ok_or_else(|| AgUiError::WorkflowDefinitionNotFound {
+                name: worker_name.to_string(),
+            })?;
+        let worker_data = worker.data.ok_or_else(|| {
+            AgUiError::InvalidInput(format!("Worker '{}' has no data", worker_name))
+        })?;
+        let (schema, settings_workflow_context) = decode_workflow_from_runner_settings(
+            &worker_data.runner_settings,
+            &hitl_info.workflow_name,
+            &self.app_module,
+        )
+        .await?;
+        let workflow_context = hitl_info
+            .workflow_context
+            .clone()
+            .or(settings_workflow_context)
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        Ok(PreparedCheckpointResume {
+            execution_id,
+            checkpoint,
+            schema,
+            workflow_context,
+        })
+    }
+
+    pub async fn handle_resume_batch(
+        &self,
+        input: RunAgentInput,
+        profile_path: &str,
+    ) -> Result<(
+        Session,
+        Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
+    )> {
+        let entries = input.resume.as_deref().unwrap_or_default();
+        if entries.is_empty() {
+            return Err(AgUiError::InvalidInput(
+                "Resume entry list is empty".to_string(),
+            ));
+        }
+        let previous = self
+            .session_manager
+            .get_session_by_interrupt_id(&entries[0].interrupt_id)
+            .await
+            .ok_or_else(|| AgUiError::InvalidInterruptId {
+                interrupt_id: entries[0].interrupt_id.clone(),
+                message: "No pending checkpoint matches this interrupt".into(),
+            })?;
+        if previous.thread_id.as_str() != input.thread_id {
+            return Err(AgUiError::InvalidInput(
+                "Resume threadId does not match the paused checkpoint".into(),
+            ));
+        }
+        if previous.profile_path.as_deref() != Some(profile_path) {
+            return Err(AgUiError::InvalidInput(
+                "Resume endpoint does not match the paused checkpoint profile".into(),
+            ));
+        }
+        if self
+            .session_manager
+            .get_session_by_run_id(&RunId::new(input.run_id.clone()))
+            .await
+            .is_some()
+        {
+            return Err(AgUiError::InvalidInput(
+                "Resume runId must identify a new run".into(),
+            ));
+        }
+        let checkpoint_info = previous.hitl_waiting_info.as_ref().ok_or_else(|| {
+            AgUiError::InvalidInput("Paused session has no checkpoint data".into())
+        })?;
+        let prepared_resume = self
+            .prepare_checkpoint_resume(&previous, checkpoint_info)
+            .await?;
+        let entries: Vec<_> = entries
+            .iter()
+            .map(|entry| ResumeBatchEntry {
+                interrupt_id: entry.interrupt_id.clone(),
+                status: entry.status,
+                payload: entry.payload.clone(),
+            })
+            .collect();
+        let batch = self
+            .session_manager
+            .apply_resume_batch(
+                &previous.session_id,
+                &previous.thread_id,
+                profile_path,
+                &entries,
+            )
+            .await
+            .map_err(|error| AgUiError::InvalidInput(format!("Invalid resume batch: {error:?}")))?;
+
+        let run_id = RunId::new(input.run_id.clone());
+        let thread_id = ThreadId::new(input.thread_id.clone());
+        let response_session = self
+            .session_manager
+            .create_session(run_id.clone(), thread_id)
+            .await;
+        self.session_manager
+            .set_profile_path(&response_session.session_id, profile_path)
+            .await;
+
+        match batch {
+            ResumeBatchResult::Partial { remaining } => {
+                let encoder = self.encoder.clone();
+                let event_store = self.event_store.clone();
+                let session_manager = self.session_manager.clone();
+                let response_session_id = response_session.session_id.clone();
+                let rid = run_id.to_string();
+                let tid = input.thread_id.clone();
+                let stream = stream! {
+                    let started = AgUiEvent::run_started(rid.clone(), tid.clone());
+                    let id = Self::encode_event_with_logging(&encoder, &started);
+                    event_store.store_event(&rid, id, started.clone()).await;
+                    yield (id, started);
+                    let finished = AgUiEvent::run_finished_with_interrupts(
+                        rid.clone(), tid.clone(),
+                        remaining.iter().map(|entry| crate::events::types::AgUiInterrupt { id: entry.interrupt_id.clone(), reason: "interrupt_pending".into() }).collect(),
+                    );
+                    let id = Self::encode_event_with_logging(&encoder, &finished);
+                    event_store.store_event(&rid, id, finished.clone()).await;
+                    session_manager.set_session_state(&response_session_id, SessionState::Completed).await;
+                    yield (id, finished);
+                };
+                Ok((response_session, Box::pin(stream)))
+            }
+            ResumeBatchResult::Complete {
+                resolved_info,
+                pending_info,
+            } => {
+                let continuation = ResumeContinuation::new(
+                    &previous,
+                    *resolved_info,
+                    *pending_info,
+                    response_session.session_id.clone(),
+                );
+                self.resume_workflow(response_session.clone(), continuation, prepared_resume)
+                    .await
+                    .map(|stream| (response_session, stream))
+            }
+        }
+    }
+
+    pub async fn run_direct_profile(
+        &self,
+        input: RunAgentInput,
+        worker_name: &str,
+        profile_path: &str,
+    ) -> Result<(
+        Session,
+        Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
+    )> {
+        let run_id = RunId::new(input.run_id.clone());
+        let thread_id = ThreadId::new(input.thread_id.clone());
+        let (job_id, events) = crate::direct::enqueue_direct_run(
+            &self.app_module,
+            worker_name,
+            &input,
+            self.config.timeout_sec,
+        )
+        .await
+        .map_err(|e| {
+            AgUiError::Internal(anyhow::anyhow!("Failed to enqueue direct LLM run: {e}"))
+        })?;
+        // Created only once the job is accepted so a rejected run never appears active.
+        let session = self
+            .session_manager
+            .create_session(run_id.clone(), thread_id.clone())
+            .await;
+        self.session_manager
+            .set_profile_path(&session.session_id, profile_path)
+            .await;
+        let output = self
+            .direct_runs
+            .start(
+                job_id,
+                &session,
+                events,
+                self.event_store.clone(),
+                self.encoder.clone(),
+                self.session_manager.clone(),
+            )
+            .await;
+        Ok((session, output))
     }
 
     /// Resume an existing workflow run from Last-Event-ID.
@@ -228,10 +513,8 @@ where
         };
 
         // Check if workflow is still running (executor exists in registry)
-        let is_running = {
-            let registry = self.executor_registry.read().await;
-            registry.contains_key(run_id)
-        };
+        let has_executor = self.executor_registry.read().await.contains_key(run_id);
+        let is_running = has_executor || self.direct_runs.is_running(run_id).await;
 
         // Update session last_event_id
         if let Some(last_id) = last_event_id {
@@ -254,7 +537,7 @@ where
             }
 
             // If workflow is still running, poll for new events
-            if is_running && session_state != SessionState::Completed && session_state != SessionState::Cancelled && session_state != SessionState::Error {
+            if is_running && !session_state.is_terminal() {
                 // Poll for new events until workflow completes
                 loop {
                     // Small delay to avoid busy-waiting
@@ -271,7 +554,7 @@ where
                         // Check if workflow completed (by looking for RUN_FINISHED or RUN_ERROR)
                         let all_events = event_store.get_all_events(&run_id_for_poll).await;
                         let workflow_completed = all_events.iter().any(|(_, event)| {
-                            matches!(event, AgUiEvent::RunFinished { .. } | AgUiEvent::RunError { .. })
+                            event.is_terminal()
                         });
 
                         if workflow_completed {
@@ -283,7 +566,7 @@ where
                     // Yield new events
                     for (id, event) in new_events {
                         last_yielded_id = Some(id);
-                        let is_terminal = matches!(event, AgUiEvent::RunFinished { .. } | AgUiEvent::RunError { .. });
+                        let is_terminal = event.is_terminal();
                         yield (id, event);
 
                         if is_terminal {
@@ -297,19 +580,26 @@ where
         Ok(Box::pin(stream))
     }
 
-    /// Cancel a running workflow.
-    ///
-    /// This method cancels the workflow execution if it's still running.
-    /// It updates the session state and triggers the WorkflowExecutor's cancel method.
-    pub async fn cancel_workflow(&self, run_id: &str) -> Result<()> {
-        let run_id_typed = RunId::new(run_id);
+    #[cfg(test)]
+    pub(crate) async fn has_registered_executor(&self, run_id: &str) -> bool {
+        self.executor_registry.read().await.contains_key(run_id)
+    }
 
-        // Find session
-        let session = self
-            .session_manager
-            .get_session_by_run_id(&run_id_typed)
-            .await
-            .ok_or_else(|| AgUiError::SessionNotFound(run_id.to_string()))?;
+    /// Cancel a running workflow or direct run.
+    ///
+    /// A direct run is settled by its own event producer. A workflow run triggers the
+    /// WorkflowExecutor's cancel method and is marked cancelled here.
+    pub async fn cancel_workflow(&self, run_id: &str) -> Result<()> {
+        let Some(session) = session_to_cancel(
+            &self.direct_runs,
+            self.app_module.job_app.as_ref(),
+            self.session_manager.as_ref(),
+            run_id,
+        )
+        .await?
+        else {
+            return Ok(());
+        };
 
         // Cancel the workflow executor if it exists
         // Clone the Arc outside the lock to avoid holding read lock during cancel().await
@@ -334,13 +624,7 @@ where
             .await;
 
         // Store RUN_ERROR event for cancelled workflow
-        let event = AgUiEvent::RunError {
-            run_id: run_id.to_string(),
-            message: "Workflow cancelled by user".to_string(),
-            code: Some("CANCELLED".to_string()),
-            details: None,
-            timestamp: Some(AgUiEvent::now_timestamp()),
-        };
+        let event = AgUiEvent::run_cancelled(run_id);
         let event_id = Self::encode_event_with_logging(&self.encoder, &event);
         self.event_store.store_event(run_id, event_id, event).await;
 
@@ -354,7 +638,7 @@ where
     }
 
     /// Get current workflow state.
-    pub async fn get_state(&self, run_id: &str) -> Result<WorkflowState> {
+    pub async fn get_state(&self, run_id: &str) -> Result<serde_json::Value> {
         let run_id_typed = RunId::new(run_id);
 
         // Find session
@@ -375,7 +659,7 @@ where
         }
 
         // Return empty state if no snapshot found
-        Ok(WorkflowState::new("unknown").with_status(WorkflowStatus::Pending))
+        Ok(serde_json::Value::Null)
     }
 
     /// Handle tool call results for LLM HITL.
@@ -482,266 +766,85 @@ where
         Ok(Box::pin(futures::stream::iter(events)))
     }
 
-    /// Resume a paused HITL workflow with user input (checkpoint-based).
-    ///
-    /// This method:
-    /// 1. Validates session is in Paused state
-    /// 2. Validates tool_call_id matches
-    /// 3. Retrieves checkpoint from storage
-    /// 4. Injects user_input into checkpoint
-    /// 5. Restarts workflow execution from checkpoint
-    /// 6. Returns event stream for resumed execution
-    ///
-    /// Note: For LLM tool call HITL, use handle_tool_call_results instead.
-    pub async fn resume_workflow(
+    /// Continue a checkpoint after the canonical resume batch has been consumed.
+    async fn resume_workflow(
         &self,
-        run_id: &str,
-        tool_call_id: &str,
-        user_input: serde_json::Value,
+        session: Session,
+        continuation: ResumeContinuation,
+        prepared: PreparedCheckpointResume,
     ) -> Result<Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>> {
-        let run_id_typed = RunId::new(run_id);
+        let ResumeContinuation {
+            hitl_info,
+            user_input,
+            consumed,
+        } = continuation;
+        let canonical_session_id = consumed.canonical_session_id.clone();
+        let run_id_typed = session.run_id.clone();
+        let run_id = session.run_id.as_str();
 
-        // 1. Find session and validate state
-        let session = self
-            .session_manager
-            .get_session_by_run_id(&run_id_typed)
-            .await
-            .ok_or_else(|| AgUiError::SessionNotFound(run_id.to_string()))?;
+        let execution_id = prepared.execution_id;
+        let checkpoint = prepared.checkpoint;
 
-        if session.state != SessionState::Paused {
-            return Err(AgUiError::SessionNotPaused {
-                current_state: format!("{:?}", session.state),
-            });
-        }
-
-        // 2. Get HITL waiting info and validate tool_call_id
-        let hitl_info =
-            session
-                .hitl_waiting_info
-                .as_ref()
-                .ok_or_else(|| AgUiError::HitlInfoNotFound {
-                    session_id: session.session_id.clone(),
-                })?;
-
-        // Validate tool_call_id
-        // For LLM tool calls (pending_tool_calls non-empty), check if tool_call_id matches any pending call
-        // For traditional HITL (pending_tool_calls empty), check if tool_call_id matches the primary ID
-        let is_valid_tool_call_id = if !hitl_info.pending_tool_calls.is_empty() {
-            hitl_info
-                .pending_tool_calls
-                .iter()
-                .any(|tc| tc.call_id == tool_call_id)
-        } else {
-            hitl_info.tool_call_id == tool_call_id
-        };
-
-        if !is_valid_tool_call_id {
-            let expected = if !hitl_info.pending_tool_calls.is_empty() {
-                hitl_info
-                    .pending_tool_calls
-                    .iter()
-                    .map(|tc| tc.call_id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            } else {
-                hitl_info.tool_call_id.clone()
-            };
-            return Err(AgUiError::InvalidToolCallId {
-                expected,
-                actual: tool_call_id.to_string(),
-            });
-        }
-
-        // 3. Get checkpoint from repository
-        let execution_id = run_id_typed
-            .to_execution_id()
-            .ok_or_else(|| AgUiError::InvalidInput("Invalid run_id for execution".to_string()))?;
-        let checkpoint_repo = self
-            .app_wrapper_module
-            .repositories
-            .redis_checkpoint_repository
-            .as_ref()
-            .map(|r| r.as_ref())
-            .unwrap_or(
-                self.app_wrapper_module
-                    .repositories
-                    .memory_checkpoint_repository
-                    .as_ref(),
-            );
-        let checkpoint = checkpoint_repo
-            .get_checkpoint_with_id(
-                &execution_id,
-                &hitl_info.workflow_name,
-                &hitl_info.checkpoint_position,
-            )
-            .await
-            .map_err(AgUiError::Internal)?
-            .ok_or_else(|| AgUiError::CheckpointNotFound {
-                workflow_name: hitl_info.workflow_name.clone(),
-                position: hitl_info.checkpoint_position.clone(),
-            })?;
-
-        // 4. Modify checkpoint with user_input
-        // Set user_input as task.output (becomes next task's input) and in context_variables
-        let user_input_for_event = user_input.clone();
+        // Inject all submitted resume entries into the canonical checkpoint.
         let mut ctx_vars = (*checkpoint.workflow.context_variables).clone();
         ctx_vars.insert("user_input".to_string(), user_input.clone());
-
         let modified_checkpoint = CheckPointContext {
             task: app_wrapper::workflow::execute::checkpoint::TaskCheckPointContext {
                 output: Arc::new(user_input.clone()),
+                flow_directive: "continue".to_string(),
                 ..checkpoint.task.clone()
             },
             workflow: app_wrapper::workflow::execute::checkpoint::WorkflowCheckPointContext {
                 context_variables: Arc::new(ctx_vars),
                 ..checkpoint.workflow.clone()
             },
-            ..checkpoint.clone()
+            ..checkpoint
         };
-
-        // 5. Get workflow schema and context for re-execution
-        let worker = self
-            .app_module
-            .worker_app
-            .find_by_name(&hitl_info.workflow_name)
-            .await
-            .map_err(|e| {
-                AgUiError::Internal(anyhow::anyhow!(
-                    "Failed to find workflow '{}': {}",
-                    hitl_info.workflow_name,
-                    e
-                ))
-            })?
-            .ok_or_else(|| AgUiError::WorkflowDefinitionNotFound {
-                name: hitl_info.workflow_name.clone(),
-            })?;
-
-        let worker_data = worker.data.ok_or_else(|| {
-            AgUiError::InvalidInput(format!("Worker '{}' has no data", hitl_info.workflow_name))
-        })?;
-
-        let (schema, settings_workflow_context) = decode_workflow_from_runner_settings(
-            &worker_data.runner_settings,
-            &hitl_info.workflow_name,
-            &self.app_module,
-        )
-        .await?;
-
-        // Use merged context preserved at HITL pause time, falling back to settings context.
-        // Intentionally uses the pause-time snapshot: if settings change after pause,
-        // the resumed execution stays consistent with the original run.
-        let context_value = hitl_info
-            .workflow_context
-            .clone()
-            .or(settings_workflow_context)
-            .unwrap_or_else(|| serde_json::json!({}));
+        let schema = prepared.schema;
+        let context_value = prepared.workflow_context;
 
         // 6. Create adapter for event conversion
         let adapter = shared_adapter(run_id_typed.clone(), session.thread_id.clone());
 
         // 7. Initialize executor from checkpoint (before updating session state)
-        let executor = WorkflowExecutor::init(
+        let executor = match WorkflowExecutor::init(
             self.app_wrapper_module.clone(),
             self.app_module.clone(),
             schema,
             modified_checkpoint.workflow.input.clone(),
             Some(execution_id.clone()),
-            Arc::new(context_value),
+            Arc::new(context_value.clone()),
             Arc::new(HashMap::new()),
             Some(modified_checkpoint),
         )
         .await
-        .map_err(|e| AgUiError::WorkflowInitFailed(format!("{:?}", e)))?;
-
-        // 8. Atomically clear HITL info and set session state to Active
-        // This is done after executor init succeeds to avoid leaving session in
-        // an inconsistent state if initialization fails.
-        if !self
-            .session_manager
-            .resume_from_paused(&session.session_id, SessionState::Active)
-            .await
         {
-            return Err(AgUiError::Internal(anyhow::anyhow!(
-                "Failed to update session state from Paused to Active for session {}",
-                session.session_id
-            )));
-        }
+            Ok(executor) => executor,
+            Err(e) => {
+                consumed.reopen(&*self.session_manager).await;
+                return Err(AgUiError::WorkflowInitFailed(format!("{:?}", e)));
+            }
+        };
 
-        // 9. Emit TOOL_CALL_END and TOOL_CALL_RESULT events
-        // For LLM tool calls (pending_tool_calls non-empty), emit events for the specific tool
-        // For traditional HITL (pending_tool_calls empty), emit events for the primary tool_call_id
-        let mut tool_events_vec = Vec::new();
+        let run_started = AgUiEvent::run_started(run_id.to_string(), session.thread_id.to_string());
+        let run_started_id = Self::encode_event_with_logging(&self.encoder, &run_started);
+        self.event_store
+            .store_event(run_id, run_started_id, run_started.clone())
+            .await;
 
-        if !hitl_info.pending_tool_calls.is_empty() {
-            // LLM tool call mode: emit TOOL_CALL_END and TOOL_CALL_RESULT for the matched tool
-            // Order: END → RESULT (AG-UI protocol compliant)
-            let tool_call_end_event = AgUiEvent::tool_call_end(tool_call_id.to_string());
-            let end_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_end_event);
-            self.event_store
-                .store_event(run_id, end_event_id, tool_call_end_event.clone())
-                .await;
-            tool_events_vec.push((end_event_id, tool_call_end_event));
-            // Persist on the session so the post-resume re-run does not emit a
-            // second TOOL_CALL_END for this call_id.
-            self.session_manager
-                .record_emitted_tool_call_end_id(&session.session_id, tool_call_id)
-                .await;
-
-            let tool_call_result_event =
-                AgUiEvent::tool_call_result(tool_call_id.to_string(), user_input_for_event);
-            let result_event_id =
-                Self::encode_event_with_logging(&self.encoder, &tool_call_result_event);
-            self.event_store
-                .store_event(run_id, result_event_id, tool_call_result_event.clone())
-                .await;
-            tool_events_vec.push((result_event_id, tool_call_result_event));
-
-            tracing::info!(
-                tool_call_id = %tool_call_id,
-                pending_count = hitl_info.pending_tool_calls.len(),
-                "LLM tool call result received"
-            );
-        } else {
-            // Traditional HITL mode: emit TOOL_CALL_END then status-based TOOL_CALL_RESULT
-            // Order: END → RESULT (AG-UI protocol compliant)
-            let tool_call_end_event = AgUiEvent::tool_call_end(tool_call_id.to_string());
-            let end_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_end_event);
-            self.event_store
-                .store_event(run_id, end_event_id, tool_call_end_event.clone())
-                .await;
-            tool_events_vec.push((end_event_id, tool_call_end_event));
-            self.session_manager
-                .record_emitted_tool_call_end_id(&session.session_id, tool_call_id)
-                .await;
-
-            let tool_call_result_event = AgUiEvent::tool_call_result(
-                tool_call_id.to_string(),
-                serde_json::json!({"status": "resumed"}),
-            );
-            let result_event_id =
-                Self::encode_event_with_logging(&self.encoder, &tool_call_result_event);
-            self.event_store
-                .store_event(run_id, result_event_id, tool_call_result_event.clone())
-                .await;
-            tool_events_vec.push((result_event_id, tool_call_result_event));
-        }
-
-        // 10. Register executor for cancellation support
+        // 8. Register executor for cancellation support
         let executor = Arc::new(executor);
-        {
-            let mut registry = self.executor_registry.write().await;
-            registry.insert(run_id.to_string(), executor.clone());
-        }
+        let registration = self.register_executor(run_id, executor.clone()).await;
 
-        // 11. Create event stream (prepend TOOL_CALL events, then workflow events)
-        let executor_registry = self.executor_registry.clone();
+        // 9. Create event stream after the standard RUN_STARTED event.
         let run_id_for_stream = run_id.to_string();
-        let run_id_for_cleanup = run_id.to_string();
         let workflow_name_for_stream = hitl_info.workflow_name.clone();
 
         let hitl_ctx = HitlStreamContext {
-            workflow_context: hitl_info.workflow_context.clone(),
+            workflow_context: Some(context_value),
             registered_worker_name: hitl_info.registered_worker_name.clone(),
+            execution_id: hitl_info.execution_id.clone(),
+            canonical_session_id: Some(canonical_session_id),
         };
 
         let workflow_stream = self.create_event_stream(
@@ -749,495 +852,17 @@ where
             adapter,
             run_id_for_stream,
             session.session_id.clone(),
-            executor_registry,
-            run_id_for_cleanup,
+            registration,
             workflow_name_for_stream,
-            true, // emit_run_started: resume is a new run invocation per AG-UI spec
+            false,
             hitl_ctx,
         );
 
-        // Prepend the tool_call events to the workflow stream
-        let tool_events = futures::stream::iter(tool_events_vec);
-
-        let combined_stream = tool_events.chain(workflow_stream);
+        // Resume payloads are checkpoint input and do not expose internal workflow calls.
+        let started = futures::stream::iter(vec![(run_started_id, run_started)]);
+        let combined_stream = started.chain(workflow_stream);
 
         Ok(Box::pin(combined_stream))
-    }
-
-    /// Handle AG-UI Interrupts resume request.
-    ///
-    /// This method handles the resume flow for AG-UI Interrupts protocol:
-    /// 1. Look up session by interrupt_id
-    /// 2. Validate session state is Paused
-    /// 3. Handle approve/reject based on ResumePayload
-    /// 4. For approve: execute tool calls and continue workflow
-    async fn handle_resume_request(
-        &self,
-        input: RunAgentInput,
-        interrupt_id: String,
-        payload: ResumePayload,
-    ) -> Result<(
-        Session,
-        Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
-    )> {
-        // 1. Look up session by interrupt_id
-        let session = self
-            .session_manager
-            .get_session_by_interrupt_id(&interrupt_id)
-            .await
-            .ok_or_else(|| AgUiError::InvalidInterruptId {
-                interrupt_id: interrupt_id.clone(),
-                message: "No session found with this interrupt ID".to_string(),
-            })?;
-
-        // 2. Verify session is in Paused state
-        if session.state != SessionState::Paused {
-            return Err(AgUiError::InvalidInterruptId {
-                interrupt_id: interrupt_id.clone(),
-                message: format!("Session state is {:?}, expected Paused", session.state),
-            });
-        }
-
-        // 3. Get HITL info (interrupt_id match is already validated by get_session_by_interrupt_id)
-        let hitl_info =
-            session
-                .hitl_waiting_info
-                .clone()
-                .ok_or_else(|| AgUiError::InvalidInterruptId {
-                    interrupt_id: interrupt_id.clone(),
-                    message: "No HITL info found in session".to_string(),
-                })?;
-
-        // 4. Handle based on payload type
-        match payload {
-            ResumePayload::Approve { tool_results } => {
-                // Check if this is LLM tool call HITL (pending_tool_calls non-empty)
-                if !hitl_info.pending_tool_calls.is_empty() {
-                    // LLM tool call HITL: Re-execute workflow with ToolExecutionRequests
-                    // This triggers OllamaChatService to execute tools and continue LLM conversation
-                    self.handle_llm_tool_approval(input, session, hitl_info, tool_results)
-                        .await
-                } else {
-                    // Traditional HITL (checkpoint-based): Use resume_workflow
-                    // Extract text from all messages
-                    let tool_result: serde_json::Value = if input.messages.is_empty() {
-                        serde_json::json!("")
-                    } else {
-                        let combined_text: String = input
-                            .messages
-                            .iter()
-                            .map(|m| m.content.extract_text())
-                            .filter(|s| !s.is_empty())
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        serde_json::json!(combined_text)
-                    };
-
-                    self.resume_workflow(
-                        session.run_id.as_str(),
-                        &hitl_info.tool_call_id,
-                        tool_result,
-                    )
-                    .await
-                    .map(|stream| (session, stream))
-                }
-            }
-            ResumePayload::Reject { reason } => {
-                // Check if this is LLM tool call HITL (pending_tool_calls non-empty)
-                if !hitl_info.pending_tool_calls.is_empty() {
-                    // LLM tool call HITL: Feed rejection back to LLM so it can respond accordingly
-                    self.handle_llm_tool_rejection(input, session, hitl_info, reason)
-                        .await
-                } else {
-                    // Traditional HITL (checkpoint-based): End the run
-                    let run_id = session.run_id.to_string();
-                    let session_id = session.session_id.clone();
-                    let encoder = self.encoder.clone();
-                    let event_store = self.event_store.clone();
-                    let session_manager = self.session_manager.clone();
-
-                    let rejection_message =
-                        reason.unwrap_or_else(|| "User rejected tool calls".to_string());
-
-                    let stream = stream! {
-                        if session_manager
-                            .resume_from_paused(&session_id, SessionState::Completed)
-                            .await
-                        {
-                            let run_finished = AgUiEvent::run_finished(
-                                run_id.clone(),
-                                Some(serde_json::json!({
-                                    "status": "rejected",
-                                    "message": rejection_message
-                                })),
-                            );
-                            let event_id = Self::encode_event_with_logging(&encoder, &run_finished);
-                            event_store.store_event(&run_id, event_id, run_finished.clone()).await;
-                            yield (event_id, run_finished);
-                        } else {
-                            tracing::warn!(
-                                session_id = %session_id,
-                                "Failed to update session state to Completed"
-                            );
-                            let error_event = AgUiEvent::run_error(
-                                run_id.clone(),
-                                format!("Failed to complete session {}", session_id),
-                                None,
-                                None,
-                            );
-                            let event_id = Self::encode_event_with_logging(&encoder, &error_event);
-                            event_store.store_event(&run_id, event_id, error_event.clone()).await;
-                            yield (event_id, error_event);
-                        }
-                    };
-
-                    Ok((session, Box::pin(stream)))
-                }
-            }
-        }
-    }
-
-    /// Handle LLM tool call approval by re-executing workflow with ToolExecutionRequests.
-    ///
-    /// This method:
-    /// 1. Builds ToolExecutionRequests from pending_tool_calls
-    /// 2. Updates workflowContext with toolExecutionRequests
-    /// 3. Starts a new workflow execution
-    /// 4. OllamaChatService will execute tools and continue LLM conversation
-    async fn handle_llm_tool_approval(
-        &self,
-        mut input: RunAgentInput,
-        session: Session,
-        hitl_info: HitlWaitingInfo,
-        tool_results: Option<Vec<crate::types::input::ToolCallResult>>,
-    ) -> Result<(
-        Session,
-        Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
-    )> {
-        tracing::info!(
-            run_id = %session.run_id,
-            interrupt_id = %hitl_info.interrupt_id,
-            pending_tool_calls = hitl_info.pending_tool_calls.len(),
-            "Handling LLM tool approval"
-        );
-
-        // Pre-resolve fn_arguments with client overrides
-        let resolved_fn_args: HashMap<&str, String> = hitl_info
-            .pending_tool_calls
-            .iter()
-            .map(|tc| {
-                let fn_arguments = tool_results
-                    .as_ref()
-                    .and_then(|results| results.iter().find(|r| r.call_id == tc.call_id))
-                    .map(|r| {
-                        let overridden = value_to_json_string(&r.result);
-                        tracing::info!(
-                            call_id = %tc.call_id,
-                            original_len = tc.fn_arguments.len(),
-                            overridden_len = overridden.len(),
-                            "Client overrode tool call arguments"
-                        );
-                        tracing::debug!(
-                            call_id = %tc.call_id,
-                            original = %tc.fn_arguments,
-                            overridden = %overridden,
-                            "Client overrode tool call arguments (detail)"
-                        );
-                        overridden
-                    })
-                    .unwrap_or_else(|| tc.fn_arguments.clone());
-                (tc.call_id.as_str(), fn_arguments)
-            })
-            .collect();
-
-        // 1. Build ToolExecutionRequests message for LLM
-        let tool_execution_requests: Vec<serde_json::Value> = hitl_info
-            .pending_tool_calls
-            .iter()
-            .map(|tc| {
-                let fn_arguments = resolved_fn_args
-                    .get(tc.call_id.as_str())
-                    .cloned()
-                    .unwrap_or_else(|| tc.fn_arguments.clone());
-                serde_json::json!({
-                    "callId": tc.call_id,
-                    "fnName": tc.fn_name,
-                    "fnArguments": fn_arguments
-                })
-            })
-            .collect();
-
-        // 3. Update workflowContext to include toolExecutionRequests in runnerMessages
-        let assistant_tool_calls: Vec<serde_json::Value> = hitl_info
-            .pending_tool_calls
-            .iter()
-            .map(|tc| {
-                let fn_arguments = resolved_fn_args
-                    .get(tc.call_id.as_str())
-                    .cloned()
-                    .unwrap_or_else(|| tc.fn_arguments.clone());
-                serde_json::json!({
-                    "callId": tc.call_id,
-                    "fnName": tc.fn_name,
-                    "fnArguments": fn_arguments
-                })
-            })
-            .collect();
-
-        let tool_message = serde_json::json!({
-            "role": "TOOL",
-            "content": {
-                "toolExecutionRequests": {
-                    "requests": tool_execution_requests.clone()
-                }
-            }
-        });
-
-        if !append_runner_messages(&mut input, assistant_tool_calls, tool_message) {
-            return Err(AgUiError::InvalidInput(
-                "Missing workflow context; cannot attach ToolExecutionRequests for LLM tool approval".to_string(),
-            ));
-        }
-
-        // 4. Clear resume info to avoid infinite loop
-        input.resume = None;
-
-        // 5. Parse workflow from input
-        let (workflow, workflow_context, registered_worker_name) =
-            self.parse_workflow_from_input(&input).await?;
-        let workflow_name = workflow.document.name.to_string();
-        let hitl_ctx = HitlStreamContext {
-            workflow_context: workflow_context.clone(),
-            registered_worker_name,
-        };
-
-        // 6. Use existing run_id and thread_id from session
-        let run_id = session.run_id.clone();
-        let thread_id = session.thread_id.clone();
-
-        // 7. Create adapter for event conversion
-        let adapter = shared_adapter(run_id.clone(), thread_id.clone());
-
-        // 8. Initialize workflow executor
-        let executor = self
-            .init_workflow_executor(workflow, input, &run_id, adapter.clone(), workflow_context)
-            .await?;
-
-        // 9. Atomically clear HITL info and set session state to Active
-        // This is done after executor init succeeds to avoid leaving session in
-        // an inconsistent state if initialization fails (same pattern as resume_workflow).
-        if !self
-            .session_manager
-            .resume_from_paused(&session.session_id, SessionState::Active)
-            .await
-        {
-            return Err(AgUiError::Internal(anyhow::anyhow!(
-                "Failed to update session state from Paused to Active for session {}",
-                session.session_id
-            )));
-        }
-
-        // 10. Register executor for cancellation support
-        let executor = Arc::new(executor);
-        {
-            let mut registry = self.executor_registry.write().await;
-            registry.insert(run_id.to_string(), executor.clone());
-        }
-
-        // 11. Build TOOL_CALL_END events for each approved pending tool call.
-        //
-        // AG-UI spec: TOOL_CALL_END marks "all arguments transmitted, tool execution underway
-        // or completed". On approval the bounded START–ARGS unit emitted before the pause is
-        // closed here so the UI can render an "executing" state immediately. TOOL_CALL_RESULT
-        // is intentionally not emitted here — the actual result arrives later through the
-        // re-run's StreamingData/StreamingJobCompleted path.
-        let mut pre_events: Vec<(u64, AgUiEvent)> =
-            Vec::with_capacity(hitl_info.pending_tool_calls.len());
-        for tc in &hitl_info.pending_tool_calls {
-            let end_event = AgUiEvent::tool_call_end(tc.call_id.clone());
-            let end_event_id = Self::encode_event_with_logging(&self.encoder, &end_event);
-            self.event_store
-                .store_event(run_id.as_str(), end_event_id, end_event.clone())
-                .await;
-            pre_events.push((end_event_id, end_event));
-            // Persist on the session so the post-approval re-run does not emit
-            // a second TOOL_CALL_END for this call_id when its result later
-            // arrives via StreamingData/StreamingJobCompleted.
-            self.session_manager
-                .record_emitted_tool_call_end_id(&session.session_id, &tc.call_id)
-                .await;
-        }
-
-        // 12. Create event stream (emit_run_started: true — resume is a new run per AG-UI spec).
-        let executor_registry = self.executor_registry.clone();
-        let run_id_for_cleanup = run_id.to_string();
-        let workflow_stream = self.create_event_stream(
-            executor,
-            adapter,
-            run_id.to_string(),
-            session.session_id.clone(),
-            executor_registry,
-            run_id_for_cleanup,
-            workflow_name,
-            true, // Resume is a new run invocation per AG-UI spec
-            hitl_ctx,
-        );
-
-        let combined = futures::stream::iter(pre_events).chain(workflow_stream);
-        Ok((session, Box::pin(combined)))
-    }
-
-    /// Handle LLM tool call rejection by feeding rejection info back to LLM.
-    ///
-    /// This method follows the same pattern as handle_llm_tool_approval:
-    /// 1. Emits TOOL_CALL_RESULT + TOOL_CALL_END events for each pending tool call (for client/memory)
-    /// 2. Updates workflowContext with rejection text as TOOL message
-    /// 3. Re-executes workflow so LLM receives the rejection and can respond accordingly
-    async fn handle_llm_tool_rejection(
-        &self,
-        mut input: RunAgentInput,
-        session: Session,
-        hitl_info: HitlWaitingInfo,
-        reason: Option<String>,
-    ) -> Result<(
-        Session,
-        Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>,
-    )> {
-        let rejection_message = reason.unwrap_or_else(|| "User rejected tool calls".to_string());
-
-        tracing::info!(
-            run_id = %session.run_id,
-            interrupt_id = %hitl_info.interrupt_id,
-            pending_tool_calls = hitl_info.pending_tool_calls.len(),
-            reason_len = rejection_message.len(),
-            "Handling LLM tool rejection"
-        );
-
-        // 1. Build TOOL_CALL_END + TOOL_CALL_RESULT events (persist after validation succeeds)
-        // Order: END → RESULT (AG-UI protocol compliant)
-        let mut rejection_events: Vec<(u64, AgUiEvent)> = Vec::new();
-        for tc in &hitl_info.pending_tool_calls {
-            let end_event = AgUiEvent::tool_call_end(tc.call_id.clone());
-            let end_id = Self::encode_event_with_logging(&self.encoder, &end_event);
-            rejection_events.push((end_id, end_event));
-            // Persist on the session so the post-rejection re-run does not emit
-            // a second TOOL_CALL_END for this call_id.
-            self.session_manager
-                .record_emitted_tool_call_end_id(&session.session_id, &tc.call_id)
-                .await;
-
-            let result_event = AgUiEvent::tool_call_result(
-                tc.call_id.clone(),
-                serde_json::json!({
-                    "status": "rejected",
-                    "reason": rejection_message,
-                }),
-            );
-            let event_id = Self::encode_event_with_logging(&self.encoder, &result_event);
-            rejection_events.push((event_id, result_event));
-        }
-
-        // 2. Update workflowContext with rejection info in runnerMessages
-        let assistant_tool_calls: Vec<serde_json::Value> = hitl_info
-            .pending_tool_calls
-            .iter()
-            .map(|tc| {
-                serde_json::json!({
-                    "callId": tc.call_id,
-                    "fnName": tc.fn_name,
-                    "fnArguments": tc.fn_arguments
-                })
-            })
-            .collect();
-
-        let rejection_text = format!(
-            "All tool calls were rejected by the user. Reason: {}. \
-             Please suggest alternative approaches or ask the user what they would like to do instead.",
-            rejection_message
-        );
-        let tool_message = serde_json::json!({
-            "role": "TOOL",
-            "content": {
-                "text": rejection_text
-            }
-        });
-
-        if !append_runner_messages(&mut input, assistant_tool_calls, tool_message) {
-            return Err(AgUiError::InvalidInput(
-                "Missing workflow context; cannot attach rejection for LLM tool rejection"
-                    .to_string(),
-            ));
-        }
-
-        // 3. Clear resume info to avoid infinite loop
-        input.resume = None;
-
-        // 4. Parse workflow from input
-        let (workflow, workflow_context, registered_worker_name) =
-            self.parse_workflow_from_input(&input).await?;
-        let workflow_name = workflow.document.name.to_string();
-        let hitl_ctx = HitlStreamContext {
-            workflow_context: workflow_context.clone(),
-            registered_worker_name,
-        };
-
-        // 5. Use existing run_id and thread_id from session
-        let run_id = session.run_id.clone();
-        let thread_id = session.thread_id.clone();
-
-        // 6. Create adapter for event conversion
-        let adapter = shared_adapter(run_id.clone(), thread_id.clone());
-
-        // 7. Initialize workflow executor
-        let executor = self
-            .init_workflow_executor(workflow, input, &run_id, adapter.clone(), workflow_context)
-            .await?;
-
-        // 8. Atomically clear HITL info and set session state to Active
-        if !self
-            .session_manager
-            .resume_from_paused(&session.session_id, SessionState::Active)
-            .await
-        {
-            return Err(AgUiError::Internal(anyhow::anyhow!(
-                "Failed to update session state from Paused to Active for session {}",
-                session.session_id
-            )));
-        }
-
-        // 9. Persist rejection events now that all checks have passed
-        for (event_id, event) in &rejection_events {
-            self.event_store
-                .store_event(session.run_id.as_str(), *event_id, event.clone())
-                .await;
-        }
-
-        // 10. Register executor for cancellation support
-        let executor = Arc::new(executor);
-        {
-            let mut registry = self.executor_registry.write().await;
-            registry.insert(run_id.to_string(), executor.clone());
-        }
-
-        // 11. Create event stream, prepending rejection events
-        let executor_registry = self.executor_registry.clone();
-        let run_id_for_cleanup = run_id.to_string();
-        let workflow_stream = self.create_event_stream(
-            executor,
-            adapter,
-            run_id.to_string(),
-            session.session_id.clone(),
-            executor_registry,
-            run_id_for_cleanup,
-            workflow_name,
-            false, // Don't emit RUN_STARTED again
-            hitl_ctx,
-        );
-
-        let rejection_stream = futures::stream::iter(rejection_events);
-        let combined = rejection_stream.chain(workflow_stream);
-
-        Ok((session, Box::pin(combined)))
     }
 
     /// Parse workflow schema from input context.
@@ -1245,71 +870,41 @@ where
     /// `registered_worker_name` is `Some` for `WorkflowDefinition`, `None` for `WorkflowInline`.
     async fn parse_workflow_from_input(
         &self,
-        input: &RunAgentInput,
+        _input: &RunAgentInput,
+        worker_name: Option<&str>,
     ) -> Result<(
         Arc<WorkflowSchema>,
         Option<serde_json::Value>,
         Option<String>,
     )> {
-        // Try to extract inline workflow first, then fall back to workflow by name
-        for ctx in &input.context {
-            match ctx {
-                crate::types::Context::WorkflowInline {
-                    workflow,
-                    workflow_context,
-                } => {
-                    let schema: WorkflowSchema =
-                        serde_json::from_value(workflow.clone()).map_err(|e| {
-                            AgUiError::InvalidInput(format!(
-                                "Failed to parse inline workflow: {}",
-                                e
-                            ))
-                        })?;
-                    return Ok((Arc::new(schema), workflow_context.clone(), None));
-                }
-                crate::types::Context::WorkflowDefinition {
+        let workflow_name = worker_name.ok_or_else(|| {
+            AgUiError::InvalidInput("No server workflow profile selected".to_string())
+        })?;
+        let worker = self
+            .app_module
+            .worker_app
+            .find_by_name(workflow_name)
+            .await
+            .map_err(|e| {
+                AgUiError::Internal(anyhow::anyhow!(
+                    "Failed to search workflow '{}': {}",
                     workflow_name,
-                    workflow_context: client_ctx,
-                    ..
-                } => {
-                    let worker = self
-                        .app_module
-                        .worker_app
-                        .find_by_name(workflow_name)
-                        .await
-                        .map_err(|e| {
-                            AgUiError::Internal(anyhow::anyhow!(
-                                "Failed to search workflow '{}': {}",
-                                workflow_name,
-                                e
-                            ))
-                        })?
-                        .ok_or_else(|| AgUiError::WorkflowDefinitionNotFound {
-                            name: workflow_name.clone(),
-                        })?;
-
-                    let worker_data = worker.data.ok_or_else(|| {
-                        AgUiError::InvalidInput(format!("Worker '{}' has no data", workflow_name))
-                    })?;
-
-                    let (schema, settings_ctx) = decode_workflow_from_runner_settings(
-                        &worker_data.runner_settings,
-                        workflow_name,
-                        &self.app_module,
-                    )
-                    .await?;
-
-                    // Merge settings workflow_context with client workflow_context
-                    let merged_ctx = merge_workflow_contexts(settings_ctx, client_ctx.clone());
-                    return Ok((schema, merged_ctx, Some(workflow_name.clone())));
-                }
-                _ => continue,
-            }
-        }
-
-        Err(AgUiError::InvalidInput(
-            "No workflow definition in context. Provide either 'workflow_inline' or 'workflow_definition'.".to_string()
-        ))
+                    e
+                ))
+            })?
+            .ok_or_else(|| AgUiError::WorkflowDefinitionNotFound {
+                name: workflow_name.to_string(),
+            })?;
+        let worker_data = worker.data.ok_or_else(|| {
+            AgUiError::InvalidInput(format!("Worker '{}' has no data", workflow_name))
+        })?;
+        let (schema, settings_ctx) = decode_workflow_from_runner_settings(
+            &worker_data.runner_settings,
+            workflow_name,
+            &self.app_module,
+        )
+        .await?;
+        Ok((schema, settings_ctx, Some(workflow_name.to_string())))
     }
 
     /// Initialize workflow executor.
@@ -1326,38 +921,19 @@ where
         let app_module = self.app_module.clone();
 
         // Extract checkpoint if resuming, with execution_id validation
-        let checkpoint: Option<CheckPointContext> = input
-            .context
-            .iter()
-            .find_map(|ctx| {
-                if let crate::types::Context::CheckpointResume {
-                    execution_id,
-                    checkpoint_data: Some(data),
-                    ..
-                } = ctx
-                {
-                    Some((execution_id.clone(), data.clone()))
-                } else {
-                    None
-                }
-            })
-            .and_then(|(execution_id, data)| {
-                // Validate execution_id matches run_id
-                if execution_id != run_id.as_str() {
-                    tracing::warn!(
-                        "CheckpointResume execution_id '{}' does not match run_id '{}', ignoring checkpoint",
-                        execution_id,
-                        run_id.as_str()
-                    );
-                    return None;
-                }
-                serde_json::from_value(data).ok()
-            });
+        let checkpoint: Option<CheckPointContext> = None;
 
         // Build input value from messages
         let input_value = Arc::new(serde_json::json!({
+            "threadId": input.thread_id,
+            "runId": input.run_id,
+            "parentRunId": input.parent_run_id,
+            "protocolVersion": input.protocol_version,
             "messages": input.messages,
             "tools": input.tools,
+            "context": input.context,
+            "state": input.state,
+            "forwardedProps": input.forwarded_props,
         }));
 
         // Parse workflow_context: can be a JSON string or an object
@@ -1384,9 +960,6 @@ where
             None => serde_json::json!({}),
         });
 
-        // Build metadata
-        let metadata = Arc::new(HashMap::new());
-
         // Convert RunId to ExecutionId for checkpoint tracking
         let execution_id = run_id.to_execution_id();
 
@@ -1398,7 +971,7 @@ where
             input_value,
             execution_id,
             context_value,
-            metadata,
+            Arc::new(HashMap::new()),
             checkpoint,
         )
         .await
@@ -1427,6 +1000,23 @@ where
         }
     }
 
+    /// Register a run's executor for cancellation; it stays registered while the
+    /// returned guard lives.
+    async fn register_executor(
+        &self,
+        run_id: &str,
+        executor: Arc<WorkflowExecutor>,
+    ) -> ExecutorRegistration {
+        self.executor_registry
+            .write()
+            .await
+            .insert(run_id.to_string(), executor);
+        ExecutorRegistration {
+            registry: self.executor_registry.clone(),
+            run_id: run_id.to_string(),
+        }
+    }
+
     /// Create the event stream from workflow execution.
     ///
     /// Returns a stream of (event_id, AgUiEvent) tuples for consistent SSE ID handling.
@@ -1441,8 +1031,7 @@ where
         adapter: SharedWorkflowEventAdapter,
         run_id: String,
         session_id: String,
-        executor_registry: ExecutorRegistry,
-        run_id_for_cleanup: String,
+        registration: ExecutorRegistration,
         workflow_name: String,
         emit_run_started: bool,
         hitl_ctx: HitlStreamContext,
@@ -1451,8 +1040,13 @@ where
         let encoder = self.encoder.clone();
         let session_manager = self.session_manager.clone();
         let app_module = self.app_module.clone();
+        let state_session_id = hitl_ctx
+            .canonical_session_id
+            .clone()
+            .unwrap_or_else(|| session_id.clone());
 
         stream! {
+            let registration = registration;
             // Emit RUN_STARTED if requested (resume passes true per AG-UI spec: each resume is a new run)
             if emit_run_started {
                 let adapter_lock = adapter.lock().await;
@@ -1500,7 +1094,7 @@ where
             // START–ARGS–END unit was already sent before the pause (per AG-UI spec:
             // "Each START–ARGS–END forms a bounded unit"). A single get_session call is used
             // to avoid two consecutive Redis round trips.
-            let session_snapshot = session_manager.get_session(&session_id).await;
+            let session_snapshot = session_manager.get_session(&state_session_id).await;
             let mut sent_tool_call_ids: std::collections::HashSet<String> = session_snapshot
                 .as_ref()
                 .map(|s| s.emitted_tool_call_ids.clone())
@@ -1519,6 +1113,7 @@ where
 
             // Main event loop - process workflow events and nested progress events
             // Uses tokio::select! to merge both event sources
+            let strict_output_only = true;
             loop {
                 let event_result = tokio::select! {
                     result = workflow_stream.next() => {
@@ -1528,6 +1123,7 @@ where
                         }
                     }
                     Some(nested_event) = nested_event_rx.recv() => {
+                        if strict_output_only { continue; }
                         yield nested_event;
                         continue;
                     }
@@ -1536,7 +1132,7 @@ where
                     Ok(event) => {
                         // Handle StreamingJobStarted: prepare message_id but defer TEXT_MESSAGE_START
                         // until text content actually arrives (avoids empty START/END for tool-only responses)
-                        if let WorkflowStreamEvent::StreamingJobStarted { event: ev } = &event {
+                        if !strict_output_only && let WorkflowStreamEvent::StreamingJobStarted { event: ev } = &event {
                             let job_id_value = ev.job_id.as_ref().map(|j| j.value).unwrap_or(0);
                             let message_id = MessageId::random();
 
@@ -1567,7 +1163,7 @@ where
                         }
 
                         // Handle StreamingData: emit TEXT_MESSAGE_CONTENT or role=tool messages
-                        if let WorkflowStreamEvent::StreamingData { event: ev } = &event {
+                        if !strict_output_only && let WorkflowStreamEvent::StreamingData { event: ev } = &event {
                             let job_id_value = ev.job_id.as_ref().map(|j| j.value).unwrap_or(0);
                             if let Some(message_id) = active_message_ids.get(&job_id_value) {
                                 // Decode LlmChatResult protobuf and extract text content
@@ -1630,7 +1226,7 @@ where
                                         // Persist on the session so subsequent streams (e.g. resumes after
                                         // a transient disconnect) do not re-emit the same bounded unit.
                                         session_manager
-                                            .record_emitted_tool_call_id(&session_id, &started.call_id)
+                                            .record_emitted_tool_call_id(&state_session_id, &started.call_id)
                                             .await;
                                     }
 
@@ -1645,7 +1241,7 @@ where
                                             event_store.store_event(&run_id, end_eid, end_event.clone()).await;
                                             yield (end_eid, end_event);
                                             session_manager
-                                                .record_emitted_tool_call_end_id(&session_id, &started.call_id)
+                                                .record_emitted_tool_call_end_id(&state_session_id, &started.call_id)
                                                 .await;
                                         }
 
@@ -1674,14 +1270,14 @@ where
                                     }
                                     if let Some(_tool_start) = pending_tool_starts.shift_remove(&call_id) {
                                         // START/ARGS already emitted; emit END only if it has not
-                                        // been sent earlier (e.g. by handle_llm_tool_approval).
+                                        // been sent earlier in this run's event stream.
                                         if sent_tool_end_ids.insert(call_id.clone()) {
                                             let end_event = AgUiEvent::tool_call_end(call_id.clone());
                                             let end_eid = Self::encode_event_with_logging(&encoder, &end_event);
                                             event_store.store_event(&run_id, end_eid, end_event.clone()).await;
                                             yield (end_eid, end_event);
                                             session_manager
-                                                .record_emitted_tool_call_end_id(&session_id, &call_id)
+                                                .record_emitted_tool_call_end_id(&state_session_id, &call_id)
                                                 .await;
                                         }
 
@@ -1759,6 +1355,7 @@ where
                                                                 if let Some(finished_id) = prev_step_id.take() {
                                                                     let finished_event = AgUiEvent::StepFinished {
                                                                         step_id: finished_id.to_string(),
+                                                                        step_name: "workflow-step".to_string(),
                                                                         timestamp: Some(AgUiEvent::now_timestamp()),
                                                                         result: None,
                                                                     };
@@ -1775,7 +1372,7 @@ where
                                                                 let step_id = StepId::random();
                                                                 let started_event = AgUiEvent::StepStarted {
                                                                     step_id: step_id.to_string(),
-                                                                    step_name: Some(step_name.to_string()),
+                                                                    step_name: step_name.to_string(),
                                                                     parent_step_id: parent_step_id.clone(),
                                                                     timestamp: Some(AgUiEvent::now_timestamp()),
                                                                     metadata: None,
@@ -1805,6 +1402,7 @@ where
                                                 if let Some(finished_id) = prev_step_id.take() {
                                                     let finished_event = AgUiEvent::StepFinished {
                                                         step_id: finished_id.to_string(),
+                                                        step_name: "workflow-step".to_string(),
                                                         timestamp: Some(AgUiEvent::now_timestamp()),
                                                         result: None,
                                                     };
@@ -1833,7 +1431,7 @@ where
                         }
 
                         // Handle StreamingJobCompleted: emit TEXT_MESSAGE_END and check for LLM tool calls
-                        if let WorkflowStreamEvent::StreamingJobCompleted { event: ev, context: tc } = &event {
+                        if !strict_output_only && let WorkflowStreamEvent::StreamingJobCompleted { event: ev, context: tc } = &event {
                             let job_id_value = ev.job_id.as_ref().map(|j| j.value).unwrap_or(0);
                             let message_id = active_message_ids.remove(&job_id_value);
 
@@ -1884,7 +1482,7 @@ where
                                         for call in &unsent_tool_calls {
                                             sent_tool_call_ids.insert(call.call_id.clone());
                                             session_manager
-                                                .record_emitted_tool_call_id(&session_id, &call.call_id)
+                                                .record_emitted_tool_call_id(&state_session_id, &call.call_id)
                                                 .await;
                                         }
                                     }
@@ -1900,17 +1498,15 @@ where
                                             // sent_tool_call_ids), so only END/RESULT remains.
                                             if !sent_tool_result_ids.contains(call.call_id.as_str()) {
                                                 // TOOL_CALL_END — guard against a second END for
-                                                // call_ids whose END was already emitted (e.g. by
-                                                // handle_llm_tool_approval prepending it to the
-                                                // re-run's stream). RESULT is still required and
-                                                // emitted exactly once below.
+                                                // call_ids whose END was already emitted earlier.
+                                                // RESULT is still required and emitted once below.
                                                 if sent_tool_end_ids.insert(call.call_id.clone()) {
                                                     let end_event = AgUiEvent::tool_call_end(call.call_id.clone());
                                                     let end_event_id = Self::encode_event_with_logging(&encoder, &end_event);
                                                     event_store.store_event(&run_id, end_event_id, end_event.clone()).await;
                                                     yield (end_event_id, end_event);
                                                     session_manager
-                                                        .record_emitted_tool_call_end_id(&session_id, &call.call_id)
+                                                        .record_emitted_tool_call_end_id(&state_session_id, &call.call_id)
                                                         .await;
                                                 }
 
@@ -1967,7 +1563,7 @@ where
                                         }
                                         sent_tool_call_ids.insert(call_id.clone());
                                         session_manager
-                                            .record_emitted_tool_call_id(&session_id, &call_id)
+                                            .record_emitted_tool_call_id(&state_session_id, &call_id)
                                             .await;
                                     }
 
@@ -1979,7 +1575,7 @@ where
                                         event_store.store_event(&run_id, end_event_id, end_event.clone()).await;
                                         yield (end_event_id, end_event);
                                         session_manager
-                                            .record_emitted_tool_call_end_id(&session_id, &call_id)
+                                            .record_emitted_tool_call_end_id(&state_session_id, &call_id)
                                             .await;
                                     }
 
@@ -2080,7 +1676,7 @@ where
                                     let primary_tool_call_id = tool_calls.tool_calls[0].call_id.clone();
 
                                     // Update session state to Paused with HITL info for later resume
-                                    let hitl_info = HitlWaitingInfo::new(
+                                    let mut hitl_info = HitlWaitingInfo::new(
                                         primary_tool_call_id.clone(),
                                         current_position.clone(),
                                         workflow_name.clone(),
@@ -2088,8 +1684,9 @@ where
                                         hitl_ctx.workflow_context.clone(),
                                         hitl_ctx.registered_worker_name.clone(),
                                     );
+                                    hitl_ctx.attach_execution_id(&mut hitl_info);
                                     let interrupt_id = hitl_info.interrupt_id.clone();
-                                    if !session_manager.set_paused_with_hitl_info(&session_id, hitl_info).await {
+                                    if !session_manager.set_paused_with_hitl_info(&state_session_id, hitl_info).await {
                                         tracing::error!(
                                             session_id = %session_id,
                                             run_id = %run_id,
@@ -2108,21 +1705,14 @@ where
                                         event_store.store_event(&run_id, error_event_id, error_event.clone()).await;
                                         yield (error_event_id, error_event);
 
-                                        session_manager.set_session_state(&session_id, SessionState::Error).await;
+                                        session_manager.set_session_state(&state_session_id, SessionState::Error).await;
+                        finish_request_session(&*session_manager, &session_id, &state_session_id, SessionState::Error).await;
                                         // Drop sender so nested subscription tasks can terminate
                                         nested_event_tx.take();
                                         return;
                                     }
 
-                                    // Remove executor from registry
-                                    {
-                                        let mut registry = executor_registry.write().await;
-                                        registry.remove(&run_id_for_cleanup);
-                                        tracing::debug!(
-                                            run_id = %run_id_for_cleanup,
-                                            "Removed executor from registry for LLM HITL pause"
-                                        );
-                                    }
+                                    registration.release().await;
 
                                     // AG-UI Interrupts: Emit RUN_FINISHED with outcome="interrupt"
                                     let interrupt_payload = InterruptPayload {
@@ -2136,18 +1726,21 @@ where
                                         checkpoint_position: current_position,
                                         workflow_name: workflow_name.clone(),
                                     };
-                                    let interrupt_info = InterruptInfo {
+                                    let interrupt_info = AgUiInterruptInfo {
                                         id: interrupt_id.clone(),
                                         reason: "tool_approval_required".to_string(),
                                         payload: interrupt_payload,
                                     };
                                     let run_finished_event = AgUiEvent::run_finished_with_interrupt(
                                         run_id.clone(),
+                                        session_manager.get_session(&state_session_id).await
+                                            .map(|s| s.thread_id.to_string()).unwrap_or_default(),
                                         interrupt_info,
                                     );
                                     let event_id = Self::encode_event_with_logging(&encoder, &run_finished_event);
                                     event_store.store_event(&run_id, event_id, run_finished_event.clone()).await;
                                     yield (event_id, run_finished_event);
+                                    finish_request_session(&*session_manager, &session_id, &state_session_id, SessionState::Completed).await;
 
                                     tracing::info!(
                                         interrupt_id = %interrupt_id,
@@ -2164,7 +1757,7 @@ where
                         }
 
                         // Handle TaskStarted: emit STEP_STARTED at task begin time
-                        if let WorkflowStreamEvent::TaskStarted { event: ev } = &event {
+                        if !strict_output_only && let WorkflowStreamEvent::TaskStarted { event: ev } = &event {
                             let task_position = &ev.position;
                             if !task_position.is_empty() && prev_position.as_deref() != Some(task_position) {
                                 // Close previous step if position changed
@@ -2204,7 +1797,7 @@ where
 
                         // Handle TaskCompleted: emit STEP_FINISHED and skip context() fallback
                         // to avoid duplicate STEP_STARTED for the same position.
-                        if let WorkflowStreamEvent::TaskCompleted { event: ev, .. } = &event {
+                        if !strict_output_only && let WorkflowStreamEvent::TaskCompleted { event: ev, .. } = &event {
                             let task_position = &ev.position;
                             if !task_position.is_empty() && prev_position.as_deref() == Some(task_position) {
                                 let finished_event = {
@@ -2245,6 +1838,9 @@ where
                             error_payload,
                         } = &event
                         {
+                            if strict_output_only {
+                                continue;
+                            }
                             tracing::warn!(
                                 task_name = %task_name,
                                 position = %position,
@@ -2316,7 +1912,7 @@ where
 
                             if prev_position.as_ref() != Some(&current_position) {
                                 // Position changed - emit STEP_FINISHED for previous step if exists
-                                if prev_position.is_some() {
+                                if !strict_output_only && prev_position.is_some() {
                                     let finished_event = {
                                         let mut adapter_lock = adapter.lock().await;
                                         adapter_lock.task_finished(None)
@@ -2329,7 +1925,7 @@ where
                                 }
 
                                 // Emit STEP_STARTED for new step if we have a step name
-                                if let Some(step_name) = current_step_name.as_ref() {
+                                if !strict_output_only && let Some(step_name) = current_step_name.as_ref() {
                                     let event = {
                                         let mut adapter_lock = adapter.lock().await;
                                         adapter_lock.task_started(step_name, None, None)
@@ -2342,167 +1938,29 @@ where
                                 prev_position = Some(current_position.clone());
                             }
 
-                            // Get workflow context for state snapshot
-                            let wfc = executor.workflow_context.read().await;
-
-                            // Get context variables from tokio::sync::Mutex
-                            let context_vars = {
-                                let guard = wfc.context_variables.lock().await;
-                                app_wrapper::workflow::execute::context::context_variables_to_json(&guard)
-                                    .into_iter()
-                                    .collect::<HashMap<String, serde_json::Value>>()
-                            };
-
-                            // Check for HITL Waiting status
-                            let is_waiting = wfc.status == app_wrapper::workflow::execute::context::WorkflowStatus::Waiting;
-
-                            // Convert context to state snapshot event
-                            let state = WorkflowState::new(&wfc.name)
-                                .with_status(match wfc.status {
-                                    app_wrapper::workflow::execute::context::WorkflowStatus::Pending => WorkflowStatus::Pending,
-                                    app_wrapper::workflow::execute::context::WorkflowStatus::Running => WorkflowStatus::Running,
-                                    app_wrapper::workflow::execute::context::WorkflowStatus::Completed => WorkflowStatus::Completed,
-                                    app_wrapper::workflow::execute::context::WorkflowStatus::Faulted => WorkflowStatus::Faulted,
-                                    app_wrapper::workflow::execute::context::WorkflowStatus::Cancelled => WorkflowStatus::Cancelled,
-                                    app_wrapper::workflow::execute::context::WorkflowStatus::Waiting => WorkflowStatus::Running, // Waiting maps to Running for AG-UI protocol
-                                })
-                                .with_context_variables(context_vars);
-
-                            let adapter_lock = adapter.lock().await;
-                            let event = adapter_lock.state_snapshot(state);
-                            drop(adapter_lock);
-                            drop(wfc);
-
-                            let event_id = Self::encode_event_with_logging(&encoder, &event);
-                            event_store.store_event(&run_id, event_id, event.clone()).await;
-                            yield (event_id, event);
-
-                            // HITL: If workflow is waiting for user input, emit TOOL_CALL events
-                            if is_waiting {
-                                tracing::info!("Workflow waiting for user input, emitting TOOL_CALL events");
-
-                                // Generate tool_call_id from run_id for consistency
-                                let tool_call_id = format!("wait_{}", run_id);
-
-                                // Get checkpoint position for later resume
-                                let checkpoint_position = current_position;
-
-                                // Emit TOOL_CALL_START event with canonical HUMAN_INPUT tool name
-                                let tool_call_start = AgUiEvent::tool_call_start(
-                                    tool_call_id.clone(),
-                                    "HUMAN_INPUT".to_string(),
-                                    None,
-                                );
-                                let start_event_id = Self::encode_event_with_logging(&encoder, &tool_call_start);
-                                event_store.store_event(&run_id, start_event_id, tool_call_start.clone()).await;
-                                yield (start_event_id, tool_call_start);
-
-                                // Emit TOOL_CALL_ARGS event with current output
-                                let args = tc.output
-                                    .as_ref()
-                                    .to_string();
-                                let tool_call_args = AgUiEvent::tool_call_args(
-                                    tool_call_id.clone(),
-                                    args,
-                                );
-                                let args_event_id = Self::encode_event_with_logging(&encoder, &tool_call_args);
-                                event_store.store_event(&run_id, args_event_id, tool_call_args.clone()).await;
-                                yield (args_event_id, tool_call_args);
-
-                                // Persist on the session so a resumed stream does not re-emit the
-                                // bounded START–ARGS pair for this HUMAN_INPUT wait.
-                                sent_tool_call_ids.insert(tool_call_id.clone());
-                                session_manager
-                                    .record_emitted_tool_call_id(&session_id, &tool_call_id)
-                                    .await;
-
-                                // Update session state to Paused with HITL info for later resume
-                                let hitl_info = HitlWaitingInfo::new(
-                                    tool_call_id.clone(),
-                                    checkpoint_position,
-                                    workflow_name.clone(),
-                                    vec![], // Traditional HITL (HUMAN_INPUT)
-                                    hitl_ctx.workflow_context.clone(),
-                                    hitl_ctx.registered_worker_name.clone(),
-                                );
-                                if !session_manager.set_paused_with_hitl_info(&session_id, hitl_info).await {
-                                    // Failed to persist HITL state - emit RUN_ERROR and set session to Error
-                                    tracing::error!(
-                                        session_id = %session_id,
-                                        run_id = %run_id,
-                                        "Failed to persist HITL waiting info, emitting RUN_ERROR"
-                                    );
-
-                                    let adapter_lock = adapter.lock().await;
-                                    let error_event = adapter_lock.workflow_error(
-                                        "Failed to persist HITL waiting state".to_string(),
-                                        "HITL_PERSISTENCE_ERROR",
-                                        None,
-                                    );
-                                    drop(adapter_lock);
-
-                                    let error_event_id = Self::encode_event_with_logging(&encoder, &error_event);
-                                    event_store.store_event(&run_id, error_event_id, error_event.clone()).await;
-                                    yield (error_event_id, error_event);
-
-                                    session_manager.set_session_state(&session_id, SessionState::Error).await;
-                                    // Drop sender so nested subscription tasks can terminate
-                                    nested_event_tx.take();
-                                    return;
-                                }
-
-                                // Remove executor from registry so /stream does not treat the run as active
-                                {
-                                    let mut registry = executor_registry.write().await;
-                                    registry.remove(&run_id_for_cleanup);
-                                    tracing::debug!(
-                                        run_id = %run_id_for_cleanup,
-                                        "Removed executor from registry for paused HITL run"
-                                    );
-                                }
-
-                                // Flush TEXT_MESSAGE_END for any active streaming messages before pausing
-                                for (job_id, message_id) in active_message_ids.drain() {
-                                    if !text_message_started.remove(&job_id) {
-                                        continue;
-                                    }
-                                    tracing::debug!(
-                                        job_id = job_id,
-                                        "HITL pause: flushing TEXT_MESSAGE_END for interrupted stream"
-                                    );
-                                    let ag_event = AgUiEvent::text_message_end(message_id);
-                                    let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
-                                    event_store.store_event(&run_id, event_id, ag_event.clone()).await;
-                                    yield (event_id, ag_event);
-                                }
-
-                                // Exit stream without emitting RUN_FINISHED
-                                tracing::info!("Workflow paused for HITL, session {} is now Paused", session_id);
-                                // Drop sender so nested subscription tasks can terminate
-                                nested_event_tx.take();
-                                return;
-                            }
                         }
                         // Start events (StreamingJobStarted, JobStarted, TaskStarted) are handled above
                     }
-                    Err(e) => {
+                    Err(_) => {
                         // Flush any remaining TEXT_MESSAGE_END for interrupted streams
-                        for (job_id, message_id) in active_message_ids.drain() {
-                            if !text_message_started.remove(&job_id) {
-                                continue;
+                        if !strict_output_only {
+                            for (job_id, message_id) in active_message_ids.drain() {
+                                if !text_message_started.remove(&job_id) {
+                                    continue;
+                                }
+                                tracing::debug!(
+                                    job_id = job_id,
+                                    "Error path: flushing TEXT_MESSAGE_END for interrupted stream"
+                                );
+                                let ag_event = AgUiEvent::text_message_end(message_id);
+                                let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
+                                event_store.store_event(&run_id, event_id, ag_event.clone()).await;
+                                yield (event_id, ag_event);
                             }
-                            tracing::debug!(
-                                job_id = job_id,
-                                "Error path: flushing TEXT_MESSAGE_END for interrupted stream"
-                            );
-                            let ag_event = AgUiEvent::text_message_end(message_id);
-                            let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
-                            event_store.store_event(&run_id, event_id, ag_event.clone()).await;
-                            yield (event_id, ag_event);
                         }
 
                         // Emit STEP_FINISHED for current step before error
-                        if prev_position.is_some() {
+                        if !strict_output_only && prev_position.is_some() {
                             let finished_event = {
                                 let mut adapter_lock = adapter.lock().await;
                                 adapter_lock.task_finished(None)
@@ -2524,7 +1982,7 @@ where
                         { has_error = true; }
                         let adapter_lock = adapter.lock().await;
                         let event = adapter_lock.workflow_error(
-                            format!("{:?}", e),
+                            "Workflow execution failed".to_string(),
                             "WORKFLOW_ERROR",
                             None,
                         );
@@ -2535,7 +1993,8 @@ where
                         yield (event_id, event);
 
                         // Update session state to Error
-                        session_manager.set_session_state(&session_id, SessionState::Error).await;
+                        session_manager.set_session_state(&state_session_id, SessionState::Error).await;
+                        finish_request_session(&*session_manager, &session_id, &state_session_id, SessionState::Error).await;
                         break;
                     }
                 }
@@ -2550,7 +2009,9 @@ where
             let drain_deadline = tokio::time::Instant::now()
                 + tokio::time::Duration::from_secs(NESTED_DRAIN_TIMEOUT_SECS);
             while let Ok(Some(nested_event)) = tokio::time::timeout_at(drain_deadline, nested_event_rx.recv()).await {
-                yield nested_event;
+                if !strict_output_only {
+                    yield nested_event;
+                }
             }
 
             // Abort remaining nested tasks — channel drop already signals graceful
@@ -2560,24 +2021,144 @@ where
                 handle.abort();
             }
 
+            let waiting_checkpoint = {
+                let workflow_context = executor.workflow_context.read().await;
+                if !has_error
+                    && workflow_context.status
+                    == app_wrapper::workflow::execute::context::WorkflowStatus::Waiting
+                {
+                    Some(
+                        workflow_context
+                            .resume_position
+                            .as_ref()
+                            .map(|position| position.as_json_pointer()),
+                    )
+                } else {
+                    None
+                }
+            };
+
+            if let Some(Some(checkpoint_position)) = waiting_checkpoint {
+                let tool_call_id = format!("wait_{run_id}");
+                session_manager
+                    .record_emitted_tool_call_id(&state_session_id, &tool_call_id)
+                    .await;
+                let mut hitl_info = HitlWaitingInfo::new(
+                    tool_call_id,
+                    checkpoint_position,
+                    workflow_name.clone(),
+                    vec![],
+                    hitl_ctx.workflow_context.clone(),
+                    hitl_ctx.registered_worker_name.clone(),
+                );
+                hitl_ctx.attach_execution_id(&mut hitl_info);
+                let interrupt_id = hitl_info.interrupt_id.clone();
+                if !session_manager
+                    .set_paused_with_hitl_info(&state_session_id, hitl_info)
+                    .await
+                {
+                    let adapter_lock = adapter.lock().await;
+                    let event = adapter_lock.workflow_error(
+                        "Failed to persist HITL waiting state",
+                        "HITL_PERSISTENCE_ERROR",
+                        None,
+                    );
+                    drop(adapter_lock);
+                    let event_id = Self::encode_event_with_logging(&encoder, &event);
+                    event_store
+                        .store_event(&run_id, event_id, event.clone())
+                        .await;
+                    yield (event_id, event);
+                    session_manager
+                        .set_session_state(&state_session_id, SessionState::Error)
+                        .await;
+                    finish_request_session(
+                        &*session_manager,
+                        &session_id,
+                        &state_session_id,
+                        SessionState::Error,
+                    )
+                    .await;
+                    nested_event_tx.take();
+                    return;
+                }
+
+                registration.release().await;
+                let thread_id = session_manager
+                    .get_session(&state_session_id)
+                    .await
+                    .map(|session| session.thread_id.to_string())
+                    .unwrap_or_default();
+                let event = AgUiEvent::run_finished_with_interrupts(
+                    run_id.clone(),
+                    thread_id,
+                    vec![crate::events::types::AgUiInterrupt {
+                        id: interrupt_id,
+                        reason: "workflow_waiting".to_string(),
+                    }],
+                );
+                let event_id = Self::encode_event_with_logging(&encoder, &event);
+                event_store
+                    .store_event(&run_id, event_id, event.clone())
+                    .await;
+                yield (event_id, event);
+                finish_request_session(
+                    &*session_manager,
+                    &session_id,
+                    &state_session_id,
+                    SessionState::Completed,
+                )
+                .await;
+                nested_event_tx.take();
+                return;
+            }
+
+            if waiting_checkpoint.is_some() {
+                let adapter_lock = adapter.lock().await;
+                let event = adapter_lock.workflow_error(
+                    "Waiting workflow has no checkpoint position",
+                    "MISSING_CHECKPOINT_POSITION",
+                    None,
+                );
+                drop(adapter_lock);
+                let event_id = Self::encode_event_with_logging(&encoder, &event);
+                event_store
+                    .store_event(&run_id, event_id, event.clone())
+                    .await;
+                yield (event_id, event);
+                session_manager
+                    .set_session_state(&state_session_id, SessionState::Error)
+                    .await;
+                finish_request_session(
+                    &*session_manager,
+                    &session_id,
+                    &state_session_id,
+                    SessionState::Error,
+                )
+                .await;
+                return;
+            }
+
             // Flush any remaining TEXT_MESSAGE_END for streams that didn't complete normally
             // (safety net for edge cases where StreamingJobCompleted wasn't received)
-            for (job_id, message_id) in active_message_ids.drain() {
-                if !text_message_started.remove(&job_id) {
-                    continue;
+            if !strict_output_only {
+                for (job_id, message_id) in active_message_ids.drain() {
+                    if !text_message_started.remove(&job_id) {
+                        continue;
+                    }
+                    tracing::debug!(
+                        job_id = job_id,
+                        "Normal completion: flushing TEXT_MESSAGE_END for unclosed stream"
+                    );
+                    let ag_event = AgUiEvent::text_message_end(message_id);
+                    let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
+                    event_store.store_event(&run_id, event_id, ag_event.clone()).await;
+                    yield (event_id, ag_event);
                 }
-                tracing::debug!(
-                    job_id = job_id,
-                    "Normal completion: flushing TEXT_MESSAGE_END for unclosed stream"
-                );
-                let ag_event = AgUiEvent::text_message_end(message_id);
-                let event_id = Self::encode_event_with_logging(&encoder, &ag_event);
-                event_store.store_event(&run_id, event_id, ag_event.clone()).await;
-                yield (event_id, ag_event);
             }
 
             // Emit STEP_FINISHED for final step if exists
-            if prev_position.is_some() && !has_error {
+            if !strict_output_only && prev_position.is_some() && !has_error {
                 let finished_event = {
                     let mut adapter_lock = adapter.lock().await;
                     adapter_lock.task_finished(None)
@@ -2591,24 +2172,50 @@ where
 
             // Emit RUN_FINISHED only if no error occurred (AG-UI spec: RUN_FINISHED and RUN_ERROR are mutually exclusive)
             if !has_error {
-                let event = {
-                    let adapter_lock = adapter.lock().await;
-                    adapter_lock.workflow_completed(None)
+                let output = executor.workflow_context.read().await.output.clone();
+                let result = if let Some(output) = output {
+                    match crate::projection::project_workflow_output(&output) {
+                        Ok(projection) => {
+                            for event in projection.events {
+                                let event_id = Self::encode_event_with_logging(&encoder, &event);
+                                event_store.store_event(&run_id, event_id, event.clone()).await;
+                                yield (event_id, event);
+                            }
+                            projection.result
+                        }
+                        Err(_) => {
+                            has_error = true;
+                            let event = AgUiEvent::run_error(run_id.clone(), "Workflow output could not be published", Some("INVALID_PUBLIC_OUTPUT".into()), None);
+                            let event_id = Self::encode_event_with_logging(&encoder, &event);
+                            event_store.store_event(&run_id, event_id, event.clone()).await;
+                            yield (event_id, event);
+                            session_manager.set_session_state(&state_session_id, SessionState::Error).await;
+                        finish_request_session(&*session_manager, &session_id, &state_session_id, SessionState::Error).await;
+                            None
+                        }
+                    }
+                } else {
+                    has_error = true;
+                    let event = AgUiEvent::run_error(run_id.clone(), "Workflow produced no public output", Some("MISSING_PUBLIC_OUTPUT".into()), None);
+                    let event_id = Self::encode_event_with_logging(&encoder, &event);
+                    event_store.store_event(&run_id, event_id, event.clone()).await;
+                    yield (event_id, event);
+                    session_manager.set_session_state(&state_session_id, SessionState::Error).await;
+                        finish_request_session(&*session_manager, &session_id, &state_session_id, SessionState::Error).await;
+                    None
                 };
+                if has_error { return; }
+                let thread_id = session_manager.get_session(&state_session_id).await.map(|s| s.thread_id.to_string()).unwrap_or_default();
+                let event = AgUiEvent::run_finished_success(run_id.clone(), thread_id, result);
                 let event_id = Self::encode_event_with_logging(&encoder, &event);
                 event_store.store_event(&run_id, event_id, event.clone()).await;
                 yield (event_id, event);
 
                 // Update session state to Completed
-                session_manager.set_session_state(&session_id, SessionState::Completed).await;
+                session_manager.set_session_state(&state_session_id, SessionState::Completed).await;
+                finish_request_session(&*session_manager, &session_id, &state_session_id, SessionState::Completed).await;
             }
 
-            // Cleanup: remove executor from registry after stream completes
-            {
-                let mut registry = executor_registry.write().await;
-                registry.remove(&run_id_for_cleanup);
-                tracing::debug!("Removed executor from registry for run_id: {}", run_id_for_cleanup);
-            }
         }
     }
 }
@@ -2627,93 +2234,43 @@ where
             config: self.config.clone(),
             encoder: self.encoder.clone(),
             executor_registry: self.executor_registry.clone(),
+            direct_runs: self.direct_runs.clone(),
         }
     }
 }
 
-/// Convert a serde_json::Value to a JSON string suitable for fn_arguments.
-/// - Value::String is unwrapped directly (avoids double-quoting). Callers are expected
-///   to send JSON-encoded strings (e.g. `"{\"key\": \"value\"}"`) in String variants,
-///   or JSON objects/arrays directly.
-/// - Other variants are serialized to JSON.
-fn value_to_json_string(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(s) => s.clone(),
-        other => serde_json::to_string(other).unwrap_or_else(|e| {
-            tracing::warn!("Failed to serialize serde_json::Value to string: {}", e);
-            String::new()
-        }),
-    }
-}
-
-/// Update workflow context's runnerMessages with ASSISTANT tool call and a TOOL response message.
-/// Returns true if a workflow context was found and updated.
-fn append_runner_messages(
-    input: &mut RunAgentInput,
-    assistant_tool_calls: Vec<serde_json::Value>,
-    tool_message: serde_json::Value,
-) -> bool {
-    for ctx in &mut input.context {
-        let workflow_context = match ctx {
-            crate::types::Context::WorkflowInline {
-                workflow_context, ..
-            } => workflow_context,
-            crate::types::Context::WorkflowDefinition {
-                workflow_context, ..
-            } => workflow_context,
-            _ => continue,
-        };
-
-        let mut ctx_value: serde_json::Value = workflow_context
-            .as_ref()
-            .and_then(|v| {
-                if let serde_json::Value::String(s) = v {
-                    serde_json::from_str(s).ok()
-                } else {
-                    Some(v.clone())
-                }
-            })
-            .unwrap_or_else(|| serde_json::json!({}));
-
-        let runner_messages = ctx_value
-            .get("runnerMessages")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!([]));
-
-        let mut messages_array = match runner_messages {
-            serde_json::Value::Array(arr) => arr,
-            _ => vec![],
-        };
-
-        // Add ASSISTANT tool call message
-        messages_array.push(serde_json::json!({
-            "role": "ASSISTANT",
-            "content": {
-                "toolCalls": {
-                    "calls": assistant_tool_calls
-                }
-            }
-        }));
-
-        // Add the caller-provided TOOL message
-        messages_array.push(tool_message);
-
-        if let serde_json::Value::Object(ref mut map) = ctx_value {
-            map.insert(
-                "runnerMessages".to_string(),
-                serde_json::Value::Array(messages_array),
-            );
-        }
-
-        *workflow_context = Some(serde_json::Value::String(ctx_value.to_string()));
-
-        tracing::debug!(
-            workflow_context = ?workflow_context,
-            "Updated workflowContext runnerMessages"
-        );
-        return true;
-    }
-    false
+/// Load the checkpoint a paused session waits on, from Redis when configured.
+pub(crate) async fn load_resume_checkpoint(
+    app_wrapper_module: &AppWrapperModule,
+    checkpoint_session: &Session,
+    hitl_info: &HitlWaitingInfo,
+) -> Result<(ExecutionId, CheckPointContext)> {
+    let execution_id = hitl_info
+        .execution_id
+        .as_deref()
+        .map(RunId::new)
+        .unwrap_or_else(|| checkpoint_session.run_id.clone())
+        .to_execution_id()
+        .ok_or_else(|| AgUiError::InvalidInput("Invalid run_id for execution".to_string()))?;
+    let repositories = &app_wrapper_module.repositories;
+    let checkpoint_repo = repositories
+        .redis_checkpoint_repository
+        .as_ref()
+        .map(|repository| repository.as_ref())
+        .unwrap_or(repositories.memory_checkpoint_repository.as_ref());
+    let checkpoint = checkpoint_repo
+        .get_checkpoint_with_id(
+            &execution_id,
+            &hitl_info.workflow_name,
+            &hitl_info.checkpoint_position,
+        )
+        .await
+        .map_err(AgUiError::Internal)?
+        .ok_or_else(|| AgUiError::CheckpointNotFound {
+            workflow_name: hitl_info.workflow_name.clone(),
+            position: hitl_info.checkpoint_position.clone(),
+        })?;
+    Ok((execution_id, checkpoint))
 }
 
 pub(crate) async fn decode_workflow_from_runner_settings(
@@ -2781,52 +2338,179 @@ pub(crate) async fn decode_workflow_from_runner_settings(
 pub(crate) struct HitlStreamContext {
     pub workflow_context: Option<serde_json::Value>,
     pub registered_worker_name: Option<String>,
+    pub execution_id: Option<String>,
+    pub canonical_session_id: Option<String>,
 }
 
-/// Merge settings-side workflow_context with client-side workflow_context.
-/// Settings keys take precedence over client values on conflict (shallow merge:
-/// nested objects are replaced entirely, not recursively merged).
-/// If client_ctx is a JSON string, it is parsed first.
-pub(crate) fn merge_workflow_contexts(
-    settings_ctx: Option<serde_json::Value>,
-    client_ctx: Option<serde_json::Value>,
-) -> Option<serde_json::Value> {
-    match (settings_ctx, client_ctx) {
-        (None, None) => None,
-        (Some(s), None) => Some(s),
-        (None, Some(c)) => Some(parse_workflow_context_value(c)),
-        (Some(s), Some(c)) => {
-            let parsed_client = parse_workflow_context_value(c);
-            match (parsed_client, s) {
-                (serde_json::Value::Object(mut base), serde_json::Value::Object(overlay)) => {
-                    // overlay = settings, so settings keys win on conflict
-                    for (k, v) in overlay {
-                        base.insert(k, v);
-                    }
-                    Some(serde_json::Value::Object(base))
-                }
-                (_, settings_val) => Some(settings_val),
-            }
+impl HitlStreamContext {
+    pub(crate) fn attach_execution_id(&self, hitl_info: &mut HitlWaitingInfo) {
+        hitl_info.execution_id = self.execution_id.clone();
+    }
+}
+
+pub(crate) fn ensure_checkpoint_execution_id(hitl_info: &mut HitlWaitingInfo, run_id: &RunId) {
+    hitl_info
+        .execution_id
+        .get_or_insert_with(|| run_id.to_string());
+}
+
+pub(crate) fn resume_worker_name(hitl_info: &HitlWaitingInfo) -> &str {
+    hitl_info
+        .registered_worker_name
+        .as_deref()
+        .unwrap_or(&hitl_info.workflow_name)
+}
+
+/// Continuation inputs for a checkpoint consumed by a completed resume batch.
+pub(crate) struct ResumeContinuation {
+    pub hitl_info: HitlWaitingInfo,
+    pub user_input: serde_json::Value,
+    pub consumed: ConsumedResumeBatch,
+}
+
+impl ResumeContinuation {
+    pub(crate) fn new(
+        canonical: &Session,
+        resolved_info: HitlWaitingInfo,
+        pending_info: HitlWaitingInfo,
+        response_session_id: String,
+    ) -> Self {
+        let mut hitl_info = resolved_info;
+        ensure_checkpoint_execution_id(&mut hitl_info, &canonical.run_id);
+        if let Some(first) = hitl_info.interrupts.first() {
+            hitl_info.tool_call_id = first.call_id.clone();
+        }
+        let user_input = resume_entries_to_user_input(&hitl_info.interrupts);
+        Self {
+            hitl_info,
+            user_input,
+            consumed: ConsumedResumeBatch {
+                canonical_session_id: canonical.session_id.clone(),
+                pending_info,
+                response_session_id,
+            },
         }
     }
 }
 
-/// Parse workflow_context value: if it's a JSON string, parse it.
-fn parse_workflow_context_value(v: serde_json::Value) -> serde_json::Value {
-    match v {
-        serde_json::Value::String(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+/// A resume batch whose checkpoint was consumed before its continuation was accepted.
+pub(crate) struct ConsumedResumeBatch {
+    pub canonical_session_id: String,
+    pub pending_info: HitlWaitingInfo,
+    pub response_session_id: String,
+}
+
+impl ConsumedResumeBatch {
+    /// Reopen the consumed interrupts and drop the response session so the client can
+    /// retry the same answers. Call only while no continuation job has been accepted,
+    /// otherwise the checkpoint could be resumed twice.
+    pub(crate) async fn reopen<SM: SessionManager + ?Sized>(self, session_manager: &SM) {
+        if !session_manager
+            .restore_resume_batch(&self.canonical_session_id, self.pending_info)
+            .await
+        {
             tracing::error!(
-                "Failed to parse workflow_context string as JSON: {}, falling back to settings context",
-                e
+                session_id = %self.canonical_session_id,
+                "Failed to reopen interrupts after the resume continuation was rejected"
             );
-            serde_json::Value::String(s)
-        }),
-        other => other,
+        }
+        session_manager
+            .delete_session(&self.response_session_id)
+            .await;
     }
+}
+
+pub(crate) fn resume_entries_to_user_input(
+    entries: &[crate::session::InterruptInfo],
+) -> serde_json::Value {
+    serde_json::json!({
+        "resume": entries
+            .iter()
+            .map(|entry| serde_json::json!({
+                "interruptId": entry.interrupt_id,
+                "status": entry.status,
+                "payload": entry.payload,
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        ConsumedResumeBatch, HitlStreamContext, ensure_checkpoint_execution_id,
+        resume_entries_to_user_input, resume_worker_name,
+    };
+    use crate::session::{
+        HitlWaitingInfo, InMemorySessionManager, InterruptInfo, ResumeBatchEntry,
+        ResumeBatchResult, SessionManager, SessionState,
+    };
+    use crate::types::{ResumeStatus, RunId, ThreadId};
+
+    #[tokio::test]
+    async fn reopening_a_rejected_resume_allows_retrying_the_same_answer() {
+        let manager = InMemorySessionManager::new(3600);
+        let thread_id = ThreadId::new("rejected_resume_thread");
+        let paused = manager
+            .create_session(RunId::new("paused_run"), thread_id.clone())
+            .await;
+        manager
+            .set_profile_path(&paused.session_id, "/agent/run")
+            .await;
+        let info = HitlWaitingInfo::new_simple(
+            "call-a".into(),
+            "/tasks/approval".into(),
+            "workflow".into(),
+            vec![],
+        );
+        let interrupt_id = info.interrupts[0].interrupt_id.clone();
+        manager
+            .set_paused_with_hitl_info(&paused.session_id, info)
+            .await;
+        let answer = [ResumeBatchEntry {
+            interrupt_id: interrupt_id.clone(),
+            status: ResumeStatus::Resolved,
+            payload: Some(serde_json::json!({"approved": true})),
+        }];
+        let ResumeBatchResult::Complete { pending_info, .. } = manager
+            .apply_resume_batch(&paused.session_id, &thread_id, "/agent/run", &answer)
+            .await
+            .unwrap()
+        else {
+            panic!("a single answer must consume the checkpoint");
+        };
+        let response = manager
+            .create_session(RunId::new("resume_run"), thread_id.clone())
+            .await;
+
+        ConsumedResumeBatch {
+            canonical_session_id: paused.session_id.clone(),
+            pending_info: *pending_info,
+            response_session_id: response.session_id.clone(),
+        }
+        .reopen(&manager)
+        .await;
+
+        assert!(manager.get_session(&response.session_id).await.is_none());
+        assert!(
+            manager
+                .get_session_by_run_id(&RunId::new("resume_run"))
+                .await
+                .is_none()
+        );
+        let reopened = manager
+            .get_session_by_interrupt_id(&interrupt_id)
+            .await
+            .unwrap();
+        assert_eq!(reopened.session_id, paused.session_id);
+        assert_eq!(reopened.state, SessionState::Paused);
+        assert!(matches!(
+            manager
+                .apply_resume_batch(&paused.session_id, &thread_id, "/agent/run", &answer)
+                .await,
+            Ok(ResumeBatchResult::Complete { .. })
+        ));
+    }
     // Note: Full integration tests require AppWrapperModule setup
     // which is complex. These tests focus on handler construction.
 
@@ -2834,5 +2518,83 @@ mod tests {
     fn test_handler_clone() {
         // Handler should be clonable for use in axum state
         // This is a compile-time check - actual instantiation requires AppWrapperModule
+    }
+
+    #[test]
+    fn repeated_waits_keep_the_original_execution_id() {
+        let mut first_wait = HitlWaitingInfo::new_simple(
+            "call-1".into(),
+            "/tasks/first".into(),
+            "workflow".into(),
+            vec![],
+        );
+        let first_context = HitlStreamContext {
+            workflow_context: None,
+            registered_worker_name: Some("registered-worker".into()),
+            execution_id: Some("original-execution".into()),
+            canonical_session_id: Some("canonical-session".into()),
+        };
+        first_context.attach_execution_id(&mut first_wait);
+
+        let mut second_wait = HitlWaitingInfo::new_simple(
+            "call-2".into(),
+            "/tasks/second".into(),
+            "workflow".into(),
+            vec![],
+        );
+        let resumed_context = HitlStreamContext {
+            workflow_context: first_wait.workflow_context.clone(),
+            registered_worker_name: first_wait.registered_worker_name.clone(),
+            execution_id: first_wait.execution_id.clone(),
+            canonical_session_id: Some("canonical-session".into()),
+        };
+        resumed_context.attach_execution_id(&mut second_wait);
+        ensure_checkpoint_execution_id(&mut second_wait, &RunId::new("intermediate-run"));
+
+        assert_eq!(
+            second_wait.execution_id.as_deref(),
+            Some("original-execution")
+        );
+    }
+
+    #[test]
+    fn resume_payload_includes_each_interrupt_status_and_payload() {
+        let entries = vec![
+            InterruptInfo {
+                interrupt_id: "interrupt-a".into(),
+                call_id: "call-a".into(),
+                status: Some(crate::types::ResumeStatus::Resolved),
+                payload: Some(serde_json::json!({"result": 1})),
+            },
+            InterruptInfo {
+                interrupt_id: "interrupt-b".into(),
+                call_id: "call-b".into(),
+                status: Some(crate::types::ResumeStatus::Cancelled),
+                payload: None,
+            },
+        ];
+
+        assert_eq!(
+            resume_entries_to_user_input(&entries),
+            serde_json::json!({
+                "resume": [
+                    {"interruptId":"interrupt-a", "status":"resolved", "payload":{"result":1}},
+                    {"interruptId":"interrupt-b", "status":"cancelled", "payload":null}
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn checkpoint_resume_looks_up_registered_worker_not_document_name() {
+        let mut hitl_info = HitlWaitingInfo::new_simple(
+            "call-a".into(),
+            "/tasks/approval".into(),
+            "guardrail-workflow".into(),
+            vec![],
+        );
+        hitl_info.registered_worker_name = Some("chat-guarded".into());
+
+        assert_eq!(resume_worker_name(&hitl_info), "chat-guarded");
     }
 }

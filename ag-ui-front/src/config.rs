@@ -1,6 +1,69 @@
 //! Configuration for AG-UI Front server.
 
 use serde::Deserialize;
+use std::collections::HashSet;
+
+/// A server-owned endpoint binding to a registered worker.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgUiProfile {
+    pub path: String,
+    pub worker_name: String,
+    pub mode: AgUiProfileMode,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AgUiProfileMode {
+    Streaming,
+    Workflow,
+}
+
+impl AgUiProfile {
+    pub fn local_route_path(&self) -> Option<&str> {
+        self.path.strip_prefix("/ag-ui")
+    }
+
+    pub fn validate_all(profiles: &[Self]) -> anyhow::Result<()> {
+        let mut paths = HashSet::new();
+        for profile in profiles {
+            let parts: Vec<_> = profile.path.split('/').collect();
+            anyhow::ensure!(
+                parts.len() == 5
+                    && parts[0].is_empty()
+                    && parts[1] == "ag-ui"
+                    && parts[2] == "agents"
+                    && !parts[3].is_empty()
+                    && parts[4] == "run",
+                "invalid AG-UI profile path: {}",
+                profile.path
+            );
+            anyhow::ensure!(
+                !profile.worker_name.trim().is_empty(),
+                "workerName must not be empty"
+            );
+            anyhow::ensure!(
+                paths.insert(&profile.path),
+                "duplicate AG-UI profile path: {}",
+                profile.path
+            );
+        }
+        Ok(())
+    }
+}
+
+pub fn profile_for_path<'a>(profiles: &'a [AgUiProfile], path: &str) -> Option<&'a AgUiProfile> {
+    profiles.iter().find(|profile| profile.path == path)
+}
+
+impl AgUiServerConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if let Some(error) = &self.profile_config_error {
+            anyhow::bail!("{error}");
+        }
+        AgUiProfile::validate_all(&self.profiles)
+    }
+}
 
 /// Configuration for AG-UI Server
 #[derive(Clone, Debug, Deserialize)]
@@ -13,6 +76,13 @@ pub struct AgUiServerConfig {
 
     /// Session time-to-live in seconds
     pub session_ttl_sec: u64,
+
+    /// Server-owned endpoint bindings. Empty by default; configure AG_UI_PROFILES to enable runs.
+    #[serde(default)]
+    pub profiles: Vec<AgUiProfile>,
+
+    #[serde(skip)]
+    pub profile_config_error: Option<String>,
 }
 
 impl Default for AgUiServerConfig {
@@ -21,6 +91,8 @@ impl Default for AgUiServerConfig {
             timeout_sec: 60,
             max_events_per_run: 1000,
             session_ttl_sec: 3600, // 1 hour
+            profiles: vec![],
+            profile_config_error: None,
         }
     }
 }
@@ -28,6 +100,7 @@ impl Default for AgUiServerConfig {
 impl AgUiServerConfig {
     /// Create configuration from environment variables
     pub fn from_env() -> Self {
+        let (profiles, profile_config_error) = profile_env();
         Self {
             timeout_sec: std::env::var("AG_UI_REQUEST_TIMEOUT_SEC")
                 .ok()
@@ -41,6 +114,8 @@ impl AgUiServerConfig {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3600),
+            profiles,
+            profile_config_error,
         }
     }
 }
@@ -123,6 +198,23 @@ impl ServerConfig {
     }
 }
 
+fn parse_profiles(value: Option<&str>) -> (Vec<AgUiProfile>, Option<String>) {
+    match value {
+        Some(value) => match serde_json::from_str(value) {
+            Ok(profiles) => (profiles, None),
+            Err(error) => (
+                vec![],
+                Some(format!("invalid AG_UI_PROFILES JSON: {error}")),
+            ),
+        },
+        None => (vec![], None),
+    }
+}
+
+fn profile_env() -> (Vec<AgUiProfile>, Option<String>) {
+    parse_profiles(std::env::var("AG_UI_PROFILES").ok().as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +225,52 @@ mod tests {
         assert_eq!(config.timeout_sec, 60);
         assert_eq!(config.max_events_per_run, 1000);
         assert_eq!(config.session_ttl_sec, 3600);
+        assert!(config.profiles.is_empty());
+    }
+
+    #[test]
+    fn profile_paths_must_be_unique_and_scoped() {
+        let make = |path: &str| AgUiProfile {
+            path: path.to_string(),
+            worker_name: "worker".to_string(),
+            mode: AgUiProfileMode::Workflow,
+        };
+        assert!(AgUiProfile::validate_all(&[make("/ag-ui/agents/guarded/run")]).is_ok());
+        assert!(AgUiProfile::validate_all(&[make("/ag-ui/run")]).is_err());
+        assert!(
+            AgUiProfile::validate_all(&[
+                make("/ag-ui/agents/live/run"),
+                make("/ag-ui/agents/live/run"),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn profile_json_uses_wire_field_names_and_rejects_unknown_fields() {
+        let profile: AgUiProfile = serde_json::from_str(
+            r#"{"path":"/ag-ui/agents/live/run","workerName":"llm","mode":"streaming"}"#,
+        )
+        .unwrap();
+        assert_eq!(profile.mode, AgUiProfileMode::Streaming);
+        assert!(serde_json::from_str::<AgUiProfile>(
+            r#"{"path":"/ag-ui/agents/live/run","workerName":"llm","mode":"streaming","extra":true}"#
+        ).is_err());
+    }
+
+    #[test]
+    fn malformed_profile_json_is_not_treated_as_an_empty_configuration() {
+        let (profiles, error) = parse_profiles(Some("{"));
+        assert!(profiles.is_empty());
+        assert!(error.is_some());
+        assert!(
+            AgUiServerConfig {
+                profile_config_error: error,
+                ..AgUiServerConfig::default()
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

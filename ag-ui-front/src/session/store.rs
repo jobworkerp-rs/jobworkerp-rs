@@ -217,13 +217,12 @@ impl EventStore for InMemoryEventStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::state::WorkflowState;
 
     fn create_test_event(n: u64) -> AgUiEvent {
         AgUiEvent::TextMessageContent {
             message_id: format!("msg_{}", n),
             delta: format!("chunk {}", n),
-            timestamp: Some(n as f64),
+            timestamp: Some(n as i64),
         }
     }
 
@@ -343,14 +342,14 @@ mod tests {
 
         let step_started = AgUiEvent::StepStarted {
             step_id: "step_1".to_string(),
-            step_name: Some("task1".to_string()),
+            step_name: "task1".to_string(),
             parent_step_id: None,
             timestamp: None,
             metadata: None,
         };
 
         let state_snapshot = AgUiEvent::StateSnapshot {
-            snapshot: WorkflowState::new("test"),
+            snapshot: serde_json::json!({"public":"test"}),
             timestamp: None,
         };
 

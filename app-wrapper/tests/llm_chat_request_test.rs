@@ -11,6 +11,7 @@ use futures::StreamExt;
 use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmRunnerSettings;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::chat_message::Body as ChatMessageBody;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     ChatMessage, ChatRole, LlmOptions, MessageContent, message_content,
 };
@@ -163,9 +164,9 @@ fn chat_args(options: LlmOptions) -> LlmChatArgs {
     LlmChatArgs {
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(message_content::Content::Text("hi".to_string())),
-            }),
+            })),
         }],
         options: Some(options),
         ..Default::default()
@@ -428,9 +429,9 @@ mod omlx_real {
             max_tokens: Some(400),
             ..options
         });
-        args.messages[0].content = Some(MessageContent {
+        args.messages[0].body = Some(ChatMessageBody::Content(MessageContent {
             content: Some(message_content::Content::Text(prompt.to_string())),
-        });
+        }));
         args
     }
 

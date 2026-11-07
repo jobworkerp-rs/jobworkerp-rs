@@ -186,12 +186,22 @@ message LLMChatArgs {
     }
   }
 
+  message MessageParts {
+    // Ordered content parts for a single chat message.
+    repeated MessageContent items = 1;
+  }
+
   message ChatMessage {
     /// The role of the message.
     ChatRole role = 1;
 
-    /// The content of the message.
-    MessageContent content = 2;
+    /// A chat message has either a single content value or ordered content parts.
+    oneof body {
+      MessageContent content = 2;
+
+      // Parts carry assistant text and tool calls together; only text and tool calls are accepted.
+      MessageParts parts = 3;
+    }
   }
 
   // The name of the model. GenAI resolves its effective model from runner

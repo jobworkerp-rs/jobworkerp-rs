@@ -1,53 +1,73 @@
-//! Tool types for AG-UI protocol.
-//!
-//! References AG-UI Rust SDK (ag-ui-core) tool.rs
+//! Standard AG-UI tool definitions and calls.
 
 use serde::{Deserialize, Serialize};
 
-/// Tool definition for frontend-defined tools.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Tool {
-    /// Tool name (unique identifier)
     pub name: String,
-
-    /// Human-readable description
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-
-    /// JSON Schema for tool parameters
-    pub parameters: serde_json::Value,
+    pub description: String,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parameters: Option<serde_json::Value>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl Tool {
-    /// Create a new tool definition
     pub fn new(name: impl Into<String>, parameters: serde_json::Value) -> Self {
         Self {
             name: name.into(),
-            description: None,
-            parameters,
+            description: String::new(),
+            parameters: Some(parameters),
+            metadata: None,
         }
     }
-
-    /// Set tool description
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
-        self.description = Some(description.into());
+        self.description = description.into();
         self
     }
 }
 
-/// A tool call request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolCall {
-    /// Unique ID for this tool call
     pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: ToolCallType,
+    pub function: ToolCallFunction,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub encrypted_value: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
+}
 
-    /// Name of the tool to call
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolCallFunction {
     pub name: String,
+    pub arguments: String,
+}
 
-    /// Arguments to pass to the tool
-    pub arguments: serde_json::Value,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolCallType {
+    #[serde(rename = "function")]
+    Function,
 }
 
 impl ToolCall {
@@ -58,29 +78,31 @@ impl ToolCall {
     ) -> Self {
         Self {
             id: id.into(),
-            name: name.into(),
-            arguments,
+            call_type: ToolCallType::Function,
+            function: ToolCallFunction {
+                name: name.into(),
+                arguments: arguments.to_string(),
+            },
+            encrypted_value: None,
+            metadata: None,
         }
     }
 }
 
-/// Result from a tool call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolCallResult {
-    /// ID of the tool call this result is for
     pub tool_call_id: String,
-
-    /// Result value from the tool
     pub result: serde_json::Value,
-
-    /// Optional error message
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::types::deserialize_non_null_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub error: Option<String>,
 }
 
 impl ToolCallResult {
-    /// Create a successful tool result
     pub fn success(tool_call_id: impl Into<String>, result: serde_json::Value) -> Self {
         Self {
             tool_call_id: tool_call_id.into(),
@@ -88,8 +110,6 @@ impl ToolCallResult {
             error: None,
         }
     }
-
-    /// Create an error tool result
     pub fn error(tool_call_id: impl Into<String>, error: impl Into<String>) -> Self {
         Self {
             tool_call_id: tool_call_id.into(),
@@ -102,58 +122,26 @@ impl ToolCallResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn test_tool_definition() {
-        let tool = Tool::new(
-            "http_request",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string" },
-                    "method": { "type": "string" }
-                }
-            }),
-        )
-        .with_description("Make an HTTP request");
-
-        let json = serde_json::to_value(&tool).unwrap();
-        assert_eq!(json["name"], "http_request");
-        assert_eq!(json["description"], "Make an HTTP request");
-    }
-
-    #[test]
-    fn test_tool_call() {
-        let call = ToolCall::new(
-            "call_123",
-            "http_request",
-            serde_json::json!({
-                "url": "https://api.example.com",
-                "method": "GET"
-            }),
+    fn standard_tool_allows_missing_parameters_but_requires_description() {
+        let tool: Tool =
+            serde_json::from_str(r#"{"name":"lookup","description":"Find a record"}"#).unwrap();
+        assert!(tool.parameters.is_none());
+        assert!(serde_json::from_str::<Tool>(r#"{"name":"lookup","parameters":{}}"#).is_err());
+        assert!(
+            serde_json::from_str::<Tool>(
+                r#"{"name":"lookup","description":"x","parameters":null}"#
+            )
+            .is_err()
         );
-
-        let json = serde_json::to_value(&call).unwrap();
-        assert_eq!(json["id"], "call_123");
-        assert_eq!(json["name"], "http_request");
-    }
-
-    #[test]
-    fn test_tool_result_success() {
-        let result = ToolCallResult::success(
-            "call_123",
-            serde_json::json!({ "status": 200, "body": "OK" }),
+        assert!(
+            serde_json::from_str::<Tool>(r#"{"name":"lookup","description":"x","extra":1}"#)
+                .is_err()
         );
-
-        assert_eq!(result.tool_call_id, "call_123");
-        assert!(result.error.is_none());
-    }
-
-    #[test]
-    fn test_tool_result_error() {
-        let result = ToolCallResult::error("call_123", "Connection timeout");
-
-        assert_eq!(result.tool_call_id, "call_123");
-        assert_eq!(result.error, Some("Connection timeout".to_string()));
+        assert!(
+            serde_json::from_str::<Tool>(r#"{"name":"lookup","description":"x","metadata":null}"#)
+                .is_err()
+        );
+        assert!(serde_json::from_str::<ToolCall>(r#"{"id":"c","type":"function","function":{"name":"lookup","arguments":"{}"},"metadata":null}"#).is_err());
     }
 }

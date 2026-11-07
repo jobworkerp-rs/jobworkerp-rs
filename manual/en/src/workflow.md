@@ -48,7 +48,7 @@ Settings configured in `worker.runner_settings` for the `run` method:
 | `workflow_data` | string (oneof, optional) | Override workflow source with inline definition |
 | `input` | string | Input for the workflow context (JSON or plain string) |
 | `workflow_context` | string (optional) | Additional context information (JSON object). Merged with `workflow_context` in runner settings; settings keys take precedence on conflict |
-| `execution_id` | string (optional) | Unique identifier for the workflow execution instance |
+| `execution_id` | string (optional) | Unique identifier for the workflow execution instance. Required to [save checkpoints](#waiting-and-resuming-from-checkpoints); it is not generated automatically |
 | `from_checkpoint` | Checkpoint (optional) | Data for resuming from a specific checkpoint |
 
 #### For `create` method (CreateWorkflowArgs)
@@ -68,7 +68,7 @@ Settings configured in `worker.runner_settings` for the `run` method:
 |-------|------|-------------|
 | `id` | string | Unique identifier for the workflow execution (UUID v7) |
 | `output` | string | Result of the workflow execution (JSON or plain string) |
-| `position` | string | Execution position in JSON Pointer format |
+| `position` | string | Execution position in JSON Pointer format. When `status` is `Waiting`, this is the resume position and can be passed as the `position` of `from_checkpoint`. This value alone does not indicate that a checkpoint was saved |
 | `status` | WorkflowStatus | Execution status: `Completed`, `Faulted`, `Cancelled`, `Running`, `Waiting`, `Pending` (internal status, typically not seen in final results) |
 | `error_message` | string (optional) | Error details if the workflow failed |
 
@@ -77,6 +77,21 @@ Settings configured in `worker.runner_settings` for the `run` method:
 | Field | Type | Description |
 |-------|------|-------------|
 | `worker_id` | WorkerId (optional) | Identifier of the created worker |
+
+### Waiting and Resuming from Checkpoints
+
+`then: wait` is available on tasks in general, not only on tasks in `do`; it can be specified on tasks such as `set`, `run`, and `call`. It is separate from a time-based `wait` task: `then: wait` suspends execution until it is resumed.
+
+| Placement | Behavior |
+|---|---|
+| A task in `do`, including top-level `do` | If another task follows, the workflow waits with that task as the resume position |
+| A task in a `for` body | `then: wait` causes a runtime `configuration` error. This restriction also applies inside a nested `do` |
+| The `for` task itself | Waits after all iterations have completed |
+| A task in a `fork` branch | Waiting and resuming are outside the supported behavior. Place wait points outside `fork`; nesting the task in a `do` inside a branch does not change this |
+
+Passing schema validation does not guarantee that waiting and resuming are supported at that placement. If a nested `do` ends with a wait, execution resumes at the next task in the enclosing sequence. If there is no later task in the workflow, it completes without waiting and has status `Completed`.
+
+To save checkpoints, set `checkpointing.enabled: true` in the workflow definition and provide `execution_id` at execution time. `execution_id` is not generated automatically. The `position` in a `Waiting` result identifies the resume position, but does not guarantee that a checkpoint was saved. Resuming requires a saved checkpoint.
 
 ## Workflow Example
 
@@ -197,7 +212,19 @@ Workflows support two types of variable expansion:
 - **jq syntax** (`${...}`): Standard jq expressions for JSON data manipulation
 - **Liquid template syntax** (`$${...}`): [Liquid](https://shopify.github.io/liquid/) template expressions for string manipulation and control flow
 
-> **Note**: `fromjson` parses a stream of JSON values. Markdown fences (`` ```json ... ``` ``) and other leading invalid tokens are not JSON, so the expression fails at runtime. Strip fences before parsing LLM output.
+> **Note**: `fromjson` parses a stream of JSON values. Empty input and input containing only JSON whitespace (space, tab, carriage return, or line feed) raise a runtime expression error. Other invalid tokens, including Markdown fences (`` ```json ... ``` ``), also fail; strip fences before parsing LLM output. Multiple JSON values remain supported.
+
+#### Handling optional or empty JSON input
+
+Check for empty or whitespace-only strings before calling `fromjson` when an empty response is expected. Choose a fallback that matches the value's use: `[]` for an optional collection, `{}` for an optional object, or `null` for an optional value. For example:
+
+```yaml
+classifyResult: ${(.content.text | if test("^[ \\t\\r\\n]*$") then {} else fromjson end)}
+```
+
+Use an explicit `error(...)` when the parsed value is required. A `//` fallback only handles `null` and `false`; it does not replace an empty string. Keep empty-state-file handling distinct from a missing file: do not initialize or overwrite a present but empty state file unless that recovery is intended.
+
+When migrating workflows across engine versions, add and validate these guards before deploying the version that raises on empty `fromjson` input. Preserve existing per-item catch/continue behavior where an empty response should skip only that item. Non-empty invalid JSON continues to follow the existing error path.
 
 ### Raise Task Errors
 
@@ -229,7 +256,7 @@ Errors raised by the workflow engine use the Open Workflow Specification standar
 
 | type | status | Raised when |
 |---|---|---|
-| `configuration` | 400 | The definition or deployment cannot run as written: an unresolved timeout reference, invalid call settings, an unsupported script language or option, a missing runner required by `run.script`, `then: wait` inside `for`, a child job's runner, worker or method that does not exist |
+| `configuration` | 400 | The definition or deployment cannot run as written: an unresolved timeout reference, invalid call settings, an unsupported script language or option, a missing runner required by `run.script`, [`then: wait` inside `for`](#waiting-and-resuming-from-checkpoints), a child job's runner, worker or method that does not exist |
 | `validation` | 400 | Workflow or task input fails its `input.schema`, a `run.script` argument name is not a valid identifier, or a child job's arguments do not match the runner's argument schema |
 | `expression` | 400 | A jq or Liquid expression fails to evaluate, or `raise.error` evaluates to a value of the wrong type |
 | `authorization` | 403 | A call references a secret that is not declared in `use.secrets` or whose value is not set |
@@ -419,7 +446,7 @@ The jobworkerp-rs workflow DSL adopts the logic construction aspects of the offi
 - `run` task: Adopts the same structure as the official `run.script` (language, code/source, arguments, environment), plus `run.shell`, `run.container`, and a jobworkerp-specific `run.workflow` source form
 - `call` task: Basic `call: http` support (method, endpoint, headers, query, body, output) including endpoint `authentication` (bearer / basic), and `call: grpc` unary support (service name/host/port, method, arguments) using server reflection, with service `authentication` limited to bearer
 - Runtime expressions: jq syntax (`${}`) for data transformation (plus Liquid template syntax (`$${}`) as a custom extension)
-- Flow control: Flow control via the `then` property (`continue`, `exit`, `end`, `wait` directives)
+- Flow control: Flow control via the `then` property (`continue`, `exit`, `end`, `wait` directives; see [Waiting and Resuming from Checkpoints](#waiting-and-resuming-from-checkpoints) for `then: wait` placement and resume conditions)
 - Input/output transformation: `input.from`, `output.as`, `export.as`
 
 `run.shell`, `run.container`, and `run.workflow` are not exact copies of the official task definitions:
@@ -467,7 +494,7 @@ do:
 **jobworkerp-rs-specific Extensions:**
 - `run.function` / `run.runner` / `run.worker`: Unified access to jobworkerp-rs's job execution platform from workflows (built-in Runners, MCP servers, plugins, etc.)
 - `useStreaming` for streaming execution (progress monitoring for long-running tasks such as LLMs)
-- `checkpoint` for checkpoint and restart functionality
+- `checkpoint` for checkpoint and restart functionality (see [Waiting and Resuming from Checkpoints](#waiting-and-resuming-from-checkpoints))
 - Liquid template syntax (`$${}`) for string templating
 - URI template matching (`{name}` placeholders) in `catch.errors.with.type`
 

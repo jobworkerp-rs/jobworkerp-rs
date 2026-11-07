@@ -8,6 +8,7 @@ use anyhow::Result;
 use app::module::test::create_hybrid_test_app;
 use infra_utils::infra::test::TEST_RUNTIME;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmRunnerSettings;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::chat_message::Body as ChatMessageBody;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, LlmOptions};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatRole, MessageContent};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
@@ -30,13 +31,14 @@ fn create_long_running_chat_args() -> LlmChatArgs {
     LlmChatArgs {
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(
                     jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content::Text(
                         "Please write a detailed explanation of artificial intelligence. Make it comprehensive with multiple sections.".to_string(),
                     ),
                 ),
-            }),
+            })),
+
         }],
         options: Some(LlmOptions {
             temperature: Some(0.8),
@@ -59,13 +61,14 @@ fn create_simple_chat_args() -> LlmChatArgs {
     LlmChatArgs {
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(
                     jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content::Text(
                         "Hello, this is a test message.".to_string(),
                     ),
                 ),
-            }),
+            })),
+
         }],
         options: Some(LlmOptions {
             temperature: Some(0.1),

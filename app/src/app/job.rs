@@ -7,6 +7,8 @@ pub mod rdb_chan;
 #[cfg(test)]
 pub mod cancellation_test;
 #[cfg(test)]
+pub mod enqueue_outcome_test;
+#[cfg(test)]
 pub mod find_list_with_processing_status_test;
 #[cfg(test)]
 pub mod hybrid_indexing_integration_test;
@@ -31,7 +33,7 @@ use infra::infra::job_result::pubsub::{JobResultPublisher, JobResultSubscriber};
 use infra::infra::{
     UseJobQueueConfig,
     job::{
-        queue::redis::RedisJobQueueRepository,
+        queue::redis::{RedisEnqueueOutcomeUnknown, RedisJobQueueRepository},
         rdb::{RdbChanJobRepositoryImpl, RdbJobRepository},
         redis::{RedisJobRepository, UseRedisJobRepository, schedule::RedisJobScheduleRepository},
         status::{
@@ -83,6 +85,25 @@ fn should_subscribe_result_stream_before_enqueue(
         && (worker.queue_type == QueueType::Normal as i32
             || worker.queue_type == QueueType::WithBackup as i32)
 }
+
+/// Identifies a job whose queue write may have succeeded despite an error response.
+/// Currently, this marker is added only for uncertain Redis queue writes.
+#[derive(Debug)]
+pub struct JobEnqueueOutcomeUnknown {
+    pub job_id: JobId,
+}
+
+impl fmt::Display for JobEnqueueOutcomeUnknown {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "enqueue outcome is unknown for job {}",
+            self.job_id.value
+        )
+    }
+}
+
+impl std::error::Error for JobEnqueueOutcomeUnknown {}
 
 /// Receiver that the dispatcher awaits to know when a spawned stream-publishing
 /// task has finished. `None` means there is no background task to wait for.
@@ -949,6 +970,52 @@ where
         // Default: no-op
     }
 
+    /// Record a queued job for running-job visibility. The job is already queued and
+    /// will run, so a failure here is logged rather than reported as an enqueue
+    /// failure, which would make the caller retry or abandon a live job.
+    async fn record_queued_job_visibility(&self, job_id: &JobId, job_data: &JobData) {
+        // For timeout=0 (unlimited), uses expire_job_result_seconds from config
+        let ttl = self.calculate_job_ttl(job_data.timeout);
+        if let Err(error) = self
+            .redis_job_repository()
+            .create_with_expire(job_id, job_data, ttl)
+            .await
+        {
+            tracing::warn!(
+                job_id = job_id.value,
+                %error,
+                "failed to record the queued job for running-job visibility"
+            );
+        }
+    }
+
+    /// Settle a failed Redis enqueue. If the write may have landed, the job can still
+    /// run: keep its PENDING record and mark the error with `JobEnqueueOutcomeUnknown`
+    /// so callers do not retry it blindly. Otherwise release the PENDING record.
+    async fn settle_failed_redis_enqueue(
+        &self,
+        job_id: JobId,
+        error: anyhow::Error,
+        pending_recorded: bool,
+    ) -> anyhow::Error {
+        if error.downcast_ref::<RedisEnqueueOutcomeUnknown>().is_some() {
+            return error.context(JobEnqueueOutcomeUnknown { job_id });
+        }
+        if pending_recorded
+            && let Err(cleanup_error) = self
+                .job_processing_status_repository()
+                .delete_status(&job_id)
+                .await
+        {
+            tracing::warn!(
+                job_id = job_id.value,
+                %cleanup_error,
+                "failed to remove PENDING status after Redis enqueue failure"
+            );
+        }
+        error
+    }
+
     /// TODO move to job/hybrid.rs
     async fn enqueue_job_to_redis_with_wait_if_needed(
         &self,
@@ -1023,16 +1090,7 @@ where
                     if worker.queue_type == QueueType::Normal as i32
                         && let Some(job_data) = &job.data
                     {
-                        // For timeout=0 (unlimited), uses expire_job_result_seconds from config
-                        let ttl = self.calculate_job_ttl(job_data.timeout);
-                        self.redis_job_repository()
-                            .create_with_expire(&job_id, job_data, ttl)
-                            .await?;
-                        tracing::debug!(
-                            "Created job {} with TTL {:?} for running job visibility",
-                            job_id.value,
-                            ttl
-                        );
+                        self.record_queued_job_visibility(&job_id, job_data).await;
                     }
                 }
                 // Direct response requires blocking until job completion
@@ -1078,21 +1136,9 @@ where
                     Ok((job_id, None, None))
                 }
             }
-            Err(error) => {
-                if should_record_pending
-                    && let Err(cleanup_error) = self
-                        .job_processing_status_repository()
-                        .delete_status(&job_id)
-                        .await
-                {
-                    tracing::warn!(
-                        job_id = job_id.value,
-                        %cleanup_error,
-                        "failed to remove PENDING status after Redis enqueue failure"
-                    );
-                }
-                Err(error)
-            }
+            Err(error) => Err(self
+                .settle_failed_redis_enqueue(job_id, error, should_record_pending)
+                .await),
         }?;
         Ok(res)
     }

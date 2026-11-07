@@ -11,6 +11,7 @@ use anyhow::Result;
 use app::app::function::function_set::FunctionSetApp;
 use app_wrapper::llm::chat::genai::GenaiChatService;
 use infra_utils::infra::test::TEST_RUNTIME;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::chat_message::Body as ChatMessageBody;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, LlmOptions};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     ChatRole, FunctionOptions, MessageContent,
@@ -106,13 +107,13 @@ fn create_auto_select_chat_args(message: &str) -> LlmChatArgs {
     LlmChatArgs {
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(
                     jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content::Text(
                         message.to_string(),
                     ),
                 ),
-            }),
+            })),
         }],
         options: Some(LlmOptions {
             temperature: Some(0.0),
@@ -293,13 +294,13 @@ fn test_genai_auto_select_without_function_sets_falls_back() -> Result<()> {
     let args = LlmChatArgs {
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(
                     jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content::Text(
                         "What is 2 + 3?".to_string(),
                     ),
                 ),
-            }),
+            })),
         }],
         options: Some(LlmOptions {
             temperature: Some(0.0),

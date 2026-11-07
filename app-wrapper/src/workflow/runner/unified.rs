@@ -230,6 +230,26 @@ impl WorkflowUnifiedRunnerImpl {
         })
     }
 
+    /// Build the result reported for a workflow context. A waiting workflow reports
+    /// its resume position so callers can look up the saved checkpoint.
+    fn workflow_result_from_context(
+        ctx: &crate::workflow::execute::context::WorkflowContext,
+        output: String,
+    ) -> WorkflowResult {
+        WorkflowResult {
+            id: ctx.id.to_string(),
+            output,
+            position: ctx.reported_position().as_json_pointer(),
+            status: WorkflowStatus::from_str_name(ctx.status.to_string().as_str())
+                .unwrap_or(WorkflowStatus::Faulted) as i32,
+            error_message: if ctx.status == WorkflowStatus::Completed.into() {
+                None
+            } else {
+                ctx.output.as_ref().map(|o| o.to_string())
+            },
+        }
+    }
+
     /// Resolve workflow: args workflow_source takes precedence over settings
     /// Uses WorkflowLoader for proper URL/file loading
     async fn resolve_workflow(
@@ -386,18 +406,7 @@ impl WorkflowUnifiedRunnerImpl {
 
         let r = if let Some(res) = final_context {
             tracing::info!("Workflow result: {}", res.output_string());
-            WorkflowResult {
-                id: res.id.to_string(),
-                output: serde_json::to_string(&res.output)?,
-                position: res.position.as_json_pointer(),
-                status: WorkflowStatus::from_str_name(res.status.to_string().as_str())
-                    .unwrap_or(WorkflowStatus::Faulted) as i32,
-                error_message: if res.status == WorkflowStatus::Completed.into() {
-                    None
-                } else {
-                    res.output.as_ref().map(|o| o.to_string())
-                },
-            }
+            Self::workflow_result_from_context(&res, serde_json::to_string(&res.output)?)
         } else if cancelled {
             // Drain window elapsed without any context being yielded.
             // Honour the cancellation by returning a synthetic Cancelled
@@ -563,21 +572,10 @@ impl WorkflowUnifiedRunnerImpl {
                 let stream_failure = stream_failure_for_then.clone();
                 async move {
                     let workflow_result = match result {
-                        Ok(context) => WorkflowResult {
-                            id: context.id.to_string(),
-                            output: serde_json::to_string(&context.output).unwrap_or_default(),
-                            position: context.position.as_json_pointer(),
-                            status: WorkflowStatus::from_str_name(
-                                context.status.to_string().as_str(),
-                            )
-                            .unwrap_or(WorkflowStatus::Faulted)
-                                as i32,
-                            error_message: if context.status == WorkflowStatus::Completed.into() {
-                                None
-                            } else {
-                                context.output.as_ref().map(|o| o.to_string())
-                            },
-                        },
+                        Ok(context) => Self::workflow_result_from_context(
+                            &context,
+                            serde_json::to_string(&context.output).unwrap_or_default(),
+                        ),
                         Err(e) => {
                             tracing::error!("Error in workflow execution: {:?}", e);
                             let message = format!("Failed to execute workflow: {e}");
@@ -860,6 +858,30 @@ mod tests {
     use super::*;
     use jobworkerp_runner::runner::RunnerSpec;
     use serde_json::json;
+
+    #[test]
+    fn workflow_result_reports_resume_position_only_while_waiting() {
+        use crate::workflow::execute::context::{
+            WorkflowContext, WorkflowPosition, WorkflowStatus as Status,
+        };
+        use jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus as Proto;
+
+        let mut context = WorkflowContext::new_empty();
+        context.position = WorkflowPosition::parse("/ROOT/do/1/wait_task").unwrap();
+        context.resume_position = Some(WorkflowPosition::parse("/ROOT/do/2/resume_task").unwrap());
+
+        context.status = Status::Waiting;
+        let waiting =
+            WorkflowUnifiedRunnerImpl::workflow_result_from_context(&context, "{}".into());
+        assert_eq!(waiting.position, "/ROOT/do/2/resume_task");
+        assert_eq!(waiting.status, Proto::Waiting as i32);
+
+        context.status = Status::Completed;
+        let completed =
+            WorkflowUnifiedRunnerImpl::workflow_result_from_context(&context, "{}".into());
+        assert_eq!(completed.position, "/ROOT/do/1/wait_task");
+        assert_eq!(completed.error_message, None);
+    }
 
     #[test]
     fn test_merge_both_contexts_with_overlapping_keys() {

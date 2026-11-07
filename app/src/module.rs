@@ -505,9 +505,46 @@ pub mod test {
     pub async fn create_hybrid_test_app_with_indexing(
         enable_rdb_indexing: bool,
     ) -> Result<AppModule> {
+        build_hybrid_test_app(enable_rdb_indexing, None).await
+    }
+
+    /// Create a hybrid app whose normal Redis pool connects through `proxy_url`, with a
+    /// worker channel shared by enqueue and dispatch. The blocking pool and pub/sub
+    /// client stay on TEST_REDIS_URL; a test worker's leftover BLPOP connections are
+    /// named by `proxied_blocking_client_name(client_name_prefix)`.
+    pub async fn create_hybrid_test_app_with_redis_proxy_and_channel(
+        client_name_prefix: &str,
+        proxy_url: &str,
+        worker_channel: &str,
+    ) -> Result<AppModule> {
+        build_hybrid_test_app(
+            false,
+            Some(RedisProxyFixture {
+                client_name_prefix,
+                proxy_url,
+                worker_channel,
+            }),
+        )
+        .await
+    }
+
+    /// Routes the normal Redis pool through a proxy, with isolated named pools and a
+    /// dedicated worker channel so the proxied queue sees only this fixture's jobs.
+    struct RedisProxyFixture<'a> {
+        client_name_prefix: &'a str,
+        proxy_url: &'a str,
+        worker_channel: &'a str,
+    }
+
+    async fn build_hybrid_test_app(
+        enable_rdb_indexing: bool,
+        proxy: Option<RedisProxyFixture<'_>>,
+    ) -> Result<AppModule> {
         use infra::infra::module::HybridRepositoryModule;
         use infra::infra::module::rdb::test::setup_test_rdb_module;
-        use infra::infra::module::redis::test::setup_test_redis_module;
+        use infra::infra::module::redis::test::{
+            setup_test_redis_module, setup_test_redis_module_through_proxy,
+        };
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Scalable,
             restore_at_startup: Some(false),
@@ -521,7 +558,13 @@ pub mod test {
 
         // Create Redis and RDB modules separately using test setup functions
         // to avoid SQLite database lock issues caused by multiple connection pools
-        let redis_module = setup_test_redis_module().await;
+        let redis_module = match &proxy {
+            Some(proxy) => {
+                setup_test_redis_module_through_proxy(proxy.client_name_prefix, proxy.proxy_url)
+                    .await
+            }
+            None => setup_test_redis_module().await,
+        };
         let rdb_module = setup_test_rdb_module(enable_rdb_indexing).await;
 
         let repositories = HybridRepositoryModule {
@@ -542,12 +585,9 @@ pub mod test {
         // Build AppConfigModule with the same StorageType::Scalable used for
         // repository construction, and a small concurrency to avoid exhausting
         // the shared redis blocking pool in tests.
-        let worker_config = Arc::new(WorkerConfig {
-            default_concurrency: 2,
-            default_channel_disabled: false,
-            channels: vec![],
-            channel_concurrencies: vec![],
-        });
+        let worker_config = Arc::new(hybrid_test_worker_config(
+            proxy.as_ref().map(|proxy| proxy.worker_channel),
+        ));
         let app_config = Arc::new(AppConfigModule {
             storage_config: storage_config.clone(),
             worker_config,
@@ -649,6 +689,15 @@ pub mod test {
             None, // Scalable mode: no shared ChanFeedSenderStore
             feed_publisher,
         ))
+    }
+
+    fn hybrid_test_worker_config(worker_channel: Option<&str>) -> WorkerConfig {
+        WorkerConfig {
+            default_concurrency: 2,
+            default_channel_disabled: worker_channel.is_some(),
+            channels: worker_channel.into_iter().map(str::to_owned).collect(),
+            channel_concurrencies: worker_channel.map(|_| 2).into_iter().collect(),
+        }
     }
 
     /// Create standalone test app (RdbChan mode) with optional RDB indexing
@@ -816,5 +865,25 @@ pub mod test {
     /// Create hybrid test app (default: RDB indexing disabled)
     pub async fn create_hybrid_test_app() -> Result<AppModule> {
         create_hybrid_test_app_with_indexing(false).await
+    }
+
+    #[cfg(test)]
+    mod worker_config_tests {
+        use super::hybrid_test_worker_config;
+
+        #[test]
+        fn custom_channel_disables_default_dispatch_but_default_fixture_keeps_it_enabled() {
+            let default_config = hybrid_test_worker_config(None);
+            assert!(!default_config.is_default_channel_disabled());
+
+            let channel_config = hybrid_test_worker_config(Some("response-loss-test"));
+            assert!(channel_config.is_default_channel_disabled());
+            let active_channels: Vec<_> = channel_config
+                .channel_concurrency_pair()
+                .into_iter()
+                .map(|(channel, _)| channel)
+                .collect();
+            assert_eq!(active_channels, ["response-loss-test"]);
+        }
     }
 }

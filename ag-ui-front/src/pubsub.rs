@@ -308,7 +308,7 @@ mod tests {
     async fn test_merge_streams_without_llm() {
         let workflow_events = vec![
             AgUiEvent::run_started("run_1", "thread_1"),
-            AgUiEvent::run_finished("run_1", None),
+            AgUiEvent::run_finished("run_1", "thread_1", None),
         ];
         let workflow_stream = futures::stream::iter(workflow_events);
 

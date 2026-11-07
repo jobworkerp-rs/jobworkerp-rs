@@ -1,6 +1,6 @@
 # AG-UI Front
 
-An HTTP SSE server compliant with the AG-UI protocol for real-time streaming execution of jobworkerp-rs workflows.
+An HTTP SSE server compliant with AG-UI 1.0. Registered endpoints select either real-time streaming from an LLM worker or guarded workflow execution.
 
 > **Note:** This is an alpha version implemented by a coding agent. APIs and behavior may change without notice.
 
@@ -64,6 +64,7 @@ AG-UI Front implements the [AG-UI protocol](https://docs.ag-ui.com/llms-full.txt
 | `AG_UI_AUTH_TOKENS` | (none) | Comma-separated authentication tokens |
 | `AG_UI_SESSION_TTL_SEC` | `3600` | Session TTL (seconds) |
 | `AG_UI_MAX_EVENTS_PER_SESSION` | `1000` | Maximum events per session |
+| `AG_UI_PROFILES` | `[]` | JSON array of registered endpoint profiles |
 | `STORAGE_TYPE` | `Standalone` | `Standalone` or `Scalable` |
 | `REDIS_URL` | (none) | Redis URL (for Scalable mode) |
 
@@ -72,13 +73,45 @@ AG-UI Front implements the [AG-UI protocol](https://docs.ag-ui.com/llms-full.txt
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/health` | GET | Health check |
-| `/ag-ui/run` | POST | Start workflow execution (returns SSE stream) |
+| `/ag-ui/agents/<name>/run` | POST | Run a registered LLM streaming or workflow profile |
 | `/ag-ui/stream/{run_id}` | GET | Reconnect to existing execution stream |
-| `/ag-ui/message` | POST | Send HITL message (tool results) |
 | `/ag-ui/run/{run_id}` | DELETE | Cancel workflow |
 | `/ag-ui/state/{run_id}` | GET | Get workflow state |
 
 See the [Client Guide](docs/CLIENT_GUIDE.md) for details.
+
+Each `AG_UI_PROFILES` item has `path`, `workerName`, and `mode` (`streaming` or `workflow`). Paths use `/ag-ui/agents/<name>/run` and must be unique. Example:
+
+```json
+[
+  {"path":"/ag-ui/agents/live/run","workerName":"chat-live","mode":"streaming"},
+  {"path":"/ag-ui/agents/guarded/run","workerName":"chat-guarded","mode":"workflow"}
+]
+```
+
+Register an `LLM/chat` worker for `streaming` and a `WORKFLOW/run` worker for `workflow`. Workers that are enqueued as jobs (the `streaming` profile worker, and the `workflow` profile worker under `ag-ui-http-async`) must use the `Direct` response type on a `Normal` or `WithBackup` queue, with no periodic interval. Workers that do not meet these conditions cannot provide a live response stream, so runs and resumes are rejected before the job is enqueued. Point each AG-UI client at the profile path for its use case. The legacy `/ag-ui/run` route is not registered automatically.
+
+### Get Started
+
+1. **Register workers:** Configure the `LLM/chat` worker for client tools with server-side auto execution disabled. The `WORKFLOW/run` worker owns the trusted LLM and guardrail settings. See the jobworkerp [worker creation examples](../../README.md#execution-examples-using-jobworkerp-client).
+2. **Set endpoint profiles:**
+
+   ```sh
+   export AG_UI_PROFILES='[{"path":"/ag-ui/agents/live/run","workerName":"chat-live","mode":"streaming"},{"path":"/ag-ui/agents/guarded/run","workerName":"chat-guarded","mode":"workflow"}]'
+   ```
+
+3. **Start the server:** Set `AG_UI_ENABLED=true` for the embedded all-in-one server. Or run `cargo run -p ag-ui-front --bin ag-ui-http-async`; the async binary requires `STORAGE_TYPE=Scalable` and running worker processes.
+4. **Connect a client:** Set the AG-UI client's endpoint URL to a profile path such as `/ag-ui/agents/live/run`. When authentication is enabled, configure `Authorization: Bearer <token>`.
+5. **Send a test request:**
+
+   ```sh
+   curl -N http://localhost:8080/ag-ui/agents/live/run \
+     -H 'Content-Type: application/json' \
+     -H 'Authorization: Bearer <token>' \
+     --data '{"threadId":"thread-1","runId":"run-1","messages":[{"id":"msg-1","role":"user","content":"Hello"}]}'
+   ```
+
+   Confirm `RUN_STARTED`, followed by text or client-tool events, then `RUN_FINISHED` or `RUN_ERROR`. The client executes client tool calls and continues the conversation in the next run with the tool result.
 
 ## SSE Events
 
@@ -116,48 +149,10 @@ See the [Client Guide](docs/CLIENT_GUIDE.md) for details.
 | `STATE_SNAPSHOT` | State snapshot |
 | `STATE_DELTA` | State delta (RFC 6902 JSON Patch) |
 
-## HITL (Human-in-the-Loop)
+## Tools and Resume
 
-AG-UI Front supports two types of HITL:
 
-### 1. Workflow HITL
-
-Pauses at tasks with `checkpoint: true` set in the workflow and waits for user input.
-Use the `/ag-ui/message` endpoint to resume from checkpoints.
-
-### 2. LLM Tool Calling HITL
-
-When `isAutoCalling: false` is set in the LLM_CHAT runner, the workflow pauses when the LLM requests a tool call.
-
-**Flow:**
-
-```text
-Client                         AG-UI Server                    LLM
-   |                              |                             |
-   |-- POST /ag-ui/run ---------->|                             |
-   |                              |-- Execute LLM_CHAT -------->|
-   |                              |<-- Tool call request -------|
-   |<-- TOOL_CALL_START ----------|   (pending_tool_calls)      |
-   |<-- TOOL_CALL_ARGS -----------|                             |
-   |   (Stream paused)            |                             |
-   |                              |                             |
-   |   [User approves tool]       |                             |
-   |                              |                             |
-   |-- POST /ag-ui/message ------>|                             |
-   |   (toolCallResults)          |                             |
-   |<-- TOOL_CALL_END ------------|                             |
-   |<-- TOOL_CALL_RESULT ---------|                             |
-   |<-- RUN_FINISHED -------------|                             |
-   |                              |                             |
-   |   [Client sends follow-up    |                             |
-   |    with tool result in       |                             |
-   |    messages]                 |                             |
-   |                              |                             |
-   |-- POST /ag-ui/run ---------->|                             |
-   |   (messages with TOOL role)  |-- Execute LLM_CHAT -------->|
-   |                              |   (with tool result)        |
-   |<-- TEXT_MESSAGE_* -----------|<-- LLM response ------------|
-```
+To resume a workflow checkpoint, send a standard `resume` entry array to the same thread and profile URL with a new `runId`. The checkpoint is not continued while interrupts remain unanswered. Configure jobworkerp FunctionSets as a separate LLM task inside the workflow; do not combine server FunctionSets and client tools in one LLM call.
 
 **Tool Name Format:**
 
@@ -197,16 +192,16 @@ sequenceDiagram
     participant EventStore as EventStore
     participant JobApp as JobResultApp/Runner
 
-    Note over Client,HTTP: Workflow execution request
-    Client->>HTTP: POST /ag-ui/run (RunAgentInput)
-    HTTP->>Handler: run_workflow(input)
+    Note over Client,HTTP: Run using a registered profile
+    Client->>HTTP: POST /ag-ui/agents/<name>/run (RunAgentInput)
+    HTTP->>Handler: dispatch by registered profile
     Handler->>Session: create_session(run_id, thread_id)
     Session-->>Handler: Session
     Handler->>EventStore: store_event(RUN_STARTED)
     Handler-->>HTTP: SSE stream and session headers
 
     par Live execution
-        Handler->>JobApp: Execute workflow
+        Handler->>JobApp: Run registered LLM worker or workflow
         JobApp-->>Handler: Workflow/job result stream
         Handler->>EventStore: store_event(each event)
         Handler->>HTTP: SSE event delivery

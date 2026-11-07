@@ -50,7 +50,7 @@ Workflow Runnerは、定義された順序で複数のジョブを実行した�
 | `workflow_data` | string (oneof, 省略可) | インライン定義でワークフローソースを上書き |
 | `input` | string | ワークフローコンテキストへの入力（JSONまたはプレーン文字列） |
 | `workflow_context` | string (省略可) | 追加のコンテキスト情報（JSONオブジェクト）。ランナー設定側の`workflow_context`とマージされ、キーが重複した場合は設定側が優先される |
-| `execution_id` | string (省略可) | ワークフロー実行インスタンスの一意識別子 |
+| `execution_id` | string (省略可) | ワークフロー実行インスタンスの一意識別子。[チェックポイントを保存する場合](#待機とチェックポイントからの再開)は指定が必要です（自動生成されません） |
 | `from_checkpoint` | Checkpoint (省略可) | 特定のチェックポイントから再開するためのデータ |
 
 #### `create`メソッド用（CreateWorkflowArgs）
@@ -70,7 +70,7 @@ Workflow Runnerは、定義された順序で複数のジョブを実行した�
 |-----------|------|------|
 | `id` | string | ワークフロー実行の一意識別子（UUID v7） |
 | `output` | string | ワークフロー実行の結果（JSONまたはプレーン文字列） |
-| `position` | string | JSON Pointer形式の実行位置 |
+| `position` | string | JSON Pointer形式の実行位置。`status` が `Waiting` のときは再開位置を返し、`from_checkpoint` の `position` に指定できます。この値だけではチェックポイントの保存成功を示しません |
 | `status` | WorkflowStatus | 実行ステータス: `Completed`, `Faulted`, `Cancelled`, `Running`, `Waiting`, `Pending`（通常は最終結果に出現しない内部ステータス） |
 | `error_message` | string (省略可) | ワークフローが失敗した場合のエラー詳細 |
 
@@ -79,6 +79,21 @@ Workflow Runnerは、定義された順序で複数のジョブを実行した�
 | フィールド | 型 | 説明 |
 |-----------|------|------|
 | `worker_id` | WorkerId (省略可) | 作成されたワーカーの識別子 |
+
+### 待機とチェックポイントからの再開
+
+タスクの `then: wait` は `do` 専用ではなく、`set`、`run`、`call` などのタスクにも指定できます。時間を指定する `wait` タスクとは別の機能で、`then: wait` は実行を中断して再開を待ちます。
+
+| 配置 | 動作 |
+|---|---|
+| トップレベルを含む `do` 内のタスク | タスクの後続に別のタスクがあれば、そのタスクを再開位置として待機します |
+| `for` 本体内のタスク | `then: wait` は実行時の `configuration` エラーになります。入れ子の `do` 内に置いてもこの制限は適用されます |
+| `for` タスク自身 | 全反復が完了した後に待機します |
+| `fork` 分岐内のタスク | 待機と再開は動作保証の対象外です。待機点は `fork` の外側に置いてください。分岐内で入れ子の `do` を使ってもこの扱いは変わりません |
+
+スキーマ検証に成功しても、その配置で待機と再開がサポートされるとは限りません。入れ子の `do` の末尾で待機した場合、再開位置はその外側にある次のタスクです。ワークフロー全体に後続タスクがなければ待機せず、`Completed` になります。
+
+チェックポイントを保存するには、ワークフロー定義で `checkpointing.enabled: true` とし、実行時に `execution_id` を指定してください。`execution_id` は自動生成されません。`Waiting` の結果にある `position` は再開位置を示しますが、チェックポイントが保存されたことまでは保証しません。再開には保存済みのチェックポイントが必要です。
 
 ## ワークフロー例
 
@@ -199,7 +214,19 @@ $ ./target/release/jobworkerp-client job enqueue-workflow -i '/path/to/list' -w 
 - **jq構文** (`${...}`): JSONデータ操作のための標準的なjq式
 - **Liquidテンプレート構文** (`$${...}`): 文字列操作や制御フローのための[Liquid](https://shopify.github.io/liquid/)テンプレート式
 
-> **注意**: `fromjson` は JSON 値のストリームをパースします。Markdown フェンス（`` ```json ... ``` ``）や先頭の無効トークンは JSON ではないため、式は実行時エラーになります。フェンス付きの LLM 出力をパースする前に、フェンスを取り除いてください。
+> **注意**: `fromjson` は JSON 値のストリームをパースします。空入力と JSON の空白（スペース、タブ、CR、LF）だけの入力は、式の実行時エラーになります。Markdown フェンス（`` ```json ... ``` ``）などの無効トークンもエラーになるため、LLM 出力をパースする前にフェンスを取り除いてください。複数の JSON 値をパースする動作は維持されます。
+
+#### 任意の JSON 入力・空入力の扱い
+
+空の応答が想定される場合は、`fromjson` の前に空文字列または空白だけかを判定します。後続処理に合わせて、任意のコレクションには `[]`、任意のオブジェクトには `{}`、任意の値には `null` を返します。例：
+
+```yaml
+classifyResult: ${(.content.text | if test("^[ \\t\\r\\n]*$") then {} else fromjson end)}
+```
+
+パース結果が必須なら、`error(...)` で明示的に失敗させます。`//` のfallbackは `null` と `false` に対して働き、空文字列は置き換えません。状態ファイルが存在しない場合と、存在するファイルが空の場合は区別し、意図がない限り空の状態ファイルを初期化・上書きしないでください。
+
+エンジンのバージョンを切り替える場合、空の `fromjson` がエラーになるバージョンをデプロイする前に、workflow に判定とfallbackを追加して検証します。空応答時に対象項目だけをスキップする既存の `catch` / `continue` は維持します。空でない不正な JSON は、従来のエラー経路に従います。
 
 ### Raise タスクのエラー
 
@@ -231,7 +258,7 @@ raise:
 
 | type | status | 送出される場面 |
 |---|---|---|
-| `configuration` | 400 | 定義や配備がそのままでは実行できない場合（解決できない timeout 参照、call の設定の不備、未対応の script 言語やオプション、`run.script` に必要な runner がない、`for` の中の `then: wait`、子ジョブの runner・worker・メソッドが存在しないなど） |
+| `configuration` | 400 | 定義や配備がそのままでは実行できない場合（解決できない timeout 参照、call の設定の不備、未対応の script 言語やオプション、`run.script` に必要な runner がない、[`for` 内の `then: wait`](#待機とチェックポイントからの再開)、子ジョブの runner・worker・メソッドが存在しないなど） |
 | `validation` | 400 | ワークフローやタスクの入力が `input.schema` の検証に失敗した場合、`run.script` の引数名が識別子として不正な場合、または子ジョブの引数が runner の引数スキーマに合わない場合 |
 | `expression` | 400 | jq / Liquid の式の評価に失敗した場合、または `raise.error` の評価結果の型が違う場合 |
 | `authorization` | 403 | call が、`use.secrets` に宣言されていない secret、または値が設定されていない secret を参照した場合 |
@@ -421,7 +448,7 @@ jobworkerp-rsのワークフローDSLは、公式仕様のロジック構築部�
 - `run`タスク: 公式仕様の`run.script`（language, code/source, arguments, environment）と同様の構造、および`run.shell` / `run.container` / jobworkerp独自のsource指定形式を持つ`run.workflow`を採用
 - `call`タスク: `call: http` の基本的なHTTP呼び出し（method, endpoint, headers, query, body, output）を採用。endpoint の `authentication`（bearer / basic）にも対応。`call: grpc` の unary 呼び出し（service の name/host/port、method、arguments）にも対応（サーバーリフレクション利用、service の `authentication` は bearer のみ）
 - ランタイム式: jq構文（`${}`）によるデータ変換（加えてLiquidテンプレート構文（`$${}`）を独自拡張）
-- フロー制御: `then`プロパティによるフロー制御（`continue`, `exit`, `end`, `wait` ディレクティブ）
+- フロー制御: `then`プロパティによるフロー制御（`continue`, `exit`, `end`, `wait` ディレクティブ。`then: wait` の配置と再開条件は[待機とチェックポイントからの再開](#待機とチェックポイントからの再開)を参照）
 - 入出力変換: `input.from`, `output.as`, `export.as`
 
 `run.shell` / `run.container` / `run.workflow` は、公式タスク定義そのものではありません：
@@ -469,7 +496,7 @@ do:
 **jobworkerp-rs独自の拡張:**
 - `run.function` / `run.runner` / `run.worker`: jobworkerp-rsのジョブ実行基盤をワークフローから統一的に利用（組み込みRunner, MCPサーバー, プラグイン等）
 - `useStreaming`によるストリーミング実行（LLM等の長時間タスクの進捗監視）
-- `checkpoint`によるチェックポイント・リスタート機能
+- `checkpoint`によるチェックポイント・リスタート機能（[待機とチェックポイントからの再開](#待機とチェックポイントからの再開)を参照）
 - Liquidテンプレート構文（`$${}`）による文字列テンプレート
 - `catch.errors.with.type` の URI テンプレート照合（`{name}` のプレースホルダー）
 

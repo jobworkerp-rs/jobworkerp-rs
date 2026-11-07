@@ -312,6 +312,72 @@ mod tests {
     use futures::stream;
     use proto::jobworkerp::data::result_output_item;
 
+    #[test]
+    fn chat_message_serde_json_accepts_legacy_content_without_parts() {
+        use crate::jobworkerp::runner::llm::llm_chat_args::ChatMessage;
+
+        let legacy_json = r#"{"role":1,"content":{"content":{"Text":"hi"}}}"#;
+        let decoded = serde_json::from_str::<ChatMessage>(legacy_json);
+        assert!(
+            decoded.is_ok(),
+            "legacy content JSON should deserialize: {decoded:?}"
+        );
+
+        let encoded = serde_json::to_value(decoded.unwrap()).unwrap();
+        assert_eq!(encoded["content"]["content"]["Text"], "hi");
+        assert!(encoded.get("body").is_none());
+        assert!(encoded.get("parts").is_none());
+    }
+
+    #[test]
+    fn chat_message_serde_json_accepts_parts_wrapper() {
+        use crate::jobworkerp::runner::llm::llm_chat_args::ChatMessage;
+
+        let json = r#"{"role":3,"parts":{"items":[{"content":{"Text":"before"}},{"content":{"ToolCalls":{"calls":[{"call_id":"call-1","fn_name":"lookup","fn_arguments":"{}"}]}}},{"content":{"Text":"after"}}]},"future":true}"#;
+        let decoded = serde_json::from_str::<ChatMessage>(json);
+        assert!(
+            decoded.is_ok(),
+            "parts wrapper should deserialize: {decoded:?}"
+        );
+
+        let encoded = serde_json::to_value(decoded.unwrap()).unwrap();
+        assert!(encoded.get("body").is_none());
+        let items = encoded["parts"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["content"]["Text"], "before");
+        assert_eq!(
+            items[1]["content"]["ToolCalls"]["calls"][0]["fn_name"],
+            "lookup"
+        );
+        assert_eq!(items[2]["content"]["Text"], "after");
+    }
+
+    #[test]
+    fn chat_message_serde_json_rejects_both_non_null_body_fields_in_either_order() {
+        use crate::jobworkerp::runner::llm::llm_chat_args::ChatMessage;
+
+        let content = r#""content":{"content":{"Text":"old"}}"#;
+        let parts = r#""parts":{"items":[{"content":{"Text":"new"}}]}"#;
+        let both_orders = [
+            format!(r#"{{"role":1,{content},{parts}}}"#),
+            format!(r#"{{"role":1,{parts},{content}}}"#),
+        ];
+
+        for json in both_orders {
+            let parsed: serde_json::Value = serde_json::from_str(&json)
+                .unwrap_or_else(|error| panic!("test input must be valid JSON: {error}"));
+            assert!(parsed.get("content").is_some());
+            assert!(parsed.get("parts").is_some());
+            let error = serde_json::from_str::<ChatMessage>(&json).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("chat message cannot set both content and parts"),
+                "{error}"
+            );
+        }
+    }
+
     fn create_text_chat_result(text: &str, reasoning: Option<&str>, done: bool) -> LlmChatResult {
         LlmChatResult {
             content: if text.is_empty() {

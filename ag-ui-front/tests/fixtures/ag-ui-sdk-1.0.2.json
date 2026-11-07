@@ -1,0 +1,34 @@
+{
+  "text": [
+    { "type": "RUN_STARTED", "threadId": "thread-text", "runId": "run-text", "timestamp": 1 },
+    { "type": "TEXT_MESSAGE_START", "messageId": "message-text", "role": "assistant", "timestamp": 2 },
+    { "type": "TEXT_MESSAGE_CONTENT", "messageId": "message-text", "delta": "hello", "timestamp": 3 },
+    { "type": "TEXT_MESSAGE_END", "messageId": "message-text", "timestamp": 4 },
+    { "type": "RUN_FINISHED", "threadId": "thread-text", "runId": "run-text", "outcome": { "type": "success" }, "timestamp": 5 }
+  ],
+  "clientToolCall": [
+    { "type": "RUN_STARTED", "threadId": "thread-tools", "runId": "run-tools-1", "timestamp": 11 },
+    { "type": "TOOL_CALL_START", "toolCallId": "call-1", "toolCallName": "computer_click", "parentMessageId": "assistant-1", "timestamp": 12 },
+    { "type": "TOOL_CALL_ARGS", "toolCallId": "call-1", "delta": "{\"x\":1}", "timestamp": 13 },
+    { "type": "TOOL_CALL_END", "toolCallId": "call-1", "timestamp": 14 },
+    { "type": "RUN_FINISHED", "threadId": "thread-tools", "runId": "run-tools-1", "outcome": { "type": "success", "pendingToolCallIds": ["call-1"] }, "timestamp": 15 }
+  ],
+  "clientToolResult": [
+    { "type": "RUN_STARTED", "threadId": "thread-tools", "runId": "run-tools-2", "timestamp": 21 },
+    { "type": "TEXT_MESSAGE_START", "messageId": "assistant-2", "role": "assistant", "timestamp": 22 },
+    { "type": "TEXT_MESSAGE_CONTENT", "messageId": "assistant-2", "delta": "done", "timestamp": 23 },
+    { "type": "TEXT_MESSAGE_END", "messageId": "assistant-2", "timestamp": 24 },
+    { "type": "RUN_FINISHED", "threadId": "thread-tools", "runId": "run-tools-2", "outcome": { "type": "success" }, "timestamp": 25 }
+  ],
+  "serverToolResult": [
+    { "type": "TOOL_CALL_RESULT", "messageId": "tool-result-message", "toolCallId": "server-call-1", "content": "approved", "timestamp": 31 }
+  ],
+  "interrupt": [
+    { "type": "RUN_STARTED", "threadId": "thread-resume", "runId": "run-resume-1", "timestamp": 41 },
+    { "type": "RUN_FINISHED", "threadId": "thread-resume", "runId": "run-resume-1", "outcome": { "type": "interrupt", "interrupts": [{ "id": "approval-1", "reason": "approval_required" }] }, "timestamp": 42 }
+  ],
+  "resumed": [
+    { "type": "RUN_STARTED", "threadId": "thread-resume", "runId": "run-resume-2", "timestamp": 51 },
+    { "type": "RUN_FINISHED", "threadId": "thread-resume", "runId": "run-resume-2", "outcome": { "type": "success" }, "timestamp": 52 }
+  ]
+}

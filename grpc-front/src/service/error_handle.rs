@@ -1,8 +1,14 @@
+use app::app::job::JobEnqueueOutcomeUnknown;
 use jobworkerp_base::error::JobWorkerError;
+use prost::Message;
 use sqlx::{error::DatabaseError, mysql::MySqlDatabaseError, sqlite::SqliteError};
 
 // TODO map redis etc error
 pub fn handle_error(err: &anyhow::Error) -> tonic::Status {
+    if let Some(unknown) = err.downcast_ref::<JobEnqueueOutcomeUnknown>() {
+        return map_enqueue_outcome_unknown(unknown);
+    }
+
     // TODO search with err.chain()
     match err.downcast_ref::<JobWorkerError>() {
         Some(JobWorkerError::DBError(sqlx::Error::Database(e))) => map_db_error(e.as_ref()),
@@ -16,6 +22,20 @@ pub fn handle_error(err: &anyhow::Error) -> tonic::Status {
             tonic::Status::internal("Internal server error")
         }
     }
+}
+
+fn map_enqueue_outcome_unknown(unknown: &JobEnqueueOutcomeUnknown) -> tonic::Status {
+    let job_id = &unknown.job_id;
+    let message = format!(
+        "Communication with the queue backend failed while enqueueing job ID {}. The job may already be queued. Do not retry automatically; check the job status and result first.",
+        job_id.value
+    );
+    let mut status = tonic::Status::unknown(message);
+    status.metadata_mut().insert_bin(
+        super::JOB_ID_HEADER_NAME,
+        tonic::metadata::MetadataValue::from_bytes(&job_id.encode_to_vec()),
+    );
+    status
 }
 
 // TODO cover all cases...
@@ -84,12 +104,82 @@ fn map_jobworker_error(err: &JobWorkerError) -> tonic::Status {
 #[cfg(test)]
 mod tests {
     use super::handle_error;
+    use app::app::job::JobEnqueueOutcomeUnknown;
     use jobworkerp_base::error::JobWorkerError;
+    use prost::Message;
+    use proto::jobworkerp::data::JobId;
+
+    fn redis_error() -> JobWorkerError {
+        let redis_error = std::io::Error::other("private redis details").into();
+        JobWorkerError::RedisError(redis_error)
+    }
+
+    fn enqueue_outcome_unknown_error(job_id: JobId, cause: JobWorkerError) -> anyhow::Error {
+        anyhow::Error::new(cause)
+            .context(JobEnqueueOutcomeUnknown { job_id })
+            .context("outer contextual detail")
+    }
 
     #[test]
     fn timeout_error_maps_to_deadline_exceeded() {
         let error = anyhow::Error::from(JobWorkerError::TimeoutError("listener expired".into()));
 
         assert_eq!(handle_error(&error).code(), tonic::Code::DeadlineExceeded);
+    }
+
+    #[test]
+    fn unknown_enqueue_outcome_returns_unknown_with_protobuf_job_id() {
+        for value in [42, i64::MAX] {
+            let error = enqueue_outcome_unknown_error(JobId { value }, redis_error());
+
+            let status = handle_error(&error);
+
+            assert_eq!(status.code(), tonic::Code::Unknown);
+            let message = status.message().to_ascii_lowercase();
+            assert!(message.contains(&format!(
+                "communication with the queue backend failed while enqueueing job id {value}"
+            )));
+            assert!(message.contains("the job may already be queued"));
+            assert!(message.contains("do not retry automatically"));
+            assert!(message.contains("check the job status and result first"));
+            assert!(!status.message().contains("private redis details"));
+            assert!(!status.message().contains("outer contextual detail"));
+            let job_id = status
+                .metadata()
+                .get_bin("x-job-id-bin")
+                .expect("job ID metadata")
+                .to_bytes()
+                .expect("binary metadata bytes");
+            assert_eq!(JobId::decode(job_id.as_ref()).unwrap(), JobId { value });
+        }
+    }
+
+    #[test]
+    fn unknown_enqueue_outcome_takes_priority_over_timeout_classification() {
+        let error = enqueue_outcome_unknown_error(
+            JobId { value: 42 },
+            JobWorkerError::TimeoutError("private timeout detail".into()),
+        );
+
+        let status = handle_error(&error);
+
+        assert_eq!(status.code(), tonic::Code::Unknown);
+        assert!(status.metadata().get_bin("x-job-id-bin").is_some());
+        assert!(!status.message().contains("private timeout detail"));
+    }
+
+    #[test]
+    fn errors_without_unknown_enqueue_marker_keep_their_existing_classification() {
+        let redis = anyhow::Error::new(redis_error());
+        let general = anyhow::anyhow!("unexpected failure");
+
+        for (error, code) in [
+            (redis, tonic::Code::Unavailable),
+            (general, tonic::Code::Internal),
+        ] {
+            let status = handle_error(&error);
+            assert_eq!(status.code(), code);
+            assert!(status.metadata().get_bin("x-job-id-bin").is_none());
+        }
     }
 }

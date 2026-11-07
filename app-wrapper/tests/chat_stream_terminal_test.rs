@@ -3,6 +3,7 @@ use app::module::test::create_hybrid_test_app;
 use app_wrapper::llm::chat::{LLMChatRunnerImpl, ollama::OllamaChatService};
 use futures::{StreamExt, stream};
 use infra_utils::infra::test::TEST_RUNTIME;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::chat_message::Body as ChatMessageBody;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     ChatMessage, ChatRole, MessageContent, message_content,
 };
@@ -113,9 +114,9 @@ async fn run_adapter_stream(body: String) -> Result<Vec<ResultOutputItem>> {
     let args = LlmChatArgs {
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(message_content::Content::Text("say hello".to_string())),
-            }),
+            })),
         }],
         ..Default::default()
     };

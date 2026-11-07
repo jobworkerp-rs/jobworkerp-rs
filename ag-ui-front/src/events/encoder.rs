@@ -99,7 +99,7 @@ mod tests {
         let event = AgUiEvent::RunStarted {
             run_id: "run_123".to_string(),
             thread_id: "thread_456".to_string(),
-            timestamp: Some(1234567890123.0),
+            timestamp: Some(1234567890123),
             metadata: None,
         };
 
@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn test_encode_with_start_id() {
         let encoder = EventEncoder::with_start_id(100);
-        let event = AgUiEvent::run_finished("run_1", None);
+        let event = AgUiEvent::run_finished("run_1", "thread_1", None);
 
         let (id, sse) = encoder.encode(&event).unwrap();
         assert_eq!(id, 100);
@@ -159,7 +159,7 @@ mod tests {
         let encoder = EventEncoder::new();
         let event = AgUiEvent::StepStarted {
             step_id: "step_1".to_string(),
-            step_name: Some("initialize".to_string()),
+            step_name: "initialize".to_string(),
             parent_step_id: None,
             timestamp: None,
             metadata: None,
@@ -179,7 +179,7 @@ mod tests {
         encoder.set_event_id(50);
         assert_eq!(encoder.current_event_id(), 50);
 
-        let event = AgUiEvent::run_finished("run_1", None);
+        let event = AgUiEvent::run_finished("run_1", "thread_1", None);
         let (id, _) = encoder.encode(&event).unwrap();
         assert_eq!(id, 50);
     }
@@ -200,18 +200,24 @@ mod tests {
     fn test_encode_complex_event() {
         let encoder = EventEncoder::new();
         let event = AgUiEvent::ToolCallResult {
+            message_id: "message_123".to_string(),
             tool_call_id: "call_123".to_string(),
+            content: r#"{"status":200,"body":{"data":[1,2,3]}}"#.to_string(),
             result: serde_json::json!({
                 "status": 200,
                 "body": { "data": [1, 2, 3] }
             }),
-            timestamp: Some(1234567890123.0),
+            timestamp: Some(1234567890123),
         };
 
         let (_, sse) = encoder.encode(&event).unwrap();
         assert!(sse.contains("event: TOOL_CALL_RESULT"));
         assert!(sse.contains("\"toolCallId\":\"call_123\""));
-        assert!(sse.contains("\"status\":200"));
+        assert!(
+            sse.contains(
+                "\"content\":\"{\\\"status\\\":200,\\\"body\\\":{\\\"data\\\":[1,2,3]}}\""
+            )
+        );
     }
 
     #[test]

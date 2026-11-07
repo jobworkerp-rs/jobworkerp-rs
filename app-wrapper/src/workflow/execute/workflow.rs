@@ -1031,6 +1031,17 @@ mod tests {
     use std::str::FromStr;
     use std::sync::Arc;
 
+    async fn collect_workflow_contexts(
+        workflow_stream: impl Stream<
+            Item = std::result::Result<Arc<WorkflowContext>, Box<workflow::Error>>,
+        >,
+    ) -> Vec<Arc<WorkflowContext>> {
+        workflow_stream
+            .map(|result| result.expect("Workflow stream should succeed"))
+            .collect()
+            .await
+    }
+
     fn create_test_workflow() -> WorkflowSchema {
         let task_map_list = {
             let mut map1 = HashMap::new();
@@ -2717,6 +2728,18 @@ mod tests {
                 checkpoint_key
             );
 
+            assert_eq!(
+                executor
+                    .workflow_context
+                    .read()
+                    .await
+                    .resume_position
+                    .as_ref()
+                    .map(|position| position.as_json_pointer()),
+                Some("/ROOT/do/2/resume_task".to_string()),
+                "Waiting workflow context should expose the saved resume position"
+            );
+
             let checkpoint = saved_checkpoint.unwrap();
             let pos_str = checkpoint.position.as_json_pointer();
 
@@ -2737,6 +2760,104 @@ mod tests {
                 checkpoint.workflow.input.get("data"),
                 Some(&serde_json::json!("test")),
                 "Checkpoint should preserve original input"
+            );
+        });
+    }
+
+    /// Run a workflow until it pauses and return its resume position with the
+    /// checkpoint saved under that position.
+    async fn run_until_wait(
+        app_wrapper_module: Arc<AppWrapperModule>,
+        app_module: Arc<AppModule>,
+        workflow: Arc<WorkflowSchema>,
+        execution_id: &ExecutionId,
+        checkpoint: Option<CheckPointContext>,
+    ) -> (String, Option<CheckPointContext>) {
+        let executor = WorkflowExecutor::init(
+            app_wrapper_module,
+            app_module,
+            workflow.clone(),
+            Arc::new(serde_json::json!({})),
+            Some(execution_id.clone()),
+            Arc::new(serde_json::json!({})),
+            Arc::new(HashMap::new()),
+            checkpoint,
+        )
+        .await
+        .unwrap();
+        let stream = executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+        pin_mut!(stream);
+        while let Some(result) = stream.next().await {
+            result.expect("workflow step should succeed");
+        }
+        let position = {
+            let workflow_context = executor.workflow_context.read().await;
+            assert_eq!(workflow_context.status, WorkflowStatus::Waiting);
+            workflow_context
+                .resume_position
+                .as_ref()
+                .expect("waiting workflow exposes its resume position")
+                .as_json_pointer()
+        };
+        let checkpoint = executor
+            .checkpoint_repository
+            .as_ref()
+            .expect("checkpointing is enabled")
+            .get_checkpoint_with_id(execution_id, workflow.document.name.as_str(), &position)
+            .await
+            .unwrap();
+        (position, checkpoint)
+    }
+
+    /// A workflow resumed from a checkpoint that waits again must save its next
+    /// checkpoint under the full task path, so the second wait is resumable too.
+    #[test]
+    fn test_workflow_second_wait_after_resume_saves_full_checkpoint_position() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let workflow: WorkflowSchema = serde_json::from_value(serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "two-wait-resume-test",
+                    "version": "1.0.0"
+                },
+                "input": {"schema": {"document": {"type": "object"}}},
+                "checkpointing": {"enabled": true, "storage": "memory"},
+                "do": [
+                    {"first_wait": {"set": {"step": "first"}, "then": "wait"}},
+                    {"second_wait": {"set": {"step": "second"}, "then": "wait"}},
+                    {"publish": {"set": {"step": "published"}}}
+                ]
+            }))
+            .expect("Valid workflow");
+            let workflow = Arc::new(workflow);
+            let app_module = Arc::new(create_hybrid_test_app().await.expect("Test app"));
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+            let execution_id =
+                ExecutionId::new("test-second-wait-after-resume".to_string()).unwrap();
+
+            let (first_position, first_checkpoint) = run_until_wait(
+                app_wrapper_module.clone(),
+                app_module.clone(),
+                workflow.clone(),
+                &execution_id,
+                None,
+            )
+            .await;
+            assert_eq!(first_position, "/ROOT/do/1/second_wait");
+
+            let (second_position, second_checkpoint) = run_until_wait(
+                app_wrapper_module,
+                app_module,
+                workflow,
+                &execution_id,
+                Some(first_checkpoint.expect("first checkpoint is saved")),
+            )
+            .await;
+            assert_eq!(second_position, "/ROOT/do/2/publish");
+            assert!(
+                second_checkpoint.is_some(),
+                "the second wait must save a checkpoint under its full position"
             );
         });
     }
@@ -2815,8 +2936,8 @@ mod tests {
             let execution_id = ExecutionId::new("test-wait-nested-position".to_string()).unwrap();
 
             let executor = WorkflowExecutor::init(
-                app_wrapper_module,
-                app_module,
+                app_wrapper_module.clone(),
+                app_module.clone(),
                 workflow.clone(),
                 input,
                 Some(execution_id.clone()),
@@ -2829,32 +2950,20 @@ mod tests {
 
             let workflow_stream =
                 executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
-            pin_mut!(workflow_stream);
-
-            let mut final_status = None;
-            let mut final_output: Option<Arc<serde_json::Value>> = None;
-
-            while let Some(result) = workflow_stream.next().await {
-                match result {
-                    Ok(wfc) => {
-                        final_status = Some(wfc.status.clone());
-                        final_output = wfc.output.clone();
-                    }
-                    Err(e) => {
-                        panic!("Unexpected error: {:?}", e);
-                    }
-                }
-            }
+            let workflow_contexts = collect_workflow_contexts(workflow_stream).await;
+            let final_context = workflow_contexts
+                .last()
+                .expect("Workflow should emit a context");
 
             // Verify workflow is in Waiting status
             assert_eq!(
-                final_status,
-                Some(WorkflowStatus::Waiting),
+                final_context.status,
+                WorkflowStatus::Waiting,
                 "Workflow should be in Waiting status"
             );
 
             // Verify output shows inner_step is "waiting" (not "resumed")
-            let output = final_output.expect("Should have output");
+            let output = final_context.output.as_ref().expect("Should have output");
             assert_eq!(
                 output.get("inner_step"),
                 Some(&serde_json::json!("waiting")),
@@ -2867,41 +2976,85 @@ mod tests {
                 "after_outer task should not have executed"
             );
 
-            // Verify checkpoint position is for inner_resume (next task inside nested do)
-            let checkpoint_repo = executor
+            let expected_resume_position = "/ROOT/do/0/outer_task/do/2/inner_resume";
+            let reported_position = {
+                let workflow_context = executor.workflow_context.read().await;
+                assert_eq!(
+                    workflow_context
+                        .resume_position
+                        .as_ref()
+                        .map(|position| position.as_json_pointer()),
+                    Some(expected_resume_position.to_string()),
+                    "Waiting workflow context should preserve the nested resume position"
+                );
+                workflow_context.reported_position().as_json_pointer()
+            };
+            assert_eq!(
+                reported_position, expected_resume_position,
+                "Reported position should point to the task after the inner wait"
+            );
+
+            let resume_checkpoint = executor
                 .checkpoint_repository
                 .as_ref()
-                .expect("Checkpoint repo");
-
-            // The checkpoint should point to inner_resume inside the nested do
-            // Key format: workflow_name:execution_id:position
-            let checkpoint_key = format!(
-                "{}:{}:{}",
-                workflow.document.name.as_str(),
-                execution_id.value,
-                "/ROOT/do/0/outer_task/do/2/inner_resume" // Nested path to next task
-            );
-
-            let saved_checkpoint = checkpoint_repo
-                .checkpoint_repository()
-                .get_checkpoint(&checkpoint_key)
+                .expect("Checkpoint repo")
+                .get_checkpoint_with_id(
+                    &execution_id,
+                    workflow.document.name.as_str(),
+                    &reported_position,
+                )
                 .await
-                .expect("Checkpoint query should succeed");
-
-            assert!(
-                saved_checkpoint.is_some(),
-                "Checkpoint should be saved at nested next task position: {}",
-                checkpoint_key
+                .expect("Checkpoint query should succeed")
+                .expect("Reported resume position should have a checkpoint");
+            assert_eq!(
+                resume_checkpoint.position.as_json_pointer(),
+                expected_resume_position,
+                "Checkpoint should be saved at the complete nested resume position"
             );
-
-            let checkpoint = saved_checkpoint.unwrap();
-            let pos_str = checkpoint.position.as_json_pointer();
-
-            // Verify the full nested path
+            let resume_execution_id =
+                ExecutionId::new("test-wait-nested-resume".to_string()).unwrap();
+            let resumed_executor = WorkflowExecutor::init(
+                app_wrapper_module,
+                app_module,
+                workflow,
+                Arc::new(serde_json::json!({})),
+                Some(resume_execution_id),
+                Arc::new(serde_json::json!({})),
+                Arc::new(HashMap::new()),
+                Some(resume_checkpoint),
+            )
+            .await
+            .unwrap();
+            let resumed_stream =
+                resumed_executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            let resumed_contexts = collect_workflow_contexts(resumed_stream).await;
+            let resumed_context = resumed_contexts
+                .last()
+                .expect("Resumed workflow should emit a context");
+            assert_eq!(
+                resumed_context.status,
+                WorkflowStatus::Completed,
+                "Resumed workflow should complete"
+            );
+            let saw_inner_resume = resumed_contexts.iter().any(|context| {
+                context
+                    .output
+                    .as_ref()
+                    .and_then(|output| output.get("inner_step"))
+                    == Some(&serde_json::json!("resumed"))
+            });
             assert!(
-                pos_str.contains("outer_task") && pos_str.contains("inner_resume"),
-                "Position should contain full nested path, got: {}",
-                pos_str
+                saw_inner_resume,
+                "Resume stream should show inner_resume output"
+            );
+            let resumed_output = resumed_context
+                .output
+                .as_ref()
+                .expect("Resumed workflow should return output");
+            assert_eq!(
+                resumed_output.get("outer_step"),
+                Some(&serde_json::json!("after")),
+                "Resume should continue with after_outer after the nested do"
             );
         });
     }
@@ -2912,14 +3065,13 @@ mod tests {
         use crate::modules::test::create_test_app_wrapper_module;
         use crate::workflow::execute::context::WorkflowStatus;
         use crate::workflow::execute::task::ExecutionId;
-        use futures_util::pin_mut;
 
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
 
             // Create workflow: outer_task(inner_first -> inner_wait_last) -> after_outer
-            // Wait is at last task of nested do, so checkpoint should point to outer_task
+            // A final nested wait resumes at the following outer task.
             let workflow_json = serde_json::json!({
                 "document": {
                     "dsl": "1.0.0",
@@ -2982,8 +3134,8 @@ mod tests {
             let execution_id = ExecutionId::new("test-nested-last-wait".to_string()).unwrap();
 
             let executor = WorkflowExecutor::init(
-                app_wrapper_module,
-                app_module,
+                app_wrapper_module.clone(),
+                app_module.clone(),
                 workflow.clone(),
                 input,
                 Some(execution_id.clone()),
@@ -2996,51 +3148,215 @@ mod tests {
 
             let workflow_stream =
                 executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
-            pin_mut!(workflow_stream);
-
-            let mut final_status = WorkflowStatus::Running;
-            while let Some(result) = workflow_stream.next().await {
-                match result {
-                    Ok(ctx) => {
-                        final_status = ctx.status.clone();
-                    }
-                    Err(e) => {
-                        panic!("Unexpected error: {:?}", e);
-                    }
-                }
-            }
+            let workflow_contexts = collect_workflow_contexts(workflow_stream).await;
+            let final_context = workflow_contexts
+                .last()
+                .expect("Workflow should emit a context");
 
             // Workflow should be waiting
             assert_eq!(
-                final_status,
+                final_context.status,
                 WorkflowStatus::Waiting,
                 "Workflow should be in Waiting status"
             );
 
-            // Checkpoint should point to outer_task (parent task position)
-            // The nested do's last wait saves position at /ROOT/do/0/outer_task
+            let expected_resume_position = "/ROOT/do/1/after_outer";
+            let reported_position = {
+                let workflow_context = executor.workflow_context.read().await;
+                assert_eq!(
+                    workflow_context
+                        .resume_position
+                        .as_ref()
+                        .map(|position| position.as_json_pointer()),
+                    Some(expected_resume_position.to_string()),
+                    "Nested terminal wait should advance to the outer continuation"
+                );
+                workflow_context.reported_position().as_json_pointer()
+            };
+            assert_eq!(reported_position, expected_resume_position);
+
             let checkpoint_repo = executor
                 .checkpoint_repository
                 .as_ref()
                 .expect("Checkpoint repository should exist");
 
-            let checkpoint_key = format!(
-                "{}:{}:{}",
-                workflow.document.name.as_str(),
-                execution_id.value,
-                "/ROOT/do/0/outer_task" // Parent task position after nested do completes
+            let resume_checkpoint = checkpoint_repo
+                .get_checkpoint_with_id(
+                    &execution_id,
+                    workflow.document.name.as_str(),
+                    &reported_position,
+                )
+                .await
+                .expect("Checkpoint query should succeed")
+                .expect("Checkpoint should be saved at the outer continuation");
+            assert_eq!(
+                resume_checkpoint.position.as_json_pointer(),
+                expected_resume_position
             );
 
-            let saved_checkpoint = checkpoint_repo
-                .checkpoint_repository()
-                .get_checkpoint(&checkpoint_key)
-                .await
-                .expect("Checkpoint query should succeed");
+            let resumed_executor = WorkflowExecutor::init(
+                app_wrapper_module,
+                app_module,
+                workflow,
+                Arc::new(serde_json::json!({})),
+                Some(ExecutionId::new("test-nested-last-wait-resume".to_string()).unwrap()),
+                Arc::new(serde_json::json!({})),
+                Arc::new(HashMap::new()),
+                Some(resume_checkpoint),
+            )
+            .await
+            .unwrap();
+            let resumed_stream =
+                resumed_executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            let resumed_contexts = collect_workflow_contexts(resumed_stream).await;
+            let resumed_context = resumed_contexts
+                .last()
+                .expect("Resumed workflow should emit a context");
+            assert_eq!(resumed_context.status, WorkflowStatus::Completed);
+            assert_eq!(
+                resumed_context
+                    .output
+                    .as_ref()
+                    .expect("Resumed workflow should return output")
+                    .get("after"),
+                Some(&serde_json::json!(true)),
+                "Resume should execute after_outer"
+            );
+        });
+    }
 
+    /// A three-level terminal wait should advance one level, then retain that descendant position.
+    #[test]
+    fn test_workflow_wait_three_level_nested_last_position() {
+        use crate::modules::test::create_test_app_wrapper_module;
+        use crate::workflow::execute::context::WorkflowStatus;
+        use crate::workflow::execute::task::ExecutionId;
+
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "three-level-nested-wait-test",
+                    "version": "1.0.0"
+                },
+                "input": {"schema": {"document": {"type": "object"}}},
+                "checkpointing": {"enabled": true, "storage": "memory"},
+                "do": [
+                    {
+                        "outer_task": {
+                            "do": [
+                                {
+                                    "inner_task": {
+                                        "do": [
+                                            {"deep_first": {"set": {"deep_step": "first"}}},
+                                            {
+                                                "deep_wait_last": {
+                                                    "set": {"deep_step": "waiting"},
+                                                    "then": "wait"
+                                                }
+                                            }
+                                        ]
+                                    }
+                                },
+                                {"middle_resume": {"set": {"middle_step": "resumed"}}}
+                            ]
+                        }
+                    },
+                    {"after_outer": {"set": {"outer_step": "after"}}}
+                ]
+            });
+            let workflow = Arc::new(
+                serde_json::from_value::<WorkflowSchema>(workflow_json).expect("Valid workflow"),
+            );
+            let execution_id =
+                ExecutionId::new("test-three-level-nested-wait".to_string()).unwrap();
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module.clone(),
+                app_module.clone(),
+                workflow.clone(),
+                Arc::new(serde_json::json!({})),
+                Some(execution_id.clone()),
+                Arc::new(serde_json::json!({})),
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+            let stream = executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            let workflow_contexts = collect_workflow_contexts(stream).await;
+            let final_context = workflow_contexts
+                .last()
+                .expect("Workflow should emit a context");
+            assert_eq!(final_context.status, WorkflowStatus::Waiting);
+
+            let expected_resume_position = "/ROOT/do/0/outer_task/do/1/middle_resume";
+            let reported_position = {
+                let workflow_context = executor.workflow_context.read().await;
+                assert_eq!(
+                    workflow_context
+                        .resume_position
+                        .as_ref()
+                        .map(|position| position.as_json_pointer()),
+                    Some(expected_resume_position.to_string()),
+                    "Middle task should advance the deepest wait position"
+                );
+                workflow_context.reported_position().as_json_pointer()
+            };
+            assert_eq!(reported_position, expected_resume_position);
+            let checkpoint = executor
+                .checkpoint_repository
+                .as_ref()
+                .expect("Checkpoint repository should exist")
+                .get_checkpoint_with_id(
+                    &execution_id,
+                    workflow.document.name.as_str(),
+                    &reported_position,
+                )
+                .await
+                .expect("Checkpoint query should succeed")
+                .expect("Checkpoint should be saved at the middle continuation");
+
+            let resumed_executor = WorkflowExecutor::init(
+                app_wrapper_module,
+                app_module,
+                workflow,
+                Arc::new(serde_json::json!({})),
+                Some(ExecutionId::new("test-three-level-nested-wait-resume".to_string()).unwrap()),
+                Arc::new(serde_json::json!({})),
+                Arc::new(HashMap::new()),
+                Some(checkpoint),
+            )
+            .await
+            .unwrap();
+            let resumed_stream =
+                resumed_executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            let resumed_contexts = collect_workflow_contexts(resumed_stream).await;
+            let resumed_context = resumed_contexts
+                .last()
+                .expect("Resumed workflow should emit a context");
+            assert_eq!(resumed_context.status, WorkflowStatus::Completed);
+            let saw_middle_resume = resumed_contexts.iter().any(|context| {
+                context
+                    .output
+                    .as_ref()
+                    .and_then(|output| output.get("middle_step"))
+                    == Some(&serde_json::json!("resumed"))
+            });
             assert!(
-                saved_checkpoint.is_some(),
-                "Checkpoint should be saved at parent task position: {}",
-                checkpoint_key
+                saw_middle_resume,
+                "Resume stream should show middle_resume output"
+            );
+            let resumed_output = resumed_context
+                .output
+                .as_ref()
+                .expect("Resumed workflow should return output");
+            assert_eq!(
+                resumed_output.get("outer_step"),
+                Some(&serde_json::json!("after")),
+                "Resume should execute after_outer"
             );
         });
     }

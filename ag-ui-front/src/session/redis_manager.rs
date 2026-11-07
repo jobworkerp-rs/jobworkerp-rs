@@ -3,7 +3,11 @@
 //! This module provides a Redis-based implementation of the SessionManager trait,
 //! enabling session persistence across multiple AG-UI server instances.
 
-use super::manager::{HitlWaitingInfo, PendingToolCallInfo, Session, SessionManager, SessionState};
+use super::manager::{
+    HitlWaitingInfo, InterruptInfo, PendingToolCallInfo, ResumeBatchEntry, ResumeBatchError,
+    ResumeBatchResult, Session, SessionManager, SessionState, apply_resume_batch_to_session,
+    has_pending_interrupt, restore_resume_batch_to_session,
+};
 use crate::types::ids::{RunId, ThreadId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -11,6 +15,7 @@ use infra_utils::infra::redis::RedisPool;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 /// Redis key prefix for sessions
 const SESSION_KEY_PREFIX: &str = "ag_ui:session:";
@@ -22,6 +27,27 @@ const THREAD_SESSIONS_PREFIX: &str = "ag_ui:thread_sessions:";
 /// references multiple sessions. Factor of 2 ensures the index survives
 /// even when the newest session within the thread is refreshed near its TTL boundary.
 const THREAD_INDEX_TTL_MULTIPLIER: u64 = 2;
+
+const CAS_MAX_ATTEMPTS: usize = 8;
+
+/// Commits a session rewrite only if the stored JSON is unchanged since it was read.
+static SESSION_CAS_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r#"
+        if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+        redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
+        redis.call('EXPIRE', KEYS[2], ARGV[3])
+        redis.call('EXPIRE', KEYS[3], ARGV[4])
+        return 1
+    "#,
+    )
+});
+
+enum CasError<E> {
+    Rejected(E),
+    Unavailable,
+    Contended,
+}
 
 /// Serializable pending tool call info for Redis storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +90,10 @@ struct RedisHitlWaitingInfo {
     workflow_context: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     registered_worker_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    execution_id: Option<String>,
+    #[serde(default)]
+    interrupts: Vec<InterruptInfo>,
 }
 
 impl From<&HitlWaitingInfo> for RedisHitlWaitingInfo {
@@ -80,13 +110,15 @@ impl From<&HitlWaitingInfo> for RedisHitlWaitingInfo {
                 .collect(),
             workflow_context: info.workflow_context.clone(),
             registered_worker_name: info.registered_worker_name.clone(),
+            execution_id: info.execution_id.clone(),
+            interrupts: info.interrupts.clone(),
         }
     }
 }
 
 impl From<RedisHitlWaitingInfo> for HitlWaitingInfo {
     fn from(data: RedisHitlWaitingInfo) -> Self {
-        Self {
+        let mut info = Self {
             interrupt_id: data.interrupt_id,
             tool_call_id: data.tool_call_id,
             checkpoint_position: data.checkpoint_position,
@@ -98,7 +130,18 @@ impl From<RedisHitlWaitingInfo> for HitlWaitingInfo {
                 .collect(),
             workflow_context: data.workflow_context,
             registered_worker_name: data.registered_worker_name,
+            execution_id: data.execution_id,
+            interrupts: data.interrupts,
+        };
+        if info.interrupts.is_empty() {
+            info.interrupts.push(InterruptInfo {
+                interrupt_id: info.interrupt_id.clone(),
+                call_id: info.tool_call_id.clone(),
+                status: None,
+                payload: None,
+            });
         }
+        info
     }
 }
 
@@ -108,6 +151,8 @@ struct RedisSessionData {
     session_id: String,
     run_id: String,
     thread_id: String,
+    #[serde(default)]
+    profile_path: Option<String>,
     created_at: DateTime<Utc>,
     last_event_id: u64,
     state: String,
@@ -131,6 +176,7 @@ impl From<&Session> for RedisSessionData {
             session_id: session.session_id.clone(),
             run_id: session.run_id.to_string(),
             thread_id: session.thread_id.to_string(),
+            profile_path: session.profile_path.clone(),
             created_at: session.created_at,
             last_event_id: session.last_event_id,
             state: session.state.to_string(),
@@ -150,6 +196,7 @@ impl From<RedisSessionData> for Session {
             session_id: data.session_id,
             run_id: RunId::new(&data.run_id),
             thread_id: ThreadId::new(&data.thread_id),
+            profile_path: data.profile_path,
             created_at: data.created_at,
             last_event_id: data.last_event_id,
             state: match data.state.as_str() {
@@ -216,10 +263,7 @@ impl RedisSessionManager {
         session_id: &str,
     ) {
         let key = Self::thread_sessions_key(thread_id);
-        let thread_ttl = self
-            .ttl_sec
-            .saturating_mul(THREAD_INDEX_TTL_MULTIPLIER)
-            .min(Self::MAX_TTL_SEC);
+        let thread_ttl = self.thread_index_ttl_sec();
         if let Err(e) = conn.sadd::<_, _, ()>(&key, session_id).await {
             tracing::warn!(thread_id = %thread_id, error = %e, "Failed to SADD to thread index");
         }
@@ -241,16 +285,66 @@ impl RedisSessionManager {
         }
     }
 
-    /// Refresh thread Set index TTL
-    async fn refresh_thread_index_ttl(&self, conn: &mut impl AsyncCommands, thread_id: &str) {
-        let key = Self::thread_sessions_key(thread_id);
-        let thread_ttl = self
-            .ttl_sec
+    fn thread_index_ttl_sec(&self) -> u64 {
+        self.ttl_sec
             .saturating_mul(THREAD_INDEX_TTL_MULTIPLIER)
-            .min(Self::MAX_TTL_SEC);
-        if let Err(e) = conn.expire::<_, ()>(&key, thread_ttl as i64).await {
-            tracing::warn!(thread_id = %thread_id, error = %e, "Failed to refresh thread index TTL");
+            .min(Self::MAX_TTL_SEC)
+    }
+
+    async fn update_session_cas<F>(&self, session_id: &str, update: F) -> bool
+    where
+        F: Fn(&mut Session) -> bool,
+    {
+        self.try_update_session_cas(
+            session_id,
+            |session| {
+                if update(session) { Ok(()) } else { Err(()) }
+            },
+        )
+        .await
+        .is_ok()
+    }
+
+    /// Optimistically rewrite a session, retrying when a concurrent writer wins the race.
+    async fn try_update_session_cas<T, E, F>(
+        &self,
+        session_id: &str,
+        mut update: F,
+    ) -> Result<T, CasError<E>>
+    where
+        F: FnMut(&mut Session) -> Result<T, E>,
+    {
+        let session_key = Self::session_key(session_id);
+        for _ in 0..CAS_MAX_ATTEMPTS {
+            let mut conn = self.pool.get().await.map_err(|_| CasError::Unavailable)?;
+            let raw: String = conn
+                .get::<_, Option<String>>(&session_key)
+                .await
+                .ok()
+                .flatten()
+                .ok_or(CasError::Unavailable)?;
+            let data = serde_json::from_str::<RedisSessionData>(&raw)
+                .map_err(|_| CasError::Unavailable)?;
+            let mut session = Session::from(data);
+            let value = update(&mut session).map_err(CasError::Rejected)?;
+            let replacement = serde_json::to_string(&RedisSessionData::from(&session))
+                .map_err(|_| CasError::Unavailable)?;
+            let committed: i32 = SESSION_CAS_SCRIPT
+                .key(&session_key)
+                .key(Self::run_id_key(session.run_id.as_str()))
+                .key(Self::thread_sessions_key(session.thread_id.as_str()))
+                .arg(raw)
+                .arg(replacement)
+                .arg(self.ttl_sec)
+                .arg(self.thread_index_ttl_sec())
+                .invoke_async(&mut *conn)
+                .await
+                .map_err(|_| CasError::Unavailable)?;
+            if committed == 1 {
+                return Ok(value);
+            }
         }
+        Err(CasError::Contended)
     }
 }
 
@@ -393,7 +487,11 @@ impl SessionManager for RedisSessionManager {
             if let Ok(json) = (*conn).get::<_, String>(&key).await
                 && let Ok(data) = serde_json::from_str::<RedisSessionData>(&json)
                 && let Some(hitl_info) = &data.hitl_waiting_info
-                && hitl_info.interrupt_id == interrupt_id
+                && has_pending_interrupt(
+                    &hitl_info.interrupt_id,
+                    &hitl_info.interrupts,
+                    interrupt_id,
+                )
             {
                 return Some(data.into());
             }
@@ -401,91 +499,56 @@ impl SessionManager for RedisSessionManager {
         None
     }
 
-    async fn update_last_event_id(&self, session_id: &str, event_id: u64) -> bool {
-        if let Some(mut session) = self.get_session(session_id).await {
-            let run_id = session.run_id.to_string();
-            let thread_id = session.thread_id.to_string();
-            session.last_event_id = event_id;
-            let data = RedisSessionData::from(&session);
+    async fn set_profile_path(&self, session_id: &str, profile_path: &str) -> bool {
+        self.update_session_cas(session_id, |session| {
+            session.profile_path = Some(profile_path.to_string());
+            true
+        })
+        .await
+    }
 
-            if let Ok(mut conn) = self.pool.get().await
-                && let Ok(json) = serde_json::to_string(&data)
-            {
-                let session_key = Self::session_key(session_id);
-                let run_id_key = Self::run_id_key(&run_id);
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        error = %e,
-                        "Failed to update session in Redis"
-                    );
-                    return false;
-                }
-                // Refresh run_id index TTL to keep it in sync with session TTL
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        run_id = %run_id,
-                        ttl_sec = self.ttl_sec,
-                        error = %e,
-                        "Failed to refresh run_id index TTL"
-                    );
-                    return false;
-                }
-                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
-                return true;
-            }
+    async fn apply_resume_batch(
+        &self,
+        session_id: &str,
+        thread_id: &ThreadId,
+        profile_path: &str,
+        entries: &[ResumeBatchEntry],
+    ) -> Result<ResumeBatchResult, ResumeBatchError> {
+        if entries.is_empty() {
+            return Err(ResumeBatchError::Empty);
         }
-        false
+        self.try_update_session_cas(session_id, |session| {
+            apply_resume_batch_to_session(session, thread_id, profile_path, entries)
+        })
+        .await
+        .map_err(|error| match error {
+            CasError::Rejected(error) => error,
+            CasError::Unavailable => ResumeBatchError::NotFound,
+            CasError::Contended => ResumeBatchError::AlreadyResolved,
+        })
+    }
+
+    async fn restore_resume_batch(&self, session_id: &str, pending_info: HitlWaitingInfo) -> bool {
+        self.update_session_cas(session_id, |session| {
+            restore_resume_batch_to_session(session, &pending_info)
+        })
+        .await
+    }
+
+    async fn update_last_event_id(&self, session_id: &str, event_id: u64) -> bool {
+        self.update_session_cas(session_id, |session| {
+            session.last_event_id = event_id;
+            true
+        })
+        .await
     }
 
     async fn set_session_state(&self, session_id: &str, state: SessionState) -> bool {
-        if let Some(mut session) = self.get_session(session_id).await {
-            let run_id = session.run_id.to_string();
-            let thread_id = session.thread_id.to_string();
+        self.update_session_cas(session_id, |session| {
             session.state = state;
-            let data = RedisSessionData::from(&session);
-
-            if let Ok(mut conn) = self.pool.get().await
-                && let Ok(json) = serde_json::to_string(&data)
-            {
-                let session_key = Self::session_key(session_id);
-                let run_id_key = Self::run_id_key(&run_id);
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        error = %e,
-                        "Failed to set session state in Redis"
-                    );
-                    return false;
-                }
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        run_id = %run_id,
-                        ttl_sec = self.ttl_sec,
-                        error = %e,
-                        "Failed to refresh run_id index TTL"
-                    );
-                    return false;
-                }
-                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
-                return true;
-            }
-        }
-        false
+            true
+        })
+        .await
     }
 
     async fn set_paused_with_hitl_info(
@@ -493,146 +556,38 @@ impl SessionManager for RedisSessionManager {
         session_id: &str,
         hitl_info: HitlWaitingInfo,
     ) -> bool {
-        if let Some(mut session) = self.get_session(session_id).await {
-            // Only allow transition to Paused from Active state
+        self.update_session_cas(session_id, |session| {
             if session.state != SessionState::Active {
                 return false;
             }
-            let run_id = session.run_id.to_string();
-            let thread_id = session.thread_id.to_string();
             session.state = SessionState::Paused;
-            session.hitl_waiting_info = Some(hitl_info);
-            let data = RedisSessionData::from(&session);
-
-            if let Ok(mut conn) = self.pool.get().await
-                && let Ok(json) = serde_json::to_string(&data)
-            {
-                let session_key = Self::session_key(session_id);
-                let run_id_key = Self::run_id_key(&run_id);
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        error = %e,
-                        "Failed to set paused state with HITL info in Redis"
-                    );
-                    return false;
-                }
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        run_id = %run_id,
-                        ttl_sec = self.ttl_sec,
-                        error = %e,
-                        "Failed to refresh run_id index TTL"
-                    );
-                    return false;
-                }
-                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
-                return true;
-            }
-        }
-        false
+            session.hitl_waiting_info = Some(hitl_info.clone());
+            true
+        })
+        .await
     }
 
     async fn clear_hitl_info(&self, session_id: &str) -> bool {
-        if let Some(mut session) = self.get_session(session_id).await {
-            // Only clear HITL info if session is in Paused state
+        self.update_session_cas(session_id, |session| {
             if session.state != SessionState::Paused {
                 return false;
             }
-            let run_id = session.run_id.to_string();
-            let thread_id = session.thread_id.to_string();
             session.hitl_waiting_info = None;
-            let data = RedisSessionData::from(&session);
-
-            if let Ok(mut conn) = self.pool.get().await
-                && let Ok(json) = serde_json::to_string(&data)
-            {
-                let session_key = Self::session_key(session_id);
-                let run_id_key = Self::run_id_key(&run_id);
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        error = %e,
-                        "Failed to clear HITL info in Redis"
-                    );
-                    return false;
-                }
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        run_id = %run_id,
-                        ttl_sec = self.ttl_sec,
-                        error = %e,
-                        "Failed to refresh run_id index TTL"
-                    );
-                    return false;
-                }
-                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
-                return true;
-            }
-        }
-        false
+            true
+        })
+        .await
     }
 
     async fn resume_from_paused(&self, session_id: &str, new_state: SessionState) -> bool {
-        if let Some(mut session) = self.get_session(session_id).await {
-            // Only resume if session is in Paused state
+        self.update_session_cas(session_id, |session| {
             if session.state != SessionState::Paused {
                 return false;
             }
-            let run_id = session.run_id.to_string();
-            let thread_id = session.thread_id.to_string();
             session.hitl_waiting_info = None;
             session.state = new_state;
-            let data = RedisSessionData::from(&session);
-
-            if let Ok(mut conn) = self.pool.get().await
-                && let Ok(json) = serde_json::to_string(&data)
-            {
-                let session_key = Self::session_key(session_id);
-                let run_id_key = Self::run_id_key(&run_id);
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        error = %e,
-                        "Failed to resume from paused state in Redis"
-                    );
-                    return false;
-                }
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        run_id = %run_id,
-                        ttl_sec = self.ttl_sec,
-                        error = %e,
-                        "Failed to refresh run_id index TTL"
-                    );
-                    return false;
-                }
-                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
-                return true;
-            }
-        }
-        false
+            true
+        })
+        .await
     }
 
     async fn delete_session(&self, session_id: &str) -> bool {
@@ -716,49 +671,10 @@ impl SessionManager for RedisSessionManager {
     }
 
     async fn record_emitted_tool_call_id(&self, session_id: &str, call_id: &str) -> bool {
-        if let Some(mut session) = self.get_session(session_id).await {
-            // Idempotent: if already recorded, no Redis write is necessary.
-            if !session.emitted_tool_call_ids.insert(call_id.to_string()) {
-                return false;
-            }
-            let run_id = session.run_id.to_string();
-            let thread_id = session.thread_id.to_string();
-            let data = RedisSessionData::from(&session);
-
-            if let Ok(mut conn) = self.pool.get().await
-                && let Ok(json) = serde_json::to_string(&data)
-            {
-                let session_key = Self::session_key(session_id);
-                let run_id_key = Self::run_id_key(&run_id);
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        call_id = %call_id,
-                        error = %e,
-                        "Failed to persist emitted_tool_call_ids in Redis"
-                    );
-                    return false;
-                }
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        run_id = %run_id,
-                        error = %e,
-                        "Failed to refresh run_id index TTL"
-                    );
-                    return false;
-                }
-                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
-                return true;
-            }
-        }
-        false
+        self.update_session_cas(session_id, |session| {
+            session.emitted_tool_call_ids.insert(call_id.to_string())
+        })
+        .await
     }
 
     async fn has_emitted_tool_call_id(&self, session_id: &str, call_id: &str) -> bool {
@@ -769,51 +685,12 @@ impl SessionManager for RedisSessionManager {
     }
 
     async fn record_emitted_tool_call_end_id(&self, session_id: &str, call_id: &str) -> bool {
-        if let Some(mut session) = self.get_session(session_id).await {
-            if !session
+        self.update_session_cas(session_id, |session| {
+            session
                 .emitted_tool_call_end_ids
                 .insert(call_id.to_string())
-            {
-                return false;
-            }
-            let run_id = session.run_id.to_string();
-            let thread_id = session.thread_id.to_string();
-            let data = RedisSessionData::from(&session);
-
-            if let Ok(mut conn) = self.pool.get().await
-                && let Ok(json) = serde_json::to_string(&data)
-            {
-                let session_key = Self::session_key(session_id);
-                let run_id_key = Self::run_id_key(&run_id);
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        call_id = %call_id,
-                        error = %e,
-                        "Failed to persist emitted_tool_call_end_ids in Redis"
-                    );
-                    return false;
-                }
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        run_id = %run_id,
-                        error = %e,
-                        "Failed to refresh run_id index TTL"
-                    );
-                    return false;
-                }
-                self.refresh_thread_index_ttl(&mut *conn, &thread_id).await;
-                return true;
-            }
-        }
-        false
+        })
+        .await
     }
 
     async fn has_emitted_tool_call_end_id(&self, session_id: &str, call_id: &str) -> bool {
@@ -1057,6 +934,194 @@ mod tests {
         assert_eq!(found.unwrap().state, SessionState::Paused);
 
         // Cleanup
+        manager.delete_session(&session.session_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_resume_batch_preserves_session_json_and_refreshes_indexes() {
+        let pool = create_test_pool().await;
+        let manager = RedisSessionManager::new(pool, 3600);
+        let session = manager
+            .create_session(
+                RunId::new("resume_batch_run"),
+                ThreadId::new("resume_batch_thread"),
+            )
+            .await;
+        manager
+            .set_profile_path(&session.session_id, "/ag-ui/agents/guarded/run")
+            .await;
+        let info = HitlWaitingInfo::new(
+            "call-a".into(),
+            "/tasks/approval".into(),
+            "workflow".into(),
+            vec![
+                PendingToolCallInfo {
+                    call_id: "call-a".into(),
+                    fn_name: "approve".into(),
+                    fn_arguments: "{}".into(),
+                },
+                PendingToolCallInfo {
+                    call_id: "call-b".into(),
+                    fn_name: "approve".into(),
+                    fn_arguments: "{}".into(),
+                },
+            ],
+            Some(serde_json::json!({"empty": [], "large": 18446744073709551615u64})),
+            Some("registered".into()),
+        );
+        let first = info.interrupts[0].interrupt_id.clone();
+        manager
+            .set_paused_with_hitl_info(&session.session_id, info.clone())
+            .await;
+        let entry = ResumeBatchEntry {
+            interrupt_id: first,
+            status: crate::types::ResumeStatus::Resolved,
+            payload: None,
+        };
+        assert!(matches!(
+            manager
+                .apply_resume_batch(
+                    &session.session_id,
+                    &ThreadId::new("resume_batch_thread"),
+                    "/ag-ui/agents/guarded/run",
+                    &[entry]
+                )
+                .await
+                .unwrap(),
+            ResumeBatchResult::Partial { .. }
+        ));
+        let stored = manager.get_session(&session.session_id).await.unwrap();
+        assert_eq!(
+            stored
+                .hitl_waiting_info
+                .as_ref()
+                .unwrap()
+                .workflow_context
+                .as_ref()
+                .unwrap()["large"],
+            serde_json::json!(18446744073709551615u64)
+        );
+        assert_eq!(
+            stored
+                .hitl_waiting_info
+                .as_ref()
+                .unwrap()
+                .workflow_context
+                .as_ref()
+                .unwrap()["empty"],
+            serde_json::json!([])
+        );
+        let final_entry = ResumeBatchEntry {
+            interrupt_id: info.interrupts[1].interrupt_id.clone(),
+            status: crate::types::ResumeStatus::Resolved,
+            payload: None,
+        };
+        let thread_id = ThreadId::new("resume_batch_thread");
+        let final_entries = [final_entry];
+        let (resumed, updated) = tokio::join!(
+            manager.apply_resume_batch(
+                &session.session_id,
+                &thread_id,
+                "/ag-ui/agents/guarded/run",
+                &final_entries,
+            ),
+            manager.update_last_event_id(&session.session_id, 99),
+        );
+        assert!(matches!(
+            resumed.unwrap(),
+            ResumeBatchResult::Complete { .. }
+        ));
+        assert!(updated);
+        let after_race = manager.get_session(&session.session_id).await.unwrap();
+        assert_eq!(after_race.state, SessionState::Active);
+        assert!(after_race.hitl_waiting_info.is_none());
+        assert_eq!(after_race.last_event_id, 99);
+        let mut conn = pool.get().await.unwrap();
+        let session_ttl: i64 = conn
+            .ttl(RedisSessionManager::session_key(&session.session_id))
+            .await
+            .unwrap();
+        let run_ttl: i64 = conn
+            .ttl(RedisSessionManager::run_id_key("resume_batch_run"))
+            .await
+            .unwrap();
+        let thread_ttl: i64 = conn
+            .ttl(RedisSessionManager::thread_sessions_key(
+                "resume_batch_thread",
+            ))
+            .await
+            .unwrap();
+        assert!(session_ttl > 0 && run_ttl > 0 && thread_ttl > 0);
+        manager.delete_session(&session.session_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_restore_resume_batch_reopens_consumed_interrupt() {
+        let pool = create_test_pool().await;
+        let manager = RedisSessionManager::new(pool, 3600);
+        let thread_id = ThreadId::new("restore_batch_thread");
+        let session = manager
+            .create_session(RunId::new("restore_batch_run"), thread_id.clone())
+            .await;
+        manager
+            .set_profile_path(&session.session_id, "/ag-ui/agents/guarded/run")
+            .await;
+        let info = HitlWaitingInfo::new_simple(
+            "call-a".into(),
+            "/tasks/approval".into(),
+            "workflow".into(),
+            vec![],
+        );
+        let interrupt_id = info.interrupts[0].interrupt_id.clone();
+        manager
+            .set_paused_with_hitl_info(&session.session_id, info.clone())
+            .await;
+        let entries = [ResumeBatchEntry {
+            interrupt_id: interrupt_id.clone(),
+            status: crate::types::ResumeStatus::Resolved,
+            payload: None,
+        }];
+        let ResumeBatchResult::Complete { pending_info, .. } = manager
+            .apply_resume_batch(
+                &session.session_id,
+                &thread_id,
+                "/ag-ui/agents/guarded/run",
+                &entries,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("a single answer must consume the checkpoint");
+        };
+        assert!(
+            manager
+                .get_session_by_interrupt_id(&interrupt_id)
+                .await
+                .is_none()
+        );
+
+        assert!(
+            manager
+                .restore_resume_batch(&session.session_id, (*pending_info).clone())
+                .await
+        );
+        let restored = manager.get_session(&session.session_id).await.unwrap();
+        assert_eq!(restored.state, SessionState::Paused);
+        assert_eq!(restored.hitl_waiting_info, Some(info));
+        assert!(
+            manager
+                .get_session_by_interrupt_id(&interrupt_id)
+                .await
+                .is_some()
+        );
+        // A second restore must not clobber the already restored waiting state.
+        assert!(
+            !manager
+                .restore_resume_batch(&session.session_id, *pending_info)
+                .await
+        );
         manager.delete_session(&session.session_id).await;
     }
 

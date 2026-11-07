@@ -28,6 +28,7 @@ use app_wrapper::llm::completion::genai::GenaiCompletionService;
 use command_utils::util::tracing::LoggingConfig;
 use futures::StreamExt;
 use infra_utils::infra::test::TEST_RUNTIME;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::chat_message::Body as ChatMessageBody;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     ChatMessage, ChatRole, LlmOptions as ChatLlmOptions, MessageContent, message_content,
 };
@@ -97,9 +98,9 @@ fn simple_chat_args(message: &str) -> LlmChatArgs {
     LlmChatArgs {
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: Some(MessageContent {
+            body: Some(ChatMessageBody::Content(MessageContent {
                 content: Some(message_content::Content::Text(message.to_string())),
-            }),
+            })),
         }],
         options: Some(ChatLlmOptions {
             temperature: Some(0.0),

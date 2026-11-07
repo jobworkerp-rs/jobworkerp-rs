@@ -49,6 +49,7 @@ test-utils = ["infra/test-utils"]
 
 [dev-dependencies]
 dotenvy = { workspace = true }
+redis = { workspace = true }
 sqlx = { workspace = true }
 tracing-subscriber = { workspace = true }
 app = { path = ".", features = ["test-utils"] }

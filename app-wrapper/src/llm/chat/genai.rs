@@ -20,7 +20,6 @@ use genai::chat::{
 };
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp;
-use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolExecutionRequest;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
@@ -165,6 +164,39 @@ pub struct GenaiChatService {
 impl ThinkTagHelper for GenaiChatService {}
 
 impl GenaiChatService {
+    fn to_genai_tool_call(
+        call: &jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::ToolCall,
+    ) -> genai::chat::ToolCall {
+        genai::chat::ToolCall {
+            call_id: call.call_id.clone(),
+            fn_name: call.fn_name.clone(),
+            fn_arguments: ToolConverter::parse_tool_call_arguments(&call.fn_arguments),
+            thought_signatures: None,
+        }
+    }
+
+    fn trans_content_parts(
+        parts: &[jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::MessageContent],
+    ) -> Vec<genai::chat::ContentPart> {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+        let mut converted = Vec::new();
+        for part in parts {
+            match part.content.as_ref() {
+                Some(ProtoContent::Text(text)) => {
+                    converted.push(genai::chat::ContentPart::Text(text.clone()))
+                }
+                Some(ProtoContent::ToolCalls(calls)) => {
+                    converted.extend(calls.calls.iter().map(|call| {
+                        genai::chat::ContentPart::ToolCall(Self::to_genai_tool_call(call))
+                    }))
+                }
+                // validate_message_parts admits only text and tool calls in parts.
+                _ => {}
+            }
+        }
+        converted
+    }
+
     pub async fn new(
         function_app: Arc<FunctionAppImpl>,
         function_set_app: Arc<FunctionSetAppImpl>,
@@ -297,7 +329,7 @@ impl GenaiChatService {
         let request_prompts = messages
             .iter()
             .filter(|message| matches!(message.role, genai::chat::ChatRole::System))
-            .filter_map(|message| message.content.first_text())
+            .flat_map(|message| message.content.texts())
             .map(str::to_string)
             .collect::<Vec<_>>();
         let merged_prompt = ToolConverter::merge_system_prompts(configured_prompt, request_prompts);
@@ -339,7 +371,9 @@ impl GenaiChatService {
     }
 
     fn trans_messages(&self, args: LlmChatArgs) -> Vec<ChatMessage> {
-        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            chat_message::Body, message_content::Content as ProtoContent,
+        };
 
         // We need backwards access to earlier messages to resolve fn_name
         // for any `ToolResults` we encounter, so iterate by index instead
@@ -349,8 +383,20 @@ impl GenaiChatService {
         for idx in 0..messages.len() {
             let msg = &messages[idx];
             let role = self.trans_role(msg.role());
-            let Some(content) = msg.content.as_ref() else {
-                continue;
+            let content = match msg.body.as_ref() {
+                Some(Body::Parts(message_parts)) => {
+                    let parts = Self::trans_content_parts(&message_parts.items);
+                    if !parts.is_empty() {
+                        out.push(ChatMessage {
+                            role,
+                            content: GenaiMessageContent::from_parts(parts),
+                            options: None,
+                        });
+                    }
+                    continue;
+                }
+                Some(Body::Content(content)) => content,
+                None => continue,
             };
             let genai_content = match content.content.as_ref() {
                 Some(ProtoContent::Text(text)) => GenaiMessageContent::from_text(text.clone()),
@@ -376,23 +422,13 @@ impl GenaiChatService {
                         },
                     )])
                 }
-                Some(ProtoContent::ToolCalls(tool_calls)) => {
-                    let calls = tool_calls
+                Some(ProtoContent::ToolCalls(tool_calls)) => GenaiMessageContent::from_tool_calls(
+                    tool_calls
                         .calls
                         .iter()
-                        .map(|call| {
-                            let fn_arguments_value = serde_json::from_str(&call.fn_arguments)
-                                .unwrap_or_else(|_| serde_json::json!({}));
-                            genai::chat::ToolCall {
-                                call_id: call.call_id.clone(),
-                                fn_name: call.fn_name.clone(),
-                                fn_arguments: fn_arguments_value,
-                                thought_signatures: None,
-                            }
-                        })
-                        .collect();
-                    GenaiMessageContent::from_tool_calls(calls)
-                }
+                        .map(Self::to_genai_tool_call)
+                        .collect(),
+                ),
                 Some(ProtoContent::ToolExecutionRequests(_)) => {
                     // Tool execution requests are handled separately in request_chat
                     // They should not be converted to chat messages directly
@@ -536,15 +572,10 @@ impl GenaiChatService {
     ) -> Result<LlmChatResult> {
         let metadata = Arc::new(metadata);
 
-        // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
-        // This runs before any provider call, surfacing client-side payload
-        // errors as direct Err instead of confusing provider-side rejections.
-        ToolConverter::validate_all_tool_results(&args)?;
-        ToolConverter::validate_client_tools_exclusive(&args)?;
-        ToolConverter::validate_client_tool_execution_requests(&args)?;
+        ToolConverter::validate_chat_args(&args)?;
 
         // Check for tool execution requests in messages (manual mode)
-        if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
+        if let Some(tool_exec_requests) = ToolConverter::extract_tool_execution_requests(&args) {
             return self
                 .handle_tool_execution(args, tool_exec_requests, cx, metadata)
                 .await;
@@ -669,32 +700,6 @@ impl GenaiChatService {
                     tool_execution_started: None,
                 })
             }
-        }
-    }
-
-    /// Extract tool execution requests from messages (for manual mode)
-    fn extract_tool_execution_requests(
-        &self,
-        args: &LlmChatArgs,
-    ) -> Option<Vec<ToolExecutionRequest>> {
-        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content as ProtoContent;
-
-        let requests: Vec<ToolExecutionRequest> = args
-            .messages
-            .iter()
-            .filter(|m| m.role() == ChatRole::Tool)
-            .filter_map(|m| m.content.as_ref())
-            .filter_map(|c| match &c.content {
-                Some(ProtoContent::ToolExecutionRequests(reqs)) => Some(reqs.requests.clone()),
-                _ => None,
-            })
-            .flatten()
-            .collect();
-
-        if requests.is_empty() {
-            None
-        } else {
-            Some(requests)
         }
     }
 
@@ -1066,14 +1071,11 @@ impl GenaiChatService {
         metadata: HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
-        ToolConverter::validate_all_tool_results(&args)?;
-        ToolConverter::validate_client_tools_exclusive(&args)?;
-        ToolConverter::validate_client_tool_execution_requests(&args)?;
+        ToolConverter::validate_chat_args(&args)?;
 
         // Check for tool execution requests first (highest priority, manual mode continuation)
         let metadata_arc = Arc::new(metadata.clone());
-        if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
+        if let Some(tool_exec_requests) = ToolConverter::extract_tool_execution_requests(&args) {
             return self
                 .handle_tool_execution_stream(
                     args,
@@ -1767,6 +1769,116 @@ impl crate::llm::tracing::LLMTracingHelper for GenaiChatService {
 mod tests {
     use super::*;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::LlmOptions;
+
+    #[test]
+    fn parts_preserve_assistant_text_and_tool_calls_together() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            MessageContent,
+            message_content::{Content, ToolCall, ToolCalls},
+        };
+        let parts = vec![
+            MessageContent {
+                content: Some(Content::Text("thinking".into())),
+            },
+            MessageContent {
+                content: Some(Content::ToolCalls(ToolCalls {
+                    calls: vec![ToolCall {
+                        call_id: "call-1".into(),
+                        fn_name: "lookup".into(),
+                        fn_arguments: "{}".into(),
+                    }],
+                })),
+            },
+        ];
+        let converted = GenaiChatService::trans_content_parts(&parts);
+        assert_eq!(converted.len(), 2);
+        assert!(
+            matches!(&converted[0], genai::chat::ContentPart::Text(text) if text == "thinking")
+        );
+        assert!(
+            matches!(&converted[1], genai::chat::ContentPart::ToolCall(call) if call.call_id == "call-1" && call.fn_name == "lookup")
+        );
+    }
+
+    #[test]
+    fn system_prompt_includes_every_text_part_from_every_system_message() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            MessageContent, message_content::Content as ProtoContent,
+        };
+
+        let system_message = |texts: &[&str]| {
+            let parts = texts
+                .iter()
+                .map(|text| MessageContent {
+                    content: Some(ProtoContent::Text((*text).to_string())),
+                })
+                .collect::<Vec<_>>();
+            ChatMessage {
+                role: genai::chat::ChatRole::System,
+                content: GenaiMessageContent::from_parts(GenaiChatService::trans_content_parts(
+                    &parts,
+                )),
+                options: None,
+            }
+        };
+        let mut messages = vec![
+            system_message(&["first part", "", "second part"]),
+            ChatMessage::user("keep this user message"),
+            system_message(&["third part"]),
+        ];
+
+        GenaiChatService::apply_system_prompt(&mut messages, Some("configured prompt"));
+
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(messages[0].role, genai::chat::ChatRole::System));
+        assert_eq!(
+            messages[0].content.first_text(),
+            Some("configured prompt\nfirst part\nsecond part\nthird part")
+        );
+        assert!(matches!(messages[1].role, genai::chat::ChatRole::User));
+        assert_eq!(
+            messages[1].content.first_text(),
+            Some("keep this user message")
+        );
+    }
+
+    #[test]
+    fn system_prompt_without_configuration_preserves_system_content_parts() {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            MessageContent, message_content::Content as ProtoContent,
+        };
+
+        let parts = ["first instruction", "second instruction"]
+            .into_iter()
+            .map(|text| MessageContent {
+                content: Some(ProtoContent::Text(text.to_string())),
+            })
+            .collect::<Vec<_>>();
+        let mut messages = vec![
+            ChatMessage {
+                role: genai::chat::ChatRole::System,
+                content: GenaiMessageContent::from_parts(GenaiChatService::trans_content_parts(
+                    &parts,
+                )),
+                options: None,
+            },
+            ChatMessage::user("keep this user message"),
+        ];
+
+        GenaiChatService::apply_system_prompt(&mut messages, None);
+
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(messages[0].role, genai::chat::ChatRole::System));
+        assert_eq!(
+            messages[0].content.texts(),
+            vec!["first instruction", "second instruction"]
+        );
+        assert!(matches!(messages[1].role, genai::chat::ChatRole::User));
+        assert_eq!(
+            messages[1].content.first_text(),
+            Some("keep this user message")
+        );
+    }
 
     #[test]
     fn generation_errors_retry_transient_http_only() {

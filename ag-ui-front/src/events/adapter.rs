@@ -4,7 +4,6 @@ use crate::events::AgUiEvent;
 use crate::types::{
     ids::{MessageId, RunId, StepId, ThreadId, ToolCallId},
     message::Role,
-    state::WorkflowState,
 };
 
 /// Adapter for converting jobworkerp-rs workflow execution events to AG-UI events.
@@ -14,6 +13,7 @@ pub struct WorkflowEventAdapter {
     thread_id: ThreadId,
     current_message_id: Option<MessageId>,
     current_step_id: Option<StepId>,
+    current_step_name: Option<String>,
     current_tool_call_id: Option<ToolCallId>,
 }
 
@@ -25,6 +25,7 @@ impl WorkflowEventAdapter {
             thread_id,
             current_message_id: None,
             current_step_id: None,
+            current_step_name: None,
             current_tool_call_id: None,
         }
     }
@@ -49,10 +50,10 @@ impl WorkflowEventAdapter {
     /// Create a RUN_STARTED event
     pub fn workflow_started(&self, workflow_name: &str, job_id: Option<i64>) -> AgUiEvent {
         let metadata = job_id.map(|id| {
-            serde_json::json!({
-                "workflowName": workflow_name,
-                "jobId": id.to_string()
-            })
+            serde_json::Map::from_iter([
+                ("workflowName".to_string(), serde_json::json!(workflow_name)),
+                ("jobId".to_string(), serde_json::json!(id.to_string())),
+            ])
         });
 
         AgUiEvent::RunStarted {
@@ -65,7 +66,7 @@ impl WorkflowEventAdapter {
 
     /// Create a RUN_FINISHED event with success outcome
     pub fn workflow_completed(&self, output: Option<serde_json::Value>) -> AgUiEvent {
-        AgUiEvent::run_finished(self.run_id.to_string(), output)
+        AgUiEvent::run_finished(self.run_id.to_string(), self.thread_id.to_string(), output)
     }
 
     /// Create a RUN_ERROR event
@@ -95,19 +96,20 @@ impl WorkflowEventAdapter {
     ) -> AgUiEvent {
         let step_id = StepId::random();
         self.current_step_id = Some(step_id.clone());
+        self.current_step_name = Some(task_name.to_string());
 
         let metadata = if task_type.is_some() || runner_type.is_some() {
-            Some(serde_json::json!({
-                "taskType": task_type,
-                "runnerType": runner_type
-            }))
+            Some(serde_json::Map::from_iter([
+                ("taskType".to_string(), serde_json::json!(task_type)),
+                ("runnerType".to_string(), serde_json::json!(runner_type)),
+            ]))
         } else {
             None
         };
 
         AgUiEvent::StepStarted {
             step_id: step_id.to_string(),
-            step_name: Some(task_name.to_string()),
+            step_name: task_name.to_string(),
             parent_step_id: None,
             timestamp: Some(AgUiEvent::now_timestamp()),
             metadata,
@@ -117,9 +119,11 @@ impl WorkflowEventAdapter {
     /// Create a STEP_FINISHED event
     pub fn task_finished(&mut self, output: Option<serde_json::Value>) -> Option<AgUiEvent> {
         let step_id = self.current_step_id.take()?;
+        let step_name = self.current_step_name.take()?;
 
         Some(AgUiEvent::StepFinished {
             step_id: step_id.to_string(),
+            step_name,
             timestamp: Some(AgUiEvent::now_timestamp()),
             result: output,
         })
@@ -201,7 +205,9 @@ impl WorkflowEventAdapter {
         let tool_call_id = self.current_tool_call_id.take()?;
 
         Some(AgUiEvent::ToolCallResult {
+            message_id: MessageId::random().to_string(),
             tool_call_id: tool_call_id.to_string(),
+            content: result.to_string(),
             result,
             timestamp: Some(AgUiEvent::now_timestamp()),
         })
@@ -212,7 +218,9 @@ impl WorkflowEventAdapter {
         let tool_call_id = ToolCallId::from_job_id(job_id);
 
         AgUiEvent::ToolCallResult {
+            message_id: MessageId::random().to_string(),
             tool_call_id: tool_call_id.to_string(),
+            content: result.to_string(),
             result,
             timestamp: Some(AgUiEvent::now_timestamp()),
         }
@@ -221,7 +229,7 @@ impl WorkflowEventAdapter {
     // === State Events ===
 
     /// Create a STATE_SNAPSHOT event
-    pub fn state_snapshot(&self, state: WorkflowState) -> AgUiEvent {
+    pub fn state_snapshot(&self, state: serde_json::Value) -> AgUiEvent {
         AgUiEvent::StateSnapshot {
             snapshot: state,
             timestamp: Some(AgUiEvent::now_timestamp()),
@@ -250,7 +258,6 @@ pub fn shared_adapter(run_id: RunId, thread_id: ThreadId) -> SharedWorkflowEvent
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::state::WorkflowStatus;
 
     #[test]
     fn test_workflow_started() {
@@ -321,7 +328,7 @@ mod tests {
                 metadata,
                 ..
             } => {
-                assert_eq!(step_name, &Some("http_request".to_string()));
+                assert_eq!(step_name, "http_request");
                 assert!(metadata.is_some());
             }
             _ => panic!("Expected StepStarted"),
@@ -404,13 +411,13 @@ mod tests {
     fn test_state_snapshot() {
         let adapter = WorkflowEventAdapter::new(RunId::new("run_1"), ThreadId::new("thread_1"));
 
-        let state = WorkflowState::new("my_workflow").with_status(WorkflowStatus::Running);
+        let state = serde_json::json!({"public":"my_workflow", "status":"running"});
 
         let event = adapter.state_snapshot(state);
         match event {
             AgUiEvent::StateSnapshot { snapshot, .. } => {
-                assert_eq!(snapshot.workflow_name, "my_workflow");
-                assert_eq!(snapshot.status, WorkflowStatus::Running);
+                assert_eq!(snapshot["public"], "my_workflow");
+                assert_eq!(snapshot["status"], "running");
             }
             _ => panic!("Expected StateSnapshot"),
         }
@@ -515,7 +522,7 @@ mod tests {
                 metadata,
                 ..
             } => {
-                assert_eq!(step_name, &Some("loop[2]".to_string()));
+                assert_eq!(step_name, "loop[2]");
                 let md = metadata.as_ref().expect("metadata should be set");
                 assert_eq!(
                     md.get("taskType").and_then(|v| v.as_str()),

@@ -135,6 +135,15 @@ enum ChatInternalResult {
 }
 
 impl OllamaChatService {
+    fn to_ollama_tool_call(call: &llm::llm_chat_args::message_content::ToolCall) -> OllamaToolCall {
+        OllamaToolCall {
+            function: ollama_rs::generation::tools::ToolCallFunction {
+                name: call.fn_name.clone(),
+                arguments: ToolConverter::parse_tool_call_arguments(&call.fn_arguments),
+            },
+        }
+    }
+
     pub fn new(
         function_app: Arc<FunctionAppImpl>,
         function_set_app: Arc<FunctionSetAppImpl>,
@@ -369,7 +378,31 @@ impl OllamaChatService {
         }
     }
 
+    /// Ollama messages hold one text and a tool-call list, so ordered parts are
+    /// flattened into both.
+    fn flatten_parts(
+        parts: &[llm::llm_chat_args::MessageContent],
+    ) -> (String, Vec<OllamaToolCall>) {
+        let mut text = String::new();
+        let mut tool_calls = Vec::new();
+        for part in parts {
+            match part.content.as_ref() {
+                Some(llm::llm_chat_args::message_content::Content::Text(value)) => {
+                    text.push_str(value);
+                }
+                Some(llm::llm_chat_args::message_content::Content::ToolCalls(calls)) => {
+                    tool_calls.extend(calls.calls.iter().map(Self::to_ollama_tool_call));
+                }
+                // validate_message_parts admits only text and tool calls in parts.
+                _ => {}
+            }
+        }
+        (text, tool_calls)
+    }
+
     async fn convert_messages(args: &LlmChatArgs) -> Vec<ChatMessage> {
+        use llm::llm_chat_args::chat_message::Body;
+
         let mut messages = Vec::with_capacity(args.messages.len());
         for m in &args.messages {
             let role = Self::role_to_enum(m.role());
@@ -379,7 +412,7 @@ impl OllamaChatService {
             // does not carry a per-message tool_call_id field, matching the
             // OpenAI/llama-cpp unpack rule in FR-TRSP-8. All other content
             // variants are 1:1.
-            if let Some(content) = &m.content
+            if let Some(Body::Content(content)) = &m.body
                 && let Some(llm::llm_chat_args::message_content::Content::ToolResults(tr)) =
                     &content.content
             {
@@ -387,8 +420,12 @@ impl OllamaChatService {
                 continue;
             }
 
-            let (content, images, tool_calls) = match &m.content {
-                Some(content) => match &content.content {
+            let (content, images, tool_calls) = match &m.body {
+                Some(Body::Parts(parts)) => {
+                    let (text, calls) = Self::flatten_parts(&parts.items);
+                    (text, vec![], calls)
+                }
+                Some(Body::Content(content)) => match &content.content {
                     Some(llm::llm_chat_args::message_content::Content::Text(t)) => {
                         (t.clone(), vec![], vec![])
                     }
@@ -402,17 +439,7 @@ impl OllamaChatService {
                         }
                     }
                     Some(llm::llm_chat_args::message_content::Content::ToolCalls(tc)) => {
-                        let calls: Vec<OllamaToolCall> = tc
-                            .calls
-                            .iter()
-                            .map(|call| OllamaToolCall {
-                                function: ollama_rs::generation::tools::ToolCallFunction {
-                                    name: call.fn_name.clone(),
-                                    arguments: serde_json::from_str(&call.fn_arguments)
-                                        .unwrap_or_else(|_| serde_json::json!({})),
-                                },
-                            })
-                            .collect();
+                        let calls = tc.calls.iter().map(Self::to_ollama_tool_call).collect();
                         (String::new(), vec![], calls)
                     }
                     _ => (String::new(), vec![], vec![]),
@@ -480,13 +507,10 @@ impl OllamaChatService {
     ) -> Result<LlmChatResult> {
         let metadata = Arc::new(metadata);
 
-        // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
-        ToolConverter::validate_all_tool_results(&args)?;
-        ToolConverter::validate_client_tools_exclusive(&args)?;
-        ToolConverter::validate_client_tool_execution_requests(&args)?;
+        ToolConverter::validate_chat_args(&args)?;
 
         // Check for tool execution requests in messages (manual mode)
-        if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
+        if let Some(tool_exec_requests) = ToolConverter::extract_tool_execution_requests(&args) {
             return self
                 .handle_tool_execution(args, tool_exec_requests, cx, metadata)
                 .await;
@@ -614,32 +638,6 @@ impl OllamaChatService {
                     tool_execution_started: None,
                 })
             }
-        }
-    }
-
-    /// Extract tool execution requests from messages (for manual mode)
-    fn extract_tool_execution_requests(
-        &self,
-        args: &LlmChatArgs,
-    ) -> Option<Vec<ToolExecutionRequest>> {
-        use llm::llm_chat_args::message_content::Content as ProtoContent;
-
-        let requests: Vec<ToolExecutionRequest> = args
-            .messages
-            .iter()
-            .filter(|m| m.role() == ChatRole::Tool)
-            .filter_map(|m| m.content.as_ref())
-            .filter_map(|c| match &c.content {
-                Some(ProtoContent::ToolExecutionRequests(reqs)) => Some(reqs.requests.clone()),
-                _ => None,
-            })
-            .flatten()
-            .collect();
-
-        if requests.is_empty() {
-            None
-        } else {
-            Some(requests)
         }
     }
 
@@ -1060,14 +1058,11 @@ impl OllamaChatService {
         metadata: HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
     ) -> Result<BoxStream<'static, LlmChatResult>> {
-        // Fail fast on malformed ToolResults (FR-TRSP-6 / FR-TRSP-7).
-        ToolConverter::validate_all_tool_results(&args)?;
-        ToolConverter::validate_client_tools_exclusive(&args)?;
-        ToolConverter::validate_client_tool_execution_requests(&args)?;
+        ToolConverter::validate_chat_args(&args)?;
 
         // Check for tool execution requests first (highest priority, manual mode continuation)
         let metadata_arc = Arc::new(metadata);
-        if let Some(tool_exec_requests) = self.extract_tool_execution_requests(&args) {
+        if let Some(tool_exec_requests) = ToolConverter::extract_tool_execution_requests(&args) {
             return self
                 .handle_tool_execution_stream(
                     args,
@@ -1563,6 +1558,45 @@ mod tests {
     use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
         ChatMessage, MessageContent, message_content,
     };
+    use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+        MessageParts, chat_message::Body as ChatMessageBody,
+    };
+
+    #[test]
+    fn parts_preserve_assistant_text_and_tool_calls_together() {
+        use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
+            ChatRole,
+            message_content::{ToolCall, ToolCalls},
+        };
+        let args = LlmChatArgs {
+            messages: vec![ChatMessage {
+                role: ChatRole::Assistant as i32,
+                body: Some(ChatMessageBody::Parts(MessageParts {
+                    items: vec![
+                        MessageContent {
+                            content: Some(message_content::Content::Text("thinking".into())),
+                        },
+                        MessageContent {
+                            content: Some(message_content::Content::ToolCalls(ToolCalls {
+                                calls: vec![ToolCall {
+                                    call_id: "call-1".into(),
+                                    fn_name: "lookup".into(),
+                                    fn_arguments: "{}".into(),
+                                }],
+                            })),
+                        },
+                    ],
+                })),
+            }],
+            ..Default::default()
+        };
+        let converted = TEST_RUNTIME.block_on(OllamaChatService::convert_messages(&args));
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].content, "thinking");
+        assert_eq!(converted[0].tool_calls.len(), 1);
+        assert_eq!(converted[0].tool_calls[0].function.name, "lookup");
+    }
 
     #[test]
     fn expand_tool_results_into_fans_out_per_result() {
@@ -1653,9 +1687,10 @@ mod tests {
         let args = LlmChatArgs {
             messages: vec![ChatMessage {
                 role: ChatRole::User as i32,
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(message_content::Content::Text("hello".to_string())),
-                }),
+                })),
+
             }],
             ..Default::default()
         };
@@ -1712,9 +1747,10 @@ mod tests {
         let args = LlmChatArgs {
             messages: vec![ChatMessage {
                 role: ChatRole::User as i32,
-                content: Some(MessageContent {
+                body: Some(ChatMessageBody::Content(MessageContent {
                     content: Some(message_content::Content::Text("hello".to_owned())),
-                }),
+                })),
+
             }],
             ..Default::default()
         };

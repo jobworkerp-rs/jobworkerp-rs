@@ -1,6 +1,6 @@
 # AG-UI Front
 
-AG-UI プロトコルに準拠した HTTP SSE サーバーで、jobworkerp-rs ワークフローをリアルタイムにストリーミング実行します。
+AG-UI 1.0 に準拠した HTTP SSE サーバーです。endpoint ごとに LLM worker の streaming または guardrail workflow を提供します。
 
 > **注意:** 本モジュールは coding agent が実装したアルファ版です。API や動作は予告なく変更される可能性があります。
 
@@ -64,6 +64,7 @@ AG-UI Front は [AG-UI プロトコル](https://docs.ag-ui.com/llms-full.txt) �
 | `AG_UI_AUTH_TOKENS` | (なし) | カンマ区切りの認証トークン |
 | `AG_UI_SESSION_TTL_SEC` | `3600` | セッション TTL（秒） |
 | `AG_UI_MAX_EVENTS_PER_SESSION` | `1000` | セッション毎の最大イベント数 |
+| `AG_UI_PROFILES` | `[]` | 登録 endpoint profile の JSON 配列 |
 | `STORAGE_TYPE` | `Standalone` | `Standalone` または `Scalable` |
 | `REDIS_URL` | (なし) | Redis URL（Scalable モード時） |
 
@@ -72,13 +73,45 @@ AG-UI Front は [AG-UI プロトコル](https://docs.ag-ui.com/llms-full.txt) �
 | エンドポイント | メソッド | 説明 |
 |---------------|---------|------|
 | `/api/health` | GET | ヘルスチェック |
-| `/ag-ui/run` | POST | ワークフロー実行開始（SSE ストリーム返却） |
+| `/ag-ui/agents/<name>/run` | POST | 登録済み LLM streaming または workflow 実行 |
 | `/ag-ui/stream/{run_id}` | GET | 既存実行へのストリーム再接続 |
-| `/ag-ui/message` | POST | HITL メッセージ送信（ツール結果） |
 | `/ag-ui/run/{run_id}` | DELETE | ワークフローキャンセル |
 | `/ag-ui/state/{run_id}` | GET | ワークフロー状態取得 |
 
 詳細は [クライアント利用ガイド](docs/CLIENT_GUIDE_ja.md) を参照してください。
+
+`AG_UI_PROFILES` の各要素は `path`、`workerName`、`mode` を持ちます。`mode` は `streaming` または `workflow` です。path は `/ag-ui/agents/<name>/run` 形式で重複できません。例:
+
+```json
+[
+  {"path":"/ag-ui/agents/live/run","workerName":"chat-live","mode":"streaming"},
+  {"path":"/ag-ui/agents/guarded/run","workerName":"chat-guarded","mode":"workflow"}
+]
+```
+
+`streaming` には `LLM/chat` worker、`workflow` には `WORKFLOW/run` worker を登録します。job として enqueue される worker は、response type を `Direct`、queue type を `Normal` または `WithBackup` にし、periodic を設定しないでください。enqueue される worker は、`streaming` profile の worker と、`ag-ui-http-async` の `workflow` profile の worker です。この条件を満たさない worker では live response stream を受け取れないため、run と resume は job を enqueue する前に拒否されます。AG-UI クライアントの接続先には、用途に対応する profile path を指定してください。旧 `/ag-ui/run` は自動登録されません。
+
+### 利用開始
+
+1. **Worker を登録:** `streaming` 用 `LLM/chat` worker は client tools を受け付け、server-side auto execution を無効にします。`workflow` 用 `WORKFLOW/run` worker は workflow 内の trusted context に LLM/guardrail 設定を含めます。登録操作は jobworkerp の [Worker 作成例](../../README_ja.md#リアルタイム結果通知ジョブ)を参照してください。
+2. **Profile を設定:**
+
+   ```sh
+   export AG_UI_PROFILES='[{"path":"/ag-ui/agents/live/run","workerName":"chat-live","mode":"streaming"},{"path":"/ag-ui/agents/guarded/run","workerName":"chat-guarded","mode":"workflow"}]'
+   ```
+
+3. **Server を起動:** embedded server は `AG_UI_ENABLED=true` を設定して `all-in-one` を起動します。分離型 async binary は `cargo run -p ag-ui-front --bin ag-ui-http-async` で起動し、`STORAGE_TYPE=Scalable` と worker process が必要です。
+4. **クライアントを接続:** AG-UI クライアントの接続先 URL を profile path (`/ag-ui/agents/live/run` など) にし、認証を有効にした場合は `Authorization: Bearer <token>` を設定します。
+5. **Request を確認:**
+
+   ```sh
+   curl -N http://localhost:8080/ag-ui/agents/live/run \
+     -H 'Content-Type: application/json' \
+     -H 'Authorization: Bearer <token>' \
+     --data '{"threadId":"thread-1","runId":"run-1","messages":[{"id":"msg-1","role":"user","content":"Hello"}]}'
+   ```
+
+   `RUN_STARTED` の後に text または client tool events が続き、最後は `RUN_FINISHED` または `RUN_ERROR` となることを確認します。client tool call はクライアントが実行し、その結果を含む次の run で会話を続けます。
 
 ## SSE イベント一覧
 
@@ -116,47 +149,10 @@ AG-UI Front は [AG-UI プロトコル](https://docs.ag-ui.com/llms-full.txt) �
 | `STATE_SNAPSHOT` | 状態スナップショット |
 | `STATE_DELTA` | 状態差分（RFC 6902 JSON Patch） |
 
-## HITL（Human-in-the-Loop）
+## ツールと再開
 
-AG-UI Front は2種類の HITL をサポートします：
 
-### 1. ワークフロー HITL
-
-ワークフロー内で `checkpoint: true` を設定したタスクで一時停止し、ユーザー入力を待機します。
-チェックポイントからの再開には `/ag-ui/message` エンドポイントを使用します。
-
-### 2. LLM ツール呼び出し HITL
-
-LLM_CHAT ランナーで `isAutoCalling: false` を設定すると、LLM がツール呼び出しを要求した際にワークフローが一時停止します。
-
-**フロー:**
-
-```text
-Client                         AG-UI Server                    LLM
-   |                              |                             |
-   |-- POST /ag-ui/run ---------->|                             |
-   |                              |-- LLM_CHAT 実行 ----------->|
-   |                              |<-- ツール呼び出し要求 -------|
-   |<-- TOOL_CALL_START ----------|   (pending_tool_calls)      |
-   |<-- TOOL_CALL_ARGS -----------|                             |
-   |   (ストリーム一時停止)        |                             |
-   |                              |                             |
-   |   [ユーザーがツールを承認]    |                             |
-   |                              |                             |
-   |-- POST /ag-ui/message ------>|                             |
-   |   (toolCallResults)          |                             |
-   |<-- TOOL_CALL_END ------------|                             |
-   |<-- TOOL_CALL_RESULT ---------|                             |
-   |<-- RUN_FINISHED -------------|                             |
-   |                              |                             |
-   |   [クライアントがツール結果を|                             |
-   |    含めて新規リクエスト送信] |                             |
-   |                              |                             |
-   |-- POST /ag-ui/run ---------->|                             |
-   |   (messages に TOOL ロール)  |-- LLM_CHAT 実行 ----------->|
-   |                              |   (ツール結果を含む)        |
-   |<-- TEXT_MESSAGE_* -----------|<-- LLM 応答 ----------------|
-```
+`workflow` profile の checkpoint resume は、同じ thread/profile URL と新しい `runId` を含む標準 `resume` entry 配列で要求します。未回答 interrupt がある間は checkpoint を続行しません。server FunctionSets は workflow 内の別 LLM task として構成し、client tools と同一 LLM 呼び出しに混ぜません。
 
 **ツール名の形式:**
 
@@ -196,16 +192,16 @@ sequenceDiagram
     participant EventStore as EventStore
     participant JobApp as JobResultApp/Runner
 
-    Note over Client,HTTP: ワークフロー実行リクエスト
-    Client->>HTTP: POST /ag-ui/run (RunAgentInput)
-    HTTP->>Handler: run_workflow(input)
+    Note over Client,HTTP: 登録 profile による実行
+    Client->>HTTP: POST /ag-ui/agents/<name>/run (RunAgentInput)
+    HTTP->>Handler: profile mode に応じて実行
     Handler->>Session: create_session(run_id, thread_id)
     Session-->>Handler: Session
     Handler->>EventStore: store_event(RUN_STARTED)
     Handler-->>HTTP: SSE ストリームとセッションヘッダ
 
     par ライブ実行中
-        Handler->>JobApp: ワークフロー実行
+        Handler->>JobApp: 登録 LLM worker または workflow
         JobApp-->>Handler: ワークフロー/ジョブ結果ストリーム
         Handler->>EventStore: store_event(各イベント)
         Handler->>HTTP: SSE イベント配信

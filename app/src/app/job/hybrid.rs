@@ -940,25 +940,11 @@ impl JobApp for HybridJobAppImpl {
             .enqueue_job(w.channel.as_ref(), &job)
             .await
         {
-            if let Err(cleanup_error) = self
-                .job_processing_status_repository()
-                .delete_status(&jid)
-                .await
-            {
-                tracing::warn!(
-                    job_id = jid.value,
-                    %cleanup_error,
-                    "failed to remove PENDING status after Redis enqueue failure"
-                );
-            }
-            return Err(error);
+            return Err(self.settle_failed_redis_enqueue(jid, error, true).await);
         }
         self.after_enqueue_to_redis_hook(jid, &job, &w, streaming_type);
         if w.queue_type == QueueType::Normal as i32 {
-            let ttl = self.calculate_job_ttl(job_data.timeout);
-            self.redis_job_repository()
-                .create_with_expire(&jid, &job_data, ttl)
-                .await?;
+            self.record_queued_job_visibility(&jid, &job_data).await;
         }
 
         // Build the result-wait future owning a clone of the redis repository so

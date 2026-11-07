@@ -3,7 +3,7 @@
 use super::{TokenCountOutcomeResult, capability_unavailable, invalid};
 use jobworkerp_runner::jobworkerp::runner::llm::{
     LlmCompletionArgs,
-    llm_chat_args::{ChatMessage, ChatRole, message_content::Content},
+    llm_chat_args::{ChatMessage, ChatRole, chat_message::Body, message_content::Content},
     llm_runner_settings::GenaiRunnerSettings,
 };
 use serde_json::{Value, json};
@@ -50,11 +50,10 @@ pub(super) fn text_messages(messages: &[ChatMessage]) -> TokenCountOutcomeResult
                 ChatRole::Tool => "tool",
                 ChatRole::Unspecified => return Err(invalid("chat message role is required")),
             };
-            match message
-                .content
-                .as_ref()
-                .and_then(|content| content.content.as_ref())
-            {
+            match message.body.as_ref().and_then(|body| match body {
+                Body::Content(content) => content.content.as_ref(),
+                Body::Parts(_) => None,
+            }) {
                 Some(Content::Text(text)) => Ok(json!({"role": role, "content": text})),
                 // Do not silently omit content that changes provider tokenization.
                 _ => Err(capability_unavailable()),
@@ -112,7 +111,7 @@ pub(super) fn completion_messages(
 mod tests {
     use super::*;
     use jobworkerp_runner::jobworkerp::runner::llm::{
-        llm_chat_args::MessageContent,
+        llm_chat_args::{MessageContent, MessageParts, chat_message::Body as ChatMessageBody},
         token_count_result::{Error, Outcome, TokenCountErrorCode},
     };
 
@@ -139,7 +138,23 @@ mod tests {
     fn rejects_non_text_chat_content() {
         let error = text_messages(&[ChatMessage {
             role: ChatRole::User as i32,
-            content: Some(MessageContent::default()),
+            body: Some(ChatMessageBody::Content(MessageContent::default())),
+        }])
+        .unwrap_err();
+        assert!(
+            matches!(outcome(error), Outcome::Error(Error { code, .. }) if code == TokenCountErrorCode::ProviderCapabilityUnavailable as i32)
+        );
+    }
+
+    #[test]
+    fn rejects_parts_for_chat_token_count() {
+        let error = text_messages(&[ChatMessage {
+            role: ChatRole::User as i32,
+            body: Some(ChatMessageBody::Parts(MessageParts {
+                items: vec![MessageContent {
+                    content: Some(Content::Text("part text".to_string())),
+                }],
+            })),
         }])
         .unwrap_err();
         assert!(

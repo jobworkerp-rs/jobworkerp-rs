@@ -201,8 +201,10 @@ pub mod test {
         worker::redis::RedisWorkerRepositoryImpl,
     };
     use anyhow::Context;
+    use infra_utils::infra::redis::{RedisPool, new_named_redis_pool};
     use infra_utils::infra::test::{
-        setup_test_redis_blocking_pool, setup_test_redis_client, setup_test_redis_pool,
+        REDIS_CONFIG, setup_test_redis_blocking_pool, setup_test_redis_client,
+        setup_test_redis_pool,
     };
     use jobworkerp_runner::runner::{
         factory::RunnerSpecFactory, mcp::proxy::McpServerFactory, plugins::Plugins,
@@ -211,25 +213,70 @@ pub mod test {
 
     // create RedsRepositoryModule for test
     pub async fn setup_test_redis_module() -> RedisRepositoryModule {
-        // use normal redis
-        let job_queue_config = Arc::new(crate::infra::JobQueueConfig::default());
         let redis_pool = setup_test_redis_pool().await;
         let redis_blocking_pool = setup_test_redis_blocking_pool().await;
+        setup_test_redis_module_with_pools(redis_pool, redis_blocking_pool, true).await
+    }
+
+    /// Client name of the blocking pool built by `setup_test_redis_module_through_proxy`,
+    /// for releasing the BLPOP connections a stopped test worker leaves behind.
+    pub fn proxied_blocking_client_name(client_name_prefix: &str) -> String {
+        format!("{client_name_prefix}-blocking")
+    }
+
+    /// Create a test Redis module with isolated named pools and no global database flush,
+    /// whose normal pool connects through `proxy_url`. Blocking operations and pub/sub
+    /// keep using the test Redis URL.
+    pub async fn setup_test_redis_module_through_proxy(
+        client_name_prefix: &str,
+        proxy_url: &str,
+    ) -> RedisRepositoryModule {
+        async fn leaked_pool(
+            blocking: bool,
+            url: Option<&str>,
+            name: String,
+        ) -> &'static RedisPool {
+            let mut config = REDIS_CONFIG.clone();
+            config.blocking = blocking;
+            if let Some(url) = url {
+                config.url = url.to_string();
+            }
+            Box::leak(Box::new(new_named_redis_pool(config, &name).await.unwrap()))
+        }
+        let redis_pool = leaked_pool(
+            false,
+            Some(proxy_url),
+            format!("{client_name_prefix}-normal"),
+        )
+        .await;
+        let redis_blocking_pool =
+            leaked_pool(true, None, proxied_blocking_client_name(client_name_prefix)).await;
+        setup_test_redis_module_with_pools(redis_pool, redis_blocking_pool, false).await
+    }
+
+    async fn setup_test_redis_module_with_pools(
+        redis_pool: &'static RedisPool,
+        redis_blocking_pool: &'static RedisPool,
+        flush_database: bool,
+    ) -> RedisRepositoryModule {
+        // use normal redis
+        let job_queue_config = Arc::new(crate::infra::JobQueueConfig::default());
         let redis_client = setup_test_redis_client().unwrap();
 
-        // flush all
-        let mut rcon = redis_pool
-            .get()
-            .await
-            .context(format!(
-                "failed to get redis connection: {:?}",
-                redis_pool.clone()
-            ))
-            .unwrap();
-        redis::cmd("FLUSHALL")
-            .query_async::<()>(&mut *rcon)
-            .await
-            .unwrap();
+        if flush_database {
+            let mut rcon = redis_pool
+                .get()
+                .await
+                .context(format!(
+                    "failed to get redis connection: {:?}",
+                    redis_pool.clone()
+                ))
+                .unwrap();
+            redis::cmd("FLUSHALL")
+                .query_async::<()>(&mut *rcon)
+                .await
+                .unwrap();
+        }
 
         let p = RunnerSpecFactory::new(
             Arc::new(Plugins::new()),
@@ -275,5 +322,29 @@ pub mod test {
                 redis_client.clone(),
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod proxied_pool_tests {
+    use super::test::{proxied_blocking_client_name, setup_test_redis_module_through_proxy};
+    use infra_utils::infra::test::{REDIS_CONFIG, TEST_RUNTIME};
+
+    #[test]
+    fn proxied_blocking_pool_uses_the_published_client_name() -> anyhow::Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let prefix = format!(
+                "proxied-name-test-{}",
+                command_utils::util::datetime::now_millis()
+            );
+            let module = setup_test_redis_module_through_proxy(&prefix, &REDIS_CONFIG.url).await;
+            let mut connection = module.redis_blocking_pool.get().await?;
+            let name: Option<String> = redis::cmd("CLIENT")
+                .arg("GETNAME")
+                .query_async(&mut *connection)
+                .await?;
+            assert_eq!(name, Some(proxied_blocking_client_name(&prefix)));
+            Ok(())
+        })
     }
 }

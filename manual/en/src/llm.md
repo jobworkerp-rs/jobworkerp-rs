@@ -107,6 +107,32 @@ Tools are organized by functionality using FunctionSets. Available built-in func
 
 For details on FunctionSet definition, management, and AutoSelection (automatic FunctionSet selection by LLM to reduce context usage), see [Function / FunctionSet](function.md).
 
+### Messages with Text and Tool Calls
+
+A `ChatMessage` in the conversation history can use `parts` to keep an assistant reply's text and tool calls in one message, in order. The existing `content` form is unchanged. In public JSON, `content` or `parts` appears directly on each message; there is no `body` wrapper. `parts` is an object with an `items` array:
+
+```json
+{
+  "messages": [{
+    "role": "ASSISTANT",
+    "parts": {
+      "items": [
+        {"text": "I will look that up."},
+        {"toolCalls": {"calls": [{
+          "callId": "call-1",
+          "fnName": "lookup",
+          "fnArguments": "{}"
+        }]}}
+      ]
+    }
+  }]
+}
+```
+
+- `content` and `parts` are mutually exclusive. A JSON request that sets both to non-null values is rejected; `null` is treated as unset.
+- `parts.items` may hold only text and tool calls.
+- A following TOOL message must return results whose `callId` values match tool calls in the immediately preceding ASSISTANT message.
+
 ## Embedding Usage
 
 The `embedding` method generates embedding vectors. Set `using` to `"embedding"` at job execution time. The runner settings (provider / model) are shared with `completion`/`chat`; use an embedding-capable model.
