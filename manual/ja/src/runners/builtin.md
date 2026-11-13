@@ -32,6 +32,18 @@ worker_runnerに組み込み定義されている機能を以下に記載しま�
 
 Worker の `JobData.timeout` による stream の idle timeout は、どの Runner でも `TIMEOUT` になります。
 
+## DOCKER runner のマウントとネットワーク
+
+`job.args` のうち、コンテナの接続先を決める主な項目は次のとおりです。いずれも run モード（`use_static=false`）で有効で、exec モードでは無視されます。
+
+| 項目 | 説明 |
+|------|------|
+| `volumes` | `ホスト側:コンテナ側[:mode]` の形式は bind mount、`:` を含まない値は匿名ボリュームとして扱います。 |
+| `network_disabled` | `true` にするとコンテナのネットワークを無効にします。 |
+| `network_mode` | `docker run --network` と同じ値で、接続するネットワークを指定します。ユーザー定義ネットワーク名（例: compose プロジェクトの `<project>_default`）、`bridge`、`host`、`none`、`container:<name\|id>` を指定できます。空文字または未指定のときは Docker の既定ネットワークを使います。`network_disabled` が `true` のときは無視されます。 |
+
+`network_mode` にユーザー定義ネットワークを指定すると、同じネットワーク上の他のコンテナにサービス名で接続できます。たとえば、実行ごとに `docker compose -p <project> up -d` で起動したテスト用のサービスに、ジョブのコンテナから接続できます。
+
 ## GRPC runner の proto ソースについて
 
 GRPC runnerは、呼び出し対象のサービス・メソッドのスキーマを次の2つの方法で解決します。

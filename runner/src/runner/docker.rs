@@ -726,14 +726,13 @@ impl DockerRunner {
             Some(volume_declarations)
         };
 
-        let host_config = if binds.is_empty() {
-            None
-        } else {
-            Some(HostConfig {
-                binds: Some(binds),
-                ..Default::default()
-            })
-        };
+        let binds = (!binds.is_empty()).then_some(binds);
+        let network_mode = arg.network_mode.clone().filter(|n| !n.is_empty());
+        let host_config = (binds.is_some() || network_mode.is_some()).then(|| HostConfig {
+            binds,
+            network_mode,
+            ..Default::default()
+        });
 
         ContainerCreateBody {
             image: arg.image.clone(),
@@ -2159,5 +2158,164 @@ mod test {
             container_id
         );
         eprintln!("=== DockerRunner Drop test completed ===");
+    }
+
+    fn host_config_for(args: DockerArgs) -> Option<HostConfig> {
+        DockerRunner::new()
+            .trans_docker_arg_to_config(&args)
+            .host_config
+    }
+
+    #[test]
+    fn network_mode_is_passed_to_host_config_without_volumes() {
+        let host_config = host_config_for(DockerArgs {
+            network_mode: Some("myproject_default".to_string()),
+            ..Default::default()
+        })
+        .expect("network_mode alone must create a host config");
+        assert_eq!(
+            host_config.network_mode.as_deref(),
+            Some("myproject_default")
+        );
+        assert_eq!(host_config.binds, None);
+    }
+
+    #[test]
+    fn network_mode_is_combined_with_bind_mounts() {
+        let host_config = host_config_for(DockerArgs {
+            volumes: vec!["/host:/container".to_string()],
+            network_mode: Some("bridge".to_string()),
+            ..Default::default()
+        })
+        .expect("host config");
+        assert_eq!(host_config.network_mode.as_deref(), Some("bridge"));
+        assert_eq!(
+            host_config.binds,
+            Some(vec!["/host:/container".to_string()])
+        );
+    }
+
+    #[test]
+    fn missing_or_empty_network_mode_leaves_the_default_network() {
+        for network_mode in [None, Some(String::new())] {
+            let args = DockerArgs {
+                network_mode: network_mode.clone(),
+                ..Default::default()
+            };
+            assert!(
+                host_config_for(args).is_none(),
+                "network_mode {network_mode:?} must not create a host config"
+            );
+        }
+    }
+
+    /// A user-defined network with a one-shot TCP service on it.
+    /// Removed on drop so a failing test does not leak Docker resources.
+    struct TestNetwork {
+        network: String,
+        service: String,
+    }
+
+    impl TestNetwork {
+        const PORT: u16 = 7777;
+
+        fn docker_cli(args: &[&str]) -> std::process::ExitStatus {
+            std::process::Command::new("docker")
+                .args(args)
+                .output()
+                .expect("docker CLI must be available")
+                .status
+        }
+
+        fn start(name: &str) -> Self {
+            let suffix = format!("{name}-{}", std::process::id());
+            let this = TestNetwork {
+                network: format!("jobworkerp-test-net-{suffix}"),
+                service: format!("jobworkerp-test-svc-{suffix}"),
+            };
+            assert!(Self::docker_cli(&["network", "create", &this.network]).success());
+            let listen = format!("echo pong | nc -l -p {}", Self::PORT);
+            assert!(
+                Self::docker_cli(&[
+                    "run",
+                    "-d",
+                    "--rm",
+                    "--name",
+                    &this.service,
+                    "--network",
+                    &this.network,
+                    "busybox:latest",
+                    "sh",
+                    "-c",
+                    &listen,
+                ])
+                .success()
+            );
+            this
+        }
+
+        /// Runs a container that retries connecting to the service by name.
+        async fn connect_from_job(&self, network_disabled: Option<bool>) -> DockerResult {
+            let mut runner = DockerRunner::new();
+            let arg = ProstMessageCodec::serialize_message(&DockerArgs {
+                image: Some("busybox:latest".to_string()),
+                cmd: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    format!(
+                        "for i in 1 2 3 4 5; do nc {} {} && exit 0; sleep 1; done; exit 1",
+                        self.service,
+                        Self::PORT
+                    ),
+                ],
+                network_mode: Some(self.network.clone()),
+                network_disabled,
+                ..Default::default()
+            })
+            .unwrap();
+            let (result, _metadata) = runner.run(&arg, HashMap::new(), None).await;
+            ProstMessageCodec::deserialize_message(&result.expect("container must run"))
+                .expect("Should decode DockerResult")
+        }
+    }
+
+    impl Drop for TestNetwork {
+        fn drop(&mut self) {
+            Self::docker_cli(&["rm", "-f", &self.service]);
+            Self::docker_cli(&["network", "rm", &self.network]);
+        }
+    }
+
+    /// A container joined to a user-defined network reaches another container by name.
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn network_mode_joins_a_user_defined_network() {
+        let net = TestNetwork::start("join");
+        let docker_result = net.connect_from_job(None).await;
+        assert_eq!(docker_result.exit_code, Some(0));
+        assert!(
+            docker_result
+                .stdout
+                .as_deref()
+                .is_some_and(|stdout| stdout.contains("pong")),
+            "stdout should contain the service reply, got: {:?}",
+            docker_result.stdout
+        );
+    }
+
+    /// network_disabled takes precedence: the container gets no networking even
+    /// though network_mode names a reachable network.
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn network_disabled_overrides_network_mode() {
+        let net = TestNetwork::start("disabled");
+        let docker_result = net.connect_from_job(Some(true)).await;
+        // The client script exits 1 only after every connection attempt failed.
+        assert_eq!(
+            docker_result.exit_code,
+            Some(1),
+            "service must be unreachable, got stdout: {:?}",
+            docker_result.stdout
+        );
     }
 }

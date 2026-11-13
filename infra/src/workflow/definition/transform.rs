@@ -42,18 +42,19 @@ pub fn is_transform_template(filter: &str) -> bool {
 }
 
 pub fn jq_filter_body(filter: &str) -> &str {
-    filter
-        .trim()
-        .trim_start_matches(FILTER_START)
-        .trim_end_matches(FILTER_END)
+    strip_delimiters(filter, FILTER_START, FILTER_END)
 }
 
 pub fn liquid_template_body(template: &str) -> &str {
-    let template = template
-        .trim()
-        .trim_start_matches(TEMPLATE_START)
-        .trim_end();
-    template.strip_suffix(TEMPLATE_END).unwrap_or(template)
+    strip_delimiters(template, TEMPLATE_START, TEMPLATE_END)
+}
+
+// Strip each delimiter exactly once: the body itself may start with `${` or
+// end with `}` (e.g. a jq object construction), which must be kept intact.
+fn strip_delimiters<'a>(expression: &'a str, start: &str, end: &str) -> &'a str {
+    let expression = expression.trim();
+    let expression = expression.strip_prefix(start).unwrap_or(expression);
+    expression.strip_suffix(end).unwrap_or(expression)
 }
 
 pub trait UseJqAndTemplateTransformer {
@@ -252,7 +253,60 @@ mod test_use_jq_and_template_transformer {
                 "{{ user }}{{ secrets.API_TOKEN }}"
             ))
         );
+        assert_eq!(
+            DefaultTransformer::transform_expression_body("${$x + {a: 1}}"),
+            Some(TransformExpression::Jq("$x + {a: 1}"))
+        );
+        assert_eq!(
+            DefaultTransformer::transform_expression_body("$${$${{ user }}}"),
+            Some(TransformExpression::Liquid("$${{ user }}"))
+        );
         assert_eq!(DefaultTransformer::transform_expression_body("plain"), None);
+        assert_eq!(DefaultTransformer::transform_expression_body("${ .a"), None);
+        assert_eq!(
+            DefaultTransformer::transform_expression_body("prefix ${ .a }"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_jq_filter_body_strips_delimiters_once() {
+        assert_eq!(jq_filter_body("${ {a: 1} }"), " {a: 1} ");
+        assert_eq!(jq_filter_body("${$x + {a: 1}}"), "$x + {a: 1}");
+        assert_eq!(jq_filter_body("${\"}\"}"), "\"}\"");
+        assert_eq!(jq_filter_body("${.key}"), ".key");
+        assert_eq!(jq_filter_body("  ${.key}  "), ".key");
+        assert_eq!(jq_filter_body("${${.key}}"), "${.key}");
+        assert_eq!(jq_filter_body("${}"), "");
+    }
+
+    #[test]
+    fn test_liquid_template_body_strips_delimiters_once() {
+        assert_eq!(liquid_template_body("$${{{ user }}}"), "{{ user }}");
+        assert_eq!(liquid_template_body("  $${{{ user }}}  "), "{{ user }}");
+        assert_eq!(liquid_template_body("$${$${x}}"), "$${x}");
+    }
+
+    #[test]
+    fn test_execute_jq_filter_ending_with_object_construction() {
+        let input = Arc::new(json!({}));
+        let mut context = ExpressionContext::new();
+        context.insert("x", Arc::new(json!({"b": 2})));
+        let cases = [
+            ("${ {a: 1} }", json!({"a": 1})),
+            ("${$x + {a: 1}}", json!({"b": 2, "a": 1})),
+            ("${\"}\"}", json!("}")),
+            ("${ {a: {b: 1}} }", json!({"a": {"b": 1}})),
+            ("${{a: {b: 1}}}", json!({"a": {"b": 1}})),
+        ];
+        for (filter, expected) in cases {
+            let result = DefaultTransformer::execute_jq_filter(input.clone(), filter, &context)
+                .unwrap_or_else(|e| panic!("{filter}: {e:?}"));
+            assert_eq!(result, expected, "{filter}");
+            let result = DefaultTransformer::execute_transform(input.clone(), filter, &context)
+                .unwrap_or_else(|e| panic!("{filter}: {e:?}"));
+            assert_eq!(result, expected, "{filter}");
+        }
     }
 
     #[test]

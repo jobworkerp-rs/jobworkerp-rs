@@ -31,6 +31,18 @@ Streaming failures are returned in `Trailer.error` on the End. See [Streaming â€
 
 A stream idle timeout caused by the worker's `JobData.timeout` is reported as `TIMEOUT` for every runner.
 
+## DOCKER runner mounts and networks
+
+These `job.args` fields decide what the container is connected to. All of them apply in run mode (`use_static=false`) and are ignored in exec mode.
+
+| Field | Description |
+|-------|-------------|
+| `volumes` | Entries in the form `host:container[:mode]` become bind mounts; entries without `:` declare anonymous volumes. |
+| `network_disabled` | When `true`, the container has no networking. |
+| `network_mode` | Network to connect to, with the same values as `docker run --network`: a user-defined network name (e.g. a compose project's `<project>_default`), `bridge`, `host`, `none` or `container:<name\|id>`. Empty or unset keeps Docker's default network. Ignored when `network_disabled` is `true`. |
+
+With a user-defined network in `network_mode`, the container reaches other containers on that network by service name, for example test services started per run with `docker compose -p <project> up -d`.
+
 ## GRPC runner proto sources
 
 The GRPC runner resolves the schema of the target service and method in one of two ways:

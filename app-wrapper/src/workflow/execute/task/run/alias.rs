@@ -1,4 +1,7 @@
-use crate::workflow::definition::{transform::UseExpressionTransformer, workflow};
+use crate::workflow::definition::{
+    transform::{self, UseExpressionTransformer},
+    workflow,
+};
 use crate::workflow::execute::context::{TaskContext, context_variables_to_json};
 use crate::workflow::execute::expression::ExpressionContext;
 use anyhow::{Result, anyhow};
@@ -92,12 +95,7 @@ fn should_preserve_workflow_data(workflow_data: &Value) -> bool {
     let Some(workflow_data) = workflow_data.as_str() else {
         return true;
     };
-    !is_entire_expression(workflow_data)
-}
-
-fn is_entire_expression(value: &str) -> bool {
-    let trimmed = value.trim();
-    (trimmed.starts_with("${") || trimmed.starts_with("$${")) && trimmed.ends_with('}')
+    transform::transform_expression_body(workflow_data).is_none()
 }
 
 fn restore_workflow_data(transformed: &mut Value, workflow_data: Option<Value>) {
@@ -854,5 +852,16 @@ do:
         .unwrap_err();
 
         assert!(err.to_string().contains("exitCode"));
+    }
+
+    #[test]
+    fn only_non_expression_workflow_data_is_preserved() {
+        assert!(!should_preserve_workflow_data(&json!("${$x + {a: 1}}")));
+        assert!(!should_preserve_workflow_data(&json!("  ${ {a: 1} }  ")));
+        assert!(!should_preserve_workflow_data(&json!("$${{{ data }}}")));
+        assert!(should_preserve_workflow_data(&json!(
+            "document: { dsl: \"1.0.0-jobworkerp\" }\ndo: []"
+        )));
+        assert!(should_preserve_workflow_data(&json!({"do": []})));
     }
 }

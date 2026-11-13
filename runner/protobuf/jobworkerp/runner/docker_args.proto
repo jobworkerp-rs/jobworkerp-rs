@@ -76,5 +76,14 @@ message DockerArgs {
     // List of exit codes to treat as success (default: [0] when treat_nonzero_as_error is true).
     // Useful for containers that return non-zero codes for valid outcomes (e.g., grep returns 1 when no match).
     repeated int32 success_exit_codes = 15;
+
+    // # Network Mode
+    // Network to connect the container to, as with `docker run --network`:
+    // a user-defined network name (e.g. a compose project's "<project>_default"),
+    // "bridge", "host", "none" or "container:<name|id>".
+    // Empty or unset keeps the Docker default network.
+    // Ignored when network_disabled is true.
+    // Only effective when use_static=false (run mode).
+    optional string network_mode = 16;
 }
 
