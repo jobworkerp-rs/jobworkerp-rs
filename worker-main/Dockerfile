@@ -31,10 +31,11 @@ RUN cargo build --release --locked --features "$CARGO_FEATURES" --bin worker
 
 FROM nvcr.io/nvidia/cuda:13.1.2-cudnn-runtime-ubuntu24.04
 
+# docker-compose-v2: Ubuntu's docker-compose package is the obsolete Python v1.
 RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y --no-install-recommends \
         ca-certificates \
         docker.io \
-        docker-compose \
+        docker-compose-v2 \
         git \
         libcap-ng0 \
         libcurl4 \

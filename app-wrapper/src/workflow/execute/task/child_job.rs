@@ -1,5 +1,6 @@
-//! Shared steps for running a child job and mapping its failure to an Open
-//! Workflow standard error.
+//! Shared steps for running a child job: building its worker parameters from
+//! the task's `options`, and mapping its failure to an Open Workflow standard
+//! error.
 //!
 //! The same error type means different things depending on where it was
 //! raised (an `InvalidParameter` while converting arguments is a schema
@@ -8,11 +9,14 @@
 //! context of that stage.
 
 use crate::workflow::{
-    definition::workflow::{
-        self,
-        errors::{ErrorFactory, StandardErrorType},
+    definition::{
+        transform::UseJqAndTemplateTransformer,
+        workflow::{
+            self,
+            errors::{ErrorFactory, StandardErrorType},
+        },
     },
-    execute::{context::TaskContext, failure},
+    execute::{context::TaskContext, expression::ExpressionContext, failure},
 };
 use anyhow::Context;
 use app::app::{
@@ -21,8 +25,94 @@ use app::app::{
 };
 use infra::infra::runner::rows::RunnerWithSchema;
 use jobworkerp_base::error::JobWorkerError;
-use proto::jobworkerp::data::{JobResult, StreamError};
+use proto::jobworkerp::data::{JobResult, QueueType, ResponseType, StreamError, WorkerData};
 use proto::stream_error::StreamFailedError;
+use serde_json::Value;
+
+struct WorkerOptionsTransformer;
+impl UseJqAndTemplateTransformer for WorkerOptionsTransformer {}
+
+/// `options` with `channel` evaluated as a runtime expression, so a workflow
+/// can pick the channel per deployment (e.g. from its input). A `null` or
+/// empty result leaves the channel unset, i.e. the default channel. The other
+/// options are typed by the schema and taken as written.
+pub(crate) async fn evaluate_worker_options(
+    options: &Option<workflow::WorkerOptions>,
+    task_context: &TaskContext,
+    expression: &ExpressionContext,
+) -> Result<Option<workflow::WorkerOptions>, Box<workflow::Error>> {
+    let Some(options) = options else {
+        return Ok(None);
+    };
+    let Some(channel) = &options.channel else {
+        return Ok(Some(options.clone()));
+    };
+    let evaluated = WorkerOptionsTransformer::execute_transform(
+        task_context.input.clone(),
+        channel,
+        expression,
+    )
+    .and_then(|value| match value {
+        Value::Null => Ok(None),
+        Value::String(channel) if channel.is_empty() => Ok(None),
+        Value::String(channel) => Ok(Some(channel)),
+        // A Liquid template yields numbers and booleans for such text.
+        scalar @ (Value::Number(_) | Value::Bool(_)) => Ok(Some(scalar.to_string())),
+        other => Err(ErrorFactory::new().expression(
+            format!("channel must evaluate to a string, got: {other}"),
+            None,
+            None,
+        )),
+    });
+    match evaluated {
+        Ok(channel) => Ok(Some(workflow::WorkerOptions {
+            channel,
+            ..options.clone()
+        })),
+        Err(mut e) => {
+            let mut position = task_context.position.read().await.clone();
+            position.push("options".to_string());
+            position.push("channel".to_string());
+            e.position(&position);
+            Err(e)
+        }
+    }
+}
+
+/// Worker parameters for a temporary or static worker named `name`, or `None`
+/// to use the defaults.
+pub(crate) fn function_options_to_worker_data(
+    options: Option<workflow::WorkerOptions>,
+    name: &str,
+) -> Option<WorkerData> {
+    let options = options?;
+    Some(WorkerData {
+        name: name.to_string(),
+        description: String::new(),
+        broadcast_results: options.broadcast_results.unwrap_or(false),
+        store_failure: options.store_failure.unwrap_or(false),
+        store_success: options.store_success.unwrap_or(false),
+        use_static: options.use_static.unwrap_or(false),
+        queue_type: options
+            .queue_type
+            .map(|qt| match qt {
+                workflow::QueueType::Normal => QueueType::Normal as i32,
+                workflow::QueueType::WithBackup => QueueType::WithBackup as i32,
+                workflow::QueueType::DbOnly => QueueType::DbOnly as i32,
+            })
+            .unwrap_or(QueueType::Normal as i32),
+        channel: options.channel,
+        retry_policy: options.retry.map(|r| r.to_jobworkerp()),
+        response_type: options
+            .response_type
+            .map(|rt| match rt {
+                workflow::ResponseType::NoResult => ResponseType::NoResult as i32,
+                workflow::ResponseType::Direct => ResponseType::Direct as i32,
+            })
+            .unwrap_or(ResponseType::Direct as i32),
+        ..Default::default()
+    })
+}
 
 /// Step of running a child job, attached to its errors with `anyhow::Context`.
 #[derive(Debug, Clone, Copy)]
@@ -168,6 +258,70 @@ mod tests {
     use super::*;
     use crate::workflow::execute::failure::workflow_failure;
     use proto::jobworkerp::data::{ResultStatus, StreamErrorCode};
+    use std::sync::Arc;
+
+    async fn channel_of(channel: &str) -> Result<Option<String>, Box<workflow::Error>> {
+        let options = Some(workflow::WorkerOptions {
+            channel: Some(channel.to_string()),
+            use_static: Some(true),
+            ..Default::default()
+        });
+        let input = Arc::new(serde_json::json!({"docker_channel": "docker", "empty": ""}));
+        let task_context = TaskContext::new(None, input.clone(), Default::default());
+        task_context.add_position_name("run".to_string()).await;
+        let mut expression = ExpressionContext::new();
+        expression.insert("workflow", Arc::new(serde_json::json!({"input": *input})));
+        let evaluated = evaluate_worker_options(&options, &task_context, &expression)
+            .await?
+            .unwrap();
+        // Only the channel is evaluated.
+        assert_eq!(evaluated.use_static, Some(true));
+        Ok(evaluated.channel)
+    }
+
+    #[tokio::test]
+    async fn worker_option_channel_is_evaluated_as_an_expression() {
+        for (channel, expected) in [
+            ("${$workflow.input.docker_channel}", "docker"),
+            ("${.docker_channel}", "docker"),
+            ("$${{{ docker_channel }}}", "docker"),
+            ("workflow", "workflow"),
+            ("${1}", "1"),
+        ] {
+            assert_eq!(
+                channel_of(channel).await.unwrap().as_deref(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_option_channel_falls_back_to_the_default_channel_when_null_or_empty() {
+        for channel in ["${null}", "${.missing}", "${.empty}"] {
+            assert_eq!(channel_of(channel).await.unwrap(), None, "{channel}");
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_option_channel_must_be_a_scalar() {
+        for channel in ["${[\"a\"]}", "${{}}", "${.docker_channel | no_such_fn}"] {
+            let error = channel_of(channel).await.unwrap_err();
+            assert_eq!(
+                error.instance.as_deref(),
+                Some("/run/options/channel"),
+                "{channel}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_options_without_options_stay_none() {
+        let task_context =
+            TaskContext::new(None, Arc::new(serde_json::json!({})), Default::default());
+        let evaluated =
+            evaluate_worker_options(&None, &task_context, &ExpressionContext::new()).await;
+        assert!(evaluated.unwrap().is_none());
+    }
 
     const RUNTIME: StandardErrorType = StandardErrorType::Runtime;
     const COMMUNICATION: StandardErrorType = StandardErrorType::Communication;

@@ -18,7 +18,7 @@
                 },
                 "workflow_context": {
                     "type": "string",
-                    "description": "# Additional context information for workflow execution (JSON formatted string)"
+                    "description": "# Additional context information for workflow execution (JSON formatted string). The `_secrets` key is reserved for secrets of the run: tasks read them as `$_secrets`, and their values are masked in logs."
                 }
             },
             "additionalProperties": true,

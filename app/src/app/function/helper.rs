@@ -295,7 +295,11 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                         using.as_deref(),
                         arguments,
                     );
-                    tracing::debug!("job args (using: {:?}): {:#?}", using, &arguments);
+                    tracing::debug!(
+                        "job args (using: {:?}): {:#?}",
+                        using,
+                        crate::app::log_redaction::redact_sensitive_args(&arguments)
+                    );
                     let job_args = if let Some(desc) = args_descriptor {
                         ProtobufDescriptor::json_value_to_message(desc, &arguments, true, true)
                             .map_err(|e| {

@@ -82,6 +82,28 @@ impl WorkflowCheckPointContext {
         }
     }
 }
+#[cfg(test)]
+impl CheckPointContext {
+    /// A checkpoint at `position` whose workflow context is `context` (a JSON
+    /// object), with empty input and task state.
+    pub(crate) fn for_test(context: serde_json::Value, position: &str) -> Self {
+        Self {
+            workflow: WorkflowCheckPointContext {
+                name: "test".to_string(),
+                input: Arc::new(serde_json::json!({})),
+                context_variables: Arc::new(context.as_object().cloned().unwrap_or_default()),
+            },
+            task: TaskCheckPointContext {
+                input: Arc::new(serde_json::json!({})),
+                output: Arc::new(serde_json::json!({})),
+                context_variables: Arc::new(serde_json::Map::new()),
+                flow_directive: "continue".to_string(),
+            },
+            position: WorkflowPosition::parse(position).unwrap(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TaskCheckPointContext {
     pub input: Arc<serde_json::Value>,

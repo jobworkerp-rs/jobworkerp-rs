@@ -23,5 +23,6 @@ message WorkflowRunnerSettings {
   // # Workflow Context (optional)
   // Context variables for workflow execution (JSON object string).
   // If set, merged with WorkflowRunArgs.workflow_context at runtime (settings keys take precedence on conflict).
+  // The `_secrets` key is reserved for secrets: tasks read them as `$_secrets`, and their values are masked in logs.
   optional string workflow_context = 3;
 }

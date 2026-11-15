@@ -1,8 +1,5 @@
 use super::{
-    context::{
-        ChildJobScope, TaskContext, WorkflowContext, WorkflowStreamEvent,
-        context_variables_from_json,
-    },
+    context::{ChildJobScope, TaskContext, WorkflowContext, WorkflowStreamEvent},
     expression::UseExpression,
 };
 use crate::workflow::execute::expression::ExpressionContext;
@@ -32,7 +29,7 @@ use set::SetTaskExecutor;
 use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 use stream::{do_::DoTaskStreamExecutor, for_::ForTaskStreamExecutor, try_::TryStreamTaskExecutor};
 use switch::SwitchTaskExecutor;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use trace::TaskTracing;
 
 pub mod call;
@@ -279,13 +276,10 @@ impl TaskExecutor {
                         &execution_id.value,
                         &pos.as_json_pointer()
                     );
-                    let mut lock = self.workflow_context.write().await;
-                    lock.position = checkpoint.position.clone();
-                    lock.input = checkpoint.workflow.input.clone();
-                    lock.context_variables = Arc::new(Mutex::new(context_variables_from_json(
-                        &checkpoint.workflow.context_variables,
-                    )));
-                    drop(lock);
+                    self.workflow_context
+                        .write()
+                        .await
+                        .restore_checkpoint(&checkpoint);
                     Ok(Some(TaskContext::new_from_cp(None, &checkpoint.task)))
                 }
                 Ok(None) => {
@@ -514,11 +508,18 @@ impl TaskExecutor {
             match eval_result {
                 Ok(v) => {
                     if v {
-                        tracing::debug!("`If' condition is true: {:#?}", &task_context.raw_input);
+                        log_masked!(
+                            tracing::Level::DEBUG,
+                            self.workflow_context,
+                            &task_context.raw_input,
+                            "`If' condition is true: {:#?}"
+                        );
                     } else {
-                        tracing::debug!(
-                            "`If' condition is false, skip: {:#?}",
-                            &task_context.raw_input
+                        log_masked!(
+                            tracing::Level::DEBUG,
+                            self.workflow_context,
+                            &task_context.raw_input,
+                            "`If' condition is false, skip: {:#?}"
                         );
                         let pos_str = task_context.position.read().await.as_json_pointer();
                         // Record input on the active span before the skip path
@@ -734,16 +735,21 @@ impl TaskExecutor {
             && let Some(schema) = schema.json_schema()
             && let Err(e) = jsonschema::validate(schema, &task_context.input.clone())
         {
-            let m = format!(
-                "Failed to validate input schema: {:#?}\n{:#?}\n{:#?}",
-                schema, task_context.raw_input, e
-            );
+            // Mask both: the input and the schema error text embed run values.
+            let (input, reason) = {
+                let context = self.workflow_context.read().await;
+                (
+                    context.mask_for_log(&task_context.raw_input),
+                    context.mask_text_for_log(&e.to_string()),
+                )
+            };
+            let m = format!("Failed to validate input schema: {schema:#?}\n{input:#?}\n{reason}");
             let pos = task_context.position.clone();
             pos.write().await.push("input".to_string());
             return Err(workflow::errors::ErrorFactory::new().validation(
                 m,
                 Some(pos.read().await.as_error_instance()),
-                Some(format!("{:?}", e.to_string())),
+                Some(format!("{reason:?}")),
             ));
         }
 
@@ -754,7 +760,12 @@ impl TaskExecutor {
         } else {
             task_context.raw_input.clone()
         };
-        tracing::debug!("Transformed input: {:#?}", transformed_input);
+        log_masked!(
+            tracing::Level::DEBUG,
+            self.workflow_context,
+            &transformed_input,
+            "Transformed input: {:#?}"
+        );
         task_context.set_input(transformed_input);
 
         Ok(task_context)
@@ -770,7 +781,12 @@ impl TaskExecutor {
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         // Transform output
-        tracing::debug!("Task raw output: {:#?}", task_context.raw_output);
+        log_masked!(
+            tracing::Level::DEBUG,
+            workflow_context,
+            &task_context.raw_output,
+            "Task raw output: {:#?}"
+        );
         if let Some(as_) = task.output().and_then(|o| o.as_.as_ref()) {
             task_context.output =
                 match Self::transform_output(task_context.raw_output.clone(), as_, expression) {
@@ -784,9 +800,19 @@ impl TaskExecutor {
                         return Err(e);
                     }
                 };
-            tracing::debug!("Transformed output: {:#?}", &task_context.output);
+            log_masked!(
+                tracing::Level::DEBUG,
+                workflow_context,
+                &task_context.output,
+                "Transformed output: {:#?}"
+            );
         } else {
-            tracing::debug!("No output transformation: {:#?}", &task_context.raw_output);
+            log_masked!(
+                tracing::Level::DEBUG,
+                workflow_context,
+                &task_context.raw_output,
+                "No output transformation: {:#?}"
+            );
             task_context.output = task_context.raw_output.clone();
         }
         // TODO output schema validation?
@@ -808,7 +834,12 @@ impl TaskExecutor {
                         }
                     }
                     _ => {
-                        tracing::warn!("Export is not a map: {:#?}", &export);
+                        log_masked!(
+                            tracing::Level::WARN,
+                            workflow_context,
+                            &export,
+                            "Export is not a map: {:#?}"
+                        );
                     }
                 },
                 Err(mut e) => {
@@ -820,7 +851,7 @@ impl TaskExecutor {
                     return Err(e);
                 }
             }
-            tracing::debug!("Transformed export: {:#?}", &export);
+            tracing::debug!("Export definition: {:#?}", &export);
         }
         // Determine next task
         task_context.flow_directive = match task.then() {
@@ -1595,6 +1626,7 @@ mod tests {
     use futures::StreamExt;
     use std::str::FromStr;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::Mutex;
 
     fn raise_task(error: RaiseTaskError) -> RaiseTask {
         RaiseTask {
@@ -1868,6 +1900,73 @@ mod tests {
             timeout: None,
             use_: None,
         }
+    }
+
+    #[test]
+    fn load_checkpoint_masks_the_resumed_context_secrets() {
+        use crate::workflow::execute::checkpoint::repository::{
+            CheckPointRepositoryWithId, CheckPointRepositoryWithIdImpl,
+        };
+        use memory_utils::cache::moka::MokaCacheConfig;
+
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_rdb_chan_test_app(false, false).await.unwrap());
+            let workflow = serde_json::from_value::<WorkflowSchema>(serde_json::json!({
+                "document": {"dsl": "1.0.0", "namespace": "test", "name": "resume", "version": "1.0.0"},
+                "do": [{"noop": {"set": {"done": true}}}]
+            }))
+            .unwrap();
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                Arc::new(serde_json::json!({})),
+                Arc::new(serde_json::json!({"_secrets": {"token": "tok-start"}})),
+                None,
+            )));
+            // The resumed run's context differs from the one the run started
+            // with, e.g. a refreshed token.
+            let checkpoint = CheckPointContext::for_test(
+                serde_json::json!({"_secrets": {"token": "tok-resumed"}}),
+                "/ROOT/do/0/noop",
+            );
+            let position = checkpoint.position.clone();
+            workflow_context.write().await.checkpoint_position = Some(position.clone());
+            let checkpoint_repo: Arc<dyn CheckPointRepositoryWithId> = Arc::new(
+                CheckPointRepositoryWithIdImpl::new_memory(&MokaCacheConfig::default()),
+            );
+            let execution_id = Arc::new(ExecutionId::new("resume-secrets".to_string()).unwrap());
+            checkpoint_repo
+                .save_checkpoint_with_id(&execution_id, "resume", &checkpoint)
+                .await
+                .unwrap();
+
+            let executor = TaskExecutor::new(
+                workflow_context.clone(),
+                None,
+                Arc::new(NamedTimeouts::new()),
+                Arc::new(JobExecutorWrapper::new(app_module)),
+                Some(checkpoint_repo),
+                "noop",
+                Arc::new(workflow.do_.0[0].get("noop").unwrap().clone()),
+                Arc::new(HashMap::new()),
+                false,
+            );
+            let loaded = executor
+                .load_checkpoint(&Some(execution_id), &RwLock::new(position))
+                .await
+                .unwrap();
+            assert!(loaded.is_some());
+
+            let context = workflow_context.read().await;
+            assert_eq!(
+                context
+                    .mask_for_log(&serde_json::json!(["tok-start", "tok-resumed"]))
+                    .into_owned(),
+                serde_json::json!([
+                    app::app::log_redaction::REDACTED,
+                    app::app::log_redaction::REDACTED
+                ])
+            );
+        });
     }
 
     #[test]
@@ -2883,6 +2982,35 @@ mod executor_behavior_tests {
                 workflow::errors::StandardErrorType::Validation.uri(),
                 "{err:?}"
             );
+        });
+    }
+
+    #[test]
+    fn task_input_schema_violation_masks_context_secrets_in_the_error() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let task = task_from_json(serde_json::json!({
+                "input": { "schema": { "format": "json", "document": {
+                    "type": "object", "required": ["name"],
+                    "properties": { "token": { "type": "number" } }
+                } } },
+                "set": { "done": true }
+            }));
+            let executor = executor_for(task, None).await;
+            executor.workflow_context.write().await.log_secret_values =
+                Arc::from(vec!["tok-secret-1234".to_string()]);
+            let parent = TaskContext::new(
+                None,
+                Arc::new(serde_json::json!({ "token": "tok-secret-1234" })),
+                Arc::new(tokio::sync::Mutex::new(Default::default())),
+            );
+            let err = run_with_parent(&executor, parent)
+                .await
+                .into_iter()
+                .find_map(|e| e.err())
+                .expect("input schema must reject the input");
+            let text = format!("{err:?}");
+            assert!(text.contains("Failed to validate input schema"), "{text}");
+            assert!(!text.contains("tok-secret-1234"), "{text}");
         });
     }
 

@@ -1,4 +1,5 @@
 use crate::workflow::execute::expression::ExpressionContext;
+use crate::workflow::execute::secret;
 use crate::workflow::{
     definition::{
         transform::UseJqAndTemplateTransformer,
@@ -79,6 +80,27 @@ pub struct WorkflowContext {
     /// the environment. Values are never stored here — only the declared names.
     #[serde(skip)]
     pub declared_secrets: Arc<HashSet<String>>,
+    /// Values of the context's `_secrets`, longest first, masked in debug logs.
+    /// `serde(skip)` keeps them out of checkpoints and expression contexts.
+    #[serde(skip)]
+    pub log_secret_values: Arc<[String]>,
+}
+
+/// Run `future` with the run's context secrets masked in the job argument
+/// logs the app layer writes while it runs (see
+/// [`app::app::log_redaction::with_log_secret_values`]). Every call converting
+/// child job arguments or runner settings must be wrapped, or its values go
+/// unmasked.
+pub async fn scope_log_secrets<F: std::future::Future>(
+    workflow_context: &RwLock<WorkflowContext>,
+    future: F,
+) -> F::Output {
+    let secret_values = workflow_context.read().await.log_secret_values.clone();
+    if secret_values.is_empty() {
+        future.await
+    } else {
+        app::app::log_redaction::with_log_secret_values(secret_values, future).await
+    }
 }
 
 /// Registry of in-flight child jobs for one task, linked to the scopes of the
@@ -231,7 +253,48 @@ impl WorkflowContext {
                     .map(|c| c.secrets.iter().cloned().collect())
                     .unwrap_or_default(),
             ),
+            log_secret_values: context
+                .as_object()
+                .map(secret::context_secret_values)
+                .unwrap_or_default()
+                .into(),
         }
+    }
+
+    /// Resume from `checkpoint`: take its position, input and context, and
+    /// also mask the `_secrets` of that context in this run's debug logs (the
+    /// resumed context may differ from the one the run started with).
+    pub fn restore_checkpoint(&mut self, checkpoint: &checkpoint::CheckPointContext) {
+        let context = &checkpoint.workflow.context_variables;
+        self.position = checkpoint.position.clone();
+        self.input = checkpoint.workflow.input.clone();
+        self.context_variables = Arc::new(Mutex::new(context_variables_from_json(context)));
+        self.log_secret_values = secret::merge_secret_values(
+            &self.log_secret_values,
+            secret::context_secret_values(context),
+        )
+        .into();
+    }
+
+    /// `value` with this run's context secrets masked, for a log. Borrowed when
+    /// the run has no context secrets.
+    pub fn mask_for_log<'a>(
+        &self,
+        value: &'a serde_json::Value,
+    ) -> std::borrow::Cow<'a, serde_json::Value> {
+        if self.log_secret_values.is_empty() {
+            std::borrow::Cow::Borrowed(value)
+        } else {
+            std::borrow::Cow::Owned(app::app::log_redaction::mask_secret_strings(
+                value,
+                &self.log_secret_values,
+            ))
+        }
+    }
+    /// `text` with this run's context secrets masked, for a log or an error
+    /// message that embeds run values.
+    pub fn mask_text_for_log(&self, text: &str) -> String {
+        app::app::log_redaction::mask_log_text(text, &self.log_secret_values)
     }
     /// Position to report to callers: a waiting workflow reports where it will resume,
     /// which is also the key its checkpoint is saved under.
@@ -264,6 +327,7 @@ impl WorkflowContext {
             child_job_scope: ChildJobScope::new_root(),
             authentications: Arc::new(std::collections::HashMap::new()),
             declared_secrets: Arc::new(HashSet::new()),
+            log_secret_values: Arc::from([]),
         }
     }
 
@@ -1088,6 +1152,41 @@ impl WorkflowStreamEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_secrets_are_masked_in_log_values() {
+        let workflow = serde_json::from_value::<workflow::WorkflowSchema>(serde_json::json!({
+            "document": {"dsl": "1.0.0", "namespace": "test", "name": "secrets", "version": "1.0.0"},
+            "do": [{"noop": {"set": {"done": true}}}]
+        }))
+        .unwrap();
+        let mut context = WorkflowContext::new(
+            &workflow,
+            Arc::new(serde_json::json!({})),
+            Arc::new(serde_json::json!({"_secrets": {"token": "tok-1"}})),
+            None,
+        );
+        let redacted = app::app::log_redaction::REDACTED;
+        assert_eq!(
+            context
+                .mask_for_log(&serde_json::json!({"stdin": "tok-1", "n": 1}))
+                .into_owned(),
+            serde_json::json!({"stdin": redacted, "n": 1})
+        );
+
+        // Resuming from a checkpoint restores that run's context as well.
+        context.restore_checkpoint(&checkpoint::CheckPointContext::for_test(
+            serde_json::json!({"_secrets": {"token": "tok-2"}}),
+            "/ROOT/do/0/noop",
+        ));
+        assert_eq!(context.position.as_json_pointer(), "/ROOT/do/0/noop");
+        assert_eq!(
+            context
+                .mask_for_log(&serde_json::json!(["tok-1", "tok-2"]))
+                .into_owned(),
+            serde_json::json!([redacted, redacted])
+        );
+    }
 
     #[test]
     fn workflow_context_clones_share_root_scope() {

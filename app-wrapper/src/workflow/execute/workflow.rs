@@ -1,5 +1,4 @@
 use super::{
-    context::context_variables_from_json,
     expression::UseExpression,
     task::{NamedTimeouts, TaskExecutor},
 };
@@ -233,11 +232,7 @@ impl WorkflowExecutor {
                 ).await {
                     Ok(Some(checkpoint)) => {
                         tracing::debug!("Loaded checkpoint for workflow: {}, execution_id={}", &workflow_name, &execution_id.value);
-                        let mut lock = initial_wfc.write().await;
-                        lock.position = checkpoint.position.clone();
-                        lock.input = checkpoint.workflow.input.clone();
-                        lock.context_variables = Arc::new(Mutex::new(context_variables_from_json(&checkpoint.workflow.context_variables)));
-                        drop(lock);
+                        initial_wfc.write().await.restore_checkpoint(&checkpoint);
                         Some(TaskContext::new_from_cp(
                             None,
                             &checkpoint.task

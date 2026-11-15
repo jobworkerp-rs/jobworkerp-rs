@@ -3872,7 +3872,7 @@ impl RetryPolicy {
 #[doc = "    },"]
 #[doc = "    \"secrets\": {"]
 #[doc = "      \"title\": \"ReusableSecrets\","]
-#[doc = "      \"description\": \"Declared secret names. Values are supplied at runtime via the `WORKFLOW_SECRET_<UPPER_SNAKE_NAME>` environment variable and are never written in the workflow definition. Only declared names may be referenced through `${ $secrets.<name> }`.\","]
+#[doc = "      \"description\": \"Declared secret names. Values are supplied at runtime via the `WORKFLOW_SECRET_<UPPER_SNAKE_NAME>` environment variable and are never written in the workflow definition. Only declared names may be referenced through `${ $secrets.<name> }`. `$secrets` is available only to call tasks. A secret for other tasks is not declared here: the caller of the run puts it in the workflow context under the reserved key `_secrets` (`${ $_secrets.<name> }`), whose values are masked in logs.\","]
 #[doc = "      \"type\": \"array\","]
 #[doc = "      \"items\": {"]
 #[doc = "        \"type\": \"string\""]
@@ -3899,7 +3899,7 @@ pub struct ReusableComponents {
         skip_serializing_if = ":: std :: collections :: HashMap::is_empty"
     )]
     pub authentications: ::std::collections::HashMap<::std::string::String, AuthenticationPolicy>,
-    #[doc = "Declared secret names. Values are supplied at runtime via the `WORKFLOW_SECRET_<UPPER_SNAKE_NAME>` environment variable and are never written in the workflow definition. Only declared names may be referenced through `${ $secrets.<name> }`."]
+    #[doc = "Declared secret names. Values are supplied at runtime via the `WORKFLOW_SECRET_<UPPER_SNAKE_NAME>` environment variable and are never written in the workflow definition. Only declared names may be referenced through `${ $secrets.<name> }`. `$secrets` is available only to call tasks. A secret for other tasks is not declared here: the caller of the run puts it in the workflow context under the reserved key `_secrets` (`${ $_secrets.<name> }`), whose values are masked in logs."]
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     pub secrets: ::std::vec::Vec<::std::string::String>,
     #[doc = "Named timeout definitions."]
@@ -6412,7 +6412,7 @@ impl WaitTask {
 #[doc = "    },"]
 #[doc = "    \"channel\": {"]
 #[doc = "      \"title\": \"Channel\","]
-#[doc = "      \"description\": \"The channel to use when running the worker (controls execution concurrency).\","]
+#[doc = "      \"description\": \"The channel to use when running the worker (controls execution concurrency). A runtime expression is allowed; a null or empty result means the default channel. A static worker (useStatic) keeps the channel it was created with.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"queueType\": {"]
@@ -6467,7 +6467,7 @@ pub struct WorkerOptions {
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub broadcast_results: ::std::option::Option<bool>,
-    #[doc = "The channel to use when running the worker (controls execution concurrency)."]
+    #[doc = "The channel to use when running the worker (controls execution concurrency). A runtime expression is allowed; a null or empty result means the default channel. A static worker (useStatic) keeps the channel it was created with."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub channel: ::std::option::Option<::std::string::String>,
     #[doc = "Defines how jobs are queued and persisted. Values: NORMAL (default, in-memory only), WITH_BACKUP (in-memory with database backup), DB_ONLY (database only)."]

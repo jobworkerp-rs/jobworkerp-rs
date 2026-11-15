@@ -561,6 +561,23 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
     where
         Self: Send + 'static;
 
+    /// Subscribe to the result stream of a job that is not enqueued yet.
+    ///
+    /// The subscription is active once this returns, so the caller can enqueue
+    /// the job without losing stream items published right away. The stored
+    /// result lookup of `subscribe_stream_by_job_id` is skipped because the job
+    /// does not exist yet.
+    ///
+    /// `timeout` (ms) bounds only establishing a Redis subscription; it is not
+    /// an idle timeout for the stream, and the channel pubsub ignores it.
+    async fn subscribe_new_job_stream(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>>
+    where
+        Self: Send + 'static;
+
     /// Subscribe to the streaming data for a job without waiting for final result.
     ///
     /// Unlike `listen_result_by_job_id`, this returns the stream immediately
@@ -1029,6 +1046,67 @@ mod subscribed_listener_tests {
             assert!(ready_rx.await.is_err());
             tokio::time::timeout(Duration::from_secs(1), stream_dropped_rx).await??;
             Ok(())
+        })
+    }
+
+    /// The stream returned for a job that is not enqueued yet must already be
+    /// subscribed: Redis drops stream items published before a subscription.
+    async fn new_job_stream_receives_items_published_after_it_returns(
+        app: &AppModule,
+    ) -> Result<()> {
+        let job_id = JobId { value: unique_id() };
+        let stream = app
+            .job_result_app
+            .subscribe_new_job_stream(&job_id, Some(2_000))
+            .await?;
+
+        let data = JobResultData {
+            job_id: Some(job_id),
+            worker_id: Some(WorkerId { value: 1 }),
+            status: ResultStatus::Success as i32,
+            response_type: ResponseType::NoResult as i32,
+            broadcast_results: true,
+            ..Default::default()
+        };
+        let items = vec![
+            ResultOutputItem {
+                item: Some(result_output_item::Item::Data(b"chunk".to_vec())),
+            },
+            ResultOutputItem {
+                item: Some(result_output_item::Item::End(Trailer::default())),
+            },
+        ];
+        app.job_app
+            .complete_job(
+                &JobResultId { value: unique_id() },
+                &data,
+                Some(futures::stream::iter(items.clone()).boxed()),
+            )
+            .await?;
+
+        let received =
+            tokio::time::timeout(Duration::from_secs(2), stream.collect::<Vec<_>>()).await?;
+        assert_eq!(received, items);
+        Ok(())
+    }
+
+    #[test]
+    fn hybrid_new_job_stream_is_subscribed_on_return() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            new_job_stream_receives_items_published_after_it_returns(
+                &create_hybrid_test_app().await?,
+            )
+            .await
+        })
+    }
+
+    #[test]
+    fn standalone_new_job_stream_is_subscribed_on_return() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            new_job_stream_receives_items_published_after_it_returns(
+                &create_rdb_chan_test_app(false, false).await?,
+            )
+            .await
         })
     }
 }

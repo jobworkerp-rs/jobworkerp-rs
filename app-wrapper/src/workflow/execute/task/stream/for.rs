@@ -268,7 +268,12 @@ impl ForTaskStreamExecutor {
             ..Default::default()
         };
 
-        tracing::debug!("for in items: {:#?}", transformed_in_items);
+        log_masked!(
+            tracing::Level::DEBUG,
+            self.workflow_context,
+            &transformed_in_items,
+            "for in items: {:#?}"
+        );
 
         Ok((task_context, transformed_in_items, do_task))
     }
@@ -952,10 +957,7 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                 Ok((task_context, transformed_in_items, do_task)) => {
                     // Handle invalid (non-array) input
                     if !transformed_in_items.is_array() {
-                        tracing::warn!(
-                            "Invalid for 'in' items(not array): {:#?}",
-                            transformed_in_items
-                        );
+                        log_masked!(tracing::Level::WARN, self.workflow_context, &transformed_in_items, "Invalid for 'in' items(not array): {:#?}");
                         let mut final_ctx = task_context;
                         final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
                         let pos_str = final_ctx.position.read().await.as_json_pointer();

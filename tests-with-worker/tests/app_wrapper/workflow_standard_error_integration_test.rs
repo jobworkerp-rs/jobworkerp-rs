@@ -24,6 +24,7 @@ use jobworkerp_runner::runner::RunnerTrait;
 use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tests_with_worker::start_test_worker;
 use tokio::net::TcpListener;
 
@@ -84,6 +85,8 @@ fn raise_custom() -> serde_json::Value {
     } } } } ])
 }
 
+const RUN_TIMEOUT: Duration = Duration::from_secs(60);
+
 pub(super) async fn run_with_worker(workflow: String) -> Result<WorkflowResult> {
     let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
     let worker_handle = start_test_worker(app_module.clone()).await?;
@@ -98,10 +101,15 @@ pub(super) async fn run_with_worker(workflow: String) -> Result<WorkflowResult> 
         input: "{}".to_string(),
         ..Default::default()
     };
-    let (result, _metadata) = runner
-        .run(&args.encode_to_vec(), HashMap::new(), None)
-        .await;
+    // A lost child result would otherwise hang the test run instead of failing it.
+    let run = tokio::time::timeout(
+        RUN_TIMEOUT,
+        runner.run(&args.encode_to_vec(), HashMap::new(), None),
+    )
+    .await;
     worker_handle.shutdown().await;
+    let (result, _metadata) =
+        run.map_err(|_| anyhow::anyhow!("workflow did not finish within {RUN_TIMEOUT:?}"))?;
     Ok(WorkflowResult::decode(&result?[..])?)
 }
 

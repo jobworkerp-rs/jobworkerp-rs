@@ -3,6 +3,7 @@ pub mod function;
 // jobworkerp mods
 pub mod job;
 pub mod job_result;
+pub mod log_redaction;
 pub mod runner;
 pub mod worker;
 pub mod worker_instance;

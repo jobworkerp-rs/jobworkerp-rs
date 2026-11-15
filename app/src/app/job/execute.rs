@@ -1,5 +1,6 @@
 use crate::app::job::{ChannelJobResultFuture, JobApp, UseJobApp};
 use crate::app::job_result::{JobResultApp, UseJobResultApp};
+use crate::app::log_redaction::redact_sensitive_args;
 use crate::app::runner::{
     RunnerApp, RunnerDataWithDescriptor, UseRunnerApp, UseRunnerParserWithCache,
 };
@@ -38,29 +39,6 @@ pub struct JobExecutorWrapper {
 impl JobExecutorWrapper {
     pub fn new(app_module: Arc<AppModule>) -> Self {
         Self { app_module }
-    }
-
-    /// Access to repository module for advanced streaming operations
-    /// Returns None if redis module is not available (standalone mode)
-    pub fn redis_job_result_pubsub_repository(
-        &self,
-    ) -> Option<&infra::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl> {
-        self.app_module
-            .repositories
-            .redis_module
-            .as_ref()
-            .map(|m| &m.redis_job_result_pubsub_repository)
-    }
-
-    /// Access to channel-based job result pubsub repository for standalone mode
-    pub fn chan_job_result_pubsub_repository(
-        &self,
-    ) -> Option<&infra::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl> {
-        self.app_module
-            .repositories
-            .rdb_module
-            .as_ref()
-            .map(|m| &m.chan_job_result_pubsub_repository)
     }
 }
 impl UseJobResultApp for JobExecutorWrapper {
@@ -179,6 +157,7 @@ pub trait UseJobExecutor:
                     data: Some(existing_data),
                 } = worker
                 {
+                    warn_if_static_channel_ignored(&existing_data, &worker_data);
                     if worker_definition_matches_expected(&existing_data, &worker_data) {
                         return Ok(Worker {
                             id: Some(wid),
@@ -292,6 +271,8 @@ pub trait UseJobExecutor:
         job_args: Vec<u8>,
         uniq_key: Option<String>,
         job_timeout_sec: u32,
+        // Lets a caller subscribe to the job's results before it is enqueued.
+        reserved_job_id: Option<JobId>,
         streaming_type: StreamingType,
         using: Option<String>, // using for MCP/Plugin runners
         // Per-job overrides (e.g. response_type). Required for static workers
@@ -317,7 +298,7 @@ pub trait UseJobExecutor:
                             0,
                             Priority::Medium as i32,
                             job_timeout_sec as u64 * 1000,
-                            None,
+                            reserved_job_id,
                             streaming_type,
                             using,
                             overrides,
@@ -335,7 +316,7 @@ pub trait UseJobExecutor:
                             0,
                             Priority::Medium as i32,
                             job_timeout_sec as u64 * 1000,
-                            None,
+                            reserved_job_id,
                             streaming_type,
                             true,
                             using,
@@ -477,6 +458,7 @@ pub trait UseJobExecutor:
                     job_args,
                     uniq_key,
                     job_timeout_sec,
+                    None, // reserved_job_id
                     streaming_type,
                     using, // Pass using parameter for MCP/Plugin runners
                     None,
@@ -520,6 +502,7 @@ pub trait UseJobExecutor:
                         job_args,
                         uniq_key,
                         job_timeout_sec,
+                        None,                // reserved_job_id
                         StreamingType::None, // no streaming
                         using.clone(),
                         None,
@@ -593,6 +576,7 @@ pub trait UseJobExecutor:
                         job_args,
                         uniq_key,
                         job_timeout_sec,
+                        None, // reserved_job_id
                         streaming_type,
                         using, // Pass using parameter for MCP/Plugin workers
                         None,
@@ -684,6 +668,7 @@ pub trait UseJobExecutor:
                     job_args,
                     uniq_key,
                     job_timeout_sec,
+                    None, // reserved_job_id
                     streaming_type,
                     using.clone(), // Pass using parameter for MCP/Plugin workers
                     None,
@@ -888,6 +873,23 @@ pub trait UseJobExecutor:
     }
 }
 
+/// A static worker keeps the channel it was created with: its runner pool is
+/// sized by that channel's concurrency in each worker process, and jobs already
+/// queued on the channel must still find the worker. A different requested
+/// channel is therefore ignored, which the caller should hear about.
+fn warn_if_static_channel_ignored(existing: &WorkerData, requested: &WorkerData) {
+    if let Some(channel) = requested.channel.as_deref()
+        && existing.channel.as_deref() != Some(channel)
+    {
+        tracing::warn!(
+            "static worker {} keeps channel {:?}; ignoring channel {:?}",
+            existing.name,
+            existing.channel,
+            channel
+        );
+    }
+}
+
 fn worker_definition_matches_expected(existing: &WorkerData, expected: &WorkerData) -> bool {
     existing.runner_id == expected.runner_id
         && existing.runner_settings == expected.runner_settings
@@ -903,37 +905,6 @@ fn worker_data_with_expected_definition(
     existing.use_static = expected.use_static;
     existing
 }
-
-/// Placeholder substituted for redacted sensitive values in logs.
-const REDACTED: &str = "***REDACTED***";
-
-/// Header names whose values carry credentials and must never be logged or
-/// echoed into task output.
-/// Matched case-insensitively against the `key` of `{key, value}` pairs (the
-/// shape the HTTP_REQUEST runner uses for headers/queries). This is a generic
-/// HTTP-credential rule, not tied to any single runner type.
-pub const SENSITIVE_HEADER_KEYS: &[&str] = &[
-    "authorization",
-    "proxy-authorization",
-    "cookie",
-    "set-cookie",
-];
-
-/// Object field names whose string value carries a credential and must never be
-/// logged. Matched case-insensitively against object keys (the flat shape used
-/// by runner settings, e.g. the GRPC runner's `auth_token` resolved from a
-/// `WORKFLOW_SECRET_*`). Only string values are masked so that structural keys
-/// of the same name are left intact.
-const SENSITIVE_FLAT_KEYS: &[&str] = &[
-    "auth_token",
-    "token",
-    "access_token",
-    "refresh_token",
-    "password",
-    "secret",
-    "api_key",
-    "apikey",
-];
 
 /// A job that finished without a successful result, downcastable from the
 /// error returned by [`UseJobExecutor::extract_job_result_output`] so callers
@@ -955,59 +926,6 @@ impl std::fmt::Display for JobFailedError {
 }
 
 impl std::error::Error for JobFailedError {}
-
-/// Return a copy of `args` with credential-bearing values masked, for safe
-/// logging. Two shapes are redacted: `{key, value}` pairs whose `key` is a
-/// sensitive header name (e.g. a transformed `call.http`'s `Authorization`
-/// header derived from a `WORKFLOW_SECRET_*`), and flat object fields whose key
-/// is a sensitive credential name with a string value (e.g. the GRPC runner's
-/// `auth_token`). All other content is preserved so the log stays useful.
-/// Non-sensitive job args incur a clone only when debug logging is on.
-fn redact_sensitive_args(args: &serde_json::Value) -> serde_json::Value {
-    match args {
-        serde_json::Value::Object(map) => serde_json::Value::Object(
-            map.iter()
-                .map(|(k, v)| {
-                    // Mask a flat credential field (string value only, so that a
-                    // structural key of the same name is not corrupted).
-                    if matches!(v, serde_json::Value::String(_))
-                        && SENSITIVE_FLAT_KEYS
-                            .iter()
-                            .any(|s| k.eq_ignore_ascii_case(s))
-                    {
-                        (k.clone(), serde_json::Value::String(REDACTED.to_string()))
-                    } else {
-                        (k.clone(), redact_sensitive_args(v))
-                    }
-                })
-                .collect(),
-        ),
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(redact_key_value_or_recurse).collect())
-        }
-        other => other.clone(),
-    }
-}
-
-/// For array elements: if the element is a `{key, value}` pair with a sensitive
-/// `key`, replace its `value` with the placeholder; otherwise recurse.
-fn redact_key_value_or_recurse(item: &serde_json::Value) -> serde_json::Value {
-    if let serde_json::Value::Object(obj) = item
-        && let Some(serde_json::Value::String(key)) = obj.get("key")
-        && obj.contains_key("value")
-        && SENSITIVE_HEADER_KEYS
-            .iter()
-            .any(|s| key.eq_ignore_ascii_case(s))
-    {
-        let mut redacted = obj.clone();
-        redacted.insert(
-            "value".to_string(),
-            serde_json::Value::String(REDACTED.to_string()),
-        );
-        return serde_json::Value::Object(redacted);
-    }
-    redact_sensitive_args(item)
-}
 
 #[cfg(test)]
 mod tests {
@@ -1182,6 +1100,54 @@ mod tests {
             assert_eq!(data.description, "stale static worker settings");
 
             app_module.worker_app.delete(&original_id).await?;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn find_or_create_worker_keeps_the_channel_of_a_static_worker_and_warns() -> Result<()> {
+        let (logs, subscriber) = crate::module::test::capture_logs(tracing::Level::WARN);
+        TEST_RUNTIME.block_on(async {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            let app_module = Arc::new(create_rdb_chan_test_app(false, false).await?);
+            let wrapper = JobExecutorWrapper::new(app_module.clone());
+            let worker_name = "find-or-create-static-worker-channel";
+            let requested = |channel: &str, runner_settings: &[u8]| WorkerData {
+                name: worker_name.to_string(),
+                runner_id: Some(RunnerId {
+                    value: COMMAND_RUNNER_ID,
+                }),
+                runner_settings: runner_settings.to_vec(),
+                channel: Some(channel.to_string()),
+                use_static: true,
+                ..Default::default()
+            };
+
+            let created = wrapper
+                .find_or_create_worker(requested("first", b"a"))
+                .await?;
+            assert_eq!(created.data.unwrap().channel.as_deref(), Some("first"));
+            let ignored = |logs: &crate::module::test::LogBuffer| {
+                logs.contents()
+                    .lines()
+                    .filter(|line| line.contains("WARN") && line.contains(worker_name))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            };
+            assert!(ignored(&logs).is_empty());
+
+            // Matching definition, and a definition updated for new settings:
+            // both keep the channel the worker was created with.
+            for settings in [b"a", b"b"] {
+                let worker = wrapper
+                    .find_or_create_worker(requested("second", settings))
+                    .await?;
+                assert_eq!(worker.id, created.id);
+                assert_eq!(worker.data.unwrap().channel.as_deref(), Some("first"));
+            }
+            let warnings = ignored(&logs);
+            assert_eq!(warnings.len(), 2, "{warnings:#?}");
+            assert!(warnings[0].contains("\"second\""), "{warnings:#?}");
             Ok(())
         })
     }
@@ -1587,114 +1553,5 @@ mod tests {
             assert!(err.downcast_ref::<JobFailedError>().is_none());
             Ok(())
         })
-    }
-
-    #[test]
-    fn redact_masks_authorization_header_value() {
-        let args = serde_json::json!({
-            "method": "GET",
-            "headers": [
-                {"key": "Authorization", "value": "Bearer s3cret-token"},
-                {"key": "Content-Type", "value": "application/json"},
-            ],
-        });
-        let redacted = redact_sensitive_args(&args);
-        let headers = redacted["headers"].as_array().unwrap();
-        let auth = headers
-            .iter()
-            .find(|h| h["key"] == "Authorization")
-            .unwrap();
-        assert_eq!(auth["value"], REDACTED);
-        // The secret must not survive anywhere in the redacted output.
-        assert!(!redacted.to_string().contains("s3cret-token"));
-        // Non-sensitive headers are preserved verbatim.
-        let ct = headers.iter().find(|h| h["key"] == "Content-Type").unwrap();
-        assert_eq!(ct["value"], "application/json");
-    }
-
-    #[test]
-    fn redact_matches_header_key_case_insensitively() {
-        let args = serde_json::json!({
-            "headers": [{"key": "authorization", "value": "Basic dXNlcjpwYXNz"}],
-        });
-        let redacted = redact_sensitive_args(&args);
-        assert_eq!(redacted["headers"][0]["value"], REDACTED);
-        assert!(!redacted.to_string().contains("dXNlcjpwYXNz"));
-    }
-
-    #[test]
-    fn redact_preserves_non_sensitive_args() {
-        // A plain value resembling a header key but not in {key,value} form must
-        // be left untouched.
-        let args = serde_json::json!({
-            "queries": [{"key": "q", "value": "authorization"}],
-            "body": "authorization details",
-        });
-        let redacted = redact_sensitive_args(&args);
-        assert_eq!(redacted, args);
-    }
-
-    #[test]
-    fn redact_handles_nested_structures() {
-        let args = serde_json::json!({
-            "outer": {
-                "headers": [{"key": "Cookie", "value": "session=abc"}],
-            },
-        });
-        let redacted = redact_sensitive_args(&args);
-        assert_eq!(redacted["outer"]["headers"][0]["value"], REDACTED);
-        assert!(!redacted.to_string().contains("session=abc"));
-    }
-
-    #[test]
-    fn redact_masks_flat_auth_token_in_runner_settings() {
-        // Shape of GRPC runner settings with a bearer secret resolved into a flat
-        // `auth_token` field.
-        let settings = serde_json::json!({
-            "host": "example.com",
-            "port": 50051,
-            "use_reflection": true,
-            "auth_token": "Bearer-or-bare-s3cret",
-        });
-        let redacted = redact_sensitive_args(&settings);
-        assert_eq!(redacted["auth_token"], REDACTED);
-        assert!(!redacted.to_string().contains("s3cret"));
-        // Non-sensitive fields are preserved.
-        assert_eq!(redacted["host"], "example.com");
-        assert_eq!(redacted["port"], 50051);
-        assert_eq!(redacted["use_reflection"], true);
-    }
-
-    #[test]
-    fn redact_masks_flat_credential_keys_case_insensitively() {
-        let settings = serde_json::json!({
-            "Password": "p@ss",
-            "API_KEY": "ak-123",
-            "nested": {"access_token": "at-456"},
-        });
-        let redacted = redact_sensitive_args(&settings);
-        assert_eq!(redacted["Password"], REDACTED);
-        assert_eq!(redacted["API_KEY"], REDACTED);
-        assert_eq!(redacted["nested"]["access_token"], REDACTED);
-        for leaked in ["p@ss", "ak-123", "at-456"] {
-            assert!(!redacted.to_string().contains(leaked));
-        }
-    }
-
-    #[test]
-    fn redact_does_not_corrupt_non_string_credential_keys() {
-        // A key named like a credential but holding structural (non-string) data
-        // must be recursed into, not blindly masked, so its contents remain
-        // inspectable while any nested credential strings are still masked.
-        let args = serde_json::json!({
-            "token": {"id": 7, "value": "nested-secret", "auth_token": "deep-s3cret"},
-        });
-        let redacted = redact_sensitive_args(&args);
-        // The object value is preserved as an object (not replaced by a string).
-        assert!(redacted["token"].is_object());
-        assert_eq!(redacted["token"]["id"], 7);
-        // A nested flat credential field is still masked.
-        assert_eq!(redacted["token"]["auth_token"], REDACTED);
-        assert!(!redacted.to_string().contains("deep-s3cret"));
     }
 }

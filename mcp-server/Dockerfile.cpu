@@ -41,6 +41,8 @@ RUN cargo build --release --features mysql --bin mcp-http
 FROM debian:trixie-slim
 
 # Install runtime dependencies (matching GPU version, excluding CUDA packages)
+# docker-cli: docker.io only recommends it, so --no-install-recommends would leave
+# out the docker command that `docker compose` needs.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -50,6 +52,7 @@ RUN apt-get update && \
         protobuf-compiler \
         libgomp1 \
         docker.io \
+        docker-cli \
         docker-compose \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*

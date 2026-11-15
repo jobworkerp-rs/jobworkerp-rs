@@ -112,7 +112,12 @@ impl PythonTaskExecutor {
 
         // Step 1: Evaluate runtime expressions in arguments
         tracing::debug!("Raw arguments from workflow: {:#?}", arguments);
-        tracing::debug!("Task context input: {:#?}", task_context.input);
+        log_masked!(
+            tracing::Level::DEBUG,
+            self.workflow_context,
+            &task_context.input,
+            "Task context input: {:#?}"
+        );
         let evaluated_args =
             match Self::transform_map(task_context.input.clone(), arguments.clone(), expression) {
                 Ok(args) => args,
@@ -123,7 +128,12 @@ impl PythonTaskExecutor {
                     return Err(e);
                 }
             };
-        tracing::debug!("Evaluated arguments: {:#?}", evaluated_args);
+        log_masked!(
+            tracing::Level::DEBUG,
+            self.workflow_context,
+            &evaluated_args,
+            "Evaluated arguments: {:#?}"
+        );
 
         // Step 2: Inject evaluated arguments as global variables via Base64 encoding (secure)
         if let serde_json::Value::Object(ref args_map) = evaluated_args

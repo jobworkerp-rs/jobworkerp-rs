@@ -67,7 +67,13 @@ impl TaskExecutorTrait<'_> for SetTaskExecutor {
                 return Err(e);
             }
         };
-        tracing::debug!("Transformed set task: {}: {:#?}", task_name, &set_values);
+        log_masked!(
+            tracing::Level::DEBUG,
+            self.workflow_context,
+            &set_values,
+            "Transformed set task: {}: {:#?}",
+            task_name
+        );
         match set_values.as_ref() {
             serde_json::Value::Object(map) => {
                 for (key, value) in map.iter() {
@@ -79,7 +85,12 @@ impl TaskExecutorTrait<'_> for SetTaskExecutor {
                 }
             }
             _ => {
-                tracing::warn!("Export is not a map: {:#?}", &set_values);
+                log_masked!(
+                    tracing::Level::WARN,
+                    self.workflow_context,
+                    &set_values,
+                    "Export is not a map: {:#?}"
+                );
             }
         }
         task_context.raw_output = set_values;

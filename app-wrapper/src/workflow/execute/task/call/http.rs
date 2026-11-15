@@ -19,7 +19,7 @@ use crate::workflow::{
     },
 };
 use anyhow::{Result, anyhow};
-use app::app::job::execute::SENSITIVE_HEADER_KEYS;
+use app::app::log_redaction::is_sensitive_header_key;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
@@ -447,10 +447,7 @@ impl CallTaskExecutor {
         let uri = Self::masked_request_uri(base_url, queries, secret_values);
         let headers = Self::header_map(
             Self::key_value_pairs(args.get(ARG_HEADERS), ARG_KEY, ARG_VALUE).map(|(key, value)| {
-                let value = if SENSITIVE_HEADER_KEYS
-                    .iter()
-                    .any(|name| key.eq_ignore_ascii_case(name))
-                {
+                let value = if is_sensitive_header_key(&key) {
                     MASKED_VALUE.to_string()
                 } else {
                     secret::mask_encoded_secret_values(&value, secret_values).unwrap_or(value)

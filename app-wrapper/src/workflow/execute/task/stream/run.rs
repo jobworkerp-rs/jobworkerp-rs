@@ -7,7 +7,9 @@ use crate::workflow::{
         workflow::{self, RunJobRunner, RunJobWorker, errors::StandardErrorType},
     },
     execute::{
-        context::{RunningJobGuard, TaskContext, WorkflowContext, WorkflowStreamEvent},
+        context::{
+            RunningJobGuard, TaskContext, WorkflowContext, WorkflowStreamEvent, scope_log_secrets,
+        },
         expression::UseExpression,
         task::{
             NamedTimeouts, StreamTaskExecutorTrait,
@@ -66,54 +68,9 @@ impl RunStreamTaskExecutor {
             metadata,
         }
     }
-
-    /// Convert workflow QueueType to proto QueueType (same as RunTaskExecutor)
-    fn convert_queue_type(qt: workflow::QueueType) -> i32 {
-        match qt {
-            workflow::QueueType::Normal => QueueType::Normal as i32,
-            workflow::QueueType::WithBackup => QueueType::WithBackup as i32,
-            workflow::QueueType::DbOnly => QueueType::DbOnly as i32,
-        }
-    }
-
-    /// Convert workflow ResponseType to proto ResponseType (same as RunTaskExecutor)
-    fn convert_response_type(rt: workflow::ResponseType) -> i32 {
-        match rt {
-            workflow::ResponseType::NoResult => ResponseType::NoResult as i32,
-            workflow::ResponseType::Direct => ResponseType::Direct as i32,
-        }
-    }
-
-    pub(super) fn function_options_to_worker_data(
-        options: Option<workflow::WorkerOptions>,
-        name: &str,
-    ) -> Option<WorkerData> {
-        if let Some(options) = options {
-            let worker_data = WorkerData {
-                name: name.to_string(),
-                description: String::new(),
-                broadcast_results: options.broadcast_results.unwrap_or(false),
-                store_failure: options.store_failure.unwrap_or(false),
-                store_success: options.store_success.unwrap_or(false),
-                use_static: options.use_static.unwrap_or(false),
-                queue_type: options
-                    .queue_type
-                    .map(Self::convert_queue_type)
-                    .unwrap_or(QueueType::Normal as i32),
-                channel: options.channel,
-                retry_policy: options.retry.map(|r| r.to_jobworkerp()),
-                response_type: options
-                    .response_type
-                    .map(Self::convert_response_type)
-                    .unwrap_or(ResponseType::Direct as i32),
-                ..Default::default()
-            };
-            Some(worker_data)
-        } else {
-            None
-        }
-    }
 }
+
+type ResultItemStream = BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>;
 
 /// Handle for a started streaming job, containing all info needed to collect results
 pub struct StreamingJobHandle {
@@ -134,8 +91,8 @@ struct StreamingPreparation {
     position: String,
     task_context: TaskContext,
     output_adapter: Option<ProcessOutputAdapter>,
-    /// Stream subscription - subscribed immediately after job enqueue to avoid race condition
-    stream: BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
+    /// Subscribed before the job was enqueued, so no item can be missed.
+    stream: ResultItemStream,
     running_job_guard: RunningJobGuard,
 }
 
@@ -208,16 +165,20 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
         // This avoids the stream! macro's blocking yield behavior
         let listener = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
             // Run preparation phase
-            let prep_result = prepare_streaming_job(
+            // Set inside the spawned task: task-local values do not cross spawns.
+            let prep_result = scope_log_secrets(
                 &workflow_context,
-                &job_executor_wrapper,
-                &task,
-                &base_metadata,
-                default_timeout,
-                &named_timeouts,
-                &cx,
-                &task_name,
-                task_context,
+                prepare_streaming_job(
+                    &workflow_context,
+                    &job_executor_wrapper,
+                    &task,
+                    &base_metadata,
+                    default_timeout,
+                    &named_timeouts,
+                    &cx,
+                    &task_name,
+                    task_context,
+                ),
             )
             .await;
 
@@ -233,7 +194,6 @@ impl StreamTaskExecutorTrait<'_> for RunStreamTaskExecutor {
             let job_id_value = job_id.value;
             let position = prep.position.clone();
             let mut task_context = prep.task_context;
-            // Stream is already subscribed in prepare_streaming_job to avoid race condition
             let stream = prep.stream;
 
             // Emit StreamingJobStarted immediately
@@ -377,7 +337,7 @@ async fn prepare_streaming_job(
         };
 
     // === 5. Start job based on configuration ===
-    let (handle, output_adapter) = match run {
+    let ((handle, stream), output_adapter) = match run {
         // Worker configuration
         workflow::RunTaskConfiguration::Worker(workflow::RunWorker {
             await_,
@@ -527,6 +487,8 @@ async fn prepare_streaming_job(
                 }
             };
 
+            let evaluated_options =
+                child_job::evaluate_worker_options(options, &task_context, &expression).await?;
             // Capture position before await to avoid blocking_read() in async context
             let pos_for_err = task_context.position.read().await.as_error_instance();
             (
@@ -536,7 +498,7 @@ async fn prepare_streaming_job(
                     timeout_sec,
                     runner_name,
                     Some(transformed_settings),
-                    options.clone(),
+                    evaluated_options,
                     args,
                     task_name,
                     using.clone(),
@@ -599,6 +561,8 @@ async fn prepare_streaming_job(
                 }
             };
 
+            let evaluated_options =
+                child_job::evaluate_worker_options(options, &task_context, &expression).await?;
             // Capture position before await to avoid blocking_read() in async context
             let pos_for_err = task_context.position.read().await.as_error_instance();
             (
@@ -608,7 +572,7 @@ async fn prepare_streaming_job(
                     timeout_sec,
                     runner_name,
                     Some(transformed_settings),
-                    options.clone(),
+                    evaluated_options,
                     args,
                     task_name,
                     using.clone(),
@@ -641,7 +605,7 @@ async fn prepare_streaming_job(
             };
 
             let pos_for_err = task_context.position.read().await.as_error_instance();
-            let handle = start_runner_streaming_job_static(
+            let started = start_runner_streaming_job_static(
                 job_executor_wrapper,
                 metadata.clone(),
                 timeout_sec,
@@ -657,7 +621,7 @@ async fn prepare_streaming_job(
                 tracing::error!(error = ?e, position = %pos_for_err, "Failed to start streaming run alias by jobworkerp");
                 child_job::to_workflow_error(e, StandardErrorType::Runtime, "Failed to start streaming run alias by jobworkerp", Some(pos_for_err))
             })?;
-            (handle, output_adapter)
+            (started, output_adapter)
         }
 
         // run.script has no streaming output (the PYTHON_COMMAND runner does not
@@ -687,39 +651,7 @@ async fn prepare_streaming_job(
         Err(e) => return Err(child_job_gate_error(e, &task_context).await),
     };
 
-    // Capture position for both success and error cases
-    let pos_for_err = task_context.position.read().await.as_error_instance();
     let position = task_context.position.read().await.as_json_pointer();
-
-    // Subscribe to stream IMMEDIATELY after job enqueue to avoid race condition
-    // This must happen before worker completes and publishes stream data
-    use infra::infra::job_result::pubsub::JobResultSubscriber;
-    let timeout_ms = job_timeout(timeout_sec).map(|d| d.as_millis() as u64);
-
-    // Try redis repository first (Scalable mode), then channel repository (Standalone mode)
-    let stream =
-        if let Some(pubsub_repo) = job_executor_wrapper.redis_job_result_pubsub_repository() {
-            pubsub_repo
-                .subscribe_result_stream(&handle.job_id, timeout_ms)
-                .await
-        } else if let Some(pubsub_repo) = job_executor_wrapper.chan_job_result_pubsub_repository() {
-            pubsub_repo
-                .subscribe_result_stream(&handle.job_id, timeout_ms)
-                .await
-        } else {
-            Err(anyhow::anyhow!(
-                "No pubsub repository available for streaming"
-            ))
-        }
-        .map_err(|e| {
-            tracing::error!(error = ?e, position = %pos_for_err, "Failed to subscribe to result stream");
-            child_job::to_workflow_error(
-                e.context(ChildJobStage::Wait),
-                StandardErrorType::Runtime,
-                "Failed to subscribe to result stream",
-                Some(pos_for_err),
-            )
-        })?;
 
     Ok(StreamingPreparation {
         handle,
@@ -745,7 +677,7 @@ async fn child_job_gate_error(
 
 /// Process stream: forward events to channel and collect output
 async fn process_stream(
-    mut stream: BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
+    mut stream: ResultItemStream,
     job_id: i64,
     handle: &StreamingJobHandle,
     job_executor_wrapper: &Arc<JobExecutorWrapper>,
@@ -899,11 +831,58 @@ async fn process_stream(
         .await
 }
 
-/// Start a worker streaming job and return handle with job_id
+/// Enqueues a streaming child job under a reserved id, subscribed to its
+/// result stream beforehand.
 ///
-/// For streaming jobs, we need to return immediately after enqueue to subscribe
-/// to stream before any data is published. Therefore, even if the worker has
-/// response_type=Direct, we override it to NoResult for enqueue to avoid blocking.
+/// Redis pub/sub drops messages without a subscriber, so subscribing after the
+/// enqueue loses the whole stream of a job that finishes first.
+async fn enqueue_subscribed_streaming_job(
+    job_executor_wrapper: &JobExecutorWrapper,
+    metadata: Arc<HashMap<String, String>>,
+    worker: WorkerForEnqueue,
+    job_args: Vec<u8>,
+    timeout_sec: u32,
+    using: Option<String>,
+) -> Result<(JobId, ResultItemStream)> {
+    use app::app::job::UseJobApp;
+    use app::app::job::execute::UseJobExecutor;
+    use app::app::job_result::UseJobResultApp;
+
+    let job_id = job_executor_wrapper
+        .job_app()
+        .generate_job_id()
+        .context(ChildJobStage::Enqueue)?;
+    // Must precede the enqueue: no worker may see the job before this exists.
+    // On an enqueue failure, returning drops (and so closes) the subscription.
+    let stream = job_executor_wrapper
+        .job_result_app()
+        .subscribe_new_job_stream(
+            &job_id,
+            job_timeout(timeout_sec).map(|d| d.as_millis() as u64),
+        )
+        .await
+        .context(ChildJobStage::Wait)?;
+    // StreamingType::Internal makes the runner stream internally and send the
+    // aggregated result as FinalCollected; the app layer returns without
+    // waiting on Hybrid, so the result stream is the only source of the output.
+    job_executor_wrapper
+        .enqueue_with_worker_or_temp(
+            metadata,
+            worker,
+            job_args,
+            None, // uniq_key
+            timeout_sec,
+            Some(job_id),
+            StreamingType::Internal,
+            using,
+            None, // streaming always collects a result, so no NoResult override
+        )
+        .await
+        .context(ChildJobStage::Enqueue)?;
+    Ok((job_id, stream))
+}
+
+/// Start a worker streaming job, returning its handle and result stream.
 async fn start_worker_streaming_job_static(
     job_executor_wrapper: &Arc<JobExecutorWrapper>,
     metadata: Arc<HashMap<String, String>>,
@@ -911,7 +890,7 @@ async fn start_worker_streaming_job_static(
     args: serde_json::Value,
     timeout_sec: u32,
     using: Option<String>,
-) -> Result<StreamingJobHandle> {
+) -> Result<(StreamingJobHandle, ResultItemStream)> {
     use app::app::job::execute::{UseJobExecutor, UseRunnerSpecFactory};
 
     let (wid, worker_data, rid, rdata, job_args) = job_executor_wrapper
@@ -922,26 +901,15 @@ async fn start_worker_streaming_job_static(
     // For streaming jobs, use the existing worker (with worker_id) to preserve pooling.
     // This is critical for heavy resources like local LLMs where use_static=true enables
     // runner instance reuse without re-initialization.
-    //
-    // StreamingType::Internal is used here because:
-    // 1. We want the runner to use run_stream() internally for streaming output
-    // 2. The app layer returns immediately (even for Direct response_type workers)
-    //    allowing us to subscribe to the stream before data is published
-    // 3. The final result is collected via collect_stream() and sent as FinalCollected
-    // 4. Workflow steps receive a single aggregated result, not raw stream chunks
-    let (job_id, _job_result, _stream) = job_executor_wrapper
-        .enqueue_with_worker_or_temp(
-            metadata,
-            WorkerForEnqueue::existing(wid, worker_data),
-            job_args,
-            None, // uniq_key
-            timeout_sec,
-            StreamingType::Internal,
-            using.clone(),
-            None, // streaming always collects a result, so no NoResult override
-        )
-        .await
-        .context(ChildJobStage::Enqueue)?;
+    let (job_id, stream) = enqueue_subscribed_streaming_job(
+        job_executor_wrapper,
+        metadata,
+        WorkerForEnqueue::existing(wid, worker_data),
+        job_args,
+        timeout_sec,
+        using.clone(),
+    )
+    .await?;
 
     // Get RunnerSpec for stream collection
     let runner_spec = job_executor_wrapper
@@ -949,7 +917,7 @@ async fn start_worker_streaming_job_static(
         .create_runner_spec_by_name(&rdata.name, false)
         .await;
 
-    Ok(StreamingJobHandle {
+    let handle = StreamingJobHandle {
         job_id,
         runner_id: rid,
         runner_name: rdata.name.clone(),
@@ -958,12 +926,12 @@ async fn start_worker_streaming_job_static(
         runner_spec,
         using,
         timeout_sec,
-    })
+    };
+    Ok((handle, stream))
 }
 
-/// Start a runner streaming job and return handle with job_id
-/// Uses NoResult response_type to avoid waiting for job completion, allowing
-/// stream subscription immediately after enqueue.
+/// Start a runner streaming job on a temporary worker, returning its handle
+/// and result stream.
 #[allow(clippy::too_many_arguments)]
 async fn start_runner_streaming_job_static(
     job_executor_wrapper: &Arc<JobExecutorWrapper>,
@@ -975,7 +943,7 @@ async fn start_runner_streaming_job_static(
     args: serde_json::Value,
     task_name: &str,
     using: Option<String>,
-) -> Result<StreamingJobHandle> {
+) -> Result<(StreamingJobHandle, ResultItemStream)> {
     use app::app::job::execute::{UseJobExecutor, UseRunnerSpecFactory};
 
     use infra::infra::runner::rows::RunnerWithSchema;
@@ -1005,24 +973,22 @@ async fn start_runner_streaming_job_static(
     // Create temporary worker for streaming
     // Use NoResult response_type to avoid waiting for job completion
     let worker_name = format!("{}_streaming_{}", task_name, runner_name);
-    let mut worker_data =
-        RunStreamTaskExecutor::function_options_to_worker_data(options, &worker_name).unwrap_or(
-            WorkerData {
-                name: worker_name.clone(),
-                description: String::new(),
-                runner_id: None,
-                runner_settings: vec![],
-                periodic_interval: 0,
-                channel: None,
-                queue_type: QueueType::Normal as i32,
-                response_type: ResponseType::NoResult as i32,
-                store_success: true,
-                store_failure: true,
-                use_static: false,
-                retry_policy: None,
-                broadcast_results: true,
-            },
-        );
+    let mut worker_data = child_job::function_options_to_worker_data(options, &worker_name)
+        .unwrap_or(WorkerData {
+            name: worker_name.clone(),
+            description: String::new(),
+            runner_id: None,
+            runner_settings: vec![],
+            periodic_interval: 0,
+            channel: None,
+            queue_type: QueueType::Normal as i32,
+            response_type: ResponseType::NoResult as i32,
+            store_success: true,
+            store_failure: true,
+            use_static: false,
+            retry_policy: None,
+            broadcast_results: true,
+        });
     worker_data.runner_id = Some(rid);
     worker_data.runner_settings = runner_settings;
     // Override response_type and store settings for streaming
@@ -1039,20 +1005,15 @@ async fn start_runner_streaming_job_static(
         .worker_for_enqueue(worker_data)
         .await
         .context(ChildJobStage::Enqueue)?;
-    // Enqueue with streaming - returns immediately (NoResult)
-    let (job_id, _job_result, _stream) = job_executor_wrapper
-        .enqueue_with_worker_or_temp(
-            metadata,
-            worker,
-            job_args,
-            None, // uniq_key
-            timeout_sec,
-            StreamingType::Internal,
-            using.clone(),
-            None,
-        )
-        .await
-        .context(ChildJobStage::Enqueue)?;
+    let (job_id, stream) = enqueue_subscribed_streaming_job(
+        job_executor_wrapper,
+        metadata,
+        worker,
+        job_args,
+        timeout_sec,
+        using.clone(),
+    )
+    .await?;
 
     // Get RunnerSpec for stream collection
     let runner_spec = job_executor_wrapper
@@ -1060,7 +1021,7 @@ async fn start_runner_streaming_job_static(
         .create_runner_spec_by_name(&rdata.name, false)
         .await;
 
-    Ok(StreamingJobHandle {
+    let handle = StreamingJobHandle {
         job_id,
         runner_id: rid,
         runner_name: rdata.name.clone(),
@@ -1069,7 +1030,8 @@ async fn start_runner_streaming_job_static(
         runner_spec,
         using,
         timeout_sec,
-    })
+    };
+    Ok((handle, stream))
 }
 
 #[cfg(test)]

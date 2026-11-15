@@ -17,7 +17,7 @@ use crate::workflow::{
         workflow,
     },
     execute::{
-        context::{ChildJobScope, TaskContext, WorkflowContext},
+        context::{ChildJobScope, TaskContext, WorkflowContext, scope_log_secrets},
         expression::UseExpression,
         secret,
         task::{
@@ -246,20 +246,24 @@ impl CallTaskExecutor {
         child_job_scope: Option<&Arc<ChildJobScope>>,
     ) -> Result<Value> {
         let runner = child_job::find_runner(&self.job_executor_wrapper, runner_name).await?;
-        let settings = self
-            .job_executor_wrapper
-            .setup_runner_and_settings(&runner, Some(settings))
-            .await
-            .context(ChildJobStage::Settings)?;
+        let settings = scope_log_secrets(
+            &self.workflow_context,
+            self.job_executor_wrapper
+                .setup_runner_and_settings(&runner, Some(settings)),
+        )
+        .await
+        .context(ChildJobStage::Settings)?;
         let (rid, rdata) = runner
             .id
             .zip(runner.data)
             .ok_or_else(|| anyhow!("Runner '{runner_name}' missing id/data"))?;
-        let job_args = self
-            .job_executor_wrapper
-            .transform_job_args(&rid, &rdata, &job_args, using)
-            .await
-            .context(ChildJobStage::Prepare)?;
+        let job_args = scope_log_secrets(
+            &self.workflow_context,
+            self.job_executor_wrapper
+                .transform_job_args(&rid, &rdata, &job_args, using),
+        )
+        .await
+        .context(ChildJobStage::Prepare)?;
 
         let mut metadata = Self::merge_task_metadata(&self.metadata, &self.task.metadata);
         Self::inject_metadata_from_context(&mut metadata, &cx);

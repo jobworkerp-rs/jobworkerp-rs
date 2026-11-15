@@ -222,10 +222,12 @@ impl TryTaskExecutor {
                 Ok(event) => {
                     // Extract context from completed events
                     if let Some(context) = event.context() {
-                        tracing::debug!(
+                        log_masked!(
+                            tracing::Level::DEBUG,
+                            self.workflow_context,
+                            &context.raw_output,
                             "Task executed successfully: {}: {:#?}",
-                            task_name,
-                            context.raw_output
+                            task_name
                         );
                         last_context = Some(context.clone());
                     }

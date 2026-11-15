@@ -9,7 +9,7 @@ use crate::workflow::{
         workflow::{self, RunJobRunner, RunJobWorker, errors::StandardErrorType},
     },
     execute::{
-        context::{ChildJobScope, TaskContext, WorkflowContext},
+        context::{ChildJobScope, TaskContext, WorkflowContext, scope_log_secrets},
         expression::UseExpression,
         task::{
             NamedTimeouts,
@@ -91,54 +91,6 @@ impl RunTaskExecutor {
         }
     }
 
-    /// Convert workflow QueueType to proto QueueType
-    fn convert_queue_type(qt: workflow::QueueType) -> i32 {
-        match qt {
-            workflow::QueueType::Normal => QueueType::Normal as i32,
-            workflow::QueueType::WithBackup => QueueType::WithBackup as i32,
-            workflow::QueueType::DbOnly => QueueType::DbOnly as i32,
-        }
-    }
-
-    /// Convert workflow ResponseType to proto ResponseType
-    fn convert_response_type(rt: workflow::ResponseType) -> i32 {
-        match rt {
-            workflow::ResponseType::NoResult => ResponseType::NoResult as i32,
-            workflow::ResponseType::Direct => ResponseType::Direct as i32,
-        }
-    }
-
-    fn function_options_to_worker_data(
-        options: Option<workflow::WorkerOptions>,
-        name: &str,
-    ) -> Option<WorkerData> {
-        if let Some(options) = options {
-            // Initialize with struct syntax instead of default() + field assignments
-            let worker_data = WorkerData {
-                name: name.to_string(),
-                description: String::new(),
-                broadcast_results: options.broadcast_results.unwrap_or(false),
-                store_failure: options.store_failure.unwrap_or(false),
-                store_success: options.store_success.unwrap_or(false),
-                use_static: options.use_static.unwrap_or(false),
-                queue_type: options
-                    .queue_type
-                    .map(Self::convert_queue_type)
-                    .unwrap_or(QueueType::Normal as i32),
-                channel: options.channel,
-                retry_policy: options.retry.map(|r| r.to_jobworkerp()),
-                response_type: options
-                    .response_type
-                    .map(Self::convert_response_type)
-                    .unwrap_or(ResponseType::Direct as i32),
-                ..Default::default()
-            };
-            Some(worker_data)
-        } else {
-            None
-        }
-    }
-
     /// Transform a string field that may contain jq expression or Liquid template
     fn transform_string_field(
         input: Arc<serde_json::Value>,
@@ -174,12 +126,14 @@ impl RunTaskExecutor {
         child_job_scope: Option<&Arc<ChildJobScope>>,
     ) -> Result<serde_json::Value> {
         let runner = child_job::find_runner(&self.job_executor_wrapper, runner_name).await?;
-        let settings = self
-            .job_executor_wrapper
-            .setup_runner_and_settings(&runner, settings)
-            .await
-            .context(ChildJobStage::Settings)?;
-        let mut worker_data = Self::function_options_to_worker_data(options, worker_name)
+        let settings = scope_log_secrets(
+            &self.workflow_context,
+            self.job_executor_wrapper
+                .setup_runner_and_settings(&runner, settings),
+        )
+        .await
+        .context(ChildJobStage::Settings)?;
+        let mut worker_data = child_job::function_options_to_worker_data(options, worker_name)
             .unwrap_or(WorkerData {
                 name: worker_name.to_string().clone(),
                 description: "".to_string(),
@@ -214,11 +168,13 @@ impl RunTaskExecutor {
             (Some(rid), Some(rdata)) => (rid, rdata),
             _ => return Err(anyhow::anyhow!("Runner '{}' missing id/data", runner_name)),
         };
-        let job_args = self
-            .job_executor_wrapper
-            .transform_job_args(&rid, &rdata, &job_args, using.as_deref())
-            .await
-            .context(ChildJobStage::Prepare)?;
+        let job_args = scope_log_secrets(
+            &self.workflow_context,
+            self.job_executor_wrapper
+                .transform_job_args(&rid, &rdata, &job_args, using.as_deref()),
+        )
+        .await
+        .context(ChildJobStage::Prepare)?;
         let worker = self
             .job_executor_wrapper
             .worker_for_enqueue(worker_data)
@@ -281,11 +237,16 @@ impl RunTaskExecutor {
     ) -> Result<serde_json::Value> {
         // Resolving the worker and converting the arguments is a separate stage
         // from enqueueing, so their failures can be told apart.
-        let (worker_id, worker_data, runner_id, runner_data, job_args) = self
-            .job_executor_wrapper
-            .resolve_worker_and_transform_args(worker_name, job_args, using.as_deref())
-            .await
-            .context(ChildJobStage::Prepare)?;
+        let (worker_id, worker_data, runner_id, runner_data, job_args) = scope_log_secrets(
+            &self.workflow_context,
+            self.job_executor_wrapper.resolve_worker_and_transform_args(
+                worker_name,
+                job_args,
+                using.as_deref(),
+            ),
+        )
+        .await
+        .context(ChildJobStage::Prepare)?;
         let enqueue = |overrides| {
             self.job_executor_wrapper
                 .enqueue_with_worker_or_temp_channel(
@@ -411,10 +372,12 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             && let Ok(Some(workflow_val)) = expression.get("workflow")
             && let Some(input_val) = workflow_val.get("input")
         {
-            tracing::debug!(
+            log_masked!(
+                tracing::Level::DEBUG,
+                self.workflow_context,
+                input_val,
                 "[DEBUG] task={} workflow.input in expression: {}",
-                task_name,
-                serde_json::to_string(input_val).unwrap_or_else(|_| "serialize error".to_string())
+                task_name
             );
         }
 
@@ -448,7 +411,12 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     }
                 };
                 // let args = serde_json::Value::Object(arguments.clone());
-                tracing::debug!("transformed arguments: {:#?}", args);
+                log_masked!(
+                    tracing::Level::DEBUG,
+                    self.workflow_context,
+                    &args,
+                    "transformed arguments: {:#?}"
+                );
 
                 let output = match self
                     .execute_by_worker_name(
@@ -546,7 +514,12 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     }
                 };
                 // let args = serde_json::Value::Object(arguments.clone());
-                tracing::debug!("transformed arguments: {:#?}", args);
+                log_masked!(
+                    tracing::Level::DEBUG,
+                    self.workflow_context,
+                    &args,
+                    "transformed arguments: {:#?}"
+                );
 
                 // enter run.function
                 let transformed_settings = match Self::transform_map(
@@ -564,12 +537,14 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     }
                 };
 
+                let evaluated_options =
+                    child_job::evaluate_worker_options(options, &task_context, &expression).await?;
                 let output = match self
                     .execute_by_jobworkerp(
                         cx.clone(),
                         &transformed_runner_name,
                         Some(transformed_settings),
-                        options.clone(),
+                        evaluated_options,
                         args,
                         task_name,
                         transformed_using,
@@ -663,7 +638,12 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     }
                 };
                 // let args = serde_json::Value::Object(arguments.clone());
-                tracing::debug!("transformed arguments: {:#?}", args);
+                log_masked!(
+                    tracing::Level::DEBUG,
+                    self.workflow_context,
+                    &args,
+                    "transformed arguments: {:#?}"
+                );
 
                 let output = match self
                     .execute_by_worker_name(
@@ -761,7 +741,12 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     }
                 };
                 // let args = serde_json::Value::Object(arguments.clone());
-                tracing::debug!("transformed arguments: {:#?}", args);
+                log_masked!(
+                    tracing::Level::DEBUG,
+                    self.workflow_context,
+                    &args,
+                    "transformed arguments: {:#?}"
+                );
 
                 // enter run.function
                 let transformed_settings = match Self::transform_map(
@@ -778,14 +763,21 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         return Err(e);
                     }
                 };
-                tracing::debug!("transformed settings: {:#?}", &transformed_settings);
+                log_masked!(
+                    tracing::Level::DEBUG,
+                    self.workflow_context,
+                    &transformed_settings,
+                    "transformed settings: {:#?}"
+                );
 
+                let evaluated_options =
+                    child_job::evaluate_worker_options(options, &task_context, &expression).await?;
                 let output = match self
                     .execute_by_jobworkerp(
                         cx.clone(),
                         &transformed_runner_name,
                         Some(transformed_settings),
-                        options.clone(),
+                        evaluated_options,
                         args,
                         task_name,
                         transformed_using,
@@ -906,9 +898,10 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
 
 #[cfg(test)]
 mod tests {
-    use super::{RunTaskExecutor, no_result_override_if};
+    use super::no_result_override_if;
     use crate::workflow::definition::workflow;
     use crate::workflow::execute::task::NamedTimeouts;
+    use crate::workflow::execute::task::child_job;
     use proto::jobworkerp::data::{QueueType, ResponseType};
 
     #[test]
@@ -947,9 +940,8 @@ mod tests {
             workflow::ResponseType::NoResult,
         );
 
-        let worker_data =
-            RunTaskExecutor::function_options_to_worker_data(Some(options), "test_worker")
-                .expect("worker data should be generated");
+        let worker_data = child_job::function_options_to_worker_data(Some(options), "test_worker")
+            .expect("worker data should be generated");
 
         assert_eq!(worker_data.queue_type, QueueType::DbOnly as i32);
         assert_eq!(worker_data.response_type, ResponseType::NoResult as i32);
@@ -969,7 +961,7 @@ mod tests {
         };
 
         let worker_data =
-            RunTaskExecutor::function_options_to_worker_data(Some(options), "legacy_worker")
+            child_job::function_options_to_worker_data(Some(options), "legacy_worker")
                 .expect("worker data should be generated");
 
         assert_eq!(worker_data.queue_type, QueueType::Normal as i32);

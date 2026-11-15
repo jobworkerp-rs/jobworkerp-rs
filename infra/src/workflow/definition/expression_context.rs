@@ -13,6 +13,11 @@ use std::{
 /// workflow input must never shadow it in templates.
 pub const SECRETS_VARIABLE: &str = "secrets";
 
+/// Workflow context variable reserved for secrets the caller passes to the run
+/// (e.g. a CI job token). Unlike `$secrets` it reaches every task type, and its
+/// values are masked in the engine's logs.
+pub const CONTEXT_SECRETS_VARIABLE: &str = "_secrets";
+
 type LazyBuilder = Box<dyn Fn() -> Result<Value, serde_json::Error> + Send + Sync>;
 
 /// A variable whose value is built on first use and then memoized.

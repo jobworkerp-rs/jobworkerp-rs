@@ -229,6 +229,39 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
     })
 }
 
+/// Waits until both the result channel and the result stream channel of
+/// `job_id` have a subscriber.
+async fn wait_for_result_subscribers(
+    pubsub: &infra::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl,
+    job_id: &JobId,
+) -> Result<()> {
+    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+    use infra_utils::infra::redis::UseRedisClient;
+
+    let channels = [
+        JobqueueAndCodec::job_result_pubsub_channel_name(job_id),
+        JobqueueAndCodec::job_result_stream_pubsub_channel_name(job_id),
+    ];
+    let mut connection = pubsub
+        .redis_client()
+        .get_multiplexed_async_connection()
+        .await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let mut all_subscribed = true;
+            for channel in &channels {
+                all_subscribed &= pubsub.numsub(&mut connection, channel).await?.1 >= 1;
+            }
+            if all_subscribed {
+                return Ok::<(), anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("listen_result did not subscribe within 10s"))?
+}
+
 /// Test: Listen with subscribe_result_stream for streaming results
 #[test]
 fn test_listen_stream_streaming_results() -> Result<()> {
@@ -237,7 +270,6 @@ fn test_listen_stream_streaming_results() -> Result<()> {
 
     TEST_RUNTIME.block_on(async {
         let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-        let worker_handle = start_test_worker(app_module.clone()).await?;
 
         // Create a worker with broadcast_results=true
         let worker_name = "test-streaming-result-worker";
@@ -253,17 +285,11 @@ fn test_listen_stream_streaming_results() -> Result<()> {
             worker_name, worker_id
         );
 
-        // Wait for worker registration
-        eprintln!("Waiting for worker registration (2s)...");
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module.clone()));
 
-        // Enqueue job
         let job_args = serde_json::json!({
-            "command": "sh",
-            // Keep the worker from publishing before listen_result subscribes.
-            "args": ["-c", "sleep 1; echo streaming output test"]
+            "command": "echo",
+            "args": ["streaming output test"]
         });
 
         eprintln!("Enqueuing job...");
@@ -282,18 +308,34 @@ fn test_listen_stream_streaming_results() -> Result<()> {
 
         // Listen for streaming results
         eprintln!("Listening for streaming result (30s timeout)...");
-        let listen_result = app_module
-            .job_result_app
-            .listen_result(
+        let (listen_result, (subscribed, worker_handle)) = tokio::join!(
+            app_module.job_result_app.listen_result(
                 &job_id,
                 Some(&worker_id),
                 None,
                 Some(30000),
                 true, // request_streaming=true for streaming listen
                 DEFAULT_METHOD_NAME,
-            )
-            .await;
+            ),
+            async {
+                let pubsub = &app_module
+                    .repositories
+                    .redis_module
+                    .as_ref()
+                    .expect("hybrid app has a redis module")
+                    .redis_job_result_pubsub_repository;
+                let subscribed = wait_for_result_subscribers(pubsub, &job_id).await;
+                // A streaming job publishes its result as soon as its stream
+                // starts, and Redis pub/sub drops it if nobody listens yet, so
+                // no worker may run the job before listen_result subscribes.
+                (subscribed, start_test_worker(app_module.clone()).await)
+            },
+        );
+        let worker_handle = worker_handle?;
+        let listen_result = subscribed.and(listen_result);
 
+        let mut received_output = false;
+        let mut ended = false;
         match listen_result {
             Ok((initial_result, stream_opt)) => {
                 eprintln!("Initial Result: {:?}", initial_result.id);
@@ -311,10 +353,13 @@ fn test_listen_stream_streaming_results() -> Result<()> {
                         count += 1;
                         match &item.item {
                             Some(result_output_item::Item::Data(data)) => {
-                                eprintln!("   [{}] Data: {}", count, String::from_utf8_lossy(data));
+                                let text = String::from_utf8_lossy(data);
+                                eprintln!("   [{}] Data: {}", count, text);
+                                received_output |= text.contains("streaming output test");
                             }
                             Some(result_output_item::Item::End(trailer)) => {
                                 eprintln!("   [{}] End: {:?}", count, trailer.metadata);
+                                ended = true;
                                 break;
                             }
                             Some(result_output_item::Item::FinalCollected(data)) => {
@@ -342,6 +387,8 @@ fn test_listen_stream_streaming_results() -> Result<()> {
         // Cleanup
         let _ = app_module.worker_app.delete(&worker_id).await;
         worker_handle.shutdown().await;
+        assert!(received_output, "the command output was not streamed");
+        assert!(ended, "the stream did not end with an End item");
         eprintln!("test_listen_stream_streaming_results completed");
         Ok(())
     })

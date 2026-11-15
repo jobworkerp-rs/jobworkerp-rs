@@ -1,3 +1,16 @@
+/// Log a `&serde_json::Value` with the run's context secrets masked, e.g.
+/// `log_masked!(tracing::Level::DEBUG, self.workflow_context, &value, "{}: {:#?}", name)`.
+/// The masked value is the last format argument. The workflow context is read
+/// only when the level is enabled.
+macro_rules! log_masked {
+    ($level:expr, $workflow_context:expr, $value:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
+        if tracing::enabled!($level) {
+            let masked = $workflow_context.read().await.mask_for_log($value);
+            tracing::event!($level, $fmt, $($arg,)* masked);
+        }
+    };
+}
+
 pub mod checkpoint;
 pub mod context;
 pub mod expression;

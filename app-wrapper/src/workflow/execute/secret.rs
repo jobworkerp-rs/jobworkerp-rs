@@ -16,8 +16,9 @@ use crate::workflow::definition::{
 };
 use crate::workflow::execute::expression::ExpressionContext;
 use anyhow::{Result, anyhow};
+use app::app::log_redaction::{longest_first, mask_secret_text};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use infra::workflow::definition::expression_context::SECRETS_VARIABLE;
+use infra::workflow::definition::expression_context::{CONTEXT_SECRETS_VARIABLE, SECRETS_VARIABLE};
 use serde_json::{Map, Value};
 use std::{collections::HashSet, sync::Arc};
 
@@ -151,18 +152,16 @@ fn resolve_referenced_secrets(
 }
 
 /// Every non-empty string leaf of a resolved `$secrets` object, longest first.
-pub(crate) fn secret_values(secrets: &Value) -> Vec<String> {
-    fn collect(value: &Value, out: &mut Vec<String>) {
-        match value {
-            Value::String(s) => out.push(s.clone()),
-            Value::Object(map) => map.values().for_each(|v| collect(v, out)),
-            Value::Array(values) => values.iter().for_each(|v| collect(v, out)),
-            _ => {}
-        }
-    }
-    let mut out = Vec::new();
-    collect(secrets, &mut out);
-    longest_first(out)
+pub(crate) use app::app::log_redaction::secret_strings as secret_values;
+
+/// Every non-empty string under the reserved `_secrets` variable of a workflow
+/// context, longest first. These are secrets the caller hands to the run, so
+/// they are masked like `$secrets` values in the engine's debug logs.
+pub(crate) fn context_secret_values(context: &Map<String, Value>) -> Vec<String> {
+    context
+        .get(CONTEXT_SECRETS_VARIABLE)
+        .map(secret_values)
+        .unwrap_or_default()
 }
 
 /// `secret_values` plus further values to mask that `$secrets` alone does not
@@ -171,15 +170,6 @@ pub(crate) fn secret_values(secrets: &Value) -> Vec<String> {
 /// are credentials too) and URI userinfo.
 pub(crate) fn merge_secret_values(secret_values: &[String], more: Vec<String>) -> Vec<String> {
     longest_first(secret_values.iter().cloned().chain(more).collect())
-}
-
-/// Non-empty values, longest first so that masking one never leaves part of a
-/// longer one exposed.
-fn longest_first(mut values: Vec<String>) -> Vec<String> {
-    values.retain(|value| !value.is_empty());
-    values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-    values.dedup();
-    values
 }
 
 fn contains_secret_value(text: &str, secret_values: &[String]) -> bool {
@@ -191,9 +181,7 @@ fn contains_secret_value(text: &str, secret_values: &[String]) -> bool {
 /// `text` with every raw occurrence of a secret value replaced by
 /// [`MASKED_VALUE`].
 pub(crate) fn mask_secret_values(text: &str, secret_values: &[String]) -> String {
-    secret_values.iter().fold(text.to_string(), |text, secret| {
-        text.replace(secret.as_str(), MASKED_VALUE)
-    })
+    mask_secret_text(text, secret_values, MASKED_VALUE)
 }
 
 /// `text` with every secret occurrence masked, whether raw or percent-encoded
@@ -842,6 +830,20 @@ mod tests {
                 "tok".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn context_secret_values_are_the_strings_under_the_reserved_key() {
+        let context = json!({
+            "_secrets": {"token": "tok-1", "nested": ["longer-tok"]},
+            "token": "public",
+        });
+        assert_eq!(
+            context_secret_values(context.as_object().unwrap()),
+            vec!["longer-tok".to_string(), "tok-1".to_string()]
+        );
+        let without = json!({"token": "public"});
+        assert!(context_secret_values(without.as_object().unwrap()).is_empty());
     }
 
     #[test]

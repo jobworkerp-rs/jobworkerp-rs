@@ -498,6 +498,39 @@ pub mod test {
     use tokio::time::Duration;
     pub const TEST_PLUGIN_DIR: &str = infra::infra::module::test::TEST_PLUGIN_DIR;
 
+    /// Collects what a [`capture_logs`] subscriber writes.
+    #[derive(Clone, Default)]
+    pub struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl LogBuffer {
+        pub fn contents(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A subscriber writing events up to `level` into the returned buffer, for
+    /// tests asserting on logs (install it with `tracing::subscriber::set_default`).
+    pub fn capture_logs(level: tracing::Level) -> (LogBuffer, impl tracing::Subscriber) {
+        let logs = LogBuffer::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(level)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        (logs, subscriber)
+    }
+
     /// Create hybrid test app (Scalable mode) with optional RDB indexing
     ///
     /// # Arguments

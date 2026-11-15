@@ -158,7 +158,7 @@
         "secrets": {
           "type": "array",
           "title": "ReusableSecrets",
-          "description": "Declared secret names. Values are supplied at runtime via the WORKFLOW_SECRET_<UPPER_SNAKE_NAME> environment variable.",
+          "description": "Declared secret names. Values are supplied at runtime via the WORKFLOW_SECRET_<UPPER_SNAKE_NAME> environment variable. $secrets is available only to call tasks. A secret for other tasks is not declared here: the caller of the run puts it in the workflow context under the reserved key _secrets (${ $_secrets.<name> }), whose values are masked in logs.",
           "items": {
             "type": "string"
           }
@@ -901,7 +901,7 @@
         "channel": {
           "type": "string",
           "title": "Channel",
-          "description": "The channel to use when running the worker (controls execution concurrency)."
+          "description": "The channel to use when running the worker (controls execution concurrency). A runtime expression is allowed; a null or empty result means the default channel. A static worker (useStatic) keeps the channel it was created with."
         },
         "queueType": {
           "type": "string",

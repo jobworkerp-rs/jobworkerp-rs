@@ -57,7 +57,8 @@ RUN cargo build --release --bin all-in-one
 # Runtime Stage
 FROM nvcr.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
-RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y libssl3 libcurl4 libgomp1 libcap-ng0 docker.io docker-compose nginx gosu protobuf-compiler \
+# docker-compose-v2: Ubuntu's docker-compose package is the obsolete Python v1.
+RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y libssl3 libcurl4 libgomp1 libcap-ng0 docker.io docker-compose-v2 nginx gosu protobuf-compiler \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 RUN adduser --system --group jobworkerp
