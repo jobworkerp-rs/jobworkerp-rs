@@ -30,14 +30,14 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.22.0"
+version = "0.25.0"
 edition = "2024"
 authors = ["sutr"]
 description = "Job-Worker system with gRPC front server"
 repository = "https://github.com/jobworkerp-rs/jobworkerp-rs"
 keywords = ["job-worker", "job-scheduler", "concurrency"]
 categories = ["web-programming"]
-license = "Apache 2.0"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 anyhow = "1.0"
@@ -165,6 +165,11 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 [patch."https://github.com/sutr-app/memory-utils.git"]
 memory-utils = { path = "modules/memory-utils" }
+
+# grpc-utils and web-utils depend on command-utils from git; without this the
+# lockfile pins a second, older command-utils next to the submodule.
+[patch."https://github.com/sutr-app/command-utils.git"]
+command-utils = { path = "modules/command-utils" }
 
 [profile.release]
 # Tell `rustc` to optimize for small code size.

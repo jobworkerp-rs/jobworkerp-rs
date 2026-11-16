@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish = false
 description = "Integration tests requiring a backend worker. Must run with --test-threads=1 due to shared Redis/SQLite resources."
+license.workspace = true
 
 [dependencies]
 proto = { path = "../proto" }

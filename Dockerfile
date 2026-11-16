@@ -2,8 +2,6 @@
 # Requires pre-built binary at ./target/release/all-in-one
 # For local development with full build, use `Dockerfile.full` instead
 
-FROM ghcr.io/superradcompany/microsandbox:0.7.2 AS microsandbox-runtime
-
 # Admin UI Build Stage
 FROM node:20-slim AS ui-builder
 
@@ -35,11 +33,8 @@ RUN adduser --system --group jobworkerp
 
 RUN mkdir -p /home/jobworkerp/.microsandbox && chown -R jobworkerp:jobworkerp /home/jobworkerp
 RUN mkdir -p /home/jobworkerp/plugins && chown jobworkerp:jobworkerp /home/jobworkerp/plugins
-COPY --from=microsandbox-runtime /usr/local/bin/msb /usr/local/bin/msb
-COPY --from=microsandbox-runtime /usr/local/lib/libkrunfw.so.5.6.1 /usr/local/lib/libkrunfw.so.5.6.1
-ENV MSB_HOME=/home/jobworkerp/.microsandbox \
-    MSB_PATH=/usr/local/bin/msb \
-    MSB_LIBKRUNFW_PATH=/usr/local/lib/libkrunfw.so.5.6.1
+# The microsandbox runtime is not shipped; docker/sandbox/Dockerfile adds it.
+ENV MSB_HOME=/home/jobworkerp/.microsandbox
 ENV LD_LIBRARY_PATH=/home/jobworkerp/plugins:/home/jobworkerp/data/plugin/runner:/home/jobworkerp/data/plugin/cuda_runner:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 RUN /sbin/ldconfig
 
@@ -85,4 +80,5 @@ ENV JOB_STATUS_RDB_INDEXING=true
 EXPOSE 8080 9000 8000 8001
 
 # Run as root initially to start nginx, then drop privileges for all-in-one
+COPY LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.txt /usr/share/doc/jobworkerp-rs/
 CMD ["/home/jobworkerp/start.sh"]

@@ -1,0 +1,45 @@
+# cargo-about settings for THIRD-PARTY-LICENSES.txt, the license listing
+# shipped with every release archive and container image
+# (scripts/generate-third-party-licenses.sh).
+#
+# Only the licenses below may appear in a release. A dependency under any
+# other license fails the listing, and with it the internal CI and the public
+# release build, so adding one is a deliberate review of this list.
+# Earlier entries are preferred when a crate offers a choice.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "Unicode-3.0",
+    "Zlib",
+    "MIT-0",
+    # File-level copyleft, accepted for unmodified crates only; see the
+    # dependency license section of .gitea/PUBLISHING.md.
+    "MPL-2.0",
+]
+
+# Every release target, so platform-specific dependencies are listed too.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+]
+
+# This project's own crates (publish = false) are covered by LICENSE-MIT and
+# LICENSE-APACHE.
+private = { ignore = true }
+
+# ollama-rs declares no license in its manifest; its LICENSE.md is MIT. The
+# checksum makes an upgrade with a changed license file fail for review.
+[ollama-rs.clarify]
+license = "MIT"
+
+[[ollama-rs.clarify.files]]
+path = "LICENSE.md"
+license = "MIT"
+checksum = "e3de1bae29d6b97ac7f510d2378de7dfafd56c4f1c6fde2c8d3a6b73e9c10b6b"

@@ -1,8 +1,8 @@
-name: Create and publish Docker images and the GitHub Release
+name: Create and publish Docker images
 
 # Release tags are pushed by the internal repository's sync (one sync commit
-# per release), so the tag push is the release trigger. The GitHub Release is
-# created only after every image has been published.
+# per release), so the tag push is the release trigger. The GitHub Release
+# with the binaries is created by release.yml.
 on:
   push:
     tags:
@@ -83,6 +83,9 @@ jobs:
         run: |
           cargo build --release --features "mysql"
       # Uses the `docker/login-action` action to log in to the Container registry registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
+      # Shipped in the image under /usr/share/doc/jobworkerp-rs/.
+      - name: Generate license listing
+        run: bash scripts/generate-license-listing.sh THIRD-PARTY-LICENSES.txt
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Log in to the Container registry
@@ -193,6 +196,9 @@ jobs:
       #          command: build
       #          args: --release
       # Uses the `docker/login-action` action to log in to the Container registry registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
+      # Shipped in the image under /usr/share/doc/jobworkerp-rs/.
+      - name: Generate license listing
+        run: bash scripts/generate-license-listing.sh THIRD-PARTY-LICENSES.txt
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Log in to the Container registry
@@ -211,32 +217,3 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/jobworkerp:latest
             ghcr.io/${{ github.repository_owner }}/jobworkerp:${{ github.ref_name }}
   #        labels: ${{ steps.meta.outputs.labels }}
-  create-release:
-    runs-on: ubuntu-latest
-    needs:
-      - build-and-push-image
-      - build-and-push-all-in-one-image
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          # The sync commit body lists the changes since the previous public
-          # release and ends with an "Upstream-Tag: <tag>" trailer. A tag on
-          # an older sync commit means the release had no public changes.
-          message=$(git log -1 --format=%B HEAD)
-          if printf '%s\n' "${message}" | grep -Fqx "Upstream-Tag: ${TAG_NAME}"; then
-            printf '%s\n' "${message}" | awk 'NR > 2 && !/^Upstream-Tag: /' > notes.md
-          else
-            echo "No source changes since the previous release." > notes.md
-          fi
-          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
-            echo "Release ${TAG_NAME} already exists; skipping."
-          else
-            gh release create "${TAG_NAME}" --verify-tag --title "${TAG_NAME}" --notes-file notes.md
-          fi

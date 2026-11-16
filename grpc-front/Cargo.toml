@@ -3,7 +3,8 @@ name = "grpc-front"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-
+license.workspace = true
+publish = false
 
 [[bin]]
 name = "grpc-front"
@@ -43,6 +44,7 @@ tracing = { workspace = true }
 test-utils = []
 
 [dev-dependencies]
+jobworkerp-base = { path = "../base", features = ["test-utils"] }
 tokio = { workspace = true }
 infra = { path = "../infra", features = ["test-utils"] }
 

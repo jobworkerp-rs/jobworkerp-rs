@@ -9,7 +9,7 @@
 既存の DB では新しい migration を適用してから再起動してください。`RunnerService/FindList` は Runner の定義を DB から取得します。microsandbox の導入だけでは `SANDBOX` は一覧に表示されません。
 
 - 実行ホストは Linux、KVM、および microsandbox runtime を必要とします。
-- microsandbox Rust SDK 0.7.2 を使用します。runtime の UDP 同時接続数制限が非対応の場合、ネットワークを有効にした VM の起動は失敗します。
+- microsandbox Rust SDK 0.7.6 を使用します。runtime の UDP 同時接続数制限が非対応の場合、ネットワークを有効にした VM の起動は失敗します。
 - v1 は microsandbox local backend を対象とします。
 - ネットワークは既定で無効です。必要な通信だけを Worker 設定で許可してください。
 - `use_static=true` では同じ VM を使用したジョブ間でファイルシステムを共有します。異なるテナント、認可境界、秘密情報を扱うジョブを同じ Worker に投入してはいけません。
@@ -27,11 +27,15 @@
 
 ### Docker 内で使う場合
 
-all-in-one と worker の GPU／CPU Dockerfile は microsandbox 0.7.2 の `msb` と対応する `libkrunfw` を実行イメージに配置し、`jobworkerp` ユーザー専用の `MSB_HOME` を使います。ホスト側の microsandbox のインストールをコンテナに共有する必要はありません。ただし Dockerfile だけでは KVM を公開できません。SANDBOX を使う環境では、それぞれの Compose override で `/dev/kvm` を渡します。通常の Compose 設定は KVM を要求しません。
+公開している jobworkerp のコンテナイメージには microsandbox runtime (`msb` と `libkrunfw`) を含めていません。`libkrunfw` はライブラリ部分が LGPL-2.1-only、同梱する Linux カーネルが GPL-2.0-only で、バイナリを再配布する場合はソースを添える必要があるためです。SANDBOX を使う場合は、`docker/sandbox/Dockerfile` で公開イメージに microsandbox 公式イメージの runtime を追加した派生イメージを手元でビルドします。派生イメージは `jobworkerp` ユーザー専用の `MSB_HOME` をそのまま使うため、ホスト側の microsandbox のインストールをコンテナに共有する必要はありません。ただし Dockerfile だけでは KVM を公開できないため、SANDBOX 用の Compose override で `/dev/kvm` を渡します。通常の Compose 設定は KVM を要求しません。
 
 1. Docker を動かす Linux ホスト（外側が VM の場合は nested virtualization）に `/dev/kvm` があり、Docker から利用できることを確認します。Docker Desktop 等でデバイスを公開できない環境では local backend は動きません。
-2. 対象の Dockerfile でイメージをビルドします。all-in-one は `docker compose -f docker-compose.yml -f docker-compose-sandbox.yml up -d`、scalable worker は `docker compose -f docker-compose-scalable.yml -f docker-compose-scalable-sandbox.yml up -d` で起動します。起動後、同じ `-f` の組合せで `exec` を行い、all-in-one は `-u jobworkerp jobworkerp-all msb doctor`、worker は `jobworkerp-worker msb doctor` を実行してください。`KVM device` と `KVM access` が成功していることを確認します。
+2. SANDBOX 用 override で派生イメージをビルドして起動します。all-in-one は `docker compose -f docker-compose.yml -f docker-compose-sandbox.yml up -d --build`、scalable worker は `docker compose -f docker-compose-scalable.yml -f docker-compose-scalable-sandbox.yml up -d --build` です。override は `docker/sandbox/Dockerfile` を `BASE_IMAGE` に公開イメージ (`ghcr.io/jobworkerp-rs/jobworkerp` / `ghcr.io/jobworkerp-rs/worker`) を指定してビルドし、`jobworkerp-sandbox:local` / `jobworkerp-worker-sandbox:local` として使います。起動後、同じ `-f` の組合せで `exec` を行い、all-in-one は `-u jobworkerp jobworkerp-all msb doctor`、worker は `jobworkerp-worker msb doctor` を実行してください。`KVM device` と `KVM access` が成功していることを確認します。
 3. 同じユーザーで `msb run alpine:3.21 --name <重複しない確認用の名前> -- sh -c 'printf "sandbox-ok\n"'` を実行し、microVM 内の出力と終了コードを確認します。確認用 VM の record が残った場合は `msb list` で名前を照合して削除します。実行例は [公式 Docker 手順](https://docs.microsandbox.dev/examples/docker/docker) を参照してください。
+
+Kubernetes など Compose 以外で使う場合も、同じ `docker/sandbox/Dockerfile` で派生イメージをビルドします (`docker build docker/sandbox --build-arg BASE_IMAGE=<公開イメージ> -t <名前>`)。派生イメージは `libkrunfw` を含むため、push 先は非公開のレジストリに限ってください。公開レジストリへの push は `libkrunfw` の再配布にあたります。
+
+`docker/sandbox/Dockerfile` の `MICROSANDBOX_VERSION` は jobworkerp がリンクする microsandbox crate (`Cargo.lock`) と同じ版、`LIBKRUNFW_VERSION` はその版の microsandbox が要求する `libkrunfw` の版に揃えています (SDK と runtime は同じリリースで組み合わせる前提のため)。crate を更新して版がずれると `worker-main/tests/docker_microsandbox_runtime.rs` が失敗します。
 
 ホストの `/dev/kvm` が特定のグループにのみ読み書きを許す場合、`stat -c '%g' /dev/kvm` で **そのデバイスの数値 group ID** を確認し、使う SANDBOX 用 Compose override の対象 service に `group_add: ["<数値 group ID>"]` を追加してください。既存の Docker socket 用グループとは別です。デバイス自体がない環境では `--privileged` を追加しても解決しません。VM image のキャッシュや sandbox database を再起動後も維持したい場合は、`MSB_HOME` に **Worker process ごとの専用 volume** をマウントし、`jobworkerp` が書き込めることを確認してください。異なる Worker process の間で書き込み可能な runtime 状態を共有しないでください。
 

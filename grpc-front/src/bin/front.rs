@@ -22,6 +22,7 @@ use jobworkerp_runner::runner::{
 // start front_server
 #[tokio::main]
 async fn main() -> Result<()> {
+    jobworkerp_base::exit_if_version_requested!();
     dotenv().ok();
 
     command_utils::util::tracing::init_from_env_and_filename("jobworkerp-front", "log").await?;

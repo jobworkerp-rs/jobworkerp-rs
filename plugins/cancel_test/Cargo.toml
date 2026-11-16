@@ -4,6 +4,8 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 description = "V2 plugin sample: cooperative cancellation via CancellationToken"
+license.workspace = true
+publish = false
 
 [lib]
 crate-type = ["dylib"]

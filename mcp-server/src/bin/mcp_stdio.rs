@@ -57,6 +57,7 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    jobworkerp_base::exit_if_version_requested!();
     dotenv().ok();
 
     // Stdio mode logs to file only to avoid interfering with MCP protocol

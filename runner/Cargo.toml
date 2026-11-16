@@ -12,6 +12,7 @@ license.workspace = true
 # than the default criterion-style bench harness, so disable cargo's
 # automatic bench discovery to avoid a duplicate-target warning.
 autobenches = false
+publish = false
 
 [dependencies]
 

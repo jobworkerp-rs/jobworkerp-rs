@@ -4,6 +4,8 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 description = "Example for jobworkerp runner plugin"
+license.workspace = true
+publish = false
 
 [lib]
 crate-type = ["dylib"]

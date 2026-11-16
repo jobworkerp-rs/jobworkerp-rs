@@ -4,7 +4,8 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 description = "Protobuf definition for jobworkerp"
-
+license.workspace = true
+publish = false
 
 [dependencies]
 command-utils = { path = "../modules/command-utils" }

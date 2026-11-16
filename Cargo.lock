@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "ag-ui-front"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "app",
@@ -21,7 +21,7 @@ dependencies = [
  "base64 0.22.1",
  "bb8",
  "chrono",
- "command-utils 0.1.0",
+ "command-utils",
  "dotenvy",
  "futures",
  "indexmap 2.14.2",
@@ -54,13 +54,13 @@ dependencies = [
 
 [[package]]
 name = "agent-server"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum",
  "chrono",
- "command-utils 0.1.0",
+ "command-utils",
  "futures",
  "futures-util",
  "http",
@@ -224,14 +224,14 @@ checksum = "d301b3b94cb4b2f23d7917810addbbaff90738e0ca2be692bd027e70d7e0330c"
 
 [[package]]
 name = "app"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "app",
  "async-stream",
  "async-trait",
  "chrono",
- "command-utils 0.1.0",
+ "command-utils",
  "dashmap",
  "debug_stub_derive",
  "dotenvy",
@@ -270,7 +270,7 @@ dependencies = [
 
 [[package]]
 name = "app-wrapper"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "app",
@@ -280,7 +280,7 @@ dependencies = [
  "bb8",
  "chrono",
  "clap",
- "command-utils 0.1.0",
+ "command-utils",
  "debug_stub_derive",
  "dotenvy",
  "envy",
@@ -1358,10 +1358,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "chardet"
-version = "0.2.4"
+name = "chardetng"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a48563284b67c003ba0fb7243c87fab68885e1532c605704228a80238512e31"
+checksum = "13de944a44b5064ee5d3a5ceccc49a41bfec50f2580e66f82e87703acdb88b53"
+dependencies = [
+ "cfg-if",
+ "encoding_rs",
+ "memchr",
+]
 
 [[package]]
 name = "chrono"
@@ -1494,10 +1499,10 @@ name = "command-utils"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chardet",
+ "chardetng",
  "chrono",
  "chrono-tz",
- "encoding",
+ "encoding_rs",
  "envy",
  "futures",
  "itertools 0.15.0",
@@ -1535,51 +1540,6 @@ dependencies = [
  "uuid",
  "vibrato",
  "zstd 0.13.3",
-]
-
-[[package]]
-name = "command-utils"
-version = "0.1.0"
-source = "git+https://github.com/sutr-app/command-utils.git?branch=main#4e0bd8c54bde5f64616090733a4babb6d6e6395d"
-dependencies = [
- "anyhow",
- "chardet",
- "chrono",
- "chrono-tz",
- "encoding",
- "envy",
- "futures",
- "itertools 0.15.0",
- "jaq-core",
- "jaq-json",
- "jaq-std",
- "liquid-core",
- "liquid-derive",
- "moka",
- "once_cell",
- "opentelemetry",
- "opentelemetry-appender-tracing",
- "opentelemetry-otlp",
- "opentelemetry-semantic-conventions",
- "opentelemetry-stdout",
- "opentelemetry_sdk",
- "pnet",
- "prost",
- "prost-reflect",
- "prost-reflect-build",
- "rand 0.10.3",
- "regex",
- "rs-snowflake",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tonic",
- "tonic-prost-build",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2328,70 +2288,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
-name = "encoding"
-version = "0.2.33"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b0d943856b990d12d3b55b359144ff341533e516d94098b1d3fc1ac666d36ec"
-dependencies = [
- "encoding-index-japanese",
- "encoding-index-korean",
- "encoding-index-simpchinese",
- "encoding-index-singlebyte",
- "encoding-index-tradchinese",
-]
-
-[[package]]
-name = "encoding-index-japanese"
-version = "1.20141219.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04e8b2ff42e9a05335dbf8b5c6f7567e5591d0d916ccef4e0b1710d32a0d0c91"
-dependencies = [
- "encoding_index_tests",
-]
-
-[[package]]
-name = "encoding-index-korean"
-version = "1.20141219.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dc33fb8e6bcba213fe2f14275f0963fd16f0a02c878e3095ecfdf5bee529d81"
-dependencies = [
- "encoding_index_tests",
-]
-
-[[package]]
-name = "encoding-index-simpchinese"
-version = "1.20141219.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d87a7194909b9118fc707194baa434a4e3b0fb6a5a757c73c3adb07aa25031f7"
-dependencies = [
- "encoding_index_tests",
-]
-
-[[package]]
-name = "encoding-index-singlebyte"
-version = "1.20141219.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3351d5acffb224af9ca265f435b859c7c01537c0849754d3db3fdf2bfe2ae84a"
-dependencies = [
- "encoding_index_tests",
-]
-
-[[package]]
-name = "encoding-index-tradchinese"
-version = "1.20141219.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd0e20d5688ce3cab59eb3ef3a2083a5c77bf496cb798dc6fcdb75f323890c18"
-dependencies = [
- "encoding_index_tests",
-]
-
-[[package]]
-name = "encoding_index_tests"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a246d82be1c9d791c5dfde9a2bd045fc3cbba3fa2b11ad558f27d01712f00569"
-
-[[package]]
 name = "encoding_rs"
 version = "0.8.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2891,12 +2787,12 @@ dependencies = [
 
 [[package]]
 name = "grpc-front"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "app",
  "async-stream",
- "command-utils 0.1.0",
+ "command-utils",
  "debug_stub_derive",
  "dotenvy",
  "futures",
@@ -2929,7 +2825,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "command-utils 0.1.0 (git+https://github.com/sutr-app/command-utils.git?branch=main)",
+ "command-utils",
  "futures",
  "prost",
  "prost-reflect",
@@ -3502,7 +3398,7 @@ dependencies = [
 
 [[package]]
 name = "infra"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3510,7 +3406,7 @@ dependencies = [
  "bb8",
  "bollard",
  "chrono",
- "command-utils 0.1.0",
+ "command-utils",
  "dashmap",
  "debug_stub_derive",
  "dotenvy",
@@ -3869,7 +3765,7 @@ dependencies = [
 
 [[package]]
 name = "jobworkerp-base"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "bollard",
@@ -3879,19 +3775,20 @@ dependencies = [
  "reqwest 0.13.5",
  "serde_json",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.21",
  "tonic",
 ]
 
 [[package]]
 name = "jobworkerp-main"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "ag-ui-front",
  "anyhow",
  "app",
  "app-wrapper",
- "command-utils 0.1.0",
+ "command-utils",
  "dotenvy",
  "envy",
  "grpc-front",
@@ -3901,6 +3798,7 @@ dependencies = [
  "jobworkerp-base",
  "jobworkerp-runner",
  "mcp-server",
+ "microsandbox-utils",
  "proto",
  "rand 0.10.3",
  "tokio",
@@ -3934,7 +3832,7 @@ dependencies = [
 
 [[package]]
 name = "jobworkerp-runner"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "async-ffi",
@@ -3944,7 +3842,7 @@ dependencies = [
  "bb8",
  "bollard",
  "chrono",
- "command-utils 0.1.0",
+ "command-utils",
  "dashmap",
  "debug_stub_derive",
  "dotenvy",
@@ -4146,7 +4044,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "legacy_compat_test"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4468,14 +4366,14 @@ checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 
 [[package]]
 name = "mcp-server"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "app",
  "app-wrapper",
  "axum",
  "base64 0.22.1",
- "command-utils 0.1.0",
+ "command-utils",
  "dotenvy",
  "futures",
  "infra",
@@ -5993,7 +5891,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "plugin_runner_cancel_test"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6006,7 +5904,7 @@ dependencies = [
 
 [[package]]
 name = "plugin_runner_hello"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6029,7 +5927,7 @@ dependencies = [
 
 [[package]]
 name = "plugin_runner_panic_ctor_test"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "async-trait",
  "jobworkerp-plugin-abi",
@@ -6037,7 +5935,7 @@ dependencies = [
 
 [[package]]
 name = "plugin_runner_test"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6359,10 +6257,10 @@ dependencies = [
 
 [[package]]
 name = "proto"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
- "command-utils 0.1.0",
+ "command-utils",
  "prost",
  "prost-reflect",
  "prost-types",
@@ -8455,13 +8353,13 @@ dependencies = [
 
 [[package]]
 name = "tests-with-worker"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "app",
  "app-wrapper",
  "chrono",
- "command-utils 0.1.0",
+ "command-utils",
  "futures",
  "infra",
  "infra-utils",
@@ -9559,7 +9457,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
- "command-utils 0.1.0 (git+https://github.com/sutr-app/command-utils.git?branch=main)",
+ "command-utils",
  "deadpool",
  "http",
  "itertools 0.15.0",
@@ -10054,7 +9952,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "worker-app"
-version = "0.22.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "app",
@@ -10063,7 +9961,7 @@ dependencies = [
  "bollard",
  "bytes",
  "chrono",
- "command-utils 0.1.0",
+ "command-utils",
  "dashmap",
  "deadpool",
  "debug_stub_derive",

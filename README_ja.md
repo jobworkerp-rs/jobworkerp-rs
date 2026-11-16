@@ -67,6 +67,38 @@ graph TB
 - LLM統合: テキスト生成やツール呼び出し付きチャット（詳細は[llm.md](manual/ja/src/llm.md)を参照）
 - ワークフロー機能: 複数のジョブを連携して実行（詳細は[workflow.md](manual/ja/src/workflow.md)を参照）
 
+## インストール
+
+ビルド済みバイナリを各 [GitHub Release](https://github.com/jobworkerp-rs/jobworkerp-rs/releases) に添付しています。
+SQLite 版 (スタンドアロン構成) です。MySQL を使う場合は `--features mysql` でビルドするか、コンテナイメージを使ってください。
+
+| Asset | 動作要件 |
+|---|---|
+| `jobworkerp-x86_64-unknown-linux-gnu.tar.gz` | x86_64 の Linux。glibc 2.39 以上と GCC 14 以降の libstdc++ が必要 (Ubuntu 24.04、Debian 13、RHEL 10 など) |
+| `jobworkerp-aarch64-unknown-linux-gnu.tar.gz` | aarch64 の Linux。要件は同上 |
+| `jobworkerp-aarch64-apple-darwin.tar.gz` | Apple Silicon の macOS 11 以降 |
+
+PLUGIN runner が plugin を `dlopen` で読み込むため、Linux 版はシステムの glibc を動的リンクしています。plugin は同じか古い glibc の環境でビルドしてください。古いディストリビューションではコンテナイメージを使うか、ソースからビルドしてください。
+
+各アーカイブには、バイナリ (`all-in-one`, `worker`, `grpc-front`, `mcp-http`, `mcp-stdio`, `ag-ui-http`, `ag-ui-http-async`)、`LICENSE-MIT`、`LICENSE-APACHE`、`THIRD-PARTY-LICENSES.txt`、README、設定例の `dot.env` が入っています。同じ Release の `SHA256SUMS` でダウンロードを検証し、必要に応じて GitHub CLI でビルドの provenance も検証できます。
+
+```text
+sha256sum --ignore-missing -c SHA256SUMS
+gh attestation verify jobworkerp-<target>.tar.gz --repo jobworkerp-rs/jobworkerp-rs
+tar -xzf jobworkerp-<target>.tar.gz
+jobworkerp-<target>/all-in-one --version
+```
+
+macOS では、ダウンロードした asset を `shasum` で確認します。
+
+```text
+grep ' jobworkerp-aarch64-apple-darwin.tar.gz$' SHA256SUMS | shasum -a 256 -c
+```
+
+macOS 版は ad-hoc 署名のみで notarize していません。ブラウザでのダウンロードが Gatekeeper に止められる場合は、`curl` でダウンロードするか、`xattr -d com.apple.quarantine` で quarantine 属性を外してください。
+
+実行するディレクトリに `dot.env` を `.env` としてコピーし、環境に合わせて編集してください。
+
 ## クイックスタート
 
 ### ビルドと起動
@@ -87,6 +119,9 @@ $ ./target/release/all-in-one
 # Run gRPC front server and worker by release binary
 $ ./target/release/worker &
 $ ./target/release/grpc-front &
+
+# バイナリのバージョンを表示 (どのバイナリも --version を受け付ける)
+$ ./target/release/all-in-one --version
 ```
 
 ### Docker環境での実行
@@ -112,6 +147,9 @@ all-in-oneイメージ用に2つのDockerfileがあります：
 # オプション1: ビルド済みバイナリを使用 (Dockerfile)
 # まずRustバイナリをローカルでビルド
 $ cargo build --release
+# イメージに同梱する依存ライセンス一覧を生成
+# (cargo-about が必要: scripts/install-cargo-about.sh で取得し CARGO_ABOUT を設定)
+$ bash scripts/generate-third-party-licenses.sh THIRD-PARTY-LICENSES.txt
 # Dockerイメージをビルド
 $ docker build -t jobworkerp-all-in-one .
 
@@ -407,3 +445,12 @@ TBD
 - id (job idなど)にはsnowflakeを利用、マシンidとして10bit各ホストのIPv4アドレスのホスト部を利用しているため、10bitを越えるホスト部を持つサブネットでの運用あるいは異なるサブネットで同一ホスト部を持つようなインスタンスを利用するような運用は避けてください。(重複したjob idを払いだす可能性があります)
 - worker.type = DOCKER をk8s環境上のworkerで実行する場合にはDocker Outside Of Dockerの設定あるいはDocker in Dockerの設定が必要になります (未テストです)
 - runner plugin内の処理でpanicを起こすとworkerプロセス自体が落ちます。そのためworkerはsupervisordやkubernetes deploymentなどの耐障害性のある運用をすることが推奨されます。(C-unwind の適用検討は今後の課題です)
+
+## ライセンス
+
+以下のいずれかを選択して利用できます。
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
+
+明示的に別段の意思表示をしない限り、本プロジェクトに取り込むことを意図して提出された寄稿 (Apache-2.0 ライセンスの定義による) は、追加の条件なしに上記の dual license で提供されるものとします。

@@ -14,6 +14,7 @@ use std::sync::Arc;
 // #[tokio::main]
 #[tokio::main(flavor = "multi_thread")]
 pub async fn main() -> Result<()> {
+    jobworkerp_base::exit_if_version_requested!();
     dotenv().ok();
     // node specific str (based on ip)
     let log_filename =

@@ -8,6 +8,7 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 license.workspace = true
+publish = false
 
 [[bin]]
 name = "mcp-http"
@@ -50,6 +51,7 @@ yaml-rust2 = "0.11"
 tonic = { workspace = true }
 
 [dev-dependencies]
+jobworkerp-base = { path = "../base", features = ["test-utils"] }
 infra-utils = { path = "../modules/infra-utils" }
 tempfile = { workspace = true }
 tokio-test = "0.4"

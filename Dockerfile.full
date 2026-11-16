@@ -2,8 +2,6 @@
 # This builds everything inside Docker (no pre-built binaries required)
 # For GitHub Actions, use `Dockerfile` instead (requires pre-built binary)
 
-FROM ghcr.io/superradcompany/microsandbox:0.7.2 AS microsandbox-runtime
-
 # Admin UI Build Stage
 FROM node:20-slim AS ui-builder
 
@@ -65,11 +63,8 @@ RUN adduser --system --group jobworkerp
 
 RUN mkdir -p /home/jobworkerp/.microsandbox && chown -R jobworkerp:jobworkerp /home/jobworkerp
 RUN mkdir -p /home/jobworkerp/plugins && chown jobworkerp:jobworkerp /home/jobworkerp/plugins
-COPY --from=microsandbox-runtime /usr/local/bin/msb /usr/local/bin/msb
-COPY --from=microsandbox-runtime /usr/local/lib/libkrunfw.so.5.6.1 /usr/local/lib/libkrunfw.so.5.6.1
-ENV MSB_HOME=/home/jobworkerp/.microsandbox \
-    MSB_PATH=/usr/local/bin/msb \
-    MSB_LIBKRUNFW_PATH=/usr/local/lib/libkrunfw.so.5.6.1
+# The microsandbox runtime is not shipped; docker/sandbox/Dockerfile adds it.
+ENV MSB_HOME=/home/jobworkerp/.microsandbox
 ENV LD_LIBRARY_PATH=/home/jobworkerp/plugins:/home/jobworkerp/data/plugin/runner:/home/jobworkerp/data/plugin/cuda_runner:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 RUN /sbin/ldconfig
 

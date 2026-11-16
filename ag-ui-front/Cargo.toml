@@ -8,6 +8,7 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 license.workspace = true
+publish = false
 
 [[bin]]
 name = "ag-ui-http"
@@ -64,6 +65,7 @@ prost = { workspace = true }
 indexmap = { version = "2", features = ["serde"] }
 
 [dev-dependencies]
+jobworkerp-base = { path = "../base", features = ["test-utils"] }
 tokio-test = "0.4"
 app = { path = "../app", features = ["test-utils"] }
 jsonschema = { workspace = true }

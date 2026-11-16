@@ -1,6 +1,10 @@
 *
 !Cargo.lock
 !Cargo.toml
+# Shipped in every image (the listing is generated before docker build).
+!LICENSE-MIT
+!LICENSE-APACHE
+!THIRD-PARTY-LICENSES.txt
 !.cargo/
 !.cargo/**
 !admin-ui/

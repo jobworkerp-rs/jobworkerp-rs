@@ -3,6 +3,8 @@ name = "jobworkerp-main"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+license.workspace = true
+publish = false
 
 [[bin]]
 name = "all-in-one"
@@ -36,4 +38,8 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# Same release as the microsandbox SDK linked through jobworkerp-runner; the
+# tests compare its runtime constants with docker/sandbox/Dockerfile.
+microsandbox-utils = "0.7"
 toml = { workspace = true }
+jobworkerp-base = { path = "../base", features = ["test-utils"] }

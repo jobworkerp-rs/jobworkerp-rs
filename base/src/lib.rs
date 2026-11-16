@@ -7,6 +7,7 @@ pub mod codec;
 pub mod error;
 pub mod job_status_config;
 pub mod limits;
+pub mod version_flag;
 pub mod worker_instance_config;
 
 pub static APP_NAME: &str = "jobworkerp";

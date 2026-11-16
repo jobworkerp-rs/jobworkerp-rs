@@ -1,4 +1,11 @@
+# SANDBOX override: builds docker/sandbox/Dockerfile on the published image.
+#   docker compose -f docker-compose-scalable.yml -f docker-compose-scalable-sandbox.yml up -d --build
 services:
   jobworkerp-worker:
+    image: jobworkerp-worker-sandbox:local
+    build:
+      context: docker/sandbox
+      args:
+        BASE_IMAGE: ghcr.io/jobworkerp-rs/worker:latest
     devices:
       - /dev/kvm:/dev/kvm

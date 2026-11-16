@@ -8,6 +8,7 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 license.workspace = true
+publish = false
 
 [dependencies]
 anyhow = { workspace = true }
@@ -20,3 +21,8 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
 tonic = { workspace = true }
+tempfile = { workspace = true, optional = true }
+
+[features]
+# Helpers for the --version integration tests of the binary crates.
+test-utils = ["dep:tempfile"]

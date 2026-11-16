@@ -1,0 +1,28 @@
+THIRD-PARTY SOFTWARE LICENSES
+=============================
+
+jobworkerp-rs is dual-licensed under the MIT License or the Apache License 2.0
+at your option (see LICENSE-MIT and LICENSE-APACHE). Its binaries statically
+link the third-party Rust crates listed below, each under
+the license shown with it. On Linux they link the system C and C++ runtime
+libraries (glibc, libgcc, libstdc++) dynamically; those are not part of this
+distribution.
+
+Overview
+--------
+{{#each overview}}
+- {{{name}}} ({{{id}}}): {{count}} crate(s)
+{{/each}}
+
+{{#each licenses}}
+================================================================================
+{{{name}}} ({{{id}}})
+================================================================================
+Used by:
+{{#each used_by}}
+- {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}} ({{{crate.repository}}}){{/if}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

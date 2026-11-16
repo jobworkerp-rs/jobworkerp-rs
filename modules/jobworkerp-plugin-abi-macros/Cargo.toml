@@ -2,8 +2,9 @@
 name = "jobworkerp-plugin-abi-macros"
 version = "0.1.0"
 edition = "2024"
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 description = "Proc macro `register_plugin_v2!` for jobworkerp-plugin-abi"
+publish = false
 
 [lib]
 proc-macro = true

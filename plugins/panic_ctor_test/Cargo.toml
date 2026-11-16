@@ -4,6 +4,8 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 description = "V2 plugin sample: constructor panics so the host should reject the load instead of aborting"
+license.workspace = true
+publish = false
 
 [lib]
 crate-type = ["dylib"]

@@ -69,6 +69,47 @@ graph TB
 - LLM integration: Text generation and chat with tool calling support (See [llm.md](manual/en/src/llm.md) for details)
 - Workflow functionality: Execute multiple jobs in coordination (See [workflow.md](manual/en/src/workflow.md) for details)
 
+## Install
+
+Prebuilt binaries are attached to each [GitHub Release](https://github.com/jobworkerp-rs/jobworkerp-rs/releases).
+They use SQLite (the standalone setup); for MySQL, build with `--features mysql`
+or use the container images.
+
+| Asset | Requirements |
+|---|---|
+| `jobworkerp-x86_64-unknown-linux-gnu.tar.gz` | Linux on x86_64 with glibc 2.39 or later and libstdc++ from GCC 14 or later (e.g. Ubuntu 24.04, Debian 13, RHEL 10). |
+| `jobworkerp-aarch64-unknown-linux-gnu.tar.gz` | Linux on aarch64, with the same requirements. |
+| `jobworkerp-aarch64-apple-darwin.tar.gz` | macOS 11 or later on Apple Silicon. |
+
+The Linux binaries link the system glibc dynamically because the PLUGIN runner
+loads plugins with `dlopen`; build plugins against the same or an older glibc.
+On older distributions, use the container images or build from source.
+
+Each archive contains the binaries (`all-in-one`, `worker`, `grpc-front`,
+`mcp-http`, `mcp-stdio`, `ag-ui-http`, `ag-ui-http-async`), `LICENSE-MIT`,
+`LICENSE-APACHE`, `THIRD-PARTY-LICENSES.txt`, the READMEs, and `dot.env` as a
+configuration example. Verify the download with `SHA256SUMS` from the same
+release, and optionally verify its build provenance with the GitHub CLI:
+
+```text
+sha256sum --ignore-missing -c SHA256SUMS
+gh attestation verify jobworkerp-<target>.tar.gz --repo jobworkerp-rs/jobworkerp-rs
+tar -xzf jobworkerp-<target>.tar.gz
+jobworkerp-<target>/all-in-one --version
+```
+
+On macOS, check the asset you downloaded with `shasum`:
+
+```text
+grep ' jobworkerp-aarch64-apple-darwin.tar.gz$' SHA256SUMS | shasum -a 256 -c
+```
+
+The macOS binaries are ad-hoc signed and not notarized. If a browser download
+is blocked by Gatekeeper, download it with `curl` or remove the quarantine
+attribute with `xattr -d com.apple.quarantine`.
+
+Copy `dot.env` to `.env` next to where you run the binaries and adjust it.
+
 ## Command Examples
 
 ### Build and Launch
@@ -89,6 +130,9 @@ $ ./target/release/all-in-one
 # Run gRPC front server and worker by release binary
 $ ./target/release/worker &
 $ ./target/release/grpc-front &
+
+# Print the version of a binary (any of them accepts --version)
+$ ./target/release/all-in-one --version
 ```
 
 #### Launch Example Using Docker Image
@@ -114,6 +158,9 @@ There are two Dockerfiles available for the all-in-one image:
 # Option 1: Using pre-built binary (Dockerfile)
 # First build the Rust binary locally
 $ cargo build --release
+# Generate the third-party license listing the image ships
+# (needs cargo-about: scripts/install-cargo-about.sh, then set CARGO_ABOUT)
+$ bash scripts/generate-third-party-licenses.sh THIRD-PARTY-LICENSES.txt
 # Then build the Docker image
 $ docker build -t jobworkerp-all-in-one .
 
@@ -415,3 +462,16 @@ TBD
 - IDs (e.g., job IDs) use snowflake, with machine IDs derived from the 10-bit host part of each host's IPv4 address. Avoid using subnets with host parts exceeding 10 bits or instances with identical host parts across different subnets, as this may result in duplicate job IDs.
 - When executing worker.type = DOCKER on k8s environments, Docker Outside Of Docker or Docker in Docker settings are required (untested)
 - If a panic occurs within the runner plugin's processing, the worker process itself will crash. It is recommended to operate workers with fault-tolerant systems such as supervisord or Kubernetes deployment. (Applying C-unwind is a future consideration)
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this work by you, as defined in the Apache-2.0 license, shall
+be dual licensed as above, without any additional terms or conditions.

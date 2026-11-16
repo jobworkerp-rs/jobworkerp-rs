@@ -44,6 +44,7 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    jobworkerp_base::exit_if_version_requested!();
     dotenv().ok();
 
     let conf = command_utils::util::tracing::load_tracing_config_from_env().unwrap_or_default();

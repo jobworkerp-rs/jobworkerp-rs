@@ -15,6 +15,7 @@ WORKDIR /home/jobworkerp
 
 COPY --chown=jobworkerp:daemon ./target/release/grpc-front .
 
+COPY LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.txt /usr/share/doc/jobworkerp-rs/
 USER jobworkerp
 
 CMD ["./grpc-front"]
