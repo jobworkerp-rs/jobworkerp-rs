@@ -114,11 +114,7 @@ impl McpHandler {
                 }
             }
         }
-        Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-            meta: None,
-        })
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn ensure_tool_is_published(&self, name: &str) -> Result<(), McpError> {
@@ -186,61 +182,10 @@ impl McpHandler {
         }))
     }
 
-    /// Map internal errors to MCP ErrorData
-    fn map_error(e: anyhow::Error) -> McpError {
-        use jobworkerp_base::error::JobWorkerError;
-
-        if let Some(jwe) = e.downcast_ref::<JobWorkerError>() {
-            match jwe {
-                JobWorkerError::NotFound(_) => {
-                    McpError::method_not_found::<CallToolRequestMethod>()
-                }
-                JobWorkerError::InvalidParameter(msg) => {
-                    McpError::invalid_params(msg.clone(), None)
-                }
-                JobWorkerError::WorkerNotFound(_) => {
-                    McpError::method_not_found::<CallToolRequestMethod>()
-                }
-                _ => McpError::internal_error(e.to_string(), None),
-            }
-        } else {
-            McpError::internal_error(e.to_string(), None)
-        }
-    }
-}
-
-impl ServerHandler for McpHandler {
-    fn get_info(&self) -> ServerInfo {
-        // ServerInfo (InitializeResult) is #[non_exhaustive] in rmcp 2.x; build via constructor.
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::LATEST)
-            .with_instructions(self.instructions.clone())
-    }
-
-    async fn list_tools(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, McpError> {
-        if let Some(name) = &self.config.set_name {
-            self.function_set_tools(name).await
-        } else {
-            let functions = self
-                .function_app
-                .find_functions(
-                    self.config.exclude_runner_as_tool,
-                    self.config.exclude_worker_as_tool,
-                )
-                .await
-                .map_err(Self::map_error)?;
-            self.project_tools(functions).await
-        }
-    }
-
-    async fn call_tool(
+    async fn execute_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        request_meta: Option<serde_json::Value>,
     ) -> Result<CallToolResult, McpError> {
         // Tool name is passed directly to call_function_for_llm().
         // The internal find_runner_by_name_with_mcp() handles the "runner___method" format
@@ -248,7 +193,6 @@ impl ServerHandler for McpHandler {
         let name = request.name.as_ref();
         self.ensure_tool_is_published(name).await?;
 
-        let request_meta = request.meta.map(|meta| serde_json::Value::Object(meta.0));
         let raw_arguments = request.arguments;
         let arguments = raw_arguments.clone().unwrap_or_default();
         if let Some(result) = call_fixed_grpc_tool(
@@ -376,6 +320,74 @@ impl ServerHandler for McpHandler {
                 Ok(CallToolResult::success(vec![ContentBlock::json(result)?]))
             }
         }
+    }
+
+    /// Map internal errors to MCP ErrorData
+    fn map_error(e: anyhow::Error) -> McpError {
+        use jobworkerp_base::error::JobWorkerError;
+
+        if let Some(jwe) = e.downcast_ref::<JobWorkerError>() {
+            match jwe {
+                JobWorkerError::NotFound(_) => {
+                    McpError::method_not_found::<CallToolRequestMethod>()
+                }
+                JobWorkerError::InvalidParameter(msg) => {
+                    McpError::invalid_params(msg.clone(), None)
+                }
+                JobWorkerError::WorkerNotFound(_) => {
+                    McpError::method_not_found::<CallToolRequestMethod>()
+                }
+                _ => McpError::internal_error(e.to_string(), None),
+            }
+        } else {
+            McpError::internal_error(e.to_string(), None)
+        }
+    }
+}
+
+impl ServerHandler for McpHandler {
+    fn get_info(&self) -> ServerConfig {
+        // ServerConfig (InitializeResult) is #[non_exhaustive]; build via constructor.
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::LATEST)
+            .with_instructions(self.instructions.clone())
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        if let Some(name) = &self.config.set_name {
+            self.function_set_tools(name).await
+        } else {
+            let functions = self
+                .function_app
+                .find_functions(
+                    self.config.exclude_runner_as_tool,
+                    self.config.exclude_worker_as_tool,
+                )
+                .await
+                .map_err(Self::map_error)?;
+            self.project_tools(functions).await
+        }
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        // rmcp moves the wire-level `_meta` of a request into the context, so
+        // `request.meta` is always empty for calls coming from an MCP client.
+        let request_meta = context.meta.0.0;
+        let request_meta =
+            (!request_meta.is_empty()).then(|| serde_json::Value::Object(request_meta));
+        // jobworkerp tools never ask the client for additional input mid-call,
+        // so every call completes with a plain CallToolResult.
+        self.execute_tool(request, request_meta)
+            .await
+            .map(CallToolResponse::from)
     }
 
     async fn initialize(

@@ -59,7 +59,7 @@ Streamable HTTP transport, suitable for browser-based clients or HTTP proxy conn
 | `MCP_AUTH_TOKENS` | Alternative valid tokens, comma-separated, for local or otherwise non-secret-managed use. Required only when `MCP_AUTH_TOKEN_FILE` is unset. | - |
 | `MCP_ALLOWED_HOSTS` | Allowed `Host` header values, comma-separated (DNS rebinding protection). Use `*` to disable validation | `localhost,127.0.0.1,::1` |
 
-> **DNS rebinding protection**: rmcp 2.x validates the inbound `Host` header by default and only accepts loopback hosts. When deploying behind a reverse proxy or binding to a public interface, set `MCP_ALLOWED_HOSTS` to your actual hostnames (e.g. `example.com,example.com:8080`). `MCP_ALLOWED_HOSTS=*` disables validation entirely and is not recommended for public deployments.
+> **DNS rebinding protection**: rmcp validates the inbound `Host` header by default and only accepts loopback hosts. When deploying behind a reverse proxy or binding to a public interface, set `MCP_ALLOWED_HOSTS` to your actual hostnames (e.g. `example.com,example.com:8080`). `MCP_ALLOWED_HOSTS=*` disables validation entirely and is not recommended for public deployments.
 
 ### stdio (`mcp-stdio`)
 

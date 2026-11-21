@@ -26,7 +26,7 @@ fn assert_is_independent_schema(schema: &str, primary_message: &str) {
         "schema must not contain unresolved imports:\n{schema}"
     );
 
-    let descriptor = ProtobufDescriptor::new(&schema.to_owned())
+    let descriptor = ProtobufDescriptor::new(schema)
         .expect("schema must compile without access to other proto files");
     let first_message = descriptor
         .get_messages()
@@ -176,8 +176,7 @@ fn sandbox_result_output_and_exit_oneof_payloads_roundtrip() {
     const OUTPUT_JSON: &str = r#"{"output":{"stream":"stderr","data":"AP8="}}"#;
     const EXIT_JSON: &str =
         r#"{"exit":{"exit_code":7,"execution_time_ms":15,"sandbox_id":"sandbox-1"}}"#;
-    let descriptor =
-        ProtobufDescriptor::new(&RESULT_PROTO.to_owned()).expect("result schema compiles");
+    let descriptor = ProtobufDescriptor::new(RESULT_PROTO).expect("result schema compiles");
 
     assert_json_roundtrip(&descriptor, "SandboxExecResult", OUTPUT_JSON);
     assert_json_roundtrip(&descriptor, "SandboxExecResult", EXIT_JSON);

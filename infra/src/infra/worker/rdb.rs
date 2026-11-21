@@ -484,8 +484,8 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         }
 
         if let Some(name) = name_filter {
-            conditions.push("name LIKE ?".to_string());
-            use infra_utils::infra::rdb::escape::escape_like_pattern;
+            use infra_utils::infra::rdb::escape::{escape_like_pattern, like_clause};
+            conditions.push(like_clause("name"));
             let escaped = escape_like_pattern(name);
             bindings.push(WorkerFilterBinding::String(format!("{escaped}%")));
         }
@@ -1221,6 +1221,87 @@ mod test {
             "Multiple runner_types count should be >= individual counts"
         );
 
+        Ok(())
+    }
+
+    // `_` and `%` in name_filter must match literally (no wildcard behaviour) on both DBs
+    async fn _test_find_list_by_name_filter_wildcards(pool: &'static RdbPool) -> Result<()> {
+        const NAMES: [&str; 6] = [
+            "conductor_a",
+            "conductorXa",
+            "100%_off",
+            "100Zoff",
+            "bang!x",
+            "bangXx",
+        ];
+        const DESCRIPTION: &str = "wildcard";
+        let repository = RdbWorkerRepositoryImpl::new(pool);
+        let db = repository.db_pool();
+
+        sqlx::query("DELETE FROM worker WHERE description = ?")
+            .bind(DESCRIPTION)
+            .execute(db)
+            .await
+            .context("error in cleanup")?;
+
+        for (i, name) in NAMES.iter().enumerate() {
+            let data = WorkerData {
+                name: name.to_string(),
+                description: DESCRIPTION.to_string(),
+                runner_id: Some(RunnerId { value: 1 }),
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
+                    name: format!("wildcard{i}"),
+                })?,
+                retry_policy: None,
+                periodic_interval: 0,
+                channel: None,
+                queue_type: QueueType::Normal as i32,
+                response_type: ResponseType::NoResult as i32,
+                store_success: true,
+                store_failure: true,
+                use_static: false,
+                broadcast_results: false,
+            };
+            let mut tx = db.begin().await.context("error in test")?;
+            repository.create(&mut *tx, &data).await?;
+            tx.commit().await.context("error in test commit")?;
+        }
+
+        for (filter, expected) in [
+            ("conductor_", "conductor_a"),
+            ("100%", "100%_off"),
+            ("100%_", "100%_off"),
+            ("bang!", "bang!x"),
+        ] {
+            let results = repository
+                .find_list(
+                    vec![],
+                    None,
+                    None,
+                    None,
+                    Some(filter.to_string()),
+                    None,
+                    vec![],
+                    None,
+                    None,
+                )
+                .await?;
+            let names: Vec<_> = results
+                .iter()
+                .map(|w| w.data.as_ref().unwrap().name.clone())
+                .collect();
+            assert_eq!(names, vec![expected.to_string()], "filter={filter}");
+            let count = repository
+                .count_by(vec![], None, Some(filter.to_string()), None, vec![])
+                .await?;
+            assert_eq!(count, 1, "count filter={filter}");
+        }
+        // Remove the fixtures so that later tests sharing the DB are not affected
+        sqlx::query("DELETE FROM worker WHERE description = ?")
+            .bind(DESCRIPTION)
+            .execute(db)
+            .await
+            .context("error in cleanup")?;
         Ok(())
     }
 
@@ -2333,6 +2414,7 @@ mod test {
             _test_runner_types_filter_with_exists(rdb_pool).await?;
             // Sprint 1-2 new parameter tests
             _test_find_list_by_name_filter(rdb_pool).await?;
+            _test_find_list_by_name_filter_wildcards(rdb_pool).await?;
             _test_find_list_by_is_periodic(rdb_pool).await?;
             _test_find_list_by_runner_ids(rdb_pool).await?;
             _test_find_list_by_sort(rdb_pool).await?;

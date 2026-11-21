@@ -55,7 +55,7 @@ GRPC runnerは、呼び出し対象のサービス・メソッドのスキーマ
 
 proto ソースは「gRPC サービスの完全な実装情報」までは必要ありませんが、以下を満たす必要があります。
 
-- **`protoc` でコンパイル可能な、構文的に完全な proto であること。** 内部的に単一ファイルとしてコンパイルするため、**`import` で他ファイルを参照する proto は解決できません**。proto は自己完結（self-contained）である必要があります。
+- **構文的に完全な `proto2` または `proto3` の proto であること。** 内部的に単一ファイルとしてコンパイルするため、**`import` で他ファイルを参照する proto は解決できません**。import できるのは well-known types（`google/protobuf/timestamp.proto` などの `google/protobuf/*.proto`）だけで、それ以外は自己完結（self-contained）である必要があります。Protobuf editions（`edition = "2023"`）には対応していません。
 - **呼び出すメソッドの `service { rpc ... }` 宣言が含まれていること。** メソッドはサービス定義から解決するため、メッセージ型だけを定義してサービス／RPC 宣言を省いた proto では解決に失敗します。
 - **そのメソッドの入力・出力メッセージ型（および依存するメッセージ型）の定義が含まれていること。** これらは JSON ⇔ protobuf 変換に使用されます。他のサービスや未使用メソッドの定義は不要です。
 

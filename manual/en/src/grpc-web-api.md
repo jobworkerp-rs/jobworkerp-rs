@@ -455,7 +455,7 @@ The following fields can be set as defaults in runner settings. When set, they t
 - `as_json` (optional): Default value for converting response to JSON. Requires either `use_reflection` or `proto`.
 - `proto` (optional): `.proto` definition used for JSON/protobuf conversion without reflection. `source` can be an `https://` URI, a `file://` URI, or inline proto text. `http://` is allowed only when `allow_insecure_http: true` is set. `fetch_headers` are sent when fetching over HTTP(S). `file://` sources are allowed only when `GRPC_PROTO_ALLOWED_DIR` is set to an allowed directory.
 
-When `proto` is set, the runner builds and caches a proto descriptor at worker load time or job execution time. The worker runtime must have `protoc` available. `proto` in runner settings takes priority over `proto` in job arguments.
+When `proto` is set, the runner builds and caches a proto descriptor at worker load time or job execution time. The proto is compiled in process, so the worker runtime does not need `protoc`. `proto` in runner settings takes priority over `proto` in job arguments.
 
 **Job Arguments (args_json) - Unary (using: "unary", default):**
 ```json

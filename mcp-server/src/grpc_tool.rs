@@ -1239,11 +1239,10 @@ mod tests {
 
     #[test]
     fn invalid_structured_description_uses_the_independent_fallback() {
-        let descriptor =
-            ProtobufDescriptor::new(&"syntax = \"proto3\"; message Request {}".to_string())
-                .unwrap()
-                .get_message_by_name("Request")
-                .unwrap();
+        let descriptor = ProtobufDescriptor::new("syntax = \"proto3\"; message Request {}")
+            .unwrap()
+            .get_message_by_name("Request")
+            .unwrap();
         let mut schema = serde_json::json!({"type":"object", "properties":{}})
             .as_object()
             .cloned()
@@ -1275,7 +1274,7 @@ mod tests {
     #[test]
     fn required_proto_field_aliases_accept_either_name_but_not_both() {
         let descriptor = ProtobufDescriptor::new(
-            &"syntax = \"proto2\"; message Request { required string user_id = 1; }".to_string(),
+            "syntax = \"proto2\"; message Request { required string user_id = 1; }",
         )
         .unwrap()
         .get_message_by_name("Request")
@@ -1297,7 +1296,7 @@ mod tests {
     #[test]
     fn oneof_constraints_cover_proto_field_aliases() {
         let descriptor = ProtobufDescriptor::new(
-            &"syntax = \"proto3\"; message Request { oneof selector { string user_id = 1; string display_name = 2; } }".to_string(),
+            "syntax = \"proto3\"; message Request { oneof selector { string user_id = 1; string display_name = 2; } }",
         )
         .unwrap()
         .get_message_by_name("Request")
@@ -1318,12 +1317,11 @@ mod tests {
 
     #[test]
     fn structured_description_annotates_canonical_and_proto_field_names() {
-        let descriptor = ProtobufDescriptor::new(
-            &"syntax = \"proto3\"; message Request { string user_id = 1; }".to_string(),
-        )
-        .unwrap()
-        .get_message_by_name("Request")
-        .unwrap();
+        let descriptor =
+            ProtobufDescriptor::new("syntax = \"proto3\"; message Request { string user_id = 1; }")
+                .unwrap()
+                .get_message_by_name("Request")
+                .unwrap();
         let mut schema = message_to_protojson_schema(&descriptor)
             .unwrap()
             .as_object()
@@ -1355,12 +1353,11 @@ mod tests {
 
     #[test]
     fn recursive_response_schema_keeps_refs_local_to_the_body_schema() {
-        let descriptor = ProtobufDescriptor::new(
-            &"syntax = \"proto3\"; message Node { Node child = 1; }".to_string(),
-        )
-        .unwrap()
-        .get_message_by_name("Node")
-        .unwrap();
+        let descriptor =
+            ProtobufDescriptor::new("syntax = \"proto3\"; message Node { Node child = 1; }")
+                .unwrap()
+                .get_message_by_name("Node")
+                .unwrap();
         let schema = grpc_result_schema(
             message_to_protojson_schema(&descriptor).unwrap(),
             GrpcMethodKind::Unary,
@@ -1598,12 +1595,11 @@ mod tests {
 
     #[test]
     fn streaming_runner_result_is_not_decoded_as_a_unary_envelope() {
-        let descriptor = ProtobufDescriptor::new(
-            &"syntax = \"proto3\"; message Response { string value = 1; }".to_string(),
-        )
-        .unwrap()
-        .get_message_by_name("Response")
-        .unwrap();
+        let descriptor =
+            ProtobufDescriptor::new("syntax = \"proto3\"; message Response { string value = 1; }")
+                .unwrap()
+                .get_message_by_name("Response")
+                .unwrap();
         let body = ProtobufDescriptor::json_value_to_message(
             descriptor.clone(),
             &serde_json::json!({"value":"ok"}),
@@ -1639,12 +1635,11 @@ mod tests {
 
     #[test]
     fn descriptor_aware_error_keeps_its_existing_bodyless_shape() {
-        let descriptor = ProtobufDescriptor::new(
-            &"syntax = \"proto3\"; message Response { string value = 1; }".to_string(),
-        )
-        .unwrap()
-        .get_message_by_name("Response")
-        .unwrap();
+        let descriptor =
+            ProtobufDescriptor::new("syntax = \"proto3\"; message Response { string value = 1; }")
+                .unwrap()
+                .get_message_by_name("Response")
+                .unwrap();
         let bytes = ProstMessageCodec::serialize_message(&GrpcUnaryResult {
             metadata: Default::default(),
             code: 14,

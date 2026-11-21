@@ -273,7 +273,7 @@ mod tests {
     use command_utils::protobuf::ProtobufDescriptor;
 
     fn descriptor(proto: &str, name: &str) -> prost_reflect::MessageDescriptor {
-        ProtobufDescriptor::new(&proto.to_string())
+        ProtobufDescriptor::new(proto)
             .unwrap()
             .get_message_by_name(name)
             .unwrap()

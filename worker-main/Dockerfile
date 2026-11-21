@@ -38,7 +38,6 @@ RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y --no-install
         libcap-ng0 \
         libcurl4 \
         libgomp1 \
-        protobuf-compiler \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
 

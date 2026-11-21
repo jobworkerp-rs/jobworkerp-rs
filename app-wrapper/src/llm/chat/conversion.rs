@@ -240,11 +240,7 @@ impl ToolConverter {
             .flat_map(|tool| Self::convert_normal_function(&tool))
             .collect::<Vec<_>>();
 
-        Ok(ListToolsResult {
-            tools: tool_list,
-            next_cursor: None,
-            meta: None,
-        })
+        Ok(ListToolsResult::with_all_items(tool_list))
     }
 
     /// Convert MCP Tool to Ollama ToolInfo

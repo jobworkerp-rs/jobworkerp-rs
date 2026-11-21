@@ -163,7 +163,7 @@ fn success_result(job_id: i64, answer: &str) -> JobResult {
 
 fn encoded_reply(answer: &str) -> Vec<u8> {
     let descriptor = command_utils::protobuf::ProtobufDescriptor::new(
-        &"syntax = \"proto3\"; message Reply { string answer = 1; }".to_owned(),
+        "syntax = \"proto3\"; message Reply { string answer = 1; }",
     )
     .unwrap();
     command_utils::protobuf::ProtobufDescriptor::json_to_message(

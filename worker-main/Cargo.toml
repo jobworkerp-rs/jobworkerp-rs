@@ -41,5 +41,6 @@ tracing = { workspace = true }
 # Same release as the microsandbox SDK linked through jobworkerp-runner; the
 # tests compare its runtime constants with docker/sandbox/Dockerfile.
 microsandbox-utils = "0.7"
+serde_json = { workspace = true }
 toml = { workspace = true }
 jobworkerp-base = { path = "../base", features = ["test-utils"] }

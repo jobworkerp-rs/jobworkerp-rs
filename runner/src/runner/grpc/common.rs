@@ -212,9 +212,9 @@ impl GrpcConnection {
     async fn build_descriptor_pool(&self, proto: String) -> Result<DescriptorPool> {
         let key = Arc::new(proto);
         self.with_cache(&key, || async {
-            ProtobufDescriptor::build_protobuf_descriptor(&key).with_context(|| {
-                "failed to build gRPC proto descriptor; protoc may be missing or proto source is invalid"
-            })
+            ProtobufDescriptor::build_protobuf_descriptor(&key).with_context(
+                || "failed to build gRPC proto descriptor; the proto source is invalid",
+            )
         })
         .await
     }
@@ -1029,8 +1029,7 @@ service EchoService {
     #[tokio::test]
     async fn json_to_protobuf_uses_descriptor_pool_without_reflection() {
         let conn = GrpcConnection::new();
-        let pool =
-            ProtobufDescriptor::build_protobuf_descriptor(&TEST_GRPC_PROTO.to_string()).unwrap();
+        let pool = ProtobufDescriptor::build_protobuf_descriptor(TEST_GRPC_PROTO).unwrap();
 
         let bytes = conn
             .json_to_protobuf(
@@ -1052,8 +1051,7 @@ service EchoService {
     #[tokio::test]
     async fn convert_response_to_json_uses_descriptor_pool_without_reflection() {
         let conn = GrpcConnection::new();
-        let pool =
-            ProtobufDescriptor::build_protobuf_descriptor(&TEST_GRPC_PROTO.to_string()).unwrap();
+        let pool = ProtobufDescriptor::build_protobuf_descriptor(TEST_GRPC_PROTO).unwrap();
         let descriptor = pool
             .get_message_by_name("example.EchoResponse")
             .expect("EchoResponse descriptor");
@@ -1075,8 +1073,7 @@ service EchoService {
         // output descriptor is resolved a single time and reused to decode each
         // streamed body, and the result must equal the per-call convert path.
         let conn = GrpcConnection::new();
-        let pool =
-            ProtobufDescriptor::build_protobuf_descriptor(&TEST_GRPC_PROTO.to_string()).unwrap();
+        let pool = ProtobufDescriptor::build_protobuf_descriptor(TEST_GRPC_PROTO).unwrap();
         let descriptor = pool
             .get_message_by_name("example.EchoResponse")
             .expect("EchoResponse descriptor");
@@ -1129,8 +1126,7 @@ service EchoService {
     #[tokio::test]
     async fn resolve_descriptor_pool_prefers_settings_pool_over_args_proto() {
         let mut conn = GrpcConnection::new();
-        let settings_pool =
-            ProtobufDescriptor::build_protobuf_descriptor(&TEST_GRPC_PROTO.to_string()).unwrap();
+        let settings_pool = ProtobufDescriptor::build_protobuf_descriptor(TEST_GRPC_PROTO).unwrap();
         conn.descriptor_pool = Some(Arc::new(settings_pool.clone()));
         let args_proto = Some(GrpcArgsProtoSource {
             source: "invalid proto".to_string(),

@@ -150,7 +150,7 @@ pub trait MethodJsonSchemaConverter {
         context_method: &str,
         context_type: &str,
     ) -> Result<String> {
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string()).context(format!(
+        let descriptor = ProtobufDescriptor::new(proto_string).context(format!(
             "Failed to parse Protobuf for method '{}' ({})",
             context_method, context_type
         ))?;

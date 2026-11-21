@@ -207,8 +207,8 @@ where
 
     // Create MCP service with StreamableHttpService.
     //
-    // stateful_mode=false is a workaround for rmcp session management issues: with the
-    // default stateful_mode=true, LocalSessionManager closes HTTP channels immediately after
+    // legacy_session_mode=false is a workaround for rmcp session management issues: with the
+    // default legacy_session_mode=true, LocalSessionManager closes HTTP channels immediately after
     // the response, causing SSE reconnection failures ("Channel closed" errors).
     // Related issues:
     // - https://github.com/modelcontextprotocol/rust-sdk/issues/559
@@ -216,7 +216,7 @@ where
     //
     // StreamableHttpServerConfig is #[non_exhaustive]; start from Default and override fields.
     let mut config = StreamableHttpServerConfig::default();
-    config.stateful_mode = false;
+    config.legacy_session_mode = false;
     match allowed_hosts {
         AllowedHostsSetting::Default => {}
         AllowedHostsSetting::Disabled => {

@@ -54,7 +54,7 @@ The GRPC runner resolves the schema of the target service and method in one of t
 
 A proto source does not need the full implementation of a gRPC service, but it must satisfy the following:
 
-- **It must be a syntactically complete proto that `protoc` can compile.** It is compiled internally as a single file, so **a proto that references other files via `import` cannot be resolved**. The proto must be self-contained.
+- **It must be a syntactically complete `proto2` or `proto3` file.** It is compiled internally as a single file, so **a proto that `import`s other files cannot be resolved**; only the well-known types (`google/protobuf/*.proto`, such as `timestamp.proto`) can be imported. The proto must otherwise be self-contained. Protobuf editions (`edition = "2023"`) are not supported.
 - **It must include the `service { rpc ... }` declaration of the method being called.** The method is resolved from the service definition, so a proto that defines only message types and omits the service/RPC declaration fails to resolve.
 - **It must include the definitions of that method's input/output message types (and any message types they depend on).** These are used for JSON ⇔ protobuf conversion. Definitions of other services or unused methods are not required.
 

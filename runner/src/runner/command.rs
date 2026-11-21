@@ -24,12 +24,12 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use sysinfo::System;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::{JoinError, JoinHandle};
-use tokio_stream::StreamExt;
-use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio_stream::wrappers::SplitStream;
+use tokio_stream::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 
 use super::cancellation::CancelMonitoring;
@@ -105,6 +105,23 @@ async fn wait_for_stdin_writer(
         Some(writer) => writer.await,
         None => futures::future::pending().await,
     }
+}
+
+/// Splits a child's output into lines without a trailing "\r", replacing
+/// invalid UTF-8 with U+FFFD. Failing on such a line would stop reading the
+/// pipe, and the child would then block once the pipe buffer is full.
+fn output_lines(
+    reader: impl AsyncRead + Unpin,
+) -> impl Stream<Item = std::io::Result<String>> + Unpin {
+    SplitStream::new(BufReader::new(reader).split(b'\n')).map(|line| {
+        line.map(|mut bytes| {
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            String::from_utf8(bytes)
+                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+        })
+    })
 }
 
 fn stdin_write_error_result(message: String, started_at: u64) -> CommandResult {
@@ -506,8 +523,8 @@ impl RunnerTrait for CommandRunnerImpl {
                     let stdout = c.stdout.take().unwrap();
                     let stderr = c.stderr.take().unwrap();
 
-                    let mut stdout_reader = FramedRead::new(stdout, LinesCodec::new());
-                    let mut stderr_reader = FramedRead::new(stderr, LinesCodec::new());
+                    let mut stdout_reader = output_lines(stdout);
+                    let mut stderr_reader = output_lines(stderr);
 
                     // Process stdout and stderr concurrently with cancellation monitoring
                     let mut stdout_done = false;
@@ -518,14 +535,20 @@ impl RunnerTrait for CommandRunnerImpl {
                             stdout_line = stdout_reader.next(), if !stdout_done => {
                                 match stdout_line {
                                     Some(Ok(line)) => stdout_messages.push(line),
-                                    Some(Err(e)) => tracing::error!("command stdout line decode err: {:?}", e),
+                                    Some(Err(e)) => {
+                                        tracing::error!("command stdout read err: {:?}", e);
+                                        stdout_done = true;
+                                    }
                                     None => stdout_done = true,
                                 }
                             }
                             stderr_line = stderr_reader.next(), if !stderr_done => {
                                 match stderr_line {
                                     Some(Ok(line)) => stderr_messages.push(line),
-                                    Some(Err(e)) => tracing::error!("command stderr line decode err: {:?}", e),
+                                    Some(Err(e)) => {
+                                        tracing::error!("command stderr read err: {:?}", e);
+                                        stderr_done = true;
+                                    }
                                     None => stderr_done = true,
                                 }
                             }
@@ -2454,6 +2477,59 @@ mod tests {
 
         let stdout = result.stdout.unwrap_or_default();
         assert!(stdout.trim().eq("/tmp") || stdout.trim().ends_with("/tmp"));
+    }
+
+    // An invalid UTF-8 line, then more than a pipe buffer (64KB) of output.
+    const LONG_OUTPUT_AFTER_INVALID_LINE: &str =
+        r"printf '\343\201\n'; head -c 200000 /dev/zero | tr '\0' a; printf '\nend\n'";
+
+    /// Runs `sh -c script` without streaming, failing instead of hanging if the
+    /// output is not read to the end.
+    async fn run_shell(script: &str) -> CommandResult {
+        let mut runner = CommandRunnerImpl::new();
+        let arg = command_args("sh", &["-c", script], false);
+        let res = tokio::time::timeout(
+            Duration::from_secs(30),
+            runner.run(&arg, HashMap::new(), None),
+        )
+        .await
+        .expect("run() must read the output to the end");
+        ProstMessageCodec::deserialize_message::<CommandResult>(&res.0.unwrap()).unwrap()
+    }
+
+    fn assert_long_output_after_invalid_line(output: &str) {
+        let lines: Vec<&str> = output.split('\n').collect();
+        assert_eq!(3, lines.len());
+        assert_eq!("\u{FFFD}", lines[0]);
+        assert_eq!(200_000, lines[1].len());
+        assert!(lines[1].bytes().all(|b| b == b'a'));
+        assert_eq!("end", lines[2]);
+    }
+
+    #[tokio::test]
+    async fn run_reads_stdout_past_an_invalid_utf8_line() {
+        let result = run_shell(LONG_OUTPUT_AFTER_INVALID_LINE).await;
+        assert_eq!(Some(0), result.exit_code);
+        assert_long_output_after_invalid_line(&result.stdout.unwrap());
+    }
+
+    #[tokio::test]
+    async fn run_reads_stderr_past_an_invalid_utf8_line() {
+        let result = run_shell(&format!("{{ {LONG_OUTPUT_AFTER_INVALID_LINE}; }} >&2")).await;
+        assert_eq!(Some(0), result.exit_code);
+        assert_long_output_after_invalid_line(&result.stderr.unwrap());
+    }
+
+    #[tokio::test]
+    async fn run_keeps_lines_after_a_short_invalid_utf8_line() {
+        let result = run_shell(r"printf 'a\n\343\201\nb\n'").await;
+        assert_eq!(Some("a\n\u{FFFD}\nb"), result.stdout.as_deref());
+    }
+
+    #[tokio::test]
+    async fn run_strips_carriage_returns_and_keeps_empty_and_unterminated_lines() {
+        let result = run_shell(r"printf 'x\r\n\ny'").await;
+        assert_eq!(Some("x\n\ny"), result.stdout.as_deref());
     }
 
     #[test]

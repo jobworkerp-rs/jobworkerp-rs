@@ -512,7 +512,7 @@ pub trait RunnerRepository:
         sort_by: Option<proto::jobworkerp::data::RunnerSortField>,
         ascending: Option<bool>,
     ) -> Result<Vec<RunnerRow>> {
-        use infra_utils::infra::rdb::escape::escape_like_pattern;
+        use infra_utils::infra::rdb::escape::{escape_like_pattern, like_clause};
 
         // Build query string first
         let mut query_str = String::from("SELECT * FROM `runner` WHERE id > 0");
@@ -530,7 +530,7 @@ pub trait RunnerRepository:
         // Name prefix filter (LIKE 'keyword%')
         let escaped_name = name_filter.as_ref().map(|name| escape_like_pattern(name));
         if escaped_name.is_some() {
-            query_str.push_str(" AND name LIKE ?");
+            query_str.push_str(&format!(" AND {}", like_clause("name")));
         }
 
         // Sort by - convert enum to SQL field name
@@ -591,7 +591,7 @@ pub trait RunnerRepository:
         runner_types: Vec<i32>,
         name_filter: Option<String>,
     ) -> Result<i64> {
-        use infra_utils::infra::rdb::escape::escape_like_pattern;
+        use infra_utils::infra::rdb::escape::{escape_like_pattern, like_clause};
 
         // Build query string first
         let mut query_str = String::from("SELECT COUNT(*) as count FROM `runner` WHERE id > 0");
@@ -609,7 +609,7 @@ pub trait RunnerRepository:
         // Name prefix filter
         let escaped_name = name_filter.as_ref().map(|name| escape_like_pattern(name));
         if escaped_name.is_some() {
-            query_str.push_str(" AND name LIKE ?");
+            query_str.push_str(&format!(" AND {}", like_clause("name")));
         }
 
         // AssertSqlSafe: IN-clause and LIKE fragments are fixed strings with bound
@@ -1575,6 +1575,65 @@ mod test {
         Ok(())
     }
 
+    // `_` and `%` in name_filter must match literally (no wildcard behaviour) on both DBs
+    async fn _test_name_filter_wildcards(pool: &'static RdbPool) -> Result<()> {
+        let plugins = Arc::new(Plugins::new());
+        let mcp_clients = McpServerFactory::new(McpConfig { server: vec![] });
+        let p = Arc::new(RunnerSpecFactory::new(plugins, Arc::new(mcp_clients)));
+        let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+        let repository = RdbRunnerRepositoryImpl::new(pool, p, id_generator.clone());
+
+        for name in [
+            "conductor_a",
+            "conductorXa",
+            "100%_off",
+            "100Zoff",
+            "bang!x",
+            "bangXx",
+        ] {
+            let row = RunnerRow {
+                id: id_generator.generate_id()?,
+                name: name.to_string(),
+                description: "wildcard".to_string(),
+                definition: "{}".to_string(),
+                r#type: RunnerType::Plugin as i32,
+                created_at: command_utils::util::datetime::now_millis(),
+            };
+            assert!(repository.create(&row).await?);
+        }
+
+        for (filter, expected) in [
+            ("conductor_", "conductor_a"),
+            ("100%", "100%_off"),
+            ("100%_", "100%_off"),
+            ("bang!", "bang!x"),
+        ] {
+            // Row-level query: rows with fake definitions cannot be converted to schemas
+            let rows = repository
+                .find_row_list_by_tx(
+                    repository.db_pool(),
+                    vec![],
+                    Some(filter.to_string()),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
+            let names: Vec<_> = rows.iter().map(|r| r.name.clone()).collect();
+            assert_eq!(names, vec![expected.to_string()], "filter={filter}");
+            let count = repository
+                .count_by(vec![], Some(filter.to_string()))
+                .await?;
+            assert_eq!(count, 1, "count filter={filter}");
+        }
+        // Remove the fixtures so that other tests sharing the DB see only built-in runners
+        sqlx::query("DELETE FROM runner WHERE id > 65535;")
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     #[test]
     fn test_sprint2_parameters() -> Result<()> {
         use infra_utils::infra::test::TEST_RUNTIME;
@@ -1603,6 +1662,7 @@ mod test {
             _test_find_list_by_sort(rdb_pool).await?;
             _test_count_by_filters(rdb_pool).await?;
             _test_find_list_by_pagination(rdb_pool).await?;
+            _test_name_filter_wildcards(rdb_pool).await?;
 
             Ok(())
         })

@@ -26,7 +26,7 @@ RUN pnpm build
 FROM nvcr.io/nvidia/cuda:13.1.2-cudnn-runtime-ubuntu24.04
 
 # docker-compose-v2: Ubuntu's docker-compose package is the obsolete Python v1.
-RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y libssl3 libcurl4 libgomp1 libcap-ng0 docker.io docker-compose-v2 nginx gosu protobuf-compiler \
+RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y libssl3 libcurl4 libgomp1 libcap-ng0 docker.io docker-compose-v2 nginx gosu \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 RUN adduser --system --group jobworkerp

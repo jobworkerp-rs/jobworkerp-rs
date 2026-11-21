@@ -455,7 +455,7 @@ unaryおよびサーバストリーミングの両方のgRPC呼び出しをサ�
 - `as_json`（任意）: レスポンスをJSONに変換するかのデフォルト値。`use_reflection` または `proto` が必要です。
 - `proto`（任意）: リフレクションを使わずにJSONとprotobufを変換するための `.proto` 定義です。`source` には `https://` URI、`file://` URI、またはinline proto文字列を指定できます。`http://` は `allow_insecure_http: true` の場合のみ許可されます。`fetch_headers` はHTTP(S)取得時に送信されます。`file://` は環境変数 `GRPC_PROTO_ALLOWED_DIR` に許可ディレクトリを設定した場合のみ使用できます。
 
-`proto` を指定した場合、Runnerは起動時または実行時にproto descriptorを構築してキャッシュします。worker実行環境には `protoc` が必要です。Runner Settings側の `proto` はJob Arguments側の `proto` より優先されます。
+`proto` を指定した場合、Runnerは起動時または実行時にproto descriptorを構築してキャッシュします。protoはプロセス内でコンパイルするため、worker実行環境に `protoc` は不要です。Runner Settings側の `proto` はJob Arguments側の `proto` より優先されます。
 
 **Job Arguments (args_json) - Unary (using: "unary", デフォルト):**
 ```json

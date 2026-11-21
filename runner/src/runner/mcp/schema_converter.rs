@@ -979,8 +979,8 @@ mod tests {
     }
 
     #[test]
-    fn test_github_schema_protoc_compilation() {
-        // Test that generated protobuf can actually be compiled by protoc
+    fn test_github_schema_compiles() {
+        // Test that the generated protobuf actually compiles
         // This is a regression test for the "optional repeated" bug
         let schema = json!({
             "type": "object",
@@ -1013,14 +1013,13 @@ mod tests {
             "proto should not contain 'optional repeated'"
         );
 
-        // Try to compile it with protoc
         use command_utils::protobuf::ProtobufDescriptor;
         let result = ProtobufDescriptor::new(&proto);
         assert!(result.is_ok(), "Protobuf should compile successfully");
     }
 
     #[test]
-    fn test_github_issue_write_schema_protoc_compilation() {
+    fn test_github_issue_write_schema_compiles() {
         // Test issue_write schema with multiple array fields
         let schema = json!({
             "type": "object",
@@ -1063,7 +1062,6 @@ mod tests {
             "proto should not contain 'optional repeated'"
         );
 
-        // Try to compile it with protoc
         use command_utils::protobuf::ProtobufDescriptor;
         let result = ProtobufDescriptor::new(&proto);
         if let Err(e) = &result {
@@ -1100,7 +1098,6 @@ mod tests {
             "proto should not contain 'optional repeated'"
         );
 
-        // Try to compile it with protoc
         use command_utils::protobuf::ProtobufDescriptor;
         let result = ProtobufDescriptor::new(&proto);
         if let Err(e) = &result {
@@ -1137,7 +1134,6 @@ mod tests {
             "proto should not contain 'optional repeated'"
         );
 
-        // Try to compile it with protoc
         use command_utils::protobuf::ProtobufDescriptor;
         let result = ProtobufDescriptor::new(&proto);
         if let Err(e) = &result {

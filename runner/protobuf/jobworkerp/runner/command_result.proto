@@ -7,10 +7,10 @@ message CommandResult {
   // 0: typically indicates success
   optional int32 exit_code = 1;
   
-  // # Standard output (stdout) from the command as bytes
+  // # Standard output (stdout) from the command; invalid UTF-8 becomes U+FFFD
   optional string stdout = 2;
-  
-  // # Standard error (stderr) from the command as bytes (optional)
+
+  // # Standard error (stderr) from the command (optional); invalid UTF-8 becomes U+FFFD
   optional string stderr = 3;
   
   // # Duration of command execution in milliseconds
